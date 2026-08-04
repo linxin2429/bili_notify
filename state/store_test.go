@@ -1,0 +1,149 @@
+package state
+
+import (
+	"bytes"
+	"errors"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/linxin2429/bili_notify/model"
+	"github.com/linxin2429/bili_notify/vault"
+)
+
+func TestBaselineAndDurableOutbox(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	v := mustVault(t, 1)
+	store, err := Open(path, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := model.UP{UID: "42", Enabled: true}
+	if err := store.PutUP(up); err != nil {
+		t.Fatal(err)
+	}
+	channel := model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com/hook"}}
+	channel, err = store.PutChannel(channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := model.Dynamic{ID: "1", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now().UTC(), URL: "https://t.bilibili.com/1"}
+	created, err := store.RecordDynamics("42", []model.Dynamic{first}, []string{channel.ID}, true)
+	if err != nil || created != 0 {
+		t.Fatalf("baseline created=%d err=%v", created, err)
+	}
+	if deliveries, _ := store.ListDeliveries(0); len(deliveries) != 0 {
+		t.Fatalf("baseline created %d deliveries", len(deliveries))
+	}
+	second := first
+	second.ID = "2"
+	created, err = store.RecordDynamics("42", []model.Dynamic{first, second}, []string{channel.ID}, false)
+	if err != nil || created != 1 {
+		t.Fatalf("new dynamics created=%d err=%v", created, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(path, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	deliveries, err := store.ListDeliveries(0)
+	if err != nil || len(deliveries) != 1 || deliveries[0].Dynamic.ID != "2" {
+		t.Fatalf("deliveries=%#v err=%v", deliveries, err)
+	}
+	if err := store.CompleteDelivery(deliveries[0].ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEncryptedRecordsAndRekey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	oldVault := mustVault(t, 2)
+	store, err := Open(path, oldVault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.PutChannel(model.Channel{Name: "mail", Type: model.ChannelEmail, Settings: map[string]string{
+		"host": "smtp.example.com", "port": "465", "tls": "tls", "from": "a@example.com", "to": "b@example.com", "password": "secret",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newVault := mustVault(t, 3)
+	if err := store.Rekey(newVault); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	wrong, err := Open(path, oldVault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrong.ListChannels(false); err == nil {
+		t.Fatal("old master key decrypted rekeyed channel")
+	}
+	_ = wrong.Close()
+	correct, err := Open(path, newVault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer correct.Close()
+	channels, err := correct.ListChannels(false)
+	if err != nil || channels[0].Settings["password"] != "secret" {
+		t.Fatalf("channels=%#v err=%v", channels, err)
+	}
+}
+
+func TestMissingSession(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Session(); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Session() error=%v, want ErrNotFound", err)
+	}
+}
+
+func TestUpdateChannelSettingsMergesEncryptedRecord(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	channel, err := store.PutChannel(model.Channel{
+		Name: "outlook", Type: model.ChannelMicrosoft,
+		Settings: map[string]string{
+			"client_id": "11111111-2222-3333-4444-555555555555",
+			"tenant":    "common", "to": "receiver@example.com",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.UpdateChannelSettings(channel.ID, map[string]string{"refresh_token": "secret", "authorized": "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Settings["to"] != "receiver@example.com" || updated.Settings["refresh_token"] != "secret" {
+		t.Fatalf("settings = %#v", updated.Settings)
+	}
+	loaded, err := store.Channel(channel.ID)
+	if err != nil || loaded.Settings["refresh_token"] != "secret" {
+		t.Fatalf("loaded=%#v err=%v", loaded, err)
+	}
+}
+
+func mustVault(t *testing.T, fill byte) *vault.Vault {
+	t.Helper()
+	v, err := vault.New(bytes.Repeat([]byte{fill}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}

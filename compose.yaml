@@ -1,0 +1,27 @@
+services:
+  bili-notify:
+    build:
+      context: .
+    image: bili-notify:local
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "8443:8443"
+    environment:
+      BILI_NOTIFY_LOG_LEVEL: info
+      BILI_NOTIFY_POLL_INTERVAL: 30s
+      BILI_NOTIFY_REQUEST_RATE: "2"
+      BILI_NOTIFY_REQUEST_CONCURRENCY: "4"
+    volumes:
+      - bili-notify-data:/data
+      - ./secrets:/run/secrets:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  bili-notify-data:
