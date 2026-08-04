@@ -67,7 +67,7 @@ HTTP 只承担认证生命周期：
 | `PUT /api/v1/session/password` | 验证当前密码并修改密码 |
 | `GET /api/v1/ws` | 校验会话并升级 WebSocket |
 
-WebSocket 请求为 `id/action/payload`，响应使用相同 `id` 和 `ok/data/error`。服务端事件包含 `event/revision/data`；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、采集参数、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。写操作包含 `settings.update`，payload 为完整采集参数：动态三项 `poll_interval_sec`、`request_rate`、`request_concurrency`，以及评论五项 `comment_enabled`、`comment_track_n`、`comment_root_pages`、`comment_reply_pages`、`comment_batch_interval_sec`。历史查询为按需命令（不进入 snapshot）：`dynamics.query` / `comments.query`（payload：`uid?`、`q?`、`from?`、`to?` RFC3339、`limit?` 默认 20 最大 100、`offset?`；时间范围为半开区间 `[from, to)`；返回 `items/total/limit/offset`），以及 `dynamics.get` / `comments.get` 取完整 payload。断线客户端不重放未知结果的写操作，重连后使用快照修复状态。
+WebSocket 请求为 `id/action/payload`，响应使用相同 `id` 和 `ok/data/error`。服务端事件包含 `event/revision/data`；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、采集参数、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。写操作包含 `settings.update`，payload 为完整采集参数：动态三项 `poll_interval_sec`、`request_rate`、`request_concurrency`，以及评论五项 `comment_enabled`、`comment_track_n`、`comment_root_pages`、`comment_reply_pages`、`comment_batch_interval_sec`。历史查询为按需命令（不进入 snapshot）：`dynamics.query` / `comments.query`（payload：`uid?`、`q?`、`from?`、`to?` RFC3339、`limit?` 默认 20 最大 100、`offset?`；时间范围为半开区间 `[from, to)`；返回 `items/total/limit/offset`），以及 `dynamics.get` / `comments.get` 取完整 payload。`dynamics.query` 的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)` 和一层 `original` 引用预览，前端无需逐条调用 `dynamics.get`；列表不返回统计、评论坐标等与预览无关的完整 payload。断线客户端不重放未知结果的写操作，重连后使用快照修复状态。
 
 领域事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。所有消息限制为 1 MiB，命令和写入均有超时。
 

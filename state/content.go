@@ -31,19 +31,36 @@ type ContentQuery struct {
 
 // DynamicRecord is a list-row projection of an archived dynamic.
 type DynamicRecord struct {
-	ID           string    `json:"id"`
-	UID          string    `json:"uid"`
-	UPName       string    `json:"up_name"`
-	Type         string    `json:"type"`
-	PublishedAt  time.Time `json:"published_at"`
-	DiscoveredAt time.Time `json:"discovered_at"`
-	Baseline     bool      `json:"baseline"`
-	Title        string    `json:"title,omitempty"`
-	Summary      string    `json:"summary,omitempty"`
-	Description  string    `json:"description,omitempty"`
-	URL          string    `json:"url,omitempty"`
-	TargetURL    string    `json:"target_url,omitempty"`
-	Badge        string    `json:"badge,omitempty"`
+	ID           string               `json:"id"`
+	UID          string               `json:"uid"`
+	UPName       string               `json:"up_name"`
+	Type         string               `json:"type"`
+	PublishedAt  time.Time            `json:"published_at"`
+	DiscoveredAt time.Time            `json:"discovered_at"`
+	Baseline     bool                 `json:"baseline"`
+	Title        string               `json:"title,omitempty"`
+	Summary      string               `json:"summary,omitempty"`
+	Description  string               `json:"description,omitempty"`
+	URL          string               `json:"url,omitempty"`
+	TargetURL    string               `json:"target_url,omitempty"`
+	Badge        string               `json:"badge,omitempty"`
+	Media        []model.DynamicMedia `json:"media,omitempty"`
+	Original     *DynamicPreview      `json:"original,omitempty"`
+}
+
+// DynamicPreview contains the archived fields needed to identify a referenced dynamic.
+type DynamicPreview struct {
+	ID          string               `json:"id,omitempty"`
+	UID         string               `json:"uid,omitempty"`
+	UPName      string               `json:"up_name,omitempty"`
+	Type        string               `json:"type,omitempty"`
+	Title       string               `json:"title,omitempty"`
+	Summary     string               `json:"summary,omitempty"`
+	Description string               `json:"description,omitempty"`
+	URL         string               `json:"url,omitempty"`
+	TargetURL   string               `json:"target_url,omitempty"`
+	Badge       string               `json:"badge,omitempty"`
+	Media       []model.DynamicMedia `json:"media,omitempty"`
 }
 
 // CommentRecord is a list-row projection of an archived UP reply.
@@ -145,7 +162,7 @@ func (s *Store) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, error) {
 	}
 
 	listSQL := `SELECT id, uid, up_name, type, published_at, discovered_at, baseline,
-		title, summary, description, url, target_url, badge
+		title, summary, description, url, target_url, badge, payload_json
 		FROM dynamics` + where + ` ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?`
 	listArgs := append(append([]any{}, args...), limit, offset)
 	var rows []dynamicRow
@@ -154,6 +171,10 @@ func (s *Store) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, error) {
 	}
 	items := make([]DynamicRecord, 0, len(rows))
 	for _, r := range rows {
+		var payload model.Dynamic
+		if err := json.Unmarshal([]byte(r.PayloadJSON), &payload); err != nil {
+			return nil, 0, fmt.Errorf("decoding archived dynamic %s: %w", r.ID, err)
+		}
 		items = append(items, DynamicRecord{
 			ID:           r.ID,
 			UID:          r.UID,
@@ -168,9 +189,22 @@ func (s *Store) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, error) {
 			URL:          r.URL,
 			TargetURL:    r.TargetURL,
 			Badge:        r.Badge,
+			Media:        payload.Media,
+			Original:     dynamicPreview(payload.Original),
 		})
 	}
 	return items, int(total), nil
+}
+
+func dynamicPreview(dynamic *model.Dynamic) *DynamicPreview {
+	if dynamic == nil {
+		return nil
+	}
+	return &DynamicPreview{
+		ID: dynamic.ID, UID: dynamic.UID, UPName: dynamic.UPName, Type: dynamic.Type,
+		Title: dynamic.Title, Summary: dynamic.Summary, Description: dynamic.Description,
+		URL: dynamic.URL, TargetURL: dynamic.TargetURL, Badge: dynamic.Badge, Media: dynamic.Media,
+	}
 }
 
 // QueryComments returns matching archived comments and the total count for the filter.

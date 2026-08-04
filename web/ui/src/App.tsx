@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  Add, Autorenew, BrightnessAuto, CheckCircle, ChevronLeft, ChevronRight, DarkMode, Dashboard, Delete, Edit, Email,
+  Add, Autorenew, BrightnessAuto, BrokenImage, CheckCircle, ChevronLeft, ChevronRight, DarkMode, Dashboard, Delete, Edit, Email,
   ErrorOutlined, History, Hub, LightMode, LiveTv, Logout, Menu as MenuIcon, NotificationsActive, OpenInNew,
   Password, People, PlayArrow, QrCode2, Refresh, Science, Settings, WarningAmber,
 } from '@mui/icons-material'
@@ -414,21 +414,65 @@ function HistoryPage({ ups, command }: { ups: UP[]; command: <T>(action: string,
   </Stack>
 }
 
-function DynamicHistoryCard({ item, onOpen }: { item: DynamicHistoryItem; onOpen: () => void }) {
+export function DynamicHistoryCard({ item, onOpen }: { item: DynamicHistoryItem; onOpen: () => void }) {
+  const [expanded, setExpanded] = useState(false)
+  const body = (item.description || item.summary || '').trim()
+  const title = (item.title || '').trim()
+  const showTitle = title && normalizePreviewText(title) !== normalizePreviewText(body)
   return <Card sx={{ cursor: 'pointer' }} onClick={onOpen}><CardContent>
     <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}>
-      <Box minWidth={0}>
+      <Box minWidth={0} flex={1}>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-          <Typography fontWeight={750}>{item.title || item.summary || item.id}</Typography>
+          <Typography fontWeight={750}>{showTitle ? title : (item.up_name || item.uid || item.id)}</Typography>
           {item.badge && <Chip size="small" label={item.badge} />}
           {item.baseline && <Chip size="small" label="基线" variant="outlined" />}
         </Stack>
-        <Typography className="summary-clamp" sx={{ mt: 1 }}>{item.summary || '（无正文摘要）'}</Typography>
+        {body && <>
+          <Typography className={expanded ? undefined : 'history-text-clamp'} sx={{ mt: 1, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{body}</Typography>
+          {body.length > 240 && <Button size="small" sx={{ mt: .5, px: 0 }} onClick={event => { event.stopPropagation(); setExpanded(value => !value) }}>{expanded ? '收起' : '展开全文'}</Button>}
+        </>}
+        <DynamicMediaGrid media={item.media || []} />
+        {item.original && <OriginalDynamicPreview item={item.original} />}
+        {!body && !item.media?.length && !item.original && <Typography color="text.secondary" sx={{ mt: 1 }}>（该归档没有可预览的正文或媒体）</Typography>}
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>{item.up_name || item.uid} · {dynamicTypeLabel(item.type)}</Typography>
       </Box>
       <Box flexShrink={0}><Typography variant="body2" color="text.secondary">发布时间</Typography><Typography>{formatDate(item.published_at)}</Typography></Box>
     </Stack>
   </CardContent></Card>
+}
+
+function DynamicMediaGrid({ media }: { media: NonNullable<DynamicHistoryItem['media']> }) {
+  const available = media.filter(item => item.url)
+  const visible = available.slice(0, 9)
+  if (visible.length === 0) return null
+  const single = visible.length === 1
+  return <Box className={`history-media-grid ${single ? 'history-media-single' : ''}`} sx={{ mt: 1.5 }}>
+    {visible.map((item, index) => <MediaTile key={`${item.url}-${index}`} item={item} extra={index === 8 ? available.length - 9 : 0} />)}
+  </Box>
+}
+
+function MediaTile({ item, extra }: { item: NonNullable<DynamicHistoryItem['media']>[number]; extra: number }) {
+  const [failed, setFailed] = useState(false)
+  return <Box className="history-media-tile" sx={item.width && item.height ? { aspectRatio: `${item.width} / ${item.height}` } : undefined}>
+    {failed ? <Stack className="history-media-fallback" alignItems="center" justifyContent="center"><BrokenImage /><Typography variant="caption">媒体加载失败</Typography></Stack>
+      : <img src={item.url} alt={item.kind === 'cover' ? '内容封面' : '动态图片'} loading="lazy" onError={() => setFailed(true)} />}
+    {extra > 0 && <Box className="history-media-extra">+{extra}</Box>}
+  </Box>
+}
+
+function OriginalDynamicPreview({ item }: { item: NonNullable<DynamicHistoryItem['original']> }) {
+  const body = (item.description || item.summary || '').trim()
+  return <Paper variant="outlined" sx={{ mt: 1.5, p: 1.5, bgcolor: 'action.hover' }}>
+    <Typography variant="caption" color="text.secondary">转发自 {item.up_name || item.uid || '原动态'}</Typography>
+    {item.title && <Typography fontWeight={700} sx={{ mt: .5 }}>{item.title}</Typography>}
+    {body && normalizePreviewText(body) !== normalizePreviewText(item.title || '') && <Typography className="history-original-clamp" sx={{ mt: .5, whiteSpace: 'pre-wrap' }}>{body}</Typography>}
+    <DynamicMediaGrid media={item.media || []} />
+    {!item.title && !body && !item.media?.length && <Typography color="text.secondary" sx={{ mt: .5 }}>原动态内容未被归档</Typography>}
+  </Paper>
+}
+
+export function normalizePreviewText(value: string) {
+  return value.trim().replace(/\s+/g, ' ')
 }
 
 function CommentHistoryCard({ item, onOpen }: { item: CommentHistoryItem; onOpen: () => void }) {

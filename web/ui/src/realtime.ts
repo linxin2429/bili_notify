@@ -72,6 +72,28 @@ const snapshotSchema = z.object({
   updated_at: z.string(),
 })
 
+const dynamicMediaSchema = z.object({
+  kind: z.string(), url: z.string(), width: z.number().int().optional(), height: z.number().int().optional(),
+})
+
+const dynamicPreviewSchema = z.object({
+  id: z.string().optional(), uid: z.string().optional(), up_name: z.string().optional(), type: z.string().optional(),
+  title: z.string().optional(), summary: z.string().optional(), description: z.string().optional(),
+  url: z.string().optional(), target_url: z.string().optional(), badge: z.string().optional(),
+  media: z.array(dynamicMediaSchema).optional(),
+})
+
+const dynamicHistorySchema = z.object({
+  id: z.string(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(), discovered_at: z.string(),
+  baseline: z.boolean(), title: z.string().optional(), summary: z.string().optional(), description: z.string().optional(),
+  url: z.string().optional(), target_url: z.string().optional(), badge: z.string().optional(),
+  media: z.array(dynamicMediaSchema).optional(), original: dynamicPreviewSchema.optional(),
+})
+
+const dynamicHistoryPageSchema = z.object({
+  items: z.array(dynamicHistorySchema), total: z.number().int(), limit: z.number().int(), offset: z.number().int(),
+})
+
 const envelopeSchema = z.union([
   z.object({ event: z.string(), revision: z.number(), data: z.unknown() }),
   z.object({ id: z.string(), ok: z.boolean(), data: z.unknown().optional(), error: z.object({ code: z.string(), message: z.string() }).optional() }),
@@ -99,12 +121,17 @@ export function parseEvent(event: string, data: unknown): unknown {
   }
 }
 
+export function parseCommandResponse(action: string, data: unknown): unknown {
+  if (action === 'dynamics.query') return dynamicHistoryPageSchema.parse(data)
+  return data
+}
+
 export class RealtimeClient {
   private socket?: WebSocket
   private stopped = false
   private retry = 0
   private revision = 0
-  private pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: number }>()
+  private pending = new Map<string, { action: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: number }>()
 
   constructor(private readonly callbacks: RealtimeCallbacks) {}
 
@@ -130,7 +157,7 @@ export class RealtimeClient {
         this.pending.delete(id)
         reject(new Error('操作超时，结果未知，请检查最新状态'))
       }, 25000)
-      this.pending.set(id, { resolve: value => resolve(value as T), reject, timer })
+      this.pending.set(id, { action, resolve: value => resolve(value as T), reject, timer })
       this.socket?.send(JSON.stringify({ id, action, payload }))
     })
   }
@@ -170,7 +197,7 @@ export class RealtimeClient {
       if (!request) return
       window.clearTimeout(request.timer)
       this.pending.delete(envelope.id)
-      if (envelope.ok) request.resolve(envelope.data)
+      if (envelope.ok) request.resolve(parseCommandResponse(request.action, envelope.data))
       else request.reject(new Error(envelope.error?.message || '操作失败'))
     } catch (error) {
       this.callbacks.onError(error instanceof Error ? error.message : '无法解析服务器消息')
@@ -201,4 +228,4 @@ export class RealtimeClient {
   }
 }
 
-export const schemasForTest = { snapshotSchema, statusSchema }
+export const schemasForTest = { snapshotSchema, statusSchema, dynamicHistoryPageSchema }
