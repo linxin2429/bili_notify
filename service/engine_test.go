@@ -171,3 +171,44 @@ func TestStatusReadyUsesPollIntervalWindow(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, status.Ready, "beyond 2*poll_interval should be unready")
 }
+
+func TestDispatchOnceDoesNotPublishWhenQueueIsIdle(t *testing.T) {
+	t.Parallel()
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	events := NewEventBus()
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), events)
+
+	before := events.Revision()
+	require.NoError(t, engine.dispatchOnce(t.Context()))
+	assert.Equal(t, before, events.Revision())
+}
+
+func TestDispatchOncePublishesMinimalTopicsAfterDeliveryChanges(t *testing.T) {
+	t.Parallel()
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	created, err := store.RecordDynamics("42", []model.Dynamic{{
+		ID: "dynamic", UID: "42", UPName: "tester", Type: "DYNAMIC_TYPE_WORD",
+		PublishedAt: time.Now(), Summary: "hello", URL: "https://t.bilibili.com/1",
+	}}, []string{"missing-channel"}, false)
+	require.NoError(t, err)
+	require.Equal(t, 1, created)
+
+	events := NewEventBus()
+	subscription := events.Subscribe()
+	t.Cleanup(subscription.Close)
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), events)
+	require.NoError(t, engine.dispatchOnce(t.Context()))
+
+	topics, _, err := subscription.Next(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, TopicStatus|TopicDeliveries, topics)
+	assert.Zero(t, topics&TopicChannels)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, model.DeliveryBlocked, deliveries[0].State)
+}

@@ -72,10 +72,7 @@ const snapshotSchema = z.object({
   updated_at: z.string(),
 })
 
-const envelopeSchema = z.union([
-  z.object({ event: z.string(), revision: z.number(), data: z.unknown() }),
-  z.object({ id: z.string(), ok: z.boolean(), data: z.unknown().optional(), error: z.object({ code: z.string(), message: z.string() }).optional() }),
-])
+const envelopeSchema = z.object({ event: z.string(), revision: z.number(), data: z.unknown() })
 
 export interface RealtimeCallbacks {
   onSnapshot: (snapshot: DashboardSnapshot) => void
@@ -104,8 +101,6 @@ export class RealtimeClient {
   private stopped = false
   private retry = 0
   private revision = 0
-  private pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: number }>()
-
   constructor(private readonly callbacks: RealtimeCallbacks) {}
 
   start() {
@@ -117,22 +112,6 @@ export class RealtimeClient {
     this.stopped = true
     this.socket?.close(1000, 'client closed')
     this.socket = undefined
-    this.rejectPending('连接已关闭，操作结果未知')
-  }
-
-  command<T = unknown>(action: string, payload: unknown = {}): Promise<T> {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error('实时连接不可用，请等待重新连接'))
-    }
-    const id = crypto.randomUUID()
-    return new Promise<T>((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error('操作超时，结果未知，请检查最新状态'))
-      }, 25000)
-      this.pending.set(id, { resolve: value => resolve(value as T), reject, timer })
-      this.socket?.send(JSON.stringify({ id, action, payload }))
-    })
   }
 
   private connect() {
@@ -149,7 +128,6 @@ export class RealtimeClient {
     socket.onerror = () => this.callbacks.onState('stale')
     socket.onclose = () => {
       if (this.stopped) return
-      this.rejectPending('实时连接已断开，操作结果未知，请检查最新状态')
       this.callbacks.onState('stale')
       void this.verifySessionAndReconnect()
     }
@@ -158,20 +136,11 @@ export class RealtimeClient {
   private receive(raw: string) {
     try {
       const envelope = envelopeSchema.parse(JSON.parse(raw))
-      if ('event' in envelope) {
-        if (envelope.revision < this.revision) return
-        this.revision = envelope.revision
-        const data = parseEvent(envelope.event, envelope.data)
-        if (envelope.event === 'snapshot') this.callbacks.onSnapshot(data as DashboardSnapshot)
-        else this.callbacks.onEvent(envelope.event, data, envelope.revision)
-        return
-      }
-      const request = this.pending.get(envelope.id)
-      if (!request) return
-      window.clearTimeout(request.timer)
-      this.pending.delete(envelope.id)
-      if (envelope.ok) request.resolve(envelope.data)
-      else request.reject(new Error(envelope.error?.message || '操作失败'))
+      if (envelope.revision < this.revision) return
+      this.revision = envelope.revision
+      const data = parseEvent(envelope.event, envelope.data)
+      if (envelope.event === 'snapshot') this.callbacks.onSnapshot(data as DashboardSnapshot)
+      else this.callbacks.onEvent(envelope.event, data, envelope.revision)
     } catch (error) {
       this.callbacks.onError(error instanceof Error ? error.message : '无法解析服务器消息')
     }
@@ -190,14 +159,6 @@ export class RealtimeClient {
     }
     const delay = Math.min(30000, 1000 * 2 ** this.retry++)
     if (!this.stopped) window.setTimeout(() => this.connect(), delay)
-  }
-
-  private rejectPending(message: string) {
-    for (const request of this.pending.values()) {
-      window.clearTimeout(request.timer)
-      request.reject(new Error(message))
-    }
-    this.pending.clear()
   }
 }
 

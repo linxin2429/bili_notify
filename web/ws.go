@@ -25,19 +25,6 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-type wsRequest struct {
-	ID      string          `json:"id"`
-	Action  string          `json:"action"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-}
-
-type wsResponse struct {
-	ID    string      `json:"id"`
-	OK    bool        `json:"ok"`
-	Data  any         `json:"data,omitempty"`
-	Error *wsAPIError `json:"error,omitempty"`
-}
-
 type wsEvent struct {
 	Event    string `json:"event"`
 	Revision uint64 `json:"revision"`
@@ -216,7 +203,13 @@ func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	g, ctx := errgroup.WithContext(r.Context())
-	g.Go(func() error { return s.readCommands(ctx, token, connection, writer) })
+	g.Go(func() error {
+		for {
+			if _, _, err := connection.Read(ctx); err != nil {
+				return err
+			}
+		}
+	})
 	g.Go(func() error { return s.pushEvents(ctx, subscription, writer) })
 	g.Go(func() error {
 		ticker := time.NewTicker(30 * time.Second)
@@ -236,29 +229,6 @@ func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	_ = g.Wait()
-}
-
-func (s *Server) readCommands(ctx context.Context, token string, connection *websocket.Conn, writer *wsWriter) error {
-	for {
-		var request wsRequest
-		if err := wsjson.Read(ctx, connection, &request); err != nil {
-			return err
-		}
-		if _, ok := s.auth.validateToken(token, true); !ok {
-			return errors.New("session expired")
-		}
-		if request.ID == "" || request.Action == "" {
-			if err := writer.write(ctx, wsResponse{ID: request.ID, OK: false, Error: &wsAPIError{Code: "invalid_request", Message: "id and action are required"}}); err != nil {
-				return err
-			}
-			continue
-		}
-		data, apiErr := s.dispatch(ctx, request.Action, request.Payload)
-		response := wsResponse{ID: request.ID, OK: apiErr == nil, Data: data, Error: apiErr}
-		if err := writer.write(ctx, response); err != nil {
-			return err
-		}
-	}
 }
 
 func (s *Server) pushEvents(ctx context.Context, subscription *service.Subscription, writer *wsWriter) error {

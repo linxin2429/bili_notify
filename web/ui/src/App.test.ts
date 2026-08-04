@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyUpdate, readinessMessage } from './App'
+import { applyUpdate, readinessMessage } from './dashboard'
 import type { DashboardSnapshot } from './types'
 
 const snapshot: DashboardSnapshot = {
