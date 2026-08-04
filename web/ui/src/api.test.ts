@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AdminAPI } from './api'
+import { AdminAPI, httpJSON } from './api'
 
 const fetchMock = vi.fn<typeof fetch>()
 
@@ -44,5 +44,18 @@ describe('AdminAPI', () => {
     }))
 
     await expect(new AdminAPI('csrf-token').createUP({ uid: '42', name: '', enabled: true })).rejects.toThrow('UP already exists')
+  })
+
+  it('aborts a request after the operation timeout', async () => {
+    vi.useFakeTimers()
+    fetchMock.mockImplementation((_input, options) => new Promise((_resolve, reject) => {
+      options?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    }))
+
+    const request = httpJSON('/api/v1/dashboard')
+    const rejection = expect(request).rejects.toThrow('操作超时，结果未知')
+    await vi.advanceTimersByTimeAsync(25_000)
+    await rejection
+    vi.useRealTimers()
   })
 })

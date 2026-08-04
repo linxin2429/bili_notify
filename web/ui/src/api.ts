@@ -3,15 +3,34 @@ import type {
   MicrosoftLogin, RuntimeSettings, UP,
 } from './types'
 
+const requestTimeoutMS = 25_000
+
 export async function httpJSON<T>(path: string, options: RequestInit = {}, csrf = ''): Promise<T> {
   const headers = new Headers(options.headers)
   if (options.body) headers.set('Content-Type', 'application/json')
   if (csrf) headers.set('X-CSRF-Token', csrf)
-  const response = await fetch(path, { ...options, headers, credentials: 'same-origin' })
-  if (response.status === 204) return undefined as T
-  const body = await response.json()
-  if (!response.ok) throw new Error(body.error?.message || response.statusText)
-  return body as T
+  const controller = new AbortController()
+  let timedOut = false
+  const abortFromCaller = () => controller.abort(options.signal?.reason)
+  if (options.signal?.aborted) abortFromCaller()
+  else options.signal?.addEventListener('abort', abortFromCaller, { once: true })
+  const timeout = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, requestTimeoutMS)
+  try {
+    const response = await fetch(path, { ...options, headers, credentials: 'same-origin', signal: controller.signal })
+    if (response.status === 204) return undefined as T
+    const body = await response.json()
+    if (!response.ok) throw new Error(body.error?.message || response.statusText)
+    return body as T
+  } catch (error) {
+    if (timedOut) throw new Error('操作超时，结果未知，请刷新状态后重试')
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
+    options.signal?.removeEventListener('abort', abortFromCaller)
+  }
 }
 
 export interface ContentQuery {

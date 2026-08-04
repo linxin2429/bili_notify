@@ -1,9 +1,16 @@
 package web
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
+
+	"github.com/linxin2429/bili_notify/model"
+	"github.com/linxin2429/bili_notify/service"
+	"github.com/linxin2429/bili_notify/state"
 )
 
 func (s *Server) registerAdminAPI(mux *http.ServeMux) {
@@ -27,7 +34,8 @@ func (s *Server) registerAdminAPI(mux *http.ServeMux) {
 }
 
 func (s *Server) dashboardAPI(w http.ResponseWriter, r *http.Request) {
-	s.executeHTTPAction(w, r, "snapshot.get", nil, http.StatusOK)
+	snapshot, err := s.snapshot()
+	s.writeAPIResult(w, http.StatusOK, snapshot, err)
 }
 
 func (s *Server) createUPAPI(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +47,24 @@ func (s *Server) createUPAPI(w http.ResponseWriter, r *http.Request) {
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	s.executeHTTPAction(w, r, "up.create", input, http.StatusCreated)
+	up := model.UP{UID: input.UID, Name: input.Name, Enabled: input.Enabled}
+	if err := up.Validate(); err != nil {
+		s.writeAPIResult(w, http.StatusCreated, nil, validationFailure(err))
+		return
+	}
+	if _, err := s.store.UP(up.UID); err == nil {
+		s.writeAPIResult(w, http.StatusCreated, nil, conflictFailure(errors.New("UP already exists")))
+		return
+	} else if !errors.Is(err, state.ErrNotFound) {
+		s.writeAPIResult(w, http.StatusCreated, nil, err)
+		return
+	}
+	if err := s.store.PutUP(up); err != nil {
+		s.writeAPIResult(w, http.StatusCreated, nil, err)
+		return
+	}
+	s.events.Publish(service.TopicStatus | service.TopicUPs)
+	s.writeAPIResult(w, http.StatusCreated, up, nil)
 }
 
 func (s *Server) updateUPAPI(w http.ResponseWriter, r *http.Request) {
@@ -50,17 +75,31 @@ func (s *Server) updateUPAPI(w http.ResponseWriter, r *http.Request) {
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	s.executeHTTPAction(w, r, "up.update", struct {
-		UID     string `json:"uid"`
-		Name    string `json:"name"`
-		Enabled bool   `json:"enabled"`
-	}{r.PathValue("uid"), input.Name, input.Enabled}, http.StatusOK)
+	up, err := s.store.UP(r.PathValue("uid"))
+	if err != nil {
+		s.writeAPIResult(w, http.StatusOK, nil, err)
+		return
+	}
+	up.Name, up.Enabled = input.Name, input.Enabled
+	if err := up.Validate(); err != nil {
+		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(err))
+		return
+	}
+	if err := s.store.PutUP(up); err != nil {
+		s.writeAPIResult(w, http.StatusOK, nil, err)
+		return
+	}
+	s.events.Publish(service.TopicStatus | service.TopicUPs)
+	s.writeAPIResult(w, http.StatusOK, up, nil)
 }
 
 func (s *Server) deleteUPAPI(w http.ResponseWriter, r *http.Request) {
-	s.executeHTTPAction(w, r, "up.delete", struct {
-		UID string `json:"uid"`
-	}{r.PathValue("uid")}, http.StatusNoContent)
+	if err := s.store.DeleteUP(r.PathValue("uid")); err != nil {
+		s.writeAPIResult(w, http.StatusNoContent, nil, err)
+		return
+	}
+	s.events.Publish(service.TopicStatus | service.TopicUPs)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) createChannelAPI(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +107,11 @@ func (s *Server) createChannelAPI(w http.ResponseWriter, r *http.Request) {
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	s.executeHTTPAction(w, r, "channel.create", input, http.StatusCreated)
+	channel, err := s.saveChannel(input, false)
+	if err == nil {
+		s.events.Publish(service.TopicStatus | service.TopicChannels | service.TopicDeliveries | service.TopicMicrosoftLogin)
+	}
+	s.writeAPIResult(w, http.StatusCreated, toChannelView(channel), err)
 }
 
 func (s *Server) updateChannelAPI(w http.ResponseWriter, r *http.Request) {
@@ -77,50 +120,85 @@ func (s *Server) updateChannelAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.ID = r.PathValue("id")
-	s.executeHTTPAction(w, r, "channel.update", input, http.StatusOK)
+	channel, err := s.saveChannel(input, true)
+	if err == nil {
+		s.events.Publish(service.TopicStatus | service.TopicChannels | service.TopicDeliveries | service.TopicMicrosoftLogin)
+	}
+	s.writeAPIResult(w, http.StatusOK, toChannelView(channel), err)
 }
 
 func (s *Server) deleteChannelAPI(w http.ResponseWriter, r *http.Request) {
-	s.executeHTTPAction(w, r, "channel.delete", idPayload(r.PathValue("id")), http.StatusNoContent)
+	id := r.PathValue("id")
+	if err := s.store.DeleteChannel(id); err != nil {
+		s.writeAPIResult(w, http.StatusNoContent, nil, err)
+		return
+	}
+	s.engine.CancelMicrosoftLogin(id)
+	s.events.Publish(service.TopicStatus | service.TopicChannels | service.TopicMicrosoftLogin)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) testChannelAPI(w http.ResponseWriter, r *http.Request) {
-	s.executeHTTPAction(w, r, "channel.test", idPayload(r.PathValue("id")), http.StatusOK)
+	ctx, cancel := withAPITimeout(r)
+	defer cancel()
+	if err := s.engine.TestChannel(ctx, r.PathValue("id")); err != nil {
+		writeAPIError(w, http.StatusBadGateway, "upstream_failure", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
 }
 
 func (s *Server) startBiliLoginAPI(w http.ResponseWriter, r *http.Request) {
-	s.executeHTTPAction(w, r, "bilibili.login.start", nil, http.StatusCreated)
+	ctx, cancel := withAPITimeout(r)
+	defer cancel()
+	login, err := s.engine.StartLogin(ctx)
+	if err != nil {
+		s.writeAPIResult(w, http.StatusCreated, nil, err)
+		return
+	}
+	view, err := s.biliLoginViewFor(login)
+	s.writeAPIResult(w, http.StatusCreated, view, err)
 }
 
 func (s *Server) cancelBiliLoginAPI(w http.ResponseWriter, r *http.Request) {
-	s.executeHTTPAction(w, r, "bilibili.login.cancel", idPayload(r.PathValue("id")), http.StatusNoContent)
+	s.engine.CancelLogin(r.PathValue("id"))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) startMicrosoftLoginAPI(w http.ResponseWriter, r *http.Request) {
-	s.executeHTTPAction(w, r, "microsoft.login.start", channelIDPayload(r.PathValue("id")), http.StatusCreated)
+	ctx, cancel := withAPITimeout(r)
+	defer cancel()
+	login, err := s.engine.StartMicrosoftLogin(ctx, r.PathValue("id"))
+	s.writeAPIResult(w, http.StatusCreated, login, err)
 }
 
 func (s *Server) cancelMicrosoftLoginAPI(w http.ResponseWriter, r *http.Request) {
-	s.executeHTTPAction(w, r, "microsoft.login.cancel", channelIDPayload(r.PathValue("id")), http.StatusNoContent)
+	s.engine.CancelMicrosoftLogin(r.PathValue("id"))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) updateSettingsAPI(w http.ResponseWriter, r *http.Request) {
-	var input map[string]any
+	var input model.RuntimeSettings
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	s.executeHTTPAction(w, r, "settings.update", input, http.StatusOK)
+	if err := input.Validate(); err != nil {
+		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(err))
+		return
+	}
+	err := s.engine.UpdateSettings(input)
+	s.writeAPIResult(w, http.StatusOK, s.engine.Settings(), err)
 }
 
 func (s *Server) queryDynamicsAPI(w http.ResponseWriter, r *http.Request) {
-	s.queryContentAPI(w, r, "dynamics.query")
+	s.queryContentAPI(w, r, true)
 }
 
 func (s *Server) queryCommentsAPI(w http.ResponseWriter, r *http.Request) {
-	s.queryContentAPI(w, r, "comments.query")
+	s.queryContentAPI(w, r, false)
 }
 
-func (s *Server) queryContentAPI(w http.ResponseWriter, r *http.Request, action string) {
+func (s *Server) queryContentAPI(w http.ResponseWriter, r *http.Request, dynamics bool) {
 	query := r.URL.Query()
 	input := contentQueryInput{UID: query.Get("uid"), Q: query.Get("q"), From: query.Get("from"), To: query.Get("to")}
 	var err error
@@ -138,35 +216,59 @@ func (s *Server) queryContentAPI(w http.ResponseWriter, r *http.Request, action 
 			return
 		}
 	}
-	s.executeHTTPAction(w, r, action, input, http.StatusOK)
+	q, err := parseContentQuery(input)
+	if err != nil {
+		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(err))
+		return
+	}
+	limit, offset := normalizeQueryPage(q.Limit, q.Offset)
+	if dynamics {
+		items, total, err := s.store.QueryDynamics(q)
+		views := make([]dynamicHistoryView, 0, len(items))
+		for _, item := range items {
+			views = append(views, toDynamicHistoryView(item))
+		}
+		s.writeAPIResult(w, http.StatusOK, contentPage{Items: views, Total: total, Limit: limit, Offset: offset}, err)
+		return
+	}
+	items, total, err := s.store.QueryComments(q)
+	views := make([]commentHistoryView, 0, len(items))
+	for _, item := range items {
+		views = append(views, toCommentHistoryView(item))
+	}
+	s.writeAPIResult(w, http.StatusOK, contentPage{Items: views, Total: total, Limit: limit, Offset: offset}, err)
 }
 
 func (s *Server) getDynamicAPI(w http.ResponseWriter, r *http.Request) {
-	s.executeHTTPAction(w, r, "dynamics.get", idPayload(r.PathValue("id")), http.StatusOK)
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(errors.New("id is required")))
+		return
+	}
+	dynamic, err := s.store.GetDynamic(id)
+	s.writeAPIResult(w, http.StatusOK, dynamic, err)
 }
 
 func (s *Server) getCommentAPI(w http.ResponseWriter, r *http.Request) {
-	s.executeHTTPAction(w, r, "comments.get", struct {
-		RPID string `json:"rpid"`
-	}{r.PathValue("rpid")}, http.StatusOK)
+	rpid := strings.TrimSpace(r.PathValue("rpid"))
+	if rpid == "" {
+		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(errors.New("rpid is required")))
+		return
+	}
+	note, err := s.store.GetComment(rpid)
+	s.writeAPIResult(w, http.StatusOK, note, err)
 }
 
-func (s *Server) executeHTTPAction(w http.ResponseWriter, r *http.Request, action string, payload any, successStatus int) {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal", "encoding request")
+func (s *Server) writeAPIResult(w http.ResponseWriter, successStatus int, value any, err error) {
+	if err == nil {
+		writeJSON(w, successStatus, value)
 		return
 	}
-	data, apiErr := s.dispatch(r.Context(), action, raw)
-	if apiErr != nil {
-		writeAPIError(w, httpStatusForAPIError(apiErr.Code), apiErr.Code, apiErr.Message)
-		return
+	apiErr := apiError(err)
+	if apiErr.Code == "internal" && s.logger != nil {
+		s.logger.Error("admin API request failed", "err", err)
 	}
-	if successStatus == http.StatusNoContent {
-		w.WriteHeader(successStatus)
-		return
-	}
-	writeJSON(w, successStatus, data)
+	writeAPIError(w, httpStatusForAPIError(apiErr.Code), apiErr.Code, apiErr.Message)
 }
 
 func decodeAPIRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -192,18 +294,6 @@ func httpStatusForAPIError(code string) int {
 	}
 }
 
-func idPayload(id string) struct {
-	ID string `json:"id"`
-} {
-	return struct {
-		ID string `json:"id"`
-	}{id}
-}
-
-func channelIDPayload(id string) struct {
-	ChannelID string `json:"channel_id"`
-} {
-	return struct {
-		ChannelID string `json:"channel_id"`
-	}{id}
+func withAPITimeout(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), 20*time.Second)
 }

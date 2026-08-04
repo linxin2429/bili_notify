@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -148,6 +149,29 @@ func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
 	assert.Less(t, len(raw), 1<<20)
 	assert.NotContains(t, string(raw), "不应进入管理台")
 	assert.LessOrEqual(t, len([]rune(views[0].Dynamic.Summary)), 241)
+}
+
+func TestAPIErrorClassification(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		err         error
+		wantCode    string
+		wantMessage string
+	}{
+		{name: "validation", err: validationFailure(errors.New("uid is invalid")), wantCode: "validation_failed", wantMessage: "uid is invalid"},
+		{name: "conflict", err: conflictFailure(errors.New("already exists")), wantCode: "conflict", wantMessage: "already exists"},
+		{name: "not found", err: state.ErrNotFound, wantCode: "not_found", wantMessage: "resource not found"},
+		{name: "internal", err: errors.New("database is unavailable"), wantCode: "internal", wantMessage: "internal server error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := apiError(tt.err)
+			assert.Equal(t, tt.wantCode, got.Code)
+			assert.Equal(t, tt.wantMessage, got.Message)
+		})
+	}
 }
 
 type testWSEnvelope struct {

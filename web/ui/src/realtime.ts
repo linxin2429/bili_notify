@@ -74,6 +74,10 @@ const snapshotSchema = z.object({
 
 const envelopeSchema = z.object({ event: z.string(), revision: z.number(), data: z.unknown() })
 
+export function nextRevision(current: number, event: string, incoming: number): number | null {
+  return event === 'snapshot' || incoming >= current ? incoming : null
+}
+
 export interface RealtimeCallbacks {
   onSnapshot: (snapshot: DashboardSnapshot) => void
   onEvent: (event: string, data: unknown, revision: number) => void
@@ -116,6 +120,7 @@ export class RealtimeClient {
 
   private connect() {
     if (this.stopped) return
+    this.revision = 0
     this.callbacks.onState(this.retry === 0 ? 'connecting' : 'reconnecting')
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const socket = new WebSocket(`${protocol}//${location.host}/api/v1/ws`)
@@ -136,8 +141,9 @@ export class RealtimeClient {
   private receive(raw: string) {
     try {
       const envelope = envelopeSchema.parse(JSON.parse(raw))
-      if (envelope.revision < this.revision) return
-      this.revision = envelope.revision
+	  const revision = nextRevision(this.revision, envelope.event, envelope.revision)
+	  if (revision === null) return
+	  this.revision = revision
       const data = parseEvent(envelope.event, envelope.data)
       if (envelope.event === 'snapshot') this.callbacks.onSnapshot(data as DashboardSnapshot)
       else this.callbacks.onEvent(envelope.event, data, envelope.revision)

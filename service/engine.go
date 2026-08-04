@@ -41,6 +41,9 @@ type Engine struct {
 	authEverValid        atomic.Bool
 	lastSuccess          atomic.Int64
 	riskUntil            atomic.Int64
+	clockStatusMu        sync.Mutex
+	clockStatus          clockStatus
+	clockStatusKnown     bool
 	backlogAlerted       atomic.Bool
 	loginMu              sync.Mutex
 	login                *LoginSession
@@ -186,6 +189,11 @@ type Status struct {
 	RiskPausedUntil time.Time `json:"risk_paused_until,omitzero"`
 }
 
+type clockStatus struct {
+	Ready           bool
+	RiskPausedUntil int64
+}
+
 func (e *Engine) Run(ctx context.Context) error {
 	e.loginMu.Lock()
 	e.runCtx = ctx
@@ -264,6 +272,9 @@ func (e *Engine) collectLoop(ctx context.Context) error {
 }
 
 func (e *Engine) collectOnce(ctx context.Context) error {
+	if err := e.publishClockStatusIfChanged(); err != nil {
+		return fmt.Errorf("checking time-derived status: %w", err)
+	}
 	started := time.Now()
 	if !e.authValid.Load() {
 		e.logger.Debug("collection cycle skipped", "reason", "Bilibili session is not authenticated")
@@ -362,6 +373,15 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 	if err != nil {
 		return fmt.Errorf("recording dynamics: %w", err)
 	}
+	if created > 0 {
+		// RecordDynamics commits content, seen markers, and outbox rows atomically.
+		// Publish that committed state before later bookkeeping can fail.
+		e.publish(TopicStatus | TopicDeliveries)
+	}
+	if !up.BaselineReady {
+		// BaselineReady is committed by RecordDynamics as well.
+		e.publish(TopicUPs)
+	}
 	if err := e.refreshCommentTargets(up, name, items); err != nil {
 		return err
 	}
@@ -378,11 +398,12 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 	e.metrics.PollTotal.WithLabelValues("success").Inc()
 	e.metrics.LastPollSuccess.Set(float64(now.Unix()))
 	e.lastSuccess.Store(now.Unix())
-	topics := TopicStatus | TopicUPs
-	if created > 0 {
-		topics |= TopicDeliveries
+	if up.BaselineReady && (name != "" && name != up.Name || up.ConsecutiveFail > 0) {
+		e.publish(TopicUPs)
 	}
-	e.publish(topics)
+	if err := e.publishClockStatusIfChanged(); err != nil {
+		return fmt.Errorf("checking time-derived status after poll: %w", err)
+	}
 	for _, dynamic := range items {
 		if up.BaselineReady {
 			e.metrics.DiscoveryDelay.Observe(max(0, now.Sub(dynamic.PublishedAt).Seconds()))
@@ -1308,6 +1329,26 @@ func (e *Engine) MicrosoftLogins() []MicrosoftLoginSession {
 
 func (e *Engine) publish(topics Topic) {
 	e.events.Publish(topics)
+}
+
+func (e *Engine) publishClockStatusIfChanged() error {
+	status, err := e.Status()
+	if err != nil {
+		return err
+	}
+	next := clockStatus{Ready: status.Ready}
+	if !status.RiskPausedUntil.IsZero() {
+		next.RiskPausedUntil = status.RiskPausedUntil.Unix()
+	}
+	e.clockStatusMu.Lock()
+	changed := !e.clockStatusKnown || e.clockStatus != next
+	e.clockStatus = next
+	e.clockStatusKnown = true
+	e.clockStatusMu.Unlock()
+	if changed {
+		e.publish(TopicStatus)
+	}
+	return nil
 }
 
 func publicMicrosoftLogin(session *MicrosoftLoginSession) MicrosoftLoginSession {
