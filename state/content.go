@@ -171,11 +171,9 @@ func (s *Store) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, error) {
 	}
 	items := make([]DynamicRecord, 0, len(rows))
 	for _, r := range rows {
-		var payload model.Dynamic
-		if err := json.Unmarshal([]byte(r.PayloadJSON), &payload); err != nil {
-			return nil, 0, fmt.Errorf("decoding archived dynamic %s: %w", r.ID, err)
-		}
-		items = append(items, DynamicRecord{
+		// List projection prefers denormalized text columns. Media/original come from
+		// payload_json when present; a corrupt archive must not blank the whole page.
+		record := DynamicRecord{
 			ID:           r.ID,
 			UID:          r.UID,
 			UPName:       r.UPName,
@@ -189,9 +187,15 @@ func (s *Store) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, error) {
 			URL:          r.URL,
 			TargetURL:    r.TargetURL,
 			Badge:        r.Badge,
-			Media:        payload.Media,
-			Original:     dynamicPreview(payload.Original),
-		})
+		}
+		if strings.TrimSpace(r.PayloadJSON) != "" {
+			var payload model.Dynamic
+			if err := json.Unmarshal([]byte(r.PayloadJSON), &payload); err == nil {
+				record.Media = payload.Media
+				record.Original = dynamicPreview(payload.Original)
+			}
+		}
+		items = append(items, record)
 	}
 	return items, int(total), nil
 }

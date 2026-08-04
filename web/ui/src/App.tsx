@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import Add from '@mui/icons-material/Add'
 import Autorenew from '@mui/icons-material/Autorenew'
@@ -482,20 +482,33 @@ function HistoryPage({ ups, api }: { ups: UP[]; api: AdminAPI }) {
 
 export function DynamicHistoryCard({ item, onOpen }: { item: DynamicHistoryItem; onOpen: () => void }) {
   const [expanded, setExpanded] = useState(false)
-  const body = (item.description || item.summary || '').trim()
-  const title = (item.title || '').trim()
-  const showTitle = title && normalizePreviewText(title) !== normalizePreviewText(body)
+  const [clamped, setClamped] = useState(false)
+  const bodyRef = useRef<HTMLElement | null>(null)
+  const body = composePreviewBody(item.summary, item.description)
+  const heading = (item.title || item.summary || item.id || '').trim()
+  useLayoutEffect(() => {
+    if (expanded) {
+      setClamped(false)
+      return
+    }
+    const node = bodyRef.current
+    if (!node) {
+      setClamped(false)
+      return
+    }
+    setClamped(node.scrollHeight > node.clientHeight + 1)
+  }, [body, expanded])
   return <Card sx={{ cursor: 'pointer' }} onClick={onOpen}><CardContent>
     <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}>
       <Box minWidth={0} flex={1}>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-          <Typography fontWeight={750}>{showTitle ? title : (item.up_name || item.uid || item.id)}</Typography>
+          <Typography fontWeight={750}>{heading}</Typography>
           {item.badge && <Chip size="small" label={item.badge} />}
           {item.baseline && <Chip size="small" label="基线" variant="outlined" />}
         </Stack>
         {body && <>
-          <Typography className={expanded ? undefined : 'history-text-clamp'} sx={{ mt: 1, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{body}</Typography>
-          {body.length > 240 && <Button size="small" sx={{ mt: .5, px: 0 }} onClick={event => { event.stopPropagation(); setExpanded(value => !value) }}>{expanded ? '收起' : '展开全文'}</Button>}
+          <Typography ref={bodyRef} className={expanded ? undefined : 'history-text-clamp'} sx={{ mt: 1, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{body}</Typography>
+          {(expanded || clamped) && <Button size="small" sx={{ mt: .5, px: 0 }} onClick={event => { event.stopPropagation(); setExpanded(value => !value) }}>{expanded ? '收起' : '展开全文'}</Button>}
         </>}
         <DynamicMediaGrid media={item.media || []} />
         {item.original && <OriginalDynamicPreview item={item.original} />}
@@ -513,28 +526,52 @@ function DynamicMediaGrid({ media }: { media: NonNullable<DynamicHistoryItem['me
   if (visible.length === 0) return null
   const single = visible.length === 1
   return <Box className={`history-media-grid ${single ? 'history-media-single' : ''}`} sx={{ mt: 1.5 }}>
-    {visible.map((item, index) => <MediaTile key={`${item.url}-${index}`} item={item} extra={index === 8 ? available.length - 9 : 0} />)}
+    {visible.map((item, index) => <MediaTile key={`${item.url}-${index}`} item={item} extra={index === 8 ? available.length - 9 : 0} single={single} />)}
   </Box>
 }
 
-function MediaTile({ item, extra }: { item: NonNullable<DynamicHistoryItem['media']>[number]; extra: number }) {
+function MediaTile({ item, extra, single }: { item: NonNullable<DynamicHistoryItem['media']>[number]; extra: number; single: boolean }) {
   const [failed, setFailed] = useState(false)
+  const src = historyMediaURL(item.url, single ? 720 : 240)
   return <Box className="history-media-tile" sx={item.width && item.height ? { aspectRatio: `${item.width} / ${item.height}` } : undefined}>
     {failed ? <Stack className="history-media-fallback" alignItems="center" justifyContent="center"><BrokenImage /><Typography variant="caption">媒体加载失败</Typography></Stack>
-      : <img src={item.url} alt={item.kind === 'cover' ? '内容封面' : '动态图片'} loading="lazy" onError={() => setFailed(true)} />}
+      : <img src={src} alt={item.kind === 'cover' ? '内容封面' : '动态图片'} loading="lazy" onError={() => setFailed(true)} />}
     {extra > 0 && <Box className="history-media-extra">+{extra}</Box>}
   </Box>
 }
 
 function OriginalDynamicPreview({ item }: { item: NonNullable<DynamicHistoryItem['original']> }) {
-  const body = (item.description || item.summary || '').trim()
+  const body = composePreviewBody(item.summary, item.description)
+  const title = (item.title || '').trim()
   return <Paper variant="outlined" sx={{ mt: 1.5, p: 1.5, bgcolor: 'action.hover' }}>
     <Typography variant="caption" color="text.secondary">转发自 {item.up_name || item.uid || '原动态'}</Typography>
-    {item.title && <Typography fontWeight={700} sx={{ mt: .5 }}>{item.title}</Typography>}
-    {body && normalizePreviewText(body) !== normalizePreviewText(item.title || '') && <Typography className="history-original-clamp" sx={{ mt: .5, whiteSpace: 'pre-wrap' }}>{body}</Typography>}
+    {title && <Typography fontWeight={700} sx={{ mt: .5 }}>{title}</Typography>}
+    {body && normalizePreviewText(body) !== normalizePreviewText(title) && <Typography className="history-original-clamp" sx={{ mt: .5, whiteSpace: 'pre-wrap' }}>{body}</Typography>}
     <DynamicMediaGrid media={item.media || []} />
-    {!item.title && !body && !item.media?.length && <Typography color="text.secondary" sx={{ mt: .5 }}>原动态内容未被归档</Typography>}
+    {!title && !body && !item.media?.length && <Typography color="text.secondary" sx={{ mt: .5 }}>原动态内容未被归档</Typography>}
   </Paper>
+}
+
+export function composePreviewBody(summary?: string, description?: string) {
+  const parts = [summary, description].map(value => (value || '').trim()).filter(Boolean)
+  if (parts.length === 0) return ''
+  if (parts.length === 1) return parts[0]
+  if (normalizePreviewText(parts[0]) === normalizePreviewText(parts[1])) return parts[0]
+  return parts.join('\n\n')
+}
+
+export function historyMediaURL(url: string, width: number) {
+  const value = url.trim()
+  if (!value || width <= 0) return value
+  try {
+    const parsed = new URL(value, 'https://www.bilibili.com')
+    if (!/(^|\.)hdslb\.com$/i.test(parsed.hostname) || !parsed.pathname.includes('/bfs/')) return value
+    // Bilibili CDN accepts @<width>w on bfs assets for list-size tiles.
+    parsed.pathname = parsed.pathname.replace(/@[^/]*$/, '') + `@${Math.round(width)}w`
+    return parsed.toString()
+  } catch {
+    return value
+  }
 }
 
 export function normalizePreviewText(value: string) {

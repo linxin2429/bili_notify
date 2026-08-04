@@ -137,20 +137,36 @@ func TestQueryDynamicsBuildsPreviewFromArchivedPayload(t *testing.T) {
 	}
 }
 
-func TestQueryDynamicsRejectsCorruptArchivedPayload(t *testing.T) {
+func TestQueryDynamicsDegradesCorruptArchivedPayload(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, 32)
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
-	_, err := store.RecordDynamics("42", []model.Dynamic{{
-		ID: "broken", UID: "42", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now(), Summary: "正文",
-	}}, nil, false)
+	pub := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	_, err := store.RecordDynamics("42", []model.Dynamic{
+		{
+			ID: "broken", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_DRAW", PublishedAt: pub, Summary: "坏档",
+			Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.com/lost.jpg"}},
+		},
+		{
+			ID: "ok", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_DRAW", PublishedAt: pub.Add(time.Hour), Summary: "好档",
+			Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.com/ok.jpg"}},
+		},
+	}, nil, false)
 	require.NoError(t, err)
 	require.NoError(t, store.db.Model(&dynamicRow{}).Where("id = ?", "broken").Update("payload_json", "{").Error)
 
 	items, total, err := store.QueryDynamics(ContentQuery{})
-	assert.Error(t, err)
-	assert.Nil(t, items)
-	assert.Zero(t, total)
+	require.NoError(t, err)
+	assert.Equal(t, 2, total)
+	require.Len(t, items, 2)
+	assert.Equal(t, "ok", items[0].ID)
+	assert.Equal(t, "好档", items[0].Summary)
+	require.Len(t, items[0].Media, 1)
+	assert.Equal(t, "https://example.com/ok.jpg", items[0].Media[0].URL)
+	assert.Equal(t, "broken", items[1].ID)
+	assert.Equal(t, "坏档", items[1].Summary)
+	assert.Empty(t, items[1].Media)
+	assert.Nil(t, items[1].Original)
 }
 
 func TestArchiveAndQueryComments(t *testing.T) {

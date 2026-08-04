@@ -25,11 +25,17 @@ const dynamicHistorySchema = z.object({
 })
 
 const dynamicHistoryPageSchema = z.object({
-  items: z.array(dynamicHistorySchema), total: z.number().int(), limit: z.number().int(), offset: z.number().int(),
+  items: z.array(z.unknown()), total: z.number().int(), limit: z.number().int(), offset: z.number().int(),
 })
 
 export function parseDynamicHistoryPage(data: unknown): ContentPage<DynamicHistoryItem> {
-  return dynamicHistoryPageSchema.parse(data)
+  const page = dynamicHistoryPageSchema.parse(data)
+  const items: DynamicHistoryItem[] = []
+  for (const item of page.items) {
+    const parsed = dynamicHistorySchema.safeParse(item)
+    if (parsed.success) items.push(parsed.data)
+  }
+  return { items, total: page.total, limit: page.limit, offset: page.offset }
 }
 
 export async function httpJSON<T>(path: string, options: RequestInit = {}, csrf = ''): Promise<T> {

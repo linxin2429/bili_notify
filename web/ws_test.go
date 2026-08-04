@@ -151,6 +151,36 @@ func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
 	assert.LessOrEqual(t, len([]rune(views[0].Dynamic.Summary)), 241)
 }
 
+func TestDynamicHistoryViewsBoundTextAndMedia(t *testing.T) {
+	t.Parallel()
+	media := make([]model.DynamicMedia, 0, 20)
+	for i := range 20 {
+		media = append(media, model.DynamicMedia{
+			Kind: model.DynamicMediaImage,
+			URL:  "https://i0.hdslb.com/bfs/image/" + strings.Repeat("x", 8) + string(rune('a'+i%26)) + ".jpg",
+		})
+	}
+	view := toDynamicHistoryView(state.DynamicRecord{
+		ID: "dyn", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_FORWARD",
+		PublishedAt: time.Now(), DiscoveredAt: time.Now(),
+		Summary: strings.Repeat("正文", 5000), Description: strings.Repeat("简介", 5000),
+		Media: media,
+		Original: &state.DynamicPreview{
+			ID: "orig", Summary: strings.Repeat("原文", 5000), Description: strings.Repeat("原简介", 5000),
+			Media: media,
+		},
+	})
+	assert.LessOrEqual(t, len([]rune(view.Summary)), historyPreviewTextLimit+1)
+	assert.LessOrEqual(t, len([]rune(view.Description)), historyPreviewTextLimit+1)
+	assert.LessOrEqual(t, len(view.Media), historyPreviewMediaLimit)
+	require.NotNil(t, view.Original)
+	assert.LessOrEqual(t, len([]rune(view.Original.Summary)), historyPreviewTextLimit+1)
+	assert.LessOrEqual(t, len(view.Original.Media), historyPreviewMediaLimit)
+	raw, err := json.Marshal(view)
+	require.NoError(t, err)
+	assert.Less(t, len(raw), 64<<10)
+}
+
 func TestAPIErrorClassification(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
