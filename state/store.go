@@ -21,10 +21,11 @@ var (
 	bucketAuth       = []byte("auth")
 	bucketSeen       = []byte("seen")
 	bucketDeliveries = []byte("deliveries")
-	keySession       = []byte("session")
-	keyAdminHash     = []byte("admin_password_hash")
-	ErrNotFound      = errors.New("record not found")
-	ErrInitialized   = errors.New("administrator is already initialized")
+	keySession         = []byte("session")
+	keyAdminHash       = []byte("admin_password_hash")
+	keyRuntimeSettings = []byte("runtime_settings")
+	ErrNotFound        = errors.New("record not found")
+	ErrInitialized     = errors.New("administrator is already initialized")
 )
 
 type Store struct {
@@ -96,6 +97,27 @@ func (s *Store) SetAdminPasswordHash(hash string) error {
 			return ErrNotFound
 		}
 		return bucket.Put(keyAdminHash, []byte(hash))
+	})
+}
+
+func (s *Store) RuntimeSettings() (model.RuntimeSettings, error) {
+	var settings model.RuntimeSettings
+	err := s.db.View(func(tx *bolt.Tx) error {
+		raw := tx.Bucket(bucketMeta).Get(keyRuntimeSettings)
+		if raw == nil {
+			return ErrNotFound
+		}
+		return readJSON(raw, &settings)
+	})
+	return settings, err
+}
+
+func (s *Store) PutRuntimeSettings(settings model.RuntimeSettings) error {
+	if err := settings.Validate(); err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return putJSON(tx.Bucket(bucketMeta), keyRuntimeSettings, settings)
 	})
 }
 

@@ -4,6 +4,7 @@ import type { DashboardSnapshot } from './types'
 
 const snapshot: DashboardSnapshot = {
   status: { auth_valid: false, up_count: 0, channel_count: 0, outbox_depth: 0, ready: false },
+  settings: { poll_interval_sec: 30, request_rate: 2, request_concurrency: 4 },
   ups: [], channels: [], deliveries: [], microsoft_logins: [], updated_at: '2026-01-01T00:00:00Z',
 }
 
@@ -16,5 +17,20 @@ describe('dashboard state', () => {
     const next = applyUpdate(snapshot, 'ups.updated', [{ uid: '1' }])
     expect(next?.ups).toEqual([{ uid: '1' }])
     expect(next?.channels).toEqual([])
+    expect(next?.settings.poll_interval_sec).toBe(30)
+  })
+
+  it('applies settings updates', () => {
+    const next = applyUpdate(snapshot, 'settings.updated', {
+      poll_interval_sec: 45,
+      request_rate: 1.5,
+      request_concurrency: 3,
+    })
+    expect(next?.settings).toEqual({
+      poll_interval_sec: 45,
+      request_rate: 1.5,
+      request_concurrency: 3,
+    })
+    expect(next?.status.ready).toBe(false)
   })
 })

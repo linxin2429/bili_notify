@@ -46,6 +46,18 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 		return fmt.Errorf("validating encrypted Bilibili session: %w", err)
 	}
 
+	settings, err := store.RuntimeSettings()
+	if errors.Is(err, state.ErrNotFound) {
+		settings = cfg.SeedRuntimeSettings()
+		if err := store.PutRuntimeSettings(settings); err != nil {
+			return fmt.Errorf("seeding runtime settings: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("loading runtime settings: %w", err)
+	} else if err := settings.Validate(); err != nil {
+		return fmt.Errorf("stored runtime settings are invalid: %w", err)
+	}
+
 	level := new(slog.LevelVar)
 	switch strings.ToLower(cfg.LogLevel) {
 	case "debug":
@@ -58,7 +70,14 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 		level.Set(slog.LevelInfo)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
-	logger.Info("Bili Notify starting", "version", version, "poll_interval", cfg.PollInterval.String(), "request_rate", cfg.RequestRate, "request_concurrency", cfg.RequestConcurrency, "admin_addr", cfg.AdminAddr, "observe_addr", cfg.ObserveAddr)
+	logger.Info("Bili Notify starting",
+		"version", version,
+		"poll_interval_sec", settings.PollIntervalSec,
+		"request_rate", settings.RequestRate,
+		"request_concurrency", settings.RequestConcurrency,
+		"admin_addr", cfg.AdminAddr,
+		"observe_addr", cfg.ObserveAddr,
+	)
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -72,7 +91,7 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	registry := prometheus.NewRegistry()
 	metrics := service.NewMetrics(registry)
 	events := service.NewEventBus()
-	engine := service.NewEngine(store, client, logger, metrics, cfg.PollInterval, cfg.RequestRate, cfg.RequestConcurrency, events)
+	engine := service.NewEngine(store, client, logger, metrics, settings, events)
 	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, store, events, logger, registry)
 	if err != nil {
 		return err

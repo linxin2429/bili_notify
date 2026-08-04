@@ -50,6 +50,7 @@ type wsAPIError struct {
 
 type dashboardSnapshot struct {
 	Status          service.Status                  `json:"status"`
+	Settings        model.RuntimeSettings           `json:"settings"`
 	UPs             []model.UP                      `json:"ups"`
 	Channels        []channelView                   `json:"channels"`
 	Deliveries      []deliveryView                  `json:"deliveries"`
@@ -263,6 +264,11 @@ func (s *Server) writeTopicEvents(ctx context.Context, writer *wsWriter, topics 
 			return err
 		}
 	}
+	if topics&service.TopicSettings != 0 {
+		if err := writer.write(ctx, wsEvent{Event: "settings.updated", Revision: revision, Data: s.engine.Settings()}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -388,6 +394,15 @@ func (s *Server) dispatch(parent context.Context, action string, raw json.RawMes
 		}
 		login, err := s.engine.StartMicrosoftLogin(ctx, input.ChannelID)
 		return result(login, err)
+	case "settings.update":
+		var input model.RuntimeSettings
+		if err := decodePayload(raw, &input); err != nil {
+			return nil, invalidRequest(err)
+		}
+		if err := s.engine.UpdateSettings(input); err != nil {
+			return nil, apiError(err)
+		}
+		return s.engine.Settings(), nil
 	default:
 		return nil, &wsAPIError{Code: "unknown_action", Message: "unknown action"}
 	}
@@ -415,7 +430,7 @@ func (s *Server) snapshot() (dashboardSnapshot, error) {
 		return dashboardSnapshot{}, err
 	}
 	return dashboardSnapshot{
-		Status: status, UPs: ups, Channels: channels, Deliveries: deliveryViews(deliveries), BiliLogin: login,
+		Status: status, Settings: s.engine.Settings(), UPs: ups, Channels: channels, Deliveries: deliveryViews(deliveries), BiliLogin: login,
 		MicrosoftLogins: s.engine.MicrosoftLogins(), UpdatedAt: time.Now().UTC(),
 	}, nil
 }

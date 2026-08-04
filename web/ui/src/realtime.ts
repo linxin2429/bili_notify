@@ -44,8 +44,15 @@ const microsoftLoginSchema = z.object({
   expires_at: z.string().optional(), error: z.string().optional(),
 })
 
+const settingsSchema = z.object({
+  poll_interval_sec: z.number().int(),
+  request_rate: z.number(),
+  request_concurrency: z.number().int(),
+})
+
 const snapshotSchema = z.object({
   status: statusSchema,
+  settings: settingsSchema,
   ups: z.array(upSchema),
   channels: z.array(channelSchema),
   deliveries: z.array(deliverySchema),
@@ -71,6 +78,7 @@ export function parseEvent(event: string, data: unknown): unknown {
   switch (event) {
     case 'snapshot': return snapshotSchema.parse(data)
     case 'status.updated': return statusSchema.parse(data)
+    case 'settings.updated': return settingsSchema.parse(data)
     case 'ups.updated': return z.array(upSchema).parse(data)
     case 'channels.updated': return z.array(channelSchema).parse(data)
     case 'deliveries.updated': return z.array(deliverySchema).parse(data)

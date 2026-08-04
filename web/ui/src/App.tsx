@@ -14,7 +14,7 @@ import {
 } from '@mui/material'
 import type {
   BiliLogin, Channel, ChannelDraft, ChannelType, ConnectionState, DashboardSnapshot,
-  Delivery, MicrosoftLogin, ThemePreference, UP,
+  Delivery, MicrosoftLogin, RuntimeSettings, ThemePreference, UP,
 } from './types'
 import { RealtimeClient } from './realtime'
 
@@ -175,7 +175,7 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
             <Route path="/ups" element={<UPsPage ups={snapshot.ups} command={command} />} />
             <Route path="/channels" element={<ChannelsPage channels={snapshot.channels} logins={snapshot.microsoft_logins} command={command} />} />
             <Route path="/deliveries" element={<DeliveriesPage deliveries={snapshot.deliveries} channels={snapshot.channels} total={snapshot.status.outbox_depth} />} />
-            <Route path="/settings" element={<SettingsPage csrf={csrf} preference={themePreference} setPreference={setThemePreference} onChanged={onAuthLost} />} />
+            <Route path="/settings" element={<SettingsPage csrf={csrf} preference={themePreference} setPreference={setThemePreference} settings={snapshot.settings} command={command} onChanged={onAuthLost} />} />
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>}
       </Container>
@@ -202,6 +202,7 @@ function Overview({ snapshot, command }: { snapshot: DashboardSnapshot; command:
       <MetricCard label="待投递" value={`${status.outbox_depth}`} detail={status.oldest_delivery ? `最早 ${formatDate(status.oldest_delivery)}` : '队列为空'} icon={<Hub />} tone={status.outbox_depth ? 'warning.main' : 'success.main'} />
     </Box>
     {status.risk_paused_until && <Alert severity="error" icon={<ErrorOutlined />}>B站风控暂停至 {formatDate(status.risk_paused_until)}，程序不会尝试绕过风控。</Alert>}
+    <Typography variant="body2" color="text.secondary">当前采集参数：每 {snapshot.settings.poll_interval_sec} 秒轮询 · {snapshot.settings.request_rate} 请求/秒 · 并发 {snapshot.settings.request_concurrency}</Typography>
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1.35fr) minmax(320px, .65fr)' }, gap: 2 }}>
       <Card><CardContent><Stack spacing={2}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="h6" fontWeight={800}>B站账号</Typography><Typography color="text.secondary">使用哔哩哔哩 App 扫码建立网页会话</Typography></Box><QrCode2 color="primary" /></Stack><BiliLoginPanel login={snapshot.bili_login || null} busy={busy} start={() => void startLogin()} cancel={id => void command('bilibili.login.cancel', { id })} /></Stack></CardContent></Card>
       <Card><CardContent><Typography variant="h6" fontWeight={800} gutterBottom>启动检查</Typography><Stack spacing={1.5}><Checklist done={status.auth_valid} label="B站账号已登录" /><Checklist done={snapshot.channels.some(channel => channel.enabled)} label="至少一个通知渠道已启用" /><Checklist done={snapshot.ups.some(up => up.enabled)} label="至少一个 UP 主已启用" /></Stack><Divider sx={{ my: 2 }} /><Typography variant="body2" color="text.secondary">最后成功采集：{status.last_success_at ? formatDate(status.last_success_at) : '尚无记录'}</Typography></CardContent></Card>
@@ -294,10 +295,109 @@ function DeliveriesPage({ deliveries, channels, total }: { deliveries: Delivery[
   return <Stack spacing={3}><PageHeader title="投递队列" subtitle={`共 ${total} 个任务，页面展示前 ${deliveries.length} 个。`} /><Paper><Tabs value={filter} onChange={(_, value) => setFilter(value)} variant="scrollable"><Tab value="all" label="全部" /><Tab value="pending" label="等待重试" /><Tab value="blocked" label="已阻塞" /></Tabs></Paper>{visible.length === 0 ? <EmptyState icon={<CheckCircle />} title="当前筛选下没有待投递任务" /> : <Stack spacing={1.5}>{visible.map(delivery => <Card key={delivery.id}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box minWidth={0}><Stack direction="row" spacing={1} alignItems="center"><Chip size="small" color={delivery.state === 'blocked' ? 'error' : 'warning'} label={delivery.state === 'blocked' ? '已阻塞' : '等待重试'} /><Typography fontWeight={750}>{delivery.dynamic.up_name || delivery.dynamic.uid}</Typography></Stack><Typography className="summary-clamp" sx={{ mt: 1 }}>{delivery.dynamic.summary}</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>渠道：{channels.find(channel => channel.id === delivery.channel_id)?.name || delivery.channel_id} · 已尝试 {delivery.attempts} 次</Typography>{delivery.last_error && <Typography variant="body2" color="error" sx={{ mt: .5 }}>{delivery.last_error}</Typography>}</Box><Box flexShrink={0}><Typography variant="body2" color="text.secondary">下次处理</Typography><Typography>{formatDate(delivery.next_at)}</Typography></Box></Stack></CardContent></Card>)}</Stack>}</Stack>
 }
 
-function SettingsPage({ csrf, preference, setPreference, onChanged }: { csrf: string; preference: ThemePreference; setPreference: (value: ThemePreference) => void; onChanged: () => void }) {
-  const [current, setCurrent] = useState(''); const [replacement, setReplacement] = useState(''); const [confirm, setConfirm] = useState(''); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false)
-  const change = async () => { if (replacement !== confirm) { setMessage('两次输入的新密码不一致'); return } setBusy(true); try { await httpJSON('/api/v1/session/password', { method: 'PUT', body: JSON.stringify({ current_password: current, new_password: replacement }) }, csrf); await onChanged() } catch (error) { setMessage(errorMessage(error)) } finally { setBusy(false) } }
-  return <Stack spacing={3}><PageHeader title="设置" subtitle="管理本浏览器外观与管理员凭据。" /><Card><CardContent><Typography variant="h6" fontWeight={800}>外观</Typography><Typography color="text.secondary" gutterBottom>跟随系统会响应操作系统的明暗模式。</Typography><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 2 }}>{(['system', 'light', 'dark'] as ThemePreference[]).map(value => <Button key={value} variant={preference === value ? 'contained' : 'outlined'} startIcon={value === 'system' ? <BrightnessAuto /> : value === 'dark' ? <DarkMode /> : <LightMode />} onClick={() => setPreference(value)}>{themeLabel(value)}</Button>)}</Stack></CardContent></Card><Card><CardContent><Stack spacing={2} maxWidth={520}><Box><Typography variant="h6" fontWeight={800}>修改管理员密码</Typography><Typography color="text.secondary">修改后所有设备会话都会立即失效。</Typography></Box><TextField label="当前密码" type="password" value={current} onChange={e => setCurrent(e.target.value)} autoComplete="current-password" /><TextField label="新密码" type="password" value={replacement} onChange={e => setReplacement(e.target.value)} autoComplete="new-password" helperText="至少 12 个字节" /><TextField label="确认新密码" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />{message && <Alert severity="error">{message}</Alert>}<Button variant="contained" startIcon={<Password />} disabled={busy || !current || !replacement} onClick={() => void change()}>修改密码</Button></Stack></CardContent></Card></Stack>
+function SettingsPage({ csrf, preference, setPreference, settings, command, onChanged }: {
+  csrf: string
+  preference: ThemePreference
+  setPreference: (value: ThemePreference) => void
+  settings: RuntimeSettings
+  command: <T>(action: string, payload?: unknown) => Promise<T>
+  onChanged: () => void
+}) {
+  const [current, setCurrent] = useState('')
+  const [replacement, setReplacement] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [pollSec, setPollSec] = useState(String(settings.poll_interval_sec))
+  const [requestRate, setRequestRate] = useState(String(settings.request_rate))
+  const [concurrency, setConcurrency] = useState(String(settings.request_concurrency))
+  const [settingsMessage, setSettingsMessage] = useState('')
+  const [settingsBusy, setSettingsBusy] = useState(false)
+
+  useEffect(() => {
+    setPollSec(String(settings.poll_interval_sec))
+    setRequestRate(String(settings.request_rate))
+    setConcurrency(String(settings.request_concurrency))
+  }, [settings.poll_interval_sec, settings.request_rate, settings.request_concurrency])
+
+  const change = async () => {
+    if (replacement !== confirm) { setMessage('两次输入的新密码不一致'); return }
+    setBusy(true)
+    try {
+      await httpJSON('/api/v1/session/password', { method: 'PUT', body: JSON.stringify({ current_password: current, new_password: replacement }) }, csrf)
+      await onChanged()
+    } catch (error) {
+      setMessage(errorMessage(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveSettings = async () => {
+    const poll_interval_sec = Number(pollSec)
+    const request_rate = Number(requestRate)
+    const request_concurrency = Number(concurrency)
+    if (!Number.isInteger(poll_interval_sec) || poll_interval_sec < 10) {
+      setSettingsMessage('轮询间隔至少为 10 秒的整数')
+      return
+    }
+    if (!(request_rate > 0 && request_rate <= 10)) {
+      setSettingsMessage('请求速率必须在 (0, 10] 内')
+      return
+    }
+    if (!Number.isInteger(request_concurrency) || request_concurrency < 1 || request_concurrency > 16) {
+      setSettingsMessage('并发数必须是 1 到 16 的整数')
+      return
+    }
+    setSettingsBusy(true)
+    setSettingsMessage('')
+    try {
+      await command('settings.update', { poll_interval_sec, request_rate, request_concurrency })
+    } catch (error) {
+      setSettingsMessage(errorMessage(error))
+    } finally {
+      setSettingsBusy(false)
+    }
+  }
+
+  return <Stack spacing={3}>
+    <PageHeader title="设置" subtitle="管理采集参数、本浏览器外观与管理员凭据。" />
+    <Card><CardContent>
+      <Stack spacing={2} maxWidth={520}>
+        <Box>
+          <Typography variant="h6" fontWeight={800}>采集参数</Typography>
+          <Typography color="text.secondary">修改后立即生效并写入数据库；重启后仍以这里的值为准。命令行参数仅在首次启动空库时作为默认值。</Typography>
+        </Box>
+        <TextField label="轮询间隔（秒）" type="number" value={pollSec} onChange={e => setPollSec(e.target.value)} helperText="至少 10 秒" inputProps={{ min: 10, step: 1 }} />
+        <TextField label="请求速率（次/秒）" type="number" value={requestRate} onChange={e => setRequestRate(e.target.value)} helperText="(0, 10]" inputProps={{ min: 0.1, max: 10, step: 0.1 }} />
+        <TextField label="并发数" type="number" value={concurrency} onChange={e => setConcurrency(e.target.value)} helperText="1 到 16" inputProps={{ min: 1, max: 16, step: 1 }} />
+        {settingsMessage && <Alert severity="error">{settingsMessage}</Alert>}
+        <Button variant="contained" disabled={settingsBusy} onClick={() => void saveSettings()}>保存采集参数</Button>
+      </Stack>
+    </CardContent></Card>
+    <Card><CardContent>
+      <Typography variant="h6" fontWeight={800}>外观</Typography>
+      <Typography color="text.secondary" gutterBottom>跟随系统会响应操作系统的明暗模式。</Typography>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 2 }}>
+        {(['system', 'light', 'dark'] as ThemePreference[]).map(value => (
+          <Button key={value} variant={preference === value ? 'contained' : 'outlined'} startIcon={value === 'system' ? <BrightnessAuto /> : value === 'dark' ? <DarkMode /> : <LightMode />} onClick={() => setPreference(value)}>{themeLabel(value)}</Button>
+        ))}
+      </Stack>
+    </CardContent></Card>
+    <Card><CardContent>
+      <Stack spacing={2} maxWidth={520}>
+        <Box>
+          <Typography variant="h6" fontWeight={800}>修改管理员密码</Typography>
+          <Typography color="text.secondary">修改后所有设备会话都会立即失效。</Typography>
+        </Box>
+        <TextField label="当前密码" type="password" value={current} onChange={e => setCurrent(e.target.value)} autoComplete="current-password" />
+        <TextField label="新密码" type="password" value={replacement} onChange={e => setReplacement(e.target.value)} autoComplete="new-password" helperText="至少 12 个字节" />
+        <TextField label="确认新密码" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
+        {message && <Alert severity="error">{message}</Alert>}
+        <Button variant="contained" startIcon={<Password />} disabled={busy || !current || !replacement} onClick={() => void change()}>修改密码</Button>
+      </Stack>
+    </CardContent></Card>
+  </Stack>
 }
 
 function PageHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: React.ReactNode }) { return <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={2}><Box><Typography variant="h4" fontWeight={850}>{title}</Typography><Typography color="text.secondary">{subtitle}</Typography></Box>{action}</Stack> }
@@ -307,6 +407,7 @@ function applyUpdate(current: DashboardSnapshot | null, event: string, data: unk
   if (!current) return current
   const updated = { ...current, updated_at: new Date().toISOString() }
   if (event === 'status.updated') updated.status = data as DashboardSnapshot['status']
+  if (event === 'settings.updated') updated.settings = data as DashboardSnapshot['settings']
   if (event === 'ups.updated') updated.ups = data as UP[]
   if (event === 'channels.updated') updated.channels = data as Channel[]
   if (event === 'deliveries.updated') updated.deliveries = data as Delivery[]

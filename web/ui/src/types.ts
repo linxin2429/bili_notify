@@ -71,8 +71,15 @@ export interface MicrosoftLogin {
   error?: string
 }
 
+export interface RuntimeSettings {
+  poll_interval_sec: number
+  request_rate: number
+  request_concurrency: number
+}
+
 export interface DashboardSnapshot {
   status: ServiceStatus
+  settings: RuntimeSettings
   ups: UP[]
   channels: Channel[]
   deliveries: Delivery[]

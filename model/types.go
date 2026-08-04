@@ -217,6 +217,44 @@ type BiliSession struct {
 	UpdatedAt time.Time         `json:"updated_at"`
 }
 
+// Collector parameter bounds shared by startup config and runtime settings.
+const (
+	MinPollIntervalSec     = 10
+	MaxRequestRate         = 10.0
+	MinRequestConcurrency  = 1
+	MaxRequestConcurrency  = 16
+)
+
+// RuntimeSettings is the hot-reloadable collector configuration persisted in bbolt.
+type RuntimeSettings struct {
+	PollIntervalSec    int     `json:"poll_interval_sec"`
+	RequestRate        float64 `json:"request_rate"`
+	RequestConcurrency int     `json:"request_concurrency"`
+}
+
+func (s RuntimeSettings) PollInterval() time.Duration {
+	return time.Duration(s.PollIntervalSec) * time.Second
+}
+
+func (s RuntimeSettings) Validate() error {
+	return ValidateCollectorParams(s.PollInterval(), s.RequestRate, s.RequestConcurrency)
+}
+
+// ValidateCollectorParams checks poll interval, request rate, and concurrency bounds.
+func ValidateCollectorParams(pollInterval time.Duration, requestRate float64, concurrency int) error {
+	var errs []error
+	if pollInterval < time.Duration(MinPollIntervalSec)*time.Second {
+		errs = append(errs, errors.New("poll interval must be at least 10s"))
+	}
+	if requestRate <= 0 || requestRate > MaxRequestRate {
+		errs = append(errs, errors.New("request rate must be in (0, 10]"))
+	}
+	if concurrency < MinRequestConcurrency || concurrency > MaxRequestConcurrency {
+		errs = append(errs, errors.New("request concurrency must be in [1, 16]"))
+	}
+	return errors.Join(errs...)
+}
+
 func Encode(v any) ([]byte, error) {
 	b, err := json.Marshal(v)
 	if err != nil {

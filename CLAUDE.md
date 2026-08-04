@@ -25,6 +25,20 @@ go run . serve                             # needs secret files + paths configur
 gofmt -w <files>
 ```
 
+## Testing principles
+
+When writing or changing Go tests, follow these rules (also in `AGENTS.md`):
+
+1. **Table-driven**: every multi-case scenario uses `tests := []struct { name string; ... }{...}` and isolates cases with `t.Run(tt.name, func(t *testing.T) { ... })`.
+2. **`t.Parallel()`**: call it inside each subtest so cases run concurrently.
+3. **Testify**: import both `assert` and `require`.
+   - `require.*` for setup, errors, and preconditions later logic depends on (hard stop).
+   - `assert.*` for multi-field / independent checks (soft, keep going).
+4. **`t.Cleanup` only**: for temp files, mock servers, DB handles, or goroutine shutdown — **never** `defer` in tests.
+5. **Cover paths**: happy path, edge cases (empty/nil/zero/extremes), and every `error` branch. Match errors with `errors.Is` (or typed equality), not just `err != nil`.
+6. **No flaky waits**: never bare `time.Sleep` for concurrency; use channels or `assert.Eventually` / `require.Eventually`.
+7. **Fuzz (optional)**: for string transform, ser/de (JSON/YAML/XML), protocol pack/unpack, or core pure algorithms, add a native `Fuzz*` test.
+
 Docker (production-like scratch image, nonroot UID 65532):
 
 ```bash
@@ -61,7 +75,7 @@ main.go → cmd/ (Cobra CLI + Viper/BILI_NOTIFY_* env)
 | --- | --- |
 | `cmd/` | CLI only: `serve`, `admin hash-password`, `healthcheck`, `rekey`. Startup flags/env defaults. |
 | `app/` | Composition root: validate config, open store, build engine + dual HTTP servers. |
-| `config/` | Immutable **startup** settings only (paths, poll rate, log level). Runtime data is in bbolt. |
+| `config/` | Startup settings: paths, listen addrs, log level are process-immutable. Poll interval / request rate / concurrency are **first-run defaults** only; after seed they live in bbolt and hot-reload via admin UI. |
 | `model/` | Shared domain types + validation (UP, Channel, Dynamic, Delivery, BiliSession). |
 | `bilibili/` | Web API client: QR login, session validate, space dynamics feed, strict dynamic parsing. |
 | `state/` | bbolt store: UPs, channels, encrypted session/secrets, seen dynamics, Outbox deliveries. |
@@ -72,7 +86,7 @@ main.go → cmd/ (Cobra CLI + Viper/BILI_NOTIFY_* env)
 
 ### Core runtime flow
 
-1. **Collect** (`service.Engine.collectLoop`): every ~`poll_interval` (default 30s), rate-limited (2 rps, 4 concurrency) fetch each enabled UP's dynamics. Paginate up to 10 pages until a known dynamic ID; more than 10 pages is a state gap — stop that UP without committing (no silent loss).
+1. **Collect** (`service.Engine.collectLoop`): every ~runtime `poll_interval` (seed default 30s), rate-limited (seed default 2 rps, 4 concurrency) fetch each enabled UP's dynamics. These three knobs are stored in bbolt and hot-reloaded from the admin UI. Paginate up to 10 pages until a known dynamic ID; more than 10 pages is a state gap — stop that UP without committing (no silent loss).
 2. **Baseline vs notify**: first successful poll for a new UP only records seen IDs (`BaselineReady`); no historical notifications. Later polls create Outbox tasks.
 3. **Atomic Outbox** (`state.Store.RecordDynamics`): in one bbolt write txn, mark dynamics seen and enqueue one delivery per enabled channel (key = dynamic ID + channel ID).
 4. **Deliver** (`deliveryLoop`): due tasks are sent via `notify.Sender`. Success deletes the task. Transient failures retry with jittered backoff (5s → 30s → 2m → 10m → max 1h). Permanent/auth/config errors **block** the delivery until the channel is updated.
@@ -91,7 +105,7 @@ main.go → cmd/ (Cobra CLI + Viper/BILI_NOTIFY_* env)
 ### Config surface
 
 - Env prefix: `BILI_NOTIFY_` (dots/dashes → underscores), e.g. `BILI_NOTIFY_LOG_LEVEL`, `BILI_NOTIFY_POLL_INTERVAL`.
-- Defaults in `cmd/root.go` (`data_path`, `admin_addr`, `observe_addr`, secret paths under `/run/secrets`, poll 30s, rate 2, concurrency 4).
+- Defaults in `cmd/root.go` (`data_dir`, `admin_addr`, `observe_addr`, poll 30s / rate 2 / concurrency 4 as **seed** defaults for a new data directory).
 - Local Docker expects host `./secrets` mounted read-only at `/run/secrets`, with POSIX ACL granting UID 65532 read access (see README).
 
 When changing behavior that affects reliability, security, polling, or channel contracts, keep `docs/requirements-and-design.md` aligned.

@@ -14,6 +14,7 @@ const (
 	TopicDeliveries
 	TopicBiliLogin
 	TopicMicrosoftLogin
+	TopicSettings
 )
 
 type EventBus struct {

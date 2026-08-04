@@ -25,9 +25,12 @@ type Engine struct {
 	client           *bilibili.Client
 	logger           *slog.Logger
 	metrics          *Metrics
+	settingsMu       sync.RWMutex
 	pollInterval     time.Duration
-	limiter          *rate.Limiter
+	requestRate      float64
 	concurrency      int
+	limiter          *rate.Limiter
+	settingsNotify   chan struct{}
 	httpTimeout      time.Duration
 	authValid        atomic.Bool
 	authEverValid    atomic.Bool
@@ -80,19 +83,69 @@ type Status struct {
 	RiskPausedUntil time.Time `json:"risk_paused_until,omitzero"`
 }
 
-func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, pollInterval time.Duration, requestsPerSecond float64, concurrency int, events *EventBus) *Engine {
+func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, settings model.RuntimeSettings, events *EventBus) *Engine {
 	if events == nil {
 		events = NewEventBus()
 	}
 	return &Engine{
 		store: store, client: client, logger: logger, metrics: metrics,
-		pollInterval:    pollInterval,
-		limiter:         rate.NewLimiter(rate.Limit(requestsPerSecond), max(1, int(requestsPerSecond))),
-		concurrency:     concurrency,
+		pollInterval:    settings.PollInterval(),
+		requestRate:     settings.RequestRate,
+		concurrency:     settings.RequestConcurrency,
+		limiter:         rate.NewLimiter(rate.Limit(settings.RequestRate), max(1, int(settings.RequestRate))),
+		settingsNotify:  make(chan struct{}, 1),
 		httpTimeout:     10 * time.Second,
 		microsoftLogins: make(map[string]*MicrosoftLoginSession),
 		events:          events,
 	}
+}
+
+func (e *Engine) Settings() model.RuntimeSettings {
+	e.settingsMu.RLock()
+	defer e.settingsMu.RUnlock()
+	return model.RuntimeSettings{
+		PollIntervalSec:    int(e.pollInterval / time.Second),
+		RequestRate:        e.requestRate,
+		RequestConcurrency: e.concurrency,
+	}
+}
+
+func (e *Engine) UpdateSettings(settings model.RuntimeSettings) error {
+	if err := settings.Validate(); err != nil {
+		return err
+	}
+	if err := e.store.PutRuntimeSettings(settings); err != nil {
+		return err
+	}
+	e.applySettings(settings)
+	e.publish(TopicSettings | TopicStatus)
+	return nil
+}
+
+func (e *Engine) applySettings(settings model.RuntimeSettings) {
+	e.settingsMu.Lock()
+	e.pollInterval = settings.PollInterval()
+	e.requestRate = settings.RequestRate
+	e.concurrency = settings.RequestConcurrency
+	e.limiter.SetLimit(rate.Limit(settings.RequestRate))
+	e.limiter.SetBurst(max(1, int(settings.RequestRate)))
+	e.settingsMu.Unlock()
+	select {
+	case e.settingsNotify <- struct{}{}:
+	default:
+	}
+}
+
+func (e *Engine) currentPollInterval() time.Duration {
+	e.settingsMu.RLock()
+	defer e.settingsMu.RUnlock()
+	return e.pollInterval
+}
+
+func (e *Engine) currentConcurrency() int {
+	e.settingsMu.RLock()
+	defer e.settingsMu.RUnlock()
+	return e.concurrency
 }
 
 func (e *Engine) Run(ctx context.Context) error {
@@ -147,7 +200,8 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 func (e *Engine) collectLoop(ctx context.Context) error {
-	ticker := time.NewTicker(e.pollInterval)
+	interval := e.currentPollInterval()
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	if err := e.collectOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		e.logger.Error("initial collection cycle failed", "err", err)
@@ -156,6 +210,12 @@ func (e *Engine) collectLoop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-e.settingsNotify:
+			next := e.currentPollInterval()
+			if next != interval {
+				ticker.Reset(next)
+				interval = next
+			}
 		case <-ticker.C:
 			if err := e.collectOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				e.logger.Error("collection cycle failed", "err", err)
@@ -189,7 +249,7 @@ func (e *Engine) collectOnce(ctx context.Context) error {
 		return nil
 	}
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(e.concurrency)
+	g.SetLimit(e.currentConcurrency())
 	enabledUPs := 0
 	for _, up := range ups {
 		if !up.Enabled {
@@ -812,7 +872,8 @@ func (e *Engine) Status() (Status, error) {
 		status.RiskPausedUntil = time.Unix(until, 0).UTC()
 		status.Ready = false
 	}
-	if status.Ready && (status.LastSuccessAt.IsZero() || time.Since(status.LastSuccessAt) > 2*time.Minute) {
+	staleAfter := max(2*time.Minute, 2*e.currentPollInterval())
+	if status.Ready && (status.LastSuccessAt.IsZero() || time.Since(status.LastSuccessAt) > staleAfter) {
 		status.Ready = false
 	}
 	return status, nil

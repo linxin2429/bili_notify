@@ -9,6 +9,8 @@ import (
 
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/vault"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBaselineAndDurableOutbox(t *testing.T) {
@@ -155,6 +157,58 @@ func TestUpdateChannelSettingsMergesEncryptedRecord(t *testing.T) {
 	loaded, err := store.Channel(channel.ID)
 	if err != nil || loaded.Settings["refresh_token"] != "secret" {
 		t.Fatalf("loaded=%#v err=%v", loaded, err)
+	}
+}
+
+func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 6))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	_, err = store.RuntimeSettings()
+	require.ErrorIs(t, err, ErrNotFound)
+
+	tests := []struct {
+		name     string
+		settings model.RuntimeSettings
+		wantErr  string
+	}{
+		{
+			name: "valid",
+			settings: model.RuntimeSettings{
+				PollIntervalSec: 45, RequestRate: 1.5, RequestConcurrency: 3,
+			},
+		},
+		{
+			name: "reject short poll",
+			settings: model.RuntimeSettings{
+				PollIntervalSec: 5, RequestRate: 2, RequestConcurrency: 4,
+			},
+			wantErr: "poll interval",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Parallel subtests share store; use a dedicated store for write isolation.
+			local, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 7))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = local.Close() })
+
+			err = local.PutRuntimeSettings(tt.settings)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				_, getErr := local.RuntimeSettings()
+				require.ErrorIs(t, getErr, ErrNotFound)
+				return
+			}
+			require.NoError(t, err)
+			loaded, err := local.RuntimeSettings()
+			require.NoError(t, err)
+			assert.Equal(t, tt.settings, loaded)
+		})
 	}
 }
 

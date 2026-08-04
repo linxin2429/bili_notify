@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/linxin2429/bili_notify/model"
 )
 
 const (
@@ -17,7 +19,10 @@ const (
 	TLSFileName       = "tls.pem"
 )
 
-// Config contains immutable, startup-only settings. Runtime settings live in bbolt.
+// Config contains process startup settings.
+// DataDir, listen addresses, and LogLevel are immutable for the process lifetime.
+// PollInterval, RequestRate, and RequestConcurrency are first-run defaults only:
+// when bbolt has no runtime settings yet they seed the store; afterwards the admin UI owns them.
 type Config struct {
 	DataDir            string        `mapstructure:"data_dir"`
 	AdminAddr          string        `mapstructure:"admin_addr"`
@@ -38,14 +43,8 @@ func (c Config) Validate() error {
 			errs = append(errs, fmt.Errorf("invalid %s address %q: %w", name, addr, err))
 		}
 	}
-	if c.PollInterval < 10*time.Second {
-		errs = append(errs, errors.New("poll interval must be at least 10s"))
-	}
-	if c.RequestRate <= 0 || c.RequestRate > 10 {
-		errs = append(errs, errors.New("request rate must be in (0, 10]"))
-	}
-	if c.RequestConcurrency < 1 || c.RequestConcurrency > 16 {
-		errs = append(errs, errors.New("request concurrency must be in [1, 16]"))
+	if err := model.ValidateCollectorParams(c.PollInterval, c.RequestRate, c.RequestConcurrency); err != nil {
+		errs = append(errs, err)
 	}
 	switch strings.ToLower(strings.TrimSpace(c.LogLevel)) {
 	case "debug", "info", "warn", "error":
@@ -53,6 +52,15 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("invalid log level %q", c.LogLevel))
 	}
 	return errors.Join(errs...)
+}
+
+// SeedRuntimeSettings converts startup collector defaults into a runtime settings record.
+func (c Config) SeedRuntimeSettings() model.RuntimeSettings {
+	return model.RuntimeSettings{
+		PollIntervalSec:    int(c.PollInterval / time.Second),
+		RequestRate:        c.RequestRate,
+		RequestConcurrency: c.RequestConcurrency,
+	}
 }
 
 func Paths(dataDir string) (statePath, keyPath, tlsPath string) {

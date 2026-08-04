@@ -18,6 +18,8 @@ import (
 	"github.com/linxin2429/bili_notify/state"
 	"github.com/linxin2429/bili_notify/vault"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
@@ -46,7 +48,7 @@ func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
-	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), 30*time.Second, 100, 1, nil)
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil)
 	if err := engine.pollUP(t.Context(), up, []string{"channel"}); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +98,7 @@ func TestPollUPLogsSchemaFailure(t *testing.T) {
 	}
 	var logs bytes.Buffer
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
-	engine := NewEngine(store, client, slog.New(slog.NewJSONHandler(&logs, nil)), NewMetrics(prometheus.NewRegistry()), 30*time.Second, 100, 1, nil)
+	engine := NewEngine(store, client, slog.New(slog.NewJSONHandler(&logs, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil)
 	if err := engine.pollUP(t.Context(), up, []string{"channel"}); err != nil {
 		t.Fatal(err)
 	}
@@ -118,4 +120,63 @@ func mustTestVault(t *testing.T) *vault.Vault {
 		t.Fatal(err)
 	}
 	return v
+}
+
+func testSettings(pollSec int, rate float64, concurrency int) model.RuntimeSettings {
+	return model.RuntimeSettings{PollIntervalSec: pollSec, RequestRate: rate, RequestConcurrency: concurrency}
+}
+
+func TestUpdateSettingsHotReloadsAndPersists(t *testing.T) {
+	t.Parallel()
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	events := NewEventBus()
+	sub := events.Subscribe()
+	t.Cleanup(sub.Close)
+
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), events)
+	updated := testSettings(120, 1.5, 8)
+	require.NoError(t, engine.UpdateSettings(updated))
+	assert.Equal(t, updated, engine.Settings())
+
+	loaded, err := store.RuntimeSettings()
+	require.NoError(t, err)
+	assert.Equal(t, updated, loaded)
+
+	topics, _, err := sub.Next(t.Context())
+	require.NoError(t, err)
+	assert.NotZero(t, topics&TopicSettings)
+	assert.NotZero(t, topics&TopicStatus)
+
+	require.Error(t, engine.UpdateSettings(testSettings(5, 2, 4)))
+	assert.Equal(t, updated, engine.Settings())
+}
+
+func TestStatusReadyUsesPollIntervalWindow(t *testing.T) {
+	t.Parallel()
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.PutUP(model.UP{UID: "1", Enabled: true, BaselineReady: true}))
+	_, err = store.PutChannel(model.Channel{
+		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
+		Settings: map[string]string{"webhook": "https://example.com/hook"},
+	})
+	require.NoError(t, err)
+
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(180, 2, 4), nil)
+	engine.authValid.Store(true)
+	engine.lastSuccess.Store(time.Now().Add(-150 * time.Second).Unix())
+
+	status, err := engine.Status()
+	require.NoError(t, err)
+	assert.True(t, status.Ready, "150s lag should still be ready when poll_interval is 180s")
+
+	engine.lastSuccess.Store(time.Now().Add(-7 * time.Minute).Unix())
+	status, err = engine.Status()
+	require.NoError(t, err)
+	assert.False(t, status.Ready, "beyond 2*poll_interval should be unready")
 }

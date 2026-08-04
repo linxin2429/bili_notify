@@ -35,7 +35,7 @@ flowchart LR
 
 代码按功能划分为顶层包：`bilibili` 负责网页接口与二维码登录，`state` 负责事务和持久化，`notify` 负责投递协议，`service` 负责编排轮询、OAuth、Outbox 和领域事件，`web` 负责认证、WebSocket 与嵌入式管理台，`cmd` 只处理命令和非秘密启动配置。
 
-轮询器以 30 秒为目标周期，全局默认限制为 2 请求/秒、4 个并发请求。每个 UP 最多翻 10 页直至遇到已持久化动态；超过上限会停止该 UP 的提交，避免静默丢失。
+轮询器默认以 30 秒为目标周期、全局 2 请求/秒、4 个并发请求；这三项作为空库首次默认值写入 bbolt，之后可在管理台热更新并立即生效。每个 UP 最多翻 10 页直至遇到已持久化动态；超过上限会停止该 UP 的提交，避免静默丢失。
 
 新动态按发布时间由旧到新处理。`seen` 与所有启用渠道的投递任务在同一 bbolt 写事务内提交。任务只有在平台 HTTP 状态和业务码均成功后才删除；网络错误、429 和 5xx 分级重试，不可恢复配置或鉴权错误进入阻塞状态。
 
@@ -62,7 +62,7 @@ HTTP 只承担认证生命周期：
 | `PUT /api/v1/session/password` | 验证当前密码并修改密码 |
 | `GET /api/v1/ws` | 校验会话并升级 WebSocket |
 
-WebSocket 请求为 `id/action/payload`，响应使用相同 `id` 和 `ok/data/error`。服务端事件包含 `event/revision/data`；连接后先发送完整 `snapshot`，后续推送状态、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。断线客户端不重放未知结果的写操作，重连后使用快照修复状态。
+WebSocket 请求为 `id/action/payload`，响应使用相同 `id` 和 `ok/data/error`。服务端事件包含 `event/revision/data`；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、采集参数、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。写操作包含 `settings.update`，payload 为完整三项：`poll_interval_sec`、`request_rate`、`request_concurrency`。断线客户端不重放未知结果的写操作，重连后使用快照修复状态。
 
 领域事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。所有消息限制为 1 MiB，命令和写入均有超时。
 
@@ -88,7 +88,7 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 
 ## 6. 管理台设计
 
-前端使用 React、TypeScript、Vite、MUI、React Router 和 Zod，构建产物提交并通过 Go `embed` 打入单一二进制。页面采用实时运维工作台而不是等权卡片墙：概览首先显示整体就绪状态和阻塞原因，再显示 B站会话、UP、渠道与队列证据，最后提供操作。
+前端使用 React、TypeScript、Vite、MUI、React Router 和 Zod，构建产物提交并通过 Go `embed` 打入单一二进制。页面采用实时运维工作台而不是等权卡片墙：概览首先显示整体就绪状态和阻塞原因，再显示 B站会话、UP、渠道与队列证据，最后提供操作。设置页可修改采集参数（轮询间隔、请求速率、并发），以及外观主题和管理员密码。
 
 后端没有历史时间序列，因此界面不制造无依据图表。数据使用 KPI、状态标签、卡片和明细列表；成功、警告、失败状态同时使用颜色、图标和文字。主题支持跟随系统、浅色和深色，偏好只存 localStorage；路由和筛选进入 URL，秘密和会话不进入浏览器持久化存储。
 

@@ -68,9 +68,9 @@ func newServeCmd(v *viper.Viper) *cobra.Command {
 	cmd.Flags().String("data-dir", v.GetString("data_dir"), "persistent data directory")
 	cmd.Flags().String("admin-addr", v.GetString("admin_addr"), "TLS admin listen address")
 	cmd.Flags().String("observe-addr", v.GetString("observe_addr"), "observability listen address")
-	cmd.Flags().Duration("poll-interval", v.GetDuration("poll_interval"), "target polling interval")
-	cmd.Flags().Float64("request-rate", v.GetFloat64("request_rate"), "Bilibili requests per second")
-	cmd.Flags().Int("request-concurrency", v.GetInt("request_concurrency"), "maximum concurrent Bilibili requests")
+	cmd.Flags().Duration("poll-interval", v.GetDuration("poll_interval"), "default polling interval for a new data directory")
+	cmd.Flags().Float64("request-rate", v.GetFloat64("request_rate"), "default Bilibili requests per second for a new data directory")
+	cmd.Flags().Int("request-concurrency", v.GetInt("request_concurrency"), "default maximum concurrent Bilibili requests for a new data directory")
 	cmd.Flags().String("log-level", v.GetString("log_level"), "debug, info, warn, or error")
 	return cmd
 }
