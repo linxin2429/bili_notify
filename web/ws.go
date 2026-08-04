@@ -52,10 +52,31 @@ type dashboardSnapshot struct {
 	Status          service.Status                  `json:"status"`
 	UPs             []model.UP                      `json:"ups"`
 	Channels        []channelView                   `json:"channels"`
-	Deliveries      []model.Delivery                `json:"deliveries"`
+	Deliveries      []deliveryView                  `json:"deliveries"`
 	BiliLogin       *biliLoginView                  `json:"bili_login,omitempty"`
 	MicrosoftLogins []service.MicrosoftLoginSession `json:"microsoft_logins"`
 	UpdatedAt       time.Time                       `json:"updated_at"`
+}
+
+type deliveryView struct {
+	ID        string              `json:"id"`
+	Dynamic   dynamicPreview      `json:"dynamic"`
+	ChannelID string              `json:"channel_id"`
+	State     model.DeliveryState `json:"state"`
+	Attempts  int                 `json:"attempts"`
+	NextAt    time.Time           `json:"next_at"`
+	LastError string              `json:"last_error,omitempty"`
+	CreatedAt time.Time           `json:"created_at"`
+}
+
+type dynamicPreview struct {
+	ID          string    `json:"id"`
+	UID         string    `json:"uid"`
+	UPName      string    `json:"up_name"`
+	Type        string    `json:"type"`
+	PublishedAt time.Time `json:"published_at"`
+	Summary     string    `json:"summary"`
+	URL         string    `json:"url"`
 }
 
 type biliLoginView struct {
@@ -224,7 +245,7 @@ func (s *Server) writeTopicEvents(ctx context.Context, writer *wsWriter, topics 
 		if err != nil {
 			return err
 		}
-		if err := writer.write(ctx, wsEvent{Event: "deliveries.updated", Revision: revision, Data: deliveries}); err != nil {
+		if err := writer.write(ctx, wsEvent{Event: "deliveries.updated", Revision: revision, Data: deliveryViews(deliveries)}); err != nil {
 			return err
 		}
 	}
@@ -394,9 +415,34 @@ func (s *Server) snapshot() (dashboardSnapshot, error) {
 		return dashboardSnapshot{}, err
 	}
 	return dashboardSnapshot{
-		Status: status, UPs: ups, Channels: channels, Deliveries: deliveries, BiliLogin: login,
+		Status: status, UPs: ups, Channels: channels, Deliveries: deliveryViews(deliveries), BiliLogin: login,
 		MicrosoftLogins: s.engine.MicrosoftLogins(), UpdatedAt: time.Now().UTC(),
 	}, nil
+}
+
+func deliveryViews(deliveries []model.Delivery) []deliveryView {
+	views := make([]deliveryView, 0, len(deliveries))
+	for _, delivery := range deliveries {
+		views = append(views, deliveryView{
+			ID: delivery.ID,
+			Dynamic: dynamicPreview{
+				ID: delivery.Dynamic.ID, UID: delivery.Dynamic.UID, UPName: delivery.Dynamic.UPName,
+				Type: delivery.Dynamic.Type, PublishedAt: delivery.Dynamic.PublishedAt,
+				Summary: previewText(delivery.Dynamic.Summary, 240), URL: delivery.Dynamic.URL,
+			},
+			ChannelID: delivery.ChannelID, State: delivery.State, Attempts: delivery.Attempts,
+			NextAt: delivery.NextAt, LastError: delivery.LastError, CreatedAt: delivery.CreatedAt,
+		})
+	}
+	return views
+}
+
+func previewText(value string, limit int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit]) + "…"
 }
 
 func (s *Server) channelViews() ([]channelView, error) {

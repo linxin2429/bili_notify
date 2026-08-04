@@ -145,13 +145,53 @@ func isMicrosoftTenant(value string) bool {
 func (c Channel) NameCompare(other Channel) int { return cmp.Compare(c.Name, other.Name) }
 
 type Dynamic struct {
-	ID          string    `json:"id"`
-	UID         string    `json:"uid"`
-	UPName      string    `json:"up_name"`
-	Type        string    `json:"type"`
-	PublishedAt time.Time `json:"published_at"`
-	Summary     string    `json:"summary"`
-	URL         string    `json:"url"`
+	ID          string         `json:"id"`
+	UID         string         `json:"uid"`
+	UPName      string         `json:"up_name"`
+	Type        string         `json:"type"`
+	PublishedAt time.Time      `json:"published_at"`
+	Summary     string         `json:"summary"`
+	URL         string         `json:"url"`
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	TargetURL   string         `json:"target_url,omitempty"`
+	Badge       string         `json:"badge,omitempty"`
+	Links       []DynamicLink  `json:"links,omitempty"`
+	Media       []DynamicMedia `json:"media,omitempty"`
+	Stats       *DynamicStats  `json:"stats,omitempty"`
+	Video       *DynamicVideo  `json:"video,omitempty"`
+	Original    *Dynamic       `json:"original,omitempty"`
+}
+
+type DynamicLink struct {
+	Text string `json:"text"`
+	URL  string `json:"url"`
+}
+
+type DynamicMediaKind string
+
+const (
+	DynamicMediaCover DynamicMediaKind = "cover"
+	DynamicMediaImage DynamicMediaKind = "image"
+)
+
+type DynamicMedia struct {
+	Kind   DynamicMediaKind `json:"kind"`
+	URL    string           `json:"url"`
+	Width  int              `json:"width,omitempty"`
+	Height int              `json:"height,omitempty"`
+}
+
+type DynamicStats struct {
+	Forwards int64 `json:"forwards"`
+	Comments int64 `json:"comments"`
+	Likes    int64 `json:"likes"`
+}
+
+type DynamicVideo struct {
+	Duration string `json:"duration,omitempty"`
+	Views    string `json:"views,omitempty"`
+	Danmaku  string `json:"danmaku,omitempty"`
 }
 
 type DeliveryState string

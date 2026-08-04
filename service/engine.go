@@ -642,7 +642,7 @@ func (e *Engine) TestChannel(ctx context.Context, id string) error {
 		return err
 	}
 	started := time.Now()
-	if err := sender.Send(ctx, notify.Message{Subject: "Bili Notify 测试", Text: "Bili Notify 通知渠道配置成功。", HTML: "<p>Bili Notify 通知渠道配置成功。</p>"}); err != nil {
+	if err := sender.Send(ctx, notify.TextMessage("Bili Notify 测试", "Bili Notify 通知渠道配置成功。")); err != nil {
 		e.logger.Warn("notification channel test failed", "channel_id", channel.ID, "channel_type", channel.Type, "duration", elapsed(started), "err", err)
 		return err
 	}

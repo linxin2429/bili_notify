@@ -37,6 +37,11 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	}
 	second := first
 	second.ID = "2"
+	second.Summary = "full body"
+	second.Title = "video title"
+	second.Media = []model.DynamicMedia{{Kind: model.DynamicMediaCover, URL: "https://i0.hdslb.com/cover.jpg"}}
+	second.Stats = &model.DynamicStats{Forwards: 1, Comments: 2, Likes: 3}
+	second.Original = &model.Dynamic{ID: "original", UPName: "author", Type: "DYNAMIC_TYPE_WORD", Summary: "original body"}
 	created, err = store.RecordDynamics("42", []model.Dynamic{first, second}, []string{channel.ID}, false)
 	if err != nil || created != 1 {
 		t.Fatalf("new dynamics created=%d err=%v", created, err)
@@ -53,6 +58,10 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	deliveries, err := store.ListDeliveries(0)
 	if err != nil || len(deliveries) != 1 || deliveries[0].Dynamic.ID != "2" {
 		t.Fatalf("deliveries=%#v err=%v", deliveries, err)
+	}
+	persisted := deliveries[0].Dynamic
+	if persisted.Title != "video title" || len(persisted.Media) != 1 || persisted.Stats == nil || persisted.Stats.Likes != 3 || persisted.Original == nil || persisted.Original.Summary != "original body" {
+		t.Fatalf("rich dynamic was not preserved: %#v", persisted)
 	}
 	if err := store.CompleteDelivery(deliveries[0].ID); err != nil {
 		t.Fatal(err)

@@ -14,9 +14,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/linxin2429/bili_notify/model"
 	mail "github.com/wneessen/go-mail"
@@ -29,10 +31,35 @@ type Sender interface {
 type SettingsUpdater func(map[string]string) error
 
 type Message struct {
-	Subject string
-	Text    string
-	HTML    string
+	Subject  string
+	Sections []Section
+	Action   Link
 }
+
+type Section struct {
+	Heading    string
+	Paragraphs []string
+	Facts      []Fact
+	Links      []Link
+	Images     []Image
+}
+
+type Fact struct {
+	Label string
+	Value string
+}
+
+type Link struct {
+	Label string
+	URL   string
+}
+
+type Image struct {
+	Label string
+	URL   string
+}
+
+var chinaStandardTime = time.FixedZone("CST", 8*60*60)
 
 type PermanentError struct{ Err error }
 
@@ -69,8 +96,29 @@ func NewSender(ch model.Channel, client *http.Client, updateSettings SettingsUpd
 
 func DynamicMessage(d model.Dynamic) Message {
 	if d.Type == "SYSTEM" {
-		return Message{Subject: "[Bili Notify] 系统状态变更", Text: d.Summary, HTML: "<p>" + strings.ReplaceAll(html.EscapeString(d.Summary), "\n", "<br>") + "</p>"}
+		return TextMessage("[Bili Notify] 系统状态变更", d.Summary)
 	}
+	typeName := dynamicTypeName(d.Type)
+	subject := fmt.Sprintf("[B站动态] %s 发布了%s", d.UPName, typeName)
+	message := Message{
+		Subject:  subject,
+		Sections: []Section{dynamicSection(d, false)},
+		Action:   Link{Label: "查看原动态", URL: d.URL},
+	}
+	for original := d.Original; original != nil; original = original.Original {
+		message.Sections = append(message.Sections, dynamicSection(*original, true))
+	}
+	if d.Type == "DYNAMIC_TYPE_FORWARD" && d.Original == nil {
+		message.Sections = append(message.Sections, Section{Heading: "转发原动态", Paragraphs: []string{"原动态已删除或不可用。"}})
+	}
+	return message
+}
+
+func TextMessage(subject, body string) Message {
+	return Message{Subject: subject, Sections: []Section{{Paragraphs: []string{body}}}}
+}
+
+func dynamicTypeName(dynamicType string) string {
 	typeName := map[string]string{
 		"DYNAMIC_TYPE_WORD":          "文字动态",
 		"DYNAMIC_TYPE_DRAW":          "图片动态",
@@ -79,20 +127,78 @@ func DynamicMessage(d model.Dynamic) Message {
 		"DYNAMIC_TYPE_FORWARD":       "转发动态",
 		"DYNAMIC_TYPE_PGC":           "番剧内容",
 		"DYNAMIC_TYPE_COMMON_SQUARE": "动态",
-	}[d.Type]
+	}[dynamicType]
 	if typeName == "" {
-		typeName = d.Type
+		return dynamicType
 	}
-	location, _ := time.LoadLocation("Asia/Shanghai")
-	published := d.PublishedAt.In(location).Format("2006-01-02 15:04:05 MST")
-	subject := fmt.Sprintf("[B站动态] %s 发布了%s", d.UPName, typeName)
-	text := fmt.Sprintf("UP主：%s\n类型：%s\n发布时间：%s\n\n%s\n\n原文：%s", d.UPName, typeName, published, d.Summary, d.URL)
-	htmlBody := fmt.Sprintf(
-		"<h2>%s</h2><p><strong>UP主：</strong>%s<br><strong>类型：</strong>%s<br><strong>发布时间：</strong>%s</p><p>%s</p><p><a href=\"%s\">查看原动态</a></p>",
-		html.EscapeString(subject), html.EscapeString(d.UPName), html.EscapeString(typeName), html.EscapeString(published),
-		strings.ReplaceAll(html.EscapeString(d.Summary), "\n", "<br>"), html.EscapeString(d.URL),
-	)
-	return Message{Subject: subject, Text: text, HTML: htmlBody}
+	return typeName
+}
+
+func dynamicSection(d model.Dynamic, forwarded bool) Section {
+	published := d.PublishedAt.In(chinaStandardTime).Format("2006-01-02 15:04:05 MST")
+	heading := d.Title
+	if forwarded {
+		heading = "转发自 " + d.UPName
+		if d.Title != "" {
+			heading += " · " + d.Title
+		}
+	}
+	section := Section{
+		Heading: heading,
+		Facts: []Fact{
+			{Label: "UP主", Value: d.UPName},
+			{Label: "类型", Value: dynamicTypeName(d.Type)},
+			{Label: "发布时间", Value: published},
+		},
+	}
+	if d.Badge != "" {
+		section.Facts = append(section.Facts, Fact{Label: "标记", Value: d.Badge})
+	}
+	if d.Summary != "" {
+		section.Paragraphs = append(section.Paragraphs, d.Summary)
+	}
+	if d.Description != "" {
+		section.Paragraphs = append(section.Paragraphs, d.Description)
+	}
+	if d.Video != nil {
+		if d.Video.Duration != "" {
+			section.Facts = append(section.Facts, Fact{Label: "时长", Value: d.Video.Duration})
+		}
+		if d.Video.Views != "" {
+			section.Facts = append(section.Facts, Fact{Label: "播放", Value: d.Video.Views})
+		}
+		if d.Video.Danmaku != "" {
+			section.Facts = append(section.Facts, Fact{Label: "弹幕", Value: d.Video.Danmaku})
+		}
+	}
+	if d.Stats != nil {
+		section.Facts = append(section.Facts,
+			Fact{Label: "转发", Value: strconv.FormatInt(d.Stats.Forwards, 10)},
+			Fact{Label: "评论", Value: strconv.FormatInt(d.Stats.Comments, 10)},
+			Fact{Label: "点赞", Value: strconv.FormatInt(d.Stats.Likes, 10)},
+		)
+	}
+	if d.TargetURL != "" {
+		section.Links = append(section.Links, Link{Label: "查看内容", URL: d.TargetURL})
+	}
+	if forwarded && d.URL != "" {
+		section.Links = append(section.Links, Link{Label: "查看被转发动态", URL: d.URL})
+	}
+	for _, link := range d.Links {
+		label := link.Text
+		if label == "" {
+			label = "正文链接"
+		}
+		section.Links = append(section.Links, Link{Label: label, URL: link.URL})
+	}
+	for i, media := range d.Media {
+		label := fmt.Sprintf("图片 %d", i+1)
+		if media.Kind == model.DynamicMediaCover {
+			label = "封面"
+		}
+		section.Images = append(section.Images, Image{Label: label, URL: media.URL})
+	}
+	return section
 }
 
 type emailSender struct {
@@ -138,8 +244,8 @@ func (s *emailSender) Send(ctx context.Context, message Message) error {
 		return &PermanentError{Err: fmt.Errorf("setting recipients: %w", err)}
 	}
 	msg.Subject(message.Subject)
-	msg.SetBodyString(mail.TypeTextPlain, message.Text)
-	msg.AddAlternativeString(mail.TypeTextHTML, message.HTML)
+	msg.SetBodyString(mail.TypeTextPlain, renderPlainText(message))
+	msg.AddAlternativeString(mail.TypeTextHTML, renderHTML(message))
 	if err := s.client.DialAndSendWithContext(ctx, msg); err != nil {
 		return fmt.Errorf("sending email: %w", err)
 	}
@@ -169,14 +275,14 @@ func (s *robotSender) Send(ctx context.Context, message Message) error {
 		q.Set("sign", sign)
 		u.RawQuery = q.Encode()
 		endpoint = u.String()
-		payload = map[string]any{"msgtype": "markdown", "markdown": map[string]string{"title": message.Subject, "text": message.Text}}
+		payload = map[string]any{"msgtype": "markdown", "markdown": map[string]string{"title": message.Subject, "text": renderMarkdown(message, 20_000, false, true)}}
 	case model.ChannelFeishu:
 		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 		key := []byte(timestamp + "\n" + s.secret)
 		sign := hmacBase64(key, nil)
-		payload = map[string]any{"timestamp": timestamp, "sign": sign, "msg_type": "text", "content": map[string]string{"text": message.Text}}
+		payload = renderFeishuPayload(message, timestamp, sign)
 	case model.ChannelWeCom:
-		payload = map[string]any{"msgtype": "markdown", "markdown": map[string]string{"content": message.Text}}
+		payload = map[string]any{"msgtype": "markdown", "markdown": map[string]string{"content": renderMarkdown(message, 4096, true, false)}}
 	default:
 		return &PermanentError{Err: fmt.Errorf("unsupported robot type %q", s.kind)}
 	}
@@ -212,6 +318,312 @@ func (s *robotSender) Send(ctx context.Context, message Message) error {
 		return &PermanentError{Err: fmt.Errorf("%s returned business code %d: %s", s.kind, code, responseBody)}
 	}
 	return nil
+}
+
+type renderPart struct {
+	text        string
+	truncatable bool
+}
+
+func renderPlainText(message Message) string {
+	var b strings.Builder
+	b.WriteString(message.Subject)
+	for _, section := range message.Sections {
+		b.WriteString("\n\n")
+		if section.Heading != "" {
+			b.WriteString(section.Heading)
+			b.WriteByte('\n')
+		}
+		for _, fact := range section.Facts {
+			fmt.Fprintf(&b, "%s：%s\n", fact.Label, fact.Value)
+		}
+		for _, paragraph := range section.Paragraphs {
+			b.WriteByte('\n')
+			b.WriteString(paragraph)
+			b.WriteByte('\n')
+		}
+		for _, link := range section.Links {
+			fmt.Fprintf(&b, "%s：%s\n", link.Label, link.URL)
+		}
+		for _, image := range section.Images {
+			fmt.Fprintf(&b, "%s：%s\n", image.Label, image.URL)
+		}
+	}
+	if message.Action.URL != "" {
+		fmt.Fprintf(&b, "\n%s：%s", message.Action.Label, message.Action.URL)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func renderHTML(message Message) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "<h2>%s</h2>", html.EscapeString(message.Subject))
+	for _, section := range message.Sections {
+		b.WriteString("<section>")
+		if section.Heading != "" {
+			fmt.Fprintf(&b, "<h3>%s</h3>", html.EscapeString(section.Heading))
+		}
+		if len(section.Facts) > 0 {
+			b.WriteString("<dl>")
+			for _, fact := range section.Facts {
+				fmt.Fprintf(&b, "<dt><strong>%s</strong></dt><dd>%s</dd>", html.EscapeString(fact.Label), html.EscapeString(fact.Value))
+			}
+			b.WriteString("</dl>")
+		}
+		for _, paragraph := range section.Paragraphs {
+			fmt.Fprintf(&b, "<p>%s</p>", strings.ReplaceAll(html.EscapeString(paragraph), "\n", "<br>"))
+		}
+		for _, link := range section.Links {
+			fmt.Fprintf(&b, "<p><a href=\"%s\">%s</a></p>", html.EscapeString(link.URL), html.EscapeString(link.Label))
+		}
+		for _, image := range section.Images {
+			fmt.Fprintf(&b, "<p><img src=\"%s\" alt=\"%s\" style=\"max-width:100%%;height:auto\"></p>", html.EscapeString(image.URL), html.EscapeString(image.Label))
+		}
+		b.WriteString("</section>")
+	}
+	if message.Action.URL != "" {
+		fmt.Fprintf(&b, "<p><a href=\"%s\">%s</a></p>", html.EscapeString(message.Action.URL), html.EscapeString(message.Action.Label))
+	}
+	return b.String()
+}
+
+func renderMarkdown(message Message, limit int, countBytes, inlineImages bool) string {
+	parts := []renderPart{{text: "## " + escapeMarkdown(message.Subject)}}
+	for _, section := range message.Sections {
+		if section.Heading != "" {
+			parts = append(parts, renderPart{text: "### " + escapeMarkdown(section.Heading)})
+		}
+		for _, fact := range section.Facts {
+			parts = append(parts, renderPart{text: "**" + escapeMarkdown(fact.Label) + "：** " + escapeMarkdown(fact.Value)})
+		}
+		if len(section.Images) > 0 {
+			parts = append(parts, renderPart{text: renderMarkdownImage(section.Images[0], inlineImages)})
+		}
+		for _, paragraph := range section.Paragraphs {
+			parts = append(parts, renderPart{text: escapeMarkdown(paragraph), truncatable: true})
+		}
+		for _, link := range section.Links {
+			parts = append(parts, renderPart{text: markdownLink(link.Label, link.URL)})
+		}
+		if len(section.Images) > 1 {
+			for _, image := range section.Images[1:] {
+				parts = append(parts, renderPart{text: renderMarkdownImage(image, inlineImages)})
+			}
+		}
+	}
+	footer := ""
+	if message.Action.URL != "" {
+		footer = markdownLink(message.Action.Label, message.Action.URL)
+	}
+	return fitMarkdown(parts, footer, limit, countBytes)
+}
+
+func fitMarkdown(parts []renderPart, footer string, limit int, countBytes bool) string {
+	separator := "\n\n"
+	reserved := measure(footer, countBytes)
+	if footer != "" {
+		reserved += measure(separator, countBytes)
+	}
+	var b strings.Builder
+	truncated := false
+	for _, part := range parts {
+		prefix := ""
+		if b.Len() > 0 {
+			prefix = separator
+		}
+		remaining := limit - reserved - measure(b.String()+prefix, countBytes)
+		if remaining <= 0 {
+			truncated = true
+			break
+		}
+		if measure(part.text, countBytes) <= remaining {
+			b.WriteString(prefix)
+			b.WriteString(part.text)
+			continue
+		}
+		if part.truncatable {
+			marker := "…（内容已截断）"
+			shortened := truncateMeasured(part.text, remaining-measure(marker, countBytes), countBytes)
+			if shortened != "" {
+				b.WriteString(prefix)
+				b.WriteString(shortened)
+				b.WriteString(marker)
+			}
+		}
+		truncated = true
+		break
+	}
+	if truncated && !strings.Contains(b.String(), "内容已截断") {
+		marker := "…（内容已截断）"
+		prefix := ""
+		if b.Len() > 0 {
+			prefix = separator
+		}
+		if measure(b.String()+prefix+marker, countBytes)+reserved <= limit {
+			b.WriteString(prefix)
+			b.WriteString(marker)
+		}
+	}
+	if footer != "" {
+		if b.Len() > 0 {
+			b.WriteString(separator)
+		}
+		b.WriteString(footer)
+	}
+	return b.String()
+}
+
+func escapeMarkdown(value string) string {
+	replacer := strings.NewReplacer("\\", "\\\\", "*", "\\*", "_", "\\_", "`", "\\`", "[", "\\[", "]", "\\]")
+	return replacer.Replace(value)
+}
+
+func markdownLink(label, target string) string {
+	return "[" + escapeMarkdown(label) + "](" + markdownURL(target) + ")"
+}
+
+func renderMarkdownImage(image Image, inline bool) string {
+	if !inline {
+		return markdownLink(image.Label, image.URL)
+	}
+	return "![" + escapeMarkdown(image.Label) + "](" + markdownURL(image.URL) + ")"
+}
+
+func markdownURL(target string) string {
+	return strings.NewReplacer(" ", "%20", "(", "%28", ")", "%29").Replace(target)
+}
+
+func measure(value string, countBytes bool) int {
+	if countBytes {
+		return len(value)
+	}
+	return len([]rune(value))
+}
+
+func truncateMeasured(value string, limit int, countBytes bool) string {
+	if limit <= 0 {
+		return ""
+	}
+	if !countBytes {
+		runes := []rune(value)
+		return string(runes[:min(limit, len(runes))])
+	}
+	if len(value) <= limit {
+		return value
+	}
+	for limit > 0 && !utf8.RuneStart(value[limit]) {
+		limit--
+	}
+	return value[:limit]
+}
+
+type feishuElement struct {
+	Tag  string `json:"tag"`
+	Text string `json:"text"`
+	Href string `json:"href,omitempty"`
+}
+
+type feishuPost struct {
+	Title   string            `json:"title"`
+	Content [][]feishuElement `json:"content"`
+}
+
+func renderFeishuPayload(message Message, timestamp, sign string) map[string]any {
+	rows := make([][]feishuElement, 0)
+	for _, section := range message.Sections {
+		if section.Heading != "" {
+			rows = append(rows, []feishuElement{{Tag: "text", Text: section.Heading}})
+		}
+		for _, fact := range section.Facts {
+			rows = append(rows, []feishuElement{{Tag: "text", Text: fact.Label + "：" + fact.Value}})
+		}
+		if len(section.Images) > 0 {
+			rows = append(rows, []feishuElement{{Tag: "a", Text: section.Images[0].Label, Href: section.Images[0].URL}})
+		}
+		for _, paragraph := range section.Paragraphs {
+			rows = append(rows, []feishuElement{{Tag: "text", Text: paragraph}})
+		}
+		for _, link := range section.Links {
+			rows = append(rows, []feishuElement{{Tag: "a", Text: link.Label, Href: link.URL}})
+		}
+		if len(section.Images) > 1 {
+			for _, image := range section.Images[1:] {
+				rows = append(rows, []feishuElement{{Tag: "a", Text: image.Label, Href: image.URL}})
+			}
+		}
+	}
+	footer := []feishuElement(nil)
+	if message.Action.URL != "" {
+		footer = []feishuElement{{Tag: "a", Text: message.Action.Label, Href: message.Action.URL}}
+	}
+	accepted := fitFeishuRows(message.Subject, rows, footer, timestamp, sign)
+	return feishuPayload(message.Subject, accepted, timestamp, sign)
+}
+
+func fitFeishuRows(title string, rows [][]feishuElement, footer []feishuElement, timestamp, sign string) [][]feishuElement {
+	accepted := make([][]feishuElement, 0, len(rows)+1)
+	for _, row := range rows {
+		candidate := append(slices.Clone(accepted), row)
+		withFooter := candidate
+		if footer != nil {
+			withFooter = append(slices.Clone(candidate), footer)
+		}
+		if payloadSize(feishuPayload(title, withFooter, timestamp, sign)) <= 20*1024 {
+			accepted = candidate
+			continue
+		}
+		if len(row) == 1 && row[0].Tag == "text" {
+			shortened := row[0]
+			shortened.Text = truncateFeishuText(title, accepted, shortened.Text, footer, timestamp, sign)
+			if shortened.Text != "" {
+				accepted = append(accepted, []feishuElement{shortened})
+			}
+		}
+		break
+	}
+	if footer != nil {
+		accepted = append(accepted, footer)
+	}
+	return accepted
+}
+
+func truncateFeishuText(title string, rows [][]feishuElement, value string, footer []feishuElement, timestamp, sign string) string {
+	marker := "…（内容已截断）"
+	runes := []rune(value)
+	low, high := 0, len(runes)
+	for low < high {
+		mid := (low + high + 1) / 2
+		row := []feishuElement{{Tag: "text", Text: string(runes[:mid]) + marker}}
+		candidate := append(slices.Clone(rows), row)
+		if footer != nil {
+			candidate = append(candidate, footer)
+		}
+		if payloadSize(feishuPayload(title, candidate, timestamp, sign)) <= 20*1024 {
+			low = mid
+		} else {
+			high = mid - 1
+		}
+	}
+	if low == 0 {
+		return ""
+	}
+	return string(runes[:low]) + marker
+}
+
+func feishuPayload(title string, rows [][]feishuElement, timestamp, sign string) map[string]any {
+	return map[string]any{
+		"timestamp": timestamp,
+		"sign":      sign,
+		"msg_type":  "post",
+		"content": map[string]any{"post": map[string]feishuPost{
+			"zh_cn": {Title: title, Content: rows},
+		}},
+	}
+}
+
+func payloadSize(payload any) int {
+	raw, _ := json.Marshal(payload)
+	return len(raw)
 }
 
 func businessCode(result map[string]any) int64 {

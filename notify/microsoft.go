@@ -140,7 +140,7 @@ func (s *microsoftSender) Send(ctx context.Context, message Message) error {
 	payload := map[string]any{
 		"message": map[string]any{
 			"subject":      message.Subject,
-			"body":         map[string]string{"contentType": "HTML", "content": message.HTML},
+			"body":         map[string]string{"contentType": "HTML", "content": renderHTML(message)},
 			"toRecipients": recipients,
 		},
 		"saveToSentItems": true,

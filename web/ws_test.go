@@ -137,6 +137,34 @@ func TestWebSocketRequiresSessionAndPublishesUpdates(t *testing.T) {
 	}
 }
 
+func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
+	deliveries := make([]model.Delivery, 100)
+	for i := range deliveries {
+		deliveries[i] = model.Delivery{
+			ID: "delivery",
+			Dynamic: model.Dynamic{
+				ID: "dynamic", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_DRAW",
+				PublishedAt: time.Now().UTC(), Summary: strings.Repeat("正文", 5000), URL: "https://t.bilibili.com/1",
+				Description: strings.Repeat("不应进入管理台", 5000),
+				Media:       []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://i0.hdslb.com/image.jpg"}},
+				Original:    &model.Dynamic{ID: "original", Summary: strings.Repeat("原文", 5000)},
+			},
+			State: model.DeliveryPending,
+		}
+	}
+	views := deliveryViews(deliveries)
+	raw, err := json.Marshal(views)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) >= 1<<20 {
+		t.Fatalf("delivery views size = %d", len(raw))
+	}
+	if strings.Contains(string(raw), "不应进入管理台") || len([]rune(views[0].Dynamic.Summary)) > 241 {
+		t.Fatalf("delivery view contains rich payload: %s", raw[:min(len(raw), 1000)])
+	}
+}
+
 type testWSEnvelope struct {
 	ID       string          `json:"id"`
 	OK       bool            `json:"ok"`

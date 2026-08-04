@@ -337,91 +337,327 @@ func (t *unixTimestamp) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func parseDynamic(uid string, raw json.RawMessage) (model.Dynamic, string, error) {
-	var item struct {
-		ID      string `json:"id_str"`
-		Type    string `json:"type"`
-		Modules struct {
-			Author struct {
-				Name  string        `json:"name"`
-				PubTS unixTimestamp `json:"pub_ts"`
-			} `json:"module_author"`
-			Dynamic struct {
-				Desc *struct {
-					Text string `json:"text"`
-				} `json:"desc"`
-				Major json.RawMessage `json:"major"`
-			} `json:"module_dynamic"`
-		} `json:"modules"`
+type displayText string
+
+func (t *displayText) UnmarshalJSON(data []byte) error {
+	value := strings.TrimSpace(string(data))
+	if value == "null" {
+		*t = ""
+		return nil
 	}
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		var decoded string
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			return fmt.Errorf("decoding display text: %w", err)
+		}
+		*t = displayText(decoded)
+		return nil
+	}
+	if _, err := strconv.ParseFloat(value, 64); err != nil {
+		return fmt.Errorf("parsing display number %q: %w", value, err)
+	}
+	*t = displayText(value)
+	return nil
+}
+
+type rawRichTextNode struct {
+	OrigText string `json:"orig_text"`
+	Text     string `json:"text"`
+	JumpURL  string `json:"jump_url"`
+}
+
+type rawDynamic struct {
+	ID      string          `json:"id_str"`
+	Type    string          `json:"type"`
+	Orig    json.RawMessage `json:"orig"`
+	Modules struct {
+		Author struct {
+			MID   json.RawMessage `json:"mid"`
+			Name  string          `json:"name"`
+			PubTS unixTimestamp   `json:"pub_ts"`
+		} `json:"module_author"`
+		Dynamic struct {
+			Desc *struct {
+				Text          string            `json:"text"`
+				RichTextNodes []rawRichTextNode `json:"rich_text_nodes"`
+			} `json:"desc"`
+			Major json.RawMessage `json:"major"`
+		} `json:"module_dynamic"`
+		Stat *struct {
+			Forward struct {
+				Count int64 `json:"count"`
+			} `json:"forward"`
+			Comment struct {
+				Count int64 `json:"count"`
+			} `json:"comment"`
+			Like struct {
+				Count int64 `json:"count"`
+			} `json:"like"`
+		} `json:"module_stat"`
+	} `json:"modules"`
+}
+
+type rawMajor struct {
+	Archive *struct {
+		Title        string `json:"title"`
+		Desc         string `json:"desc"`
+		Cover        string `json:"cover"`
+		JumpURL      string `json:"jump_url"`
+		DurationText string `json:"duration_text"`
+		Badge        struct {
+			Text string `json:"text"`
+		} `json:"badge"`
+		Stat struct {
+			Play    displayText `json:"play"`
+			Danmaku displayText `json:"danmaku"`
+		} `json:"stat"`
+	} `json:"archive"`
+	Draw *struct {
+		Items []struct {
+			Src    string `json:"src"`
+			Width  int    `json:"width"`
+			Height int    `json:"height"`
+		} `json:"items"`
+	} `json:"draw"`
+	Article *struct {
+		Title   string   `json:"title"`
+		Desc    string   `json:"desc"`
+		Covers  []string `json:"covers"`
+		JumpURL string   `json:"jump_url"`
+		Label   string   `json:"label"`
+	} `json:"article"`
+	PGC *struct {
+		Title   string `json:"title"`
+		Cover   string `json:"cover"`
+		JumpURL string `json:"jump_url"`
+		Badge   struct {
+			Text string `json:"text"`
+		} `json:"badge"`
+	} `json:"pgc"`
+	Common *struct {
+		Title   string `json:"title"`
+		Desc    string `json:"desc"`
+		Cover   string `json:"cover"`
+		JumpURL string `json:"jump_url"`
+		Badge   struct {
+			Text string `json:"text"`
+		} `json:"badge"`
+	} `json:"common"`
+	Opus *struct {
+		Title   string `json:"title"`
+		JumpURL string `json:"jump_url"`
+		Summary struct {
+			Text          string            `json:"text"`
+			RichTextNodes []rawRichTextNode `json:"rich_text_nodes"`
+		} `json:"summary"`
+		Pics []struct {
+			URL    string `json:"url"`
+			Src    string `json:"src"`
+			Width  int    `json:"width"`
+			Height int    `json:"height"`
+		} `json:"pics"`
+	} `json:"opus"`
+}
+
+func parseDynamic(uid string, raw json.RawMessage) (model.Dynamic, string, error) {
+	dynamic, err := parseDynamicItem(uid, raw)
+	if err != nil {
+		return model.Dynamic{}, "", err
+	}
+	return dynamic, dynamic.UPName, nil
+}
+
+func parseDynamicItem(uid string, raw json.RawMessage) (model.Dynamic, error) {
+	var item rawDynamic
 	if err := json.Unmarshal(raw, &item); err != nil {
-		return model.Dynamic{}, "", &APIError{Kind: ErrorSchema, Message: "invalid dynamic item: " + err.Error()}
+		return model.Dynamic{}, &APIError{Kind: ErrorSchema, Message: "invalid dynamic item: " + err.Error()}
 	}
 	if item.ID == "" || item.Type == "" || item.Modules.Author.PubTS == 0 {
-		return model.Dynamic{}, "", &APIError{Kind: ErrorSchema, Message: "dynamic item is missing id, type, or publication time"}
+		return model.Dynamic{}, &APIError{Kind: ErrorSchema, Message: "dynamic item is missing id, type, or publication time"}
 	}
 	if !supportedDynamicTypes[item.Type] {
-		return model.Dynamic{}, "", &APIError{Kind: ErrorSchema, Message: "unsupported dynamic type " + item.Type}
+		return model.Dynamic{}, &APIError{Kind: ErrorSchema, Message: "unsupported dynamic type " + item.Type}
 	}
-	parts := make([]string, 0, 3)
-	if item.Modules.Dynamic.Desc != nil {
-		parts = appendNonEmpty(parts, item.Modules.Dynamic.Desc.Text)
-	}
-	parts = appendNonEmpty(parts, majorSummary(item.Modules.Dynamic.Major))
-	summary := truncate(strings.Join(parts, "\n"), 500)
-	return model.Dynamic{
+	dynamic := model.Dynamic{
 		ID:          item.ID,
 		UID:         uid,
 		UPName:      item.Modules.Author.Name,
 		Type:        item.Type,
 		PublishedAt: time.Unix(int64(item.Modules.Author.PubTS), 0).UTC(),
-		Summary:     summary,
 		URL:         "https://t.bilibili.com/" + item.ID,
-	}, item.Modules.Author.Name, nil
+	}
+	if mid := rawString(item.Modules.Author.MID); mid != "" {
+		dynamic.UID = mid
+	}
+	if item.Modules.Dynamic.Desc != nil {
+		dynamic.Summary = strings.TrimSpace(item.Modules.Dynamic.Desc.Text)
+		appendLinks(&dynamic, item.Modules.Dynamic.Desc.RichTextNodes)
+	}
+	if item.Modules.Stat != nil {
+		dynamic.Stats = &model.DynamicStats{
+			Forwards: item.Modules.Stat.Forward.Count,
+			Comments: item.Modules.Stat.Comment.Count,
+			Likes:    item.Modules.Stat.Like.Count,
+		}
+	}
+	if item.Type != "DYNAMIC_TYPE_LIVE_RCMD" {
+		if err := parseMajor(&dynamic, item.Modules.Dynamic.Major); err != nil {
+			return model.Dynamic{}, err
+		}
+	}
+	if item.Type == "DYNAMIC_TYPE_FORWARD" && len(item.Orig) > 0 && string(item.Orig) != "null" {
+		original, err := parseDynamicItem("", item.Orig)
+		if err != nil {
+			return model.Dynamic{}, fmt.Errorf("parsing forwarded dynamic: %w", err)
+		}
+		dynamic.Original = &original
+	}
+	return dynamic, nil
 }
 
-func majorSummary(raw json.RawMessage) string {
+func parseMajor(dynamic *model.Dynamic, raw json.RawMessage) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		if dynamic.Type == "DYNAMIC_TYPE_WORD" || dynamic.Type == "DYNAMIC_TYPE_FORWARD" {
+			return nil
+		}
+		return &APIError{Kind: ErrorSchema, Message: "dynamic type " + dynamic.Type + " is missing its content card"}
+	}
+	var major rawMajor
+	if err := json.Unmarshal(raw, &major); err != nil {
+		return &APIError{Kind: ErrorSchema, Message: "invalid dynamic major: " + err.Error()}
+	}
+	recognized := 0
+	if major.Archive != nil {
+		recognized++
+		if dynamic.Type != "DYNAMIC_TYPE_AV" {
+			return unexpectedMajor(dynamic.Type, "archive")
+		}
+		dynamic.Title = strings.TrimSpace(major.Archive.Title)
+		dynamic.Description = strings.TrimSpace(major.Archive.Desc)
+		dynamic.TargetURL = webURL(major.Archive.JumpURL)
+		dynamic.Badge = strings.TrimSpace(major.Archive.Badge.Text)
+		appendMedia(dynamic, model.DynamicMediaCover, major.Archive.Cover, 0, 0)
+		dynamic.Video = &model.DynamicVideo{
+			Duration: strings.TrimSpace(major.Archive.DurationText),
+			Views:    strings.TrimSpace(string(major.Archive.Stat.Play)),
+			Danmaku:  strings.TrimSpace(string(major.Archive.Stat.Danmaku)),
+		}
+	}
+	if major.Draw != nil {
+		recognized++
+		if dynamic.Type != "DYNAMIC_TYPE_DRAW" {
+			return unexpectedMajor(dynamic.Type, "draw")
+		}
+		for _, picture := range major.Draw.Items {
+			appendMedia(dynamic, model.DynamicMediaImage, picture.Src, picture.Width, picture.Height)
+		}
+	}
+	if major.Article != nil {
+		recognized++
+		if dynamic.Type != "DYNAMIC_TYPE_ARTICLE" {
+			return unexpectedMajor(dynamic.Type, "article")
+		}
+		dynamic.Title = strings.TrimSpace(major.Article.Title)
+		dynamic.Description = strings.TrimSpace(major.Article.Desc)
+		dynamic.TargetURL = webURL(major.Article.JumpURL)
+		dynamic.Badge = strings.TrimSpace(major.Article.Label)
+		for _, cover := range major.Article.Covers {
+			appendMedia(dynamic, model.DynamicMediaCover, cover, 0, 0)
+		}
+	}
+	if major.PGC != nil {
+		recognized++
+		if dynamic.Type != "DYNAMIC_TYPE_PGC" {
+			return unexpectedMajor(dynamic.Type, "pgc")
+		}
+		dynamic.Title = strings.TrimSpace(major.PGC.Title)
+		dynamic.TargetURL = webURL(major.PGC.JumpURL)
+		dynamic.Badge = strings.TrimSpace(major.PGC.Badge.Text)
+		appendMedia(dynamic, model.DynamicMediaCover, major.PGC.Cover, 0, 0)
+	}
+	if major.Common != nil {
+		recognized++
+		if dynamic.Type != "DYNAMIC_TYPE_COMMON_SQUARE" {
+			return unexpectedMajor(dynamic.Type, "common")
+		}
+		dynamic.Title = strings.TrimSpace(major.Common.Title)
+		dynamic.Description = strings.TrimSpace(major.Common.Desc)
+		dynamic.TargetURL = webURL(major.Common.JumpURL)
+		dynamic.Badge = strings.TrimSpace(major.Common.Badge.Text)
+		appendMedia(dynamic, model.DynamicMediaCover, major.Common.Cover, 0, 0)
+	}
+	if major.Opus != nil {
+		recognized++
+		if dynamic.Type != "DYNAMIC_TYPE_DRAW" && dynamic.Type != "DYNAMIC_TYPE_ARTICLE" {
+			return unexpectedMajor(dynamic.Type, "opus")
+		}
+		dynamic.Title = strings.TrimSpace(major.Opus.Title)
+		dynamic.Description = strings.TrimSpace(major.Opus.Summary.Text)
+		dynamic.TargetURL = webURL(major.Opus.JumpURL)
+		appendLinks(dynamic, major.Opus.Summary.RichTextNodes)
+		for _, picture := range major.Opus.Pics {
+			pictureURL := picture.URL
+			if pictureURL == "" {
+				pictureURL = picture.Src
+			}
+			appendMedia(dynamic, model.DynamicMediaImage, pictureURL, picture.Width, picture.Height)
+		}
+	}
+	if recognized == 0 {
+		return &APIError{Kind: ErrorSchema, Message: "dynamic major has no supported content card"}
+	}
+	if recognized > 1 {
+		return &APIError{Kind: ErrorSchema, Message: "dynamic major contains multiple content cards"}
+	}
+	return nil
+}
+
+func unexpectedMajor(dynamicType, majorType string) error {
+	return &APIError{Kind: ErrorSchema, Message: fmt.Sprintf("dynamic type %s contains %s major", dynamicType, majorType)}
+}
+
+func appendMedia(dynamic *model.Dynamic, kind model.DynamicMediaKind, rawURL string, width, height int) {
+	if mediaURL := webURL(rawURL); mediaURL != "" {
+		dynamic.Media = append(dynamic.Media, model.DynamicMedia{Kind: kind, URL: mediaURL, Width: width, Height: height})
+	}
+}
+
+func appendLinks(dynamic *model.Dynamic, nodes []rawRichTextNode) {
+	for _, node := range nodes {
+		if link := webURL(node.JumpURL); link != "" {
+			text := strings.TrimSpace(node.OrigText)
+			if text == "" {
+				text = strings.TrimSpace(node.Text)
+			}
+			dynamic.Links = append(dynamic.Links, model.DynamicLink{Text: text, URL: link})
+		}
+	}
+}
+
+func webURL(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "//") {
+		value = "https:" + value
+	}
+	u, err := url.Parse(value)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	return u.String()
+}
+
+func rawString(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return ""
 	}
-	var major map[string]json.RawMessage
-	if json.Unmarshal(raw, &major) != nil {
+	var value string
+	if raw[0] == '"' {
+		if json.Unmarshal(raw, &value) == nil {
+			return value
+		}
 		return ""
 	}
-	for _, key := range []string{"archive", "article", "pgc", "common", "opus"} {
-		childRaw, ok := major[key]
-		if !ok {
-			continue
-		}
-		var child struct {
-			Title   string `json:"title"`
-			Desc    string `json:"desc"`
-			Summary struct {
-				Text string `json:"text"`
-			} `json:"summary"`
-		}
-		if json.Unmarshal(childRaw, &child) != nil {
-			continue
-		}
-		return strings.TrimSpace(strings.Join([]string{child.Title, child.Desc, child.Summary.Text}, "\n"))
-	}
-	return ""
-}
-
-func appendNonEmpty(parts []string, value string) []string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return parts
-	}
-	return append(parts, value)
-}
-
-func truncate(s string, limit int) string {
-	runes := []rune(strings.TrimSpace(s))
-	if len(runes) <= limit {
-		return string(runes)
-	}
-	return string(runes[:limit]) + "…"
+	return strings.TrimSpace(string(raw))
 }
 
 func ParseRetryAfter(resp *http.Response) time.Duration {
