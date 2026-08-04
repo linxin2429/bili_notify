@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -76,4 +77,45 @@ func TestRetryDelayBounds(t *testing.T) {
 			t.Fatalf("retryDelay(0)=%s", delay)
 		}
 	}
+}
+
+func TestPollUPLogsSchemaFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","items":[{"id_str":"1","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"name":"tester","pub_ts":"invalid"}}}]}}`)
+	}))
+	defer server.Close()
+
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"), mustTestVault(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	up := model.UP{UID: "42", Name: "configured name", Enabled: true}
+	if err := store.PutUP(up); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
+	engine := NewEngine(store, client, slog.New(slog.NewJSONHandler(&logs, nil)), NewMetrics(prometheus.NewRegistry()), 30*time.Second, 100, 1)
+	if err := engine.pollUP(t.Context(), up, []string{"channel"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.UP(up.UID)
+	if err != nil || updated.ConsecutiveFail != 1 {
+		t.Fatalf("updated UP=%#v err=%v", updated, err)
+	}
+	for _, expected := range []string{`"msg":"Bilibili UP poll failed"`, `"uid":"42"`, `"up_name":"configured name"`, `"error_kind":"schema"`} {
+		if !strings.Contains(logs.String(), expected) {
+			t.Fatalf("log does not contain %s: %s", expected, logs.String())
+		}
+	}
+}
+
+func mustTestVault(t *testing.T) *vault.Vault {
+	t.Helper()
+	v, err := vault.New(bytes.Repeat([]byte{9}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }

@@ -87,6 +87,9 @@ Microsoft 渠道通过 Microsoft Graph 和 OAuth 2.0 设备码授权发送邮件
 ## 运维
 
 ```bash
+# 持续查看 JSON 结构化日志
+docker compose logs -f bili-notify
+
 # 查看版本和命令
 docker compose run --rm bili-notify --help
 
@@ -98,6 +101,8 @@ docker compose stop bili-notify
 docker compose run --rm -v ./secrets/new-master-key:/run/secrets/new-master-key:ro \
   bili-notify rekey --new-key-file /run/secrets/new-master-key
 ```
+
+默认 `info` 日志包含启动、认证变化、UP 基线、采集失败与恢复、新动态入队、渠道测试、投递结果和 Microsoft 授权状态。需要查看每轮采集及每个 UP 的成功明细时，将 Compose 中的 `BILI_NOTIFY_LOG_LEVEL` 改为 `debug`。日志不会输出 Cookie、OAuth 令牌、SMTP 密码、Webhook 或动态正文。
 
 证书文件被原子替换后会自动校验并热加载。替换文件可能丢失 ACL，替换后需重新执行
 `setfacl -m u:65532:r secrets/tls.crt secrets/tls.key`。错误主密钥、无效证书或无效管理员密码哈希会导致服务拒绝启动。

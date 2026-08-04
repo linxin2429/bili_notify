@@ -110,6 +110,7 @@ func (e *Engine) Run(ctx context.Context) error {
 			e.authEverValid.Store(true)
 			e.authValid.Store(true)
 			e.metrics.AuthState.Set(1)
+			e.logger.Info("stored Bilibili session restored")
 		} else {
 			e.authEverValid.Store(true)
 			e.logger.Warn("stored Bilibili session is invalid", "err", validateErr)
@@ -145,10 +146,13 @@ func (e *Engine) collectLoop(ctx context.Context) error {
 }
 
 func (e *Engine) collectOnce(ctx context.Context) error {
+	started := time.Now()
 	if !e.authValid.Load() {
+		e.logger.Debug("collection cycle skipped", "reason", "Bilibili session is not authenticated")
 		return nil
 	}
 	if until := e.riskUntil.Load(); until > time.Now().Unix() {
+		e.logger.Debug("collection cycle skipped", "reason", "Bilibili risk-control pause", "resume_at", time.Unix(until, 0).UTC())
 		return nil
 	}
 	ups, err := e.store.ListUPs()
@@ -161,14 +165,17 @@ func (e *Engine) collectOnce(ctx context.Context) error {
 	}
 	channelIDs := enabledChannelIDs(channels)
 	if len(channelIDs) == 0 {
+		e.logger.Debug("collection cycle skipped", "reason", "no enabled notification channels")
 		return nil
 	}
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(e.concurrency)
+	enabledUPs := 0
 	for _, up := range ups {
 		if !up.Enabled {
 			continue
 		}
+		enabledUPs++
 		g.Go(func() error {
 			if err := e.limiter.Wait(gctx); err != nil {
 				return err
@@ -176,7 +183,12 @@ func (e *Engine) collectOnce(ctx context.Context) error {
 			return e.pollUP(gctx, up, channelIDs)
 		})
 	}
-	return g.Wait()
+	err = g.Wait()
+	if err != nil {
+		return err
+	}
+	e.logger.Info("collection cycle completed", "enabled_ups", enabledUPs, "enabled_channels", len(channelIDs), "duration", elapsed(started))
+	return nil
 }
 
 func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) error {
@@ -192,23 +204,17 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 	for pageNumber := range 10 {
 		page, err := e.client.FetchPage(requestCtx, up.UID, offset)
 		if err != nil {
-			e.metrics.PollTotal.WithLabelValues("error").Inc()
-			_ = e.store.SetUPResult(up.UID, name, time.Now().UTC(), err)
 			if bilibili.IsAuthentication(err) {
 				e.setAuth(false)
 			}
 			if bilibili.IsRiskControl(err) {
 				now := time.Now()
 				previousUntil := e.riskUntil.Swap(now.Add(5 * time.Minute).Unix())
-				e.logger.Warn("Bilibili risk control stopped this cycle", "uid", up.UID, "err", err)
 				if previousUntil <= now.Unix() {
 					e.enqueueSystem("B站接口触发风控，采集已暂停五分钟；服务不会尝试绕过风控。")
 				}
 			}
-			if up.ConsecutiveFail+1 == 3 {
-				e.enqueueSystem(fmt.Sprintf("UP %s 已连续三次采集失败：%v", up.UID, err))
-			}
-			return nil
+			return e.failPoll(up, name, started, err)
 		}
 		name = page.UPName
 		foundSeen := false
@@ -228,8 +234,7 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 		}
 		if pageNumber == 9 {
 			err := errors.New("more than 10 pages of unseen dynamics; manual review required")
-			_ = e.store.SetUPResult(up.UID, name, time.Now().UTC(), err)
-			return nil
+			return e.failPoll(up, name, started, err)
 		}
 		offset = page.Offset
 	}
@@ -245,6 +250,9 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 	if up.ConsecutiveFail >= 3 {
 		e.enqueueSystem(fmt.Sprintf("UP %s 的动态采集已恢复。", up.UID))
 	}
+	if up.ConsecutiveFail > 0 {
+		e.logger.Info("Bilibili UP poll recovered", "uid", up.UID, "up_name", name, "previous_failures", up.ConsecutiveFail)
+	}
 	e.metrics.PollTotal.WithLabelValues("success").Inc()
 	e.metrics.LastPollSuccess.Set(float64(now.Unix()))
 	e.lastSuccess.Store(now.Unix())
@@ -254,7 +262,30 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 		}
 	}
 	if created > 0 {
-		e.logger.Info("new dynamics queued", "uid", up.UID, "count", created)
+		e.logger.Info("new dynamics queued", "uid", up.UID, "up_name", name, "dynamic_count", created, "channel_count", len(channelIDs))
+	} else if !up.BaselineReady {
+		e.logger.Info("Bilibili UP baseline established", "uid", up.UID, "up_name", name, "baseline_items", len(items), "duration", elapsed(started))
+	}
+	e.logger.Debug("Bilibili UP poll succeeded", "uid", up.UID, "up_name", name, "fetched_items", len(items), "queued_dynamics", created, "duration", elapsed(started))
+	return nil
+}
+
+func (e *Engine) failPoll(up model.UP, name string, started time.Time, pollErr error) error {
+	if name == "" {
+		name = up.Name
+	}
+	e.metrics.PollTotal.WithLabelValues("error").Inc()
+	if err := e.store.SetUPResult(up.UID, name, time.Now().UTC(), pollErr); err != nil {
+		return fmt.Errorf("recording failed poll for UP %s: %w", up.UID, err)
+	}
+	kind := "other"
+	var apiErr *bilibili.APIError
+	if errors.As(pollErr, &apiErr) {
+		kind = string(apiErr.Kind)
+	}
+	e.logger.Warn("Bilibili UP poll failed", "uid", up.UID, "up_name", name, "error_kind", kind, "consecutive_failures", up.ConsecutiveFail+1, "duration", elapsed(started), "err", pollErr)
+	if up.ConsecutiveFail+1 == 3 {
+		e.enqueueSystem(fmt.Sprintf("UP %s 已连续三次采集失败：%v", up.UID, pollErr))
 	}
 	return nil
 }
@@ -308,7 +339,12 @@ func (e *Engine) dispatchOnce(ctx context.Context) error {
 func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 	channel, err := e.store.Channel(delivery.ChannelID)
 	if err != nil {
-		return e.store.FailDelivery(delivery.ID, true, time.Now().UTC(), errors.New("channel no longer exists"))
+		deliveryErr := errors.New("channel no longer exists")
+		if err := e.store.FailDelivery(delivery.ID, true, time.Now().UTC(), deliveryErr); err != nil {
+			return err
+		}
+		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "err", deliveryErr)
+		return nil
 	}
 	if !channel.Enabled {
 		return nil
@@ -318,12 +354,21 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 		defer e.microsoftSendMu.Unlock()
 		channel, err = e.store.Channel(delivery.ChannelID)
 		if err != nil {
-			return e.store.FailDelivery(delivery.ID, true, time.Now().UTC(), errors.New("channel no longer exists"))
+			deliveryErr := errors.New("channel no longer exists")
+			if err := e.store.FailDelivery(delivery.ID, true, time.Now().UTC(), deliveryErr); err != nil {
+				return err
+			}
+			e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "err", deliveryErr)
+			return nil
 		}
 	}
 	sender, err := e.newSender(channel)
 	if err != nil {
-		return e.store.FailDelivery(delivery.ID, true, time.Now().UTC(), err)
+		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now().UTC(), err); storeErr != nil {
+			return storeErr
+		}
+		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "err", err)
+		return nil
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	started := time.Now()
@@ -332,7 +377,11 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 	e.metrics.DeliveryDuration.Observe(time.Since(started).Seconds())
 	if err == nil {
 		e.metrics.DeliveryTotal.WithLabelValues(string(channel.Type), "success").Inc()
-		return e.store.CompleteDelivery(delivery.ID)
+		if err := e.store.CompleteDelivery(delivery.ID); err != nil {
+			return err
+		}
+		e.logger.Info("notification delivered", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "duration", elapsed(started))
+		return nil
 	}
 	blocked := notify.IsPermanent(err)
 	result := "retry"
@@ -341,13 +390,21 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 	}
 	e.metrics.DeliveryTotal.WithLabelValues(string(channel.Type), result).Inc()
 	next := time.Now().Add(retryDelay(delivery.Attempts))
-	return e.store.FailDelivery(delivery.ID, blocked, next, err)
+	if storeErr := e.store.FailDelivery(delivery.ID, blocked, next, err); storeErr != nil {
+		return storeErr
+	}
+	e.logger.Warn("notification delivery failed", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "result", result, "next_attempt_at", next.UTC(), "duration", elapsed(started), "err", err)
+	return nil
 }
 
 func retryDelay(attempt int) time.Duration {
 	delays := []time.Duration{5 * time.Second, 30 * time.Second, 2 * time.Minute, 10 * time.Minute, time.Hour}
 	base := delays[min(attempt, len(delays)-1)]
 	return base/2 + rand.N(base/2)
+}
+
+func elapsed(started time.Time) string {
+	return time.Since(started).Round(time.Millisecond).String()
 }
 
 func (e *Engine) authLoop(ctx context.Context) error {
@@ -376,12 +433,18 @@ func (e *Engine) setAuth(valid bool) {
 	previous := e.authValid.Swap(valid)
 	if valid {
 		e.metrics.AuthState.Set(1)
+		if !previous {
+			e.logger.Info("Bilibili authentication state changed", "authenticated", true)
+		}
 		wasEverValid := e.authEverValid.Swap(true)
 		if !previous && wasEverValid {
 			e.enqueueSystem("B站登录已恢复，动态采集重新开始。")
 		}
 	} else {
 		e.metrics.AuthState.Set(0)
+		if previous {
+			e.logger.Warn("Bilibili authentication state changed", "authenticated", false)
+		}
 		if previous && e.authEverValid.Load() {
 			e.enqueueSystem("B站登录失效，请在管理控制台重新扫码登录。")
 		}
@@ -417,6 +480,7 @@ func (e *Engine) StartLogin(ctx context.Context) (LoginSession, error) {
 	e.loginMu.Lock()
 	e.login = &session
 	e.loginMu.Unlock()
+	e.logger.Info("Bilibili QR login started", "expires_at", session.ExpiresAt)
 	return session, nil
 }
 
@@ -445,7 +509,11 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 	if err != nil {
 		return LoginSession{}, err
 	}
+	previousStatus := current.Status
 	current.Status = status
+	if previousStatus != status {
+		e.logger.Info("Bilibili QR login status changed", "status", status)
+	}
 	if status == bilibili.QRSuccess {
 		e.client.SetSession(session)
 		if _, err := e.client.ValidateSession(ctx); err != nil {
@@ -456,6 +524,7 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 			return LoginSession{}, err
 		}
 		e.setAuth(true)
+		e.logger.Info("Bilibili QR login completed")
 	}
 	e.loginMu.Lock()
 	if e.login != nil && e.login.Key == id {
@@ -490,7 +559,13 @@ func (e *Engine) TestChannel(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	return sender.Send(ctx, notify.Message{Subject: "Bili Notify 测试", Text: "Bili Notify 通知渠道配置成功。", HTML: "<p>Bili Notify 通知渠道配置成功。</p>"})
+	started := time.Now()
+	if err := sender.Send(ctx, notify.Message{Subject: "Bili Notify 测试", Text: "Bili Notify 通知渠道配置成功。", HTML: "<p>Bili Notify 通知渠道配置成功。</p>"}); err != nil {
+		e.logger.Warn("notification channel test failed", "channel_id", channel.ID, "channel_type", channel.Type, "duration", elapsed(started), "err", err)
+		return err
+	}
+	e.logger.Info("notification channel test succeeded", "channel_id", channel.ID, "channel_type", channel.Type, "duration", elapsed(started))
+	return nil
 }
 
 func (e *Engine) newSender(channel model.Channel) (notify.Sender, error) {
@@ -537,6 +612,7 @@ func (e *Engine) StartMicrosoftLogin(ctx context.Context, channelID string) (Mic
 	e.microsoftLoginWG.Add(1)
 	e.microsoftLoginMu.Unlock()
 	public := publicMicrosoftLogin(session)
+	e.logger.Info("Microsoft authorization started", "channel_id", channelID, "tenant", channel.Settings["tenant"], "expires_at", session.ExpiresAt)
 	go func() {
 		defer e.microsoftLoginWG.Done()
 		e.completeMicrosoftLogin(loginCtx, session)
@@ -562,10 +638,12 @@ func (e *Engine) completeMicrosoftLogin(ctx context.Context, session *MicrosoftL
 	if err == nil {
 		session.Status = "success"
 		session.Error = ""
+		e.logger.Info("Microsoft authorization completed", "channel_id", session.ChannelID)
 		return
 	}
 	if errors.Is(err, context.Canceled) {
 		session.Status = "canceled"
+		e.logger.Info("Microsoft authorization canceled", "channel_id", session.ChannelID)
 		return
 	}
 	if !session.ExpiresAt.IsZero() && time.Now().After(session.ExpiresAt) {
@@ -574,6 +652,7 @@ func (e *Engine) completeMicrosoftLogin(ctx context.Context, session *MicrosoftL
 		session.Status = "failed"
 	}
 	session.Error = err.Error()
+	e.logger.Warn("Microsoft authorization failed", "channel_id", session.ChannelID, "status", session.Status, "err", err)
 }
 
 func (e *Engine) MicrosoftLogin(channelID string) (MicrosoftLoginSession, error) {

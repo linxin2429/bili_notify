@@ -320,14 +320,31 @@ var supportedDynamicTypes = map[string]bool{
 	"DYNAMIC_TYPE_LIVE_RCMD":     true,
 }
 
+type unixTimestamp int64
+
+func (t *unixTimestamp) UnmarshalJSON(data []byte) error {
+	value := strings.TrimSpace(string(data))
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		if err := json.Unmarshal(data, &value); err != nil {
+			return fmt.Errorf("decoding quoted Unix timestamp: %w", err)
+		}
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fmt.Errorf("parsing Unix timestamp %q: %w", value, err)
+	}
+	*t = unixTimestamp(parsed)
+	return nil
+}
+
 func parseDynamic(uid string, raw json.RawMessage) (model.Dynamic, string, error) {
 	var item struct {
 		ID      string `json:"id_str"`
 		Type    string `json:"type"`
 		Modules struct {
 			Author struct {
-				Name  string `json:"name"`
-				PubTS int64  `json:"pub_ts"`
+				Name  string        `json:"name"`
+				PubTS unixTimestamp `json:"pub_ts"`
 			} `json:"module_author"`
 			Dynamic struct {
 				Desc *struct {
@@ -357,7 +374,7 @@ func parseDynamic(uid string, raw json.RawMessage) (model.Dynamic, string, error
 		UID:         uid,
 		UPName:      item.Modules.Author.Name,
 		Type:        item.Type,
-		PublishedAt: time.Unix(item.Modules.Author.PubTS, 0).UTC(),
+		PublishedAt: time.Unix(int64(item.Modules.Author.PubTS), 0).UTC(),
 		Summary:     summary,
 		URL:         "https://t.bilibili.com/" + item.ID,
 	}, item.Modules.Author.Name, nil

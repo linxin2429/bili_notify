@@ -65,6 +65,7 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 		level.Set(slog.LevelInfo)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	logger.Info("Bili Notify starting", "version", version, "poll_interval", cfg.PollInterval.String(), "request_rate", cfg.RequestRate, "request_concurrency", cfg.RequestConcurrency, "admin_addr", cfg.AdminAddr, "observe_addr", cfg.ObserveAddr)
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,

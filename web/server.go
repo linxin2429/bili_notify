@@ -179,6 +179,7 @@ func (s *Server) index(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !s.auth.loginAllowed(r.RemoteAddr) {
+		s.logger.Warn("admin login rate limited", "remote_addr", r.RemoteAddr)
 		writeError(w, http.StatusTooManyRequests, "too many login attempts")
 		return
 	}
@@ -191,6 +192,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if !verifyPassword(s.auth.passwordHash, request.Password) {
 		s.auth.recordFailure(r.RemoteAddr)
+		s.logger.Warn("admin login failed", "remote_addr", r.RemoteAddr)
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -200,12 +202,14 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, secureCookie(sessionCookie, token, 24*60*60))
+	s.logger.Info("admin login succeeded", "remote_addr", r.RemoteAddr)
 	writeJSON(w, http.StatusOK, map[string]string{"csrf_token": csrf})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	s.auth.logout(r)
 	http.SetCookie(w, secureCookie(sessionCookie, "", -1))
+	s.logger.Info("admin logout", "remote_addr", r.RemoteAddr)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -238,6 +242,7 @@ func (s *Server) ups(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.logger.Info("UP created", "uid", up.UID, "enabled", up.Enabled)
 	writeJSON(w, http.StatusCreated, up)
 }
 
@@ -248,6 +253,7 @@ func (s *Server) up(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		s.logger.Info("UP deleted", "uid", uid)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -271,6 +277,7 @@ func (s *Server) up(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.logger.Info("UP updated", "uid", up.UID, "enabled", up.Enabled)
 	writeJSON(w, http.StatusOK, up)
 }
 
@@ -294,6 +301,7 @@ func (s *Server) channels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.logger.Info("notification channel created", "channel_id", created.ID, "channel_type", created.Type, "enabled", created.Enabled)
 	writeJSON(w, http.StatusCreated, created.Masked())
 }
 
@@ -305,6 +313,7 @@ func (s *Server) channel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.engine.CancelMicrosoftLogin(id)
+		s.logger.Info("notification channel deleted", "channel_id", id)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -339,6 +348,7 @@ func (s *Server) channel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.UnblockChannel(id)
+	s.logger.Info("notification channel updated", "channel_id", updated.ID, "channel_type", updated.Type, "enabled", updated.Enabled)
 	writeJSON(w, http.StatusOK, updated.Masked())
 }
 
