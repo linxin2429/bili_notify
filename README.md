@@ -13,6 +13,24 @@ docker compose up -d --build
 docker compose logs bili-notify
 ```
 
+或直接使用已发布镜像：
+
+```bash
+docker pull dengxinlin/bili-notify:latest
+# 钉选版本更稳妥，例如 1.2.3 / 1.2 / 1
+docker pull dengxinlin/bili-notify:1.2.3
+
+docker run -d --name bili-notify \
+  -p 8443:8443 \
+  -v bili-notify-data:/data \
+  --read-only --tmpfs /tmp:size=16m,mode=1777 \
+  --security-opt no-new-privileges \
+  --cap-drop ALL \
+  dengxinlin/bili-notify:latest
+```
+
+镜像标签由 git tag `vMAJOR.MINOR.PATCH` 发布时写入：`MAJOR.MINOR.PATCH`、`MAJOR.MINOR`、`MAJOR` 与 `latest`。push 到 `main` 只跑 CI 校验，不推送镜像。
+
 日志会输出一次性 `setup_code`。浏览器访问 `https://localhost:8443`，接受首次自签名证书警告，然后输入初始化码并设置至少 12 字节的管理员密码。初始化完成后代码立即失效。
 
 服务首次启动会在 `/data` 自动创建：

@@ -43,7 +43,10 @@ docker compose run --rm -v ./secrets/new-master-key:/run/secrets/new-master-key:
   bili-notify rekey --new-key-file /run/secrets/new-master-key
 ```
 
-CI (`.github/workflows/ci.yml`): `go test`, `go test -race`, `go vet`, `govulncheck`, `docker build`.
+CI (`.github/workflows/ci.yml`):
+- `test`: `go test` / race / vet / govulncheck + `web/ui` `npm ci && npm run lint && npm test`
+- `docker`: multi-stage image with `GOPROXY=proxy.golang.org` and `VERSION`/`COMMIT`/`BUILD_DATE` build-args; PR/main smoke `--help`; only `v*` tags push `dengxinlin/bili-notify` (`X.Y.Z`, `X.Y`, `X`, `latest`)
+- Playwright e2e is local-only. Secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
 
 Never commit material under `secrets/`, bbolt DBs, cookies, OAuth tokens, webhooks, or TLS private keys.
 
