@@ -156,7 +156,7 @@ func openWebTestStore(t *testing.T) *state.Store {
 	t.Helper()
 	v, err := vault.New(make([]byte, 32))
 	require.NoError(t, err)
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"), v)
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), v)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	return store

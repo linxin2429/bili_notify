@@ -1,7 +1,6 @@
 package state
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +9,8 @@ import (
 	"unicode"
 
 	"github.com/linxin2429/bili_notify/model"
-	_ "modernc.org/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -61,106 +61,11 @@ type CommentRecord struct {
 	Incomplete   bool      `json:"incomplete,omitempty"`
 }
 
-// ContentStore is the SQLite archive of collected dynamics and UP replies.
-type ContentStore struct {
-	db *sql.DB
-}
-
-// OpenContent opens (or creates) the content archive at path and migrates schema.
-func OpenContent(path string) (*ContentStore, error) {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("opening content database: %w", err)
-	}
-	// Single-writer; keep a small pool and enable WAL for concurrent readers.
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("configuring content database: %w", err)
-	}
-	cs := &ContentStore{db: db}
-	if err := cs.migrate(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return cs, nil
-}
-
-func (c *ContentStore) Close() error {
-	if c == nil || c.db == nil {
-		return nil
-	}
-	return c.db.Close()
-}
-
-func (c *ContentStore) migrate() error {
-	const schema = `
-CREATE TABLE IF NOT EXISTS dynamics (
-  id            TEXT PRIMARY KEY,
-  uid           TEXT NOT NULL,
-  up_name       TEXT NOT NULL,
-  type          TEXT NOT NULL,
-  published_at  INTEGER NOT NULL,
-  discovered_at INTEGER NOT NULL,
-  baseline      INTEGER NOT NULL DEFAULT 0,
-  title         TEXT NOT NULL DEFAULT '',
-  summary       TEXT NOT NULL DEFAULT '',
-  description   TEXT NOT NULL DEFAULT '',
-  url           TEXT NOT NULL DEFAULT '',
-  target_url    TEXT NOT NULL DEFAULT '',
-  badge         TEXT NOT NULL DEFAULT '',
-  search_text   TEXT NOT NULL,
-  payload_json  TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_dyn_pub ON dynamics(published_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_dyn_uid_pub ON dynamics(uid, published_at DESC, id DESC);
-
-CREATE TABLE IF NOT EXISTS comments (
-  rpid          TEXT PRIMARY KEY,
-  up_uid        TEXT NOT NULL,
-  up_name       TEXT NOT NULL,
-  content_type  TEXT NOT NULL DEFAULT '',
-  content_id    TEXT NOT NULL DEFAULT '',
-  content_title TEXT NOT NULL DEFAULT '',
-  content_url   TEXT NOT NULL DEFAULT '',
-  published_at  INTEGER NOT NULL,
-  discovered_at INTEGER NOT NULL,
-  baseline      INTEGER NOT NULL DEFAULT 0,
-  incomplete    INTEGER NOT NULL DEFAULT 0,
-  search_text   TEXT NOT NULL,
-  payload_json  TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_cmt_pub ON comments(published_at DESC, rpid DESC);
-CREATE INDEX IF NOT EXISTS idx_cmt_uid_pub ON comments(up_uid, published_at DESC, rpid DESC);
-`
-	if _, err := c.db.Exec(schema); err != nil {
-		return fmt.Errorf("migrating content schema: %w", err)
-	}
-	return nil
-}
-
-// ArchiveDynamics inserts unseen dynamics (INSERT OR IGNORE). Skips uid "system".
-func (c *ContentStore) ArchiveDynamics(dynamics []model.Dynamic, baseline bool) error {
-	if c == nil || len(dynamics) == 0 {
+func archiveDynamicsTx(tx *gorm.DB, dynamics []model.Dynamic, baseline bool) error {
+	if len(dynamics) == 0 {
 		return nil
 	}
 	now := time.Now().Unix()
-	tx, err := c.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	stmt, err := tx.Prepare(`
-INSERT OR IGNORE INTO dynamics
-  (id, uid, up_name, type, published_at, discovered_at, baseline,
-   title, summary, description, url, target_url, badge, search_text, payload_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
 	for _, d := range dynamics {
 		if d.ID == "" || d.UID == "system" {
 			continue
@@ -169,41 +74,35 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return fmt.Errorf("encoding dynamic %s: %w", d.ID, err)
 		}
-		_, err = stmt.Exec(
-			d.ID, d.UID, d.UPName, d.Type,
-			d.PublishedAt.Unix(), now, boolToInt(baseline),
-			d.Title, d.Summary, d.Description, d.URL, d.TargetURL, d.Badge,
-			dynamicSearchText(d), string(payload),
-		)
-		if err != nil {
+		row := dynamicRow{
+			ID:           d.ID,
+			UID:          d.UID,
+			UPName:       d.UPName,
+			Type:         d.Type,
+			PublishedAt:  d.PublishedAt.Unix(),
+			DiscoveredAt: now,
+			Baseline:     boolToInt(baseline),
+			Title:        d.Title,
+			Summary:      d.Summary,
+			Description:  d.Description,
+			URL:          d.URL,
+			TargetURL:    d.TargetURL,
+			Badge:        d.Badge,
+			SearchText:   dynamicSearchText(d),
+			PayloadJSON:  string(payload),
+		}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
 			return fmt.Errorf("archiving dynamic %s: %w", d.ID, err)
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
-// ArchiveComments inserts unseen UP-reply notifications (INSERT OR IGNORE).
-func (c *ContentStore) ArchiveComments(notes []model.CommentNotification, baseline bool) error {
-	if c == nil || len(notes) == 0 {
+func archiveCommentsTx(tx *gorm.DB, notes []model.CommentNotification, baseline bool) error {
+	if len(notes) == 0 {
 		return nil
 	}
 	now := time.Now().Unix()
-	tx, err := c.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	stmt, err := tx.Prepare(`
-INSERT OR IGNORE INTO comments
-  (rpid, up_uid, up_name, content_type, content_id, content_title, content_url,
-   published_at, discovered_at, baseline, incomplete, search_text, payload_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
 	for _, n := range notes {
 		if n.RPID == "" {
 			continue
@@ -212,48 +111,36 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return fmt.Errorf("encoding comment %s: %w", n.RPID, err)
 		}
-		_, err = stmt.Exec(
-			n.RPID, n.UPUID, n.UPName, n.ContentType, n.ContentID, n.ContentTitle, n.ContentURL,
-			n.PublishedAt.Unix(), now, boolToInt(baseline), boolToInt(n.Incomplete),
-			commentSearchText(n), string(payload),
-		)
-		if err != nil {
+		row := commentRow{
+			RPID:         n.RPID,
+			UPUID:        n.UPUID,
+			UPName:       n.UPName,
+			ContentType:  n.ContentType,
+			ContentID:    n.ContentID,
+			ContentTitle: n.ContentTitle,
+			ContentURL:   n.ContentURL,
+			PublishedAt:  n.PublishedAt.Unix(),
+			DiscoveredAt: now,
+			Baseline:     boolToInt(baseline),
+			Incomplete:   boolToInt(n.Incomplete),
+			SearchText:   commentSearchText(n),
+			PayloadJSON:  string(payload),
+		}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
 			return fmt.Errorf("archiving comment %s: %w", n.RPID, err)
 		}
 	}
-	return tx.Commit()
-}
-
-// DeleteUPContent removes all archived content for one UP.
-func (c *ContentStore) DeleteUPContent(uid string) error {
-	if c == nil || uid == "" {
-		return nil
-	}
-	tx, err := c.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`DELETE FROM dynamics WHERE uid = ?`, uid); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM comments WHERE up_uid = ?`, uid); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return nil
 }
 
 // QueryDynamics returns matching archived dynamics and the total count for the filter.
-func (c *ContentStore) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, error) {
-	if c == nil {
-		return nil, 0, errors.New("content store is closed")
-	}
+func (s *Store) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, error) {
 	limit, offset := normalizePage(q.Limit, q.Offset)
 	where, args := buildWhere(q, "uid")
 
-	var total int
+	var total int64
 	countSQL := `SELECT COUNT(*) FROM dynamics` + where
-	if err := c.db.QueryRow(countSQL, args...).Scan(&total); err != nil {
+	if err := s.db.Raw(countSQL, args...).Scan(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -261,42 +148,39 @@ func (c *ContentStore) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, erro
 		title, summary, description, url, target_url, badge
 		FROM dynamics` + where + ` ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?`
 	listArgs := append(append([]any{}, args...), limit, offset)
-	rows, err := c.db.Query(listSQL, listArgs...)
-	if err != nil {
+	var rows []dynamicRow
+	if err := s.db.Raw(listSQL, listArgs...).Scan(&rows).Error; err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
-
-	items := make([]DynamicRecord, 0, limit)
-	for rows.Next() {
-		var r DynamicRecord
-		var pub, disc int64
-		var base int
-		if err := rows.Scan(
-			&r.ID, &r.UID, &r.UPName, &r.Type, &pub, &disc, &base,
-			&r.Title, &r.Summary, &r.Description, &r.URL, &r.TargetURL, &r.Badge,
-		); err != nil {
-			return nil, 0, err
-		}
-		r.PublishedAt = time.Unix(pub, 0)
-		r.DiscoveredAt = time.Unix(disc, 0)
-		r.Baseline = base != 0
-		items = append(items, r)
+	items := make([]DynamicRecord, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, DynamicRecord{
+			ID:           r.ID,
+			UID:          r.UID,
+			UPName:       r.UPName,
+			Type:         r.Type,
+			PublishedAt:  time.Unix(r.PublishedAt, 0),
+			DiscoveredAt: time.Unix(r.DiscoveredAt, 0),
+			Baseline:     r.Baseline != 0,
+			Title:        r.Title,
+			Summary:      r.Summary,
+			Description:  r.Description,
+			URL:          r.URL,
+			TargetURL:    r.TargetURL,
+			Badge:        r.Badge,
+		})
 	}
-	return items, total, rows.Err()
+	return items, int(total), nil
 }
 
 // QueryComments returns matching archived comments and the total count for the filter.
-func (c *ContentStore) QueryComments(q ContentQuery) ([]CommentRecord, int, error) {
-	if c == nil {
-		return nil, 0, errors.New("content store is closed")
-	}
+func (s *Store) QueryComments(q ContentQuery) ([]CommentRecord, int, error) {
 	limit, offset := normalizePage(q.Limit, q.Offset)
 	where, args := buildWhere(q, "up_uid")
 
-	var total int
+	var total int64
 	countSQL := `SELECT COUNT(*) FROM comments` + where
-	if err := c.db.QueryRow(countSQL, args...).Scan(&total); err != nil {
+	if err := s.db.Raw(countSQL, args...).Scan(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -304,61 +188,58 @@ func (c *ContentStore) QueryComments(q ContentQuery) ([]CommentRecord, int, erro
 		published_at, discovered_at, baseline, incomplete
 		FROM comments` + where + ` ORDER BY published_at DESC, rpid DESC LIMIT ? OFFSET ?`
 	listArgs := append(append([]any{}, args...), limit, offset)
-	rows, err := c.db.Query(listSQL, listArgs...)
-	if err != nil {
+	var rows []commentRow
+	if err := s.db.Raw(listSQL, listArgs...).Scan(&rows).Error; err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
-
-	items := make([]CommentRecord, 0, limit)
-	for rows.Next() {
-		var r CommentRecord
-		var pub, disc int64
-		var base, incomplete int
-		if err := rows.Scan(
-			&r.RPID, &r.UPUID, &r.UPName, &r.ContentType, &r.ContentID, &r.ContentTitle, &r.ContentURL,
-			&pub, &disc, &base, &incomplete,
-		); err != nil {
-			return nil, 0, err
-		}
-		r.PublishedAt = time.Unix(pub, 0)
-		r.DiscoveredAt = time.Unix(disc, 0)
-		r.Baseline = base != 0
-		r.Incomplete = incomplete != 0
-		items = append(items, r)
+	items := make([]CommentRecord, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, CommentRecord{
+			RPID:         r.RPID,
+			UPUID:        r.UPUID,
+			UPName:       r.UPName,
+			ContentType:  r.ContentType,
+			ContentID:    r.ContentID,
+			ContentTitle: r.ContentTitle,
+			ContentURL:   r.ContentURL,
+			PublishedAt:  time.Unix(r.PublishedAt, 0),
+			DiscoveredAt: time.Unix(r.DiscoveredAt, 0),
+			Baseline:     r.Baseline != 0,
+			Incomplete:   r.Incomplete != 0,
+		})
 	}
-	return items, total, rows.Err()
+	return items, int(total), nil
 }
 
 // GetDynamic returns the full archived dynamic payload by id.
-func (c *ContentStore) GetDynamic(id string) (model.Dynamic, error) {
-	var raw string
-	err := c.db.QueryRow(`SELECT payload_json FROM dynamics WHERE id = ?`, id).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
+func (s *Store) GetDynamic(id string) (model.Dynamic, error) {
+	var row dynamicRow
+	err := s.db.Select("payload_json").Where("id = ?", id).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return model.Dynamic{}, ErrNotFound
 	}
 	if err != nil {
 		return model.Dynamic{}, err
 	}
 	var d model.Dynamic
-	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+	if err := json.Unmarshal([]byte(row.PayloadJSON), &d); err != nil {
 		return model.Dynamic{}, err
 	}
 	return d, nil
 }
 
 // GetComment returns the full archived comment notification by rpid.
-func (c *ContentStore) GetComment(rpid string) (model.CommentNotification, error) {
-	var raw string
-	err := c.db.QueryRow(`SELECT payload_json FROM comments WHERE rpid = ?`, rpid).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
+func (s *Store) GetComment(rpid string) (model.CommentNotification, error) {
+	var row commentRow
+	err := s.db.Select("payload_json").Where("rpid = ?", rpid).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return model.CommentNotification{}, ErrNotFound
 	}
 	if err != nil {
 		return model.CommentNotification{}, err
 	}
 	var n model.CommentNotification
-	if err := json.Unmarshal([]byte(raw), &n); err != nil {
+	if err := json.Unmarshal([]byte(row.PayloadJSON), &n); err != nil {
 		return model.CommentNotification{}, err
 	}
 	return n, nil
@@ -400,13 +281,6 @@ func normalizePage(limit, offset int) (int, int) {
 		offset = 0
 	}
 	return limit, offset
-}
-
-func boolToInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
 }
 
 func dynamicSearchText(d model.Dynamic) string {

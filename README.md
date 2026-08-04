@@ -1,6 +1,6 @@
 # Bili Notify
 
-Bili Notify 是一个单实例 Go 服务，通过登录后的 B 站网页接口轮询 UP 主动态，并可靠投递到 SMTP 邮件、Microsoft Outlook/Microsoft 365、钉钉、飞书和企业微信群机器人。React 管理台与 Go 后端通过同源 WebSocket 实时通信，状态和待投递通知持久化到 bbolt。
+Bili Notify 是一个单实例 Go 服务，通过登录后的 B 站网页接口轮询 UP 主动态，并可靠投递到 SMTP 邮件、Microsoft Outlook/Microsoft 365、钉钉、飞书和企业微信群机器人。React 管理台与 Go 后端通过同源 WebSocket 实时通信，状态、待投递通知与内容档案持久化到单一 SQLite 数据库。
 
 > B 站未提供面向任意公开 UP 主动态的稳定推送接口。本项目使用非官方网页接口，可能因接口变化、风控或平台规则而不可用；它不会绕过验证码、限流或风控。请仅在你有权使用的场景中部署。
 
@@ -38,10 +38,11 @@ docker run -d --name bili-notify \
 
 服务首次启动会在 `/data` 自动创建：
 
-- `state.db`：运行状态数据库（bbolt）；
-- `content.db`：已采集动态与 UP 回复内容库（SQLite）；
+- `data.db`：运行状态、Outbox 与已采集内容档案（SQLite，启动时自动执行版本化迁移）；
 - `master.key`：随机 AES-256 主密钥；
 - `tls.pem`：十年有效的本地自签名 ECDSA 证书和私钥。
+
+若数据目录中仍存在旧版 `state.db` 或 `content.db`，服务会拒绝启动（不自动导入）；请备份后换用全新数据目录。
 
 这些文件只保存在 Docker 数据卷中。主密钥与数据库同卷可以实现无人值守重启，但不能防护整个数据卷同时被窃取的情况。生产环境需要可信证书时，可在服务前部署终止 TLS 的反向代理；应用自身始终使用 HTTPS/WSS。
 

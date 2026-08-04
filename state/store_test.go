@@ -14,7 +14,7 @@ import (
 
 func TestBaselineAndDurableOutbox(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "state.db")
+	path := filepath.Join(t.TempDir(), "data.db")
 	v := mustVault(t, 1)
 	store, err := Open(path, v)
 	require.NoError(t, err)
@@ -65,7 +65,7 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 
 func TestEncryptedRecords(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "state.db")
+	path := filepath.Join(t.TempDir(), "data.db")
 	oldVault := mustVault(t, 2)
 	store, err := Open(path, oldVault)
 	require.NoError(t, err)
@@ -86,7 +86,7 @@ func TestEncryptedRecords(t *testing.T) {
 
 func TestMissingSession(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 4))
+	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 4))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	_, err = store.Session()
@@ -95,7 +95,7 @@ func TestMissingSession(t *testing.T) {
 
 func TestAdministratorPasswordInitializationIsAtomic(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 9))
+	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 9))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
@@ -111,7 +111,7 @@ func TestAdministratorPasswordInitializationIsAtomic(t *testing.T) {
 
 func TestUpdateChannelSettingsMergesEncryptedRecord(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 5))
+	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 5))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	channel, err := store.PutChannel(model.Channel{
@@ -133,7 +133,7 @@ func TestUpdateChannelSettingsMergesEncryptedRecord(t *testing.T) {
 
 func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 6))
+	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 6))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
@@ -163,7 +163,7 @@ func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			// Parallel subtests share store; use a dedicated store for write isolation.
-			local, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 7))
+			local, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 7))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = local.Close() })
 
@@ -192,7 +192,7 @@ func mustVault(t *testing.T, fill byte) *vault.Vault {
 
 func TestCommentTargetsAndOutbox(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 8))
+	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 8))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 

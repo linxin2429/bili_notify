@@ -71,7 +71,7 @@ func TestLoadOrCreateMasterKey(t *testing.T) {
 func TestDatabaseWithoutKeyRejected(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, StateFileName), []byte("state"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, DataFileName), []byte("state"), 0o600))
 	_, err := LoadOrCreateMasterKey(dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "master key")

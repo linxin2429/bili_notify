@@ -2,147 +2,135 @@ package state
 
 import (
 	"cmp"
+	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
+	_ "github.com/glebarez/go-sqlite" // pure-Go SQLite driver name "sqlite"
+	"github.com/glebarez/sqlite"
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/vault"
-	bolt "go.etcd.io/bbolt"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
 var (
-	bucketMeta           = []byte("meta")
-	bucketUPs            = []byte("ups")
-	bucketChannels       = []byte("channels")
-	bucketAuth           = []byte("auth")
-	bucketSeen           = []byte("seen")
-	bucketSeenComments   = []byte("seen-comments")
-	bucketCommentTargets = []byte("comment-targets")
-	bucketDeliveries     = []byte("deliveries")
-	keySession           = []byte("session")
-	keyAdminHash         = []byte("admin_password_hash")
-	keyRuntimeSettings   = []byte("runtime_settings")
-	ErrNotFound          = errors.New("record not found")
-	ErrInitialized       = errors.New("administrator is already initialized")
+	ErrNotFound    = errors.New("record not found")
+	ErrInitialized = errors.New("administrator is already initialized")
 )
 
+// Store is the single SQLite persistence layer for config, secrets, outbox, and content archive.
 type Store struct {
-	db      *bolt.DB
-	vault   *vault.Vault
-	content *ContentStore
+	db    *gorm.DB
+	sql   *sql.DB
+	vault *vault.Vault
+	path  string
 }
 
-// Open opens the bbolt state database. Use OpenWithContent when the content archive is required.
+// Open opens (or creates) the SQLite database at path, runs migrations, and returns a Store.
 func Open(path string, v *vault.Vault) (*Store, error) {
-	return open(path, "", v)
-}
-
-// OpenWithContent opens bbolt state and the SQLite content archive.
-func OpenWithContent(statePath, contentPath string, v *vault.Vault) (*Store, error) {
-	return open(statePath, contentPath, v)
-}
-
-func open(statePath, contentPath string, v *vault.Vault) (*Store, error) {
-	db, err := bolt.Open(statePath, 0o600, &bolt.Options{Timeout: 2 * time.Second})
-	if err != nil {
-		return nil, fmt.Errorf("opening state database: %w", err)
+	if v == nil {
+		return nil, errors.New("vault is required")
 	}
-	s := &Store{db: db, vault: v}
-	if err := s.init(); err != nil {
-		_ = db.Close()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("creating database directory: %w", err)
+	}
+	sqlDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	if _, err := sqlDB.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("configuring database: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("securing database file: %w", err)
+	}
+	if err := runMigrations(context.Background(), sqlDB); err != nil {
+		_ = sqlDB.Close()
 		return nil, err
 	}
-	if contentPath != "" {
-		cs, err := OpenContent(contentPath)
-		if err != nil {
-			_ = db.Close()
-			return nil, err
-		}
-		s.content = cs
-	}
-	return s, nil
-}
-
-func (s *Store) init() error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketMeta, bucketUPs, bucketChannels, bucketAuth, bucketSeen, bucketSeenComments, bucketCommentTargets, bucketDeliveries} {
-			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
-				return fmt.Errorf("creating bucket %q: %w", name, err)
-			}
-		}
-		meta := tx.Bucket(bucketMeta)
-		version := meta.Get([]byte("schema_version"))
-		if version == nil {
-			return meta.Put([]byte("schema_version"), []byte("2"))
-		}
-		if string(version) != "2" {
-			return fmt.Errorf("unsupported database schema %q", version)
-		}
-		return nil
+	gdb, err := gorm.Open(sqlite.Dialector{
+		DriverName: "sqlite",
+		DSN:        path,
+		Conn:       sqlDB,
+	}, &gorm.Config{
+		Logger:                                   logger.Default.LogMode(logger.Silent),
+		DisableForeignKeyConstraintWhenMigrating: true,
 	})
+	if err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("opening gorm: %w", err)
+	}
+	return &Store{db: gdb, sql: sqlDB, vault: v, path: path}, nil
 }
 
 func (s *Store) Close() error {
-	var errs []error
-	if s.content != nil {
-		errs = append(errs, s.content.Close())
+	if s == nil || s.sql == nil {
+		return nil
 	}
-	errs = append(errs, s.db.Close())
-	return errors.Join(errs...)
+	return s.sql.Close()
 }
 
-// Content returns the content archive, or nil when opened without one (tests).
-func (s *Store) Content() *ContentStore { return s.content }
-
 func (s *Store) AdminPasswordHash() (string, error) {
-	var hash string
-	err := s.db.View(func(tx *bolt.Tx) error {
-		value := tx.Bucket(bucketMeta).Get(keyAdminHash)
-		if value == nil {
-			return ErrNotFound
-		}
-		hash = string(value)
-		return nil
-	})
-	return hash, err
+	var row metaRow
+	err := s.db.Where("key = ?", metaKeyAdminHash).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return row.Value, nil
 }
 
 func (s *Store) InitializeAdminPasswordHash(hash string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(bucketMeta)
-		if bucket.Get(keyAdminHash) != nil {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&metaRow{}).Where("key = ?", metaKeyAdminHash).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
 			return ErrInitialized
 		}
-		return bucket.Put(keyAdminHash, []byte(hash))
+		return tx.Create(&metaRow{Key: metaKeyAdminHash, Value: hash}).Error
 	})
 }
 
 func (s *Store) SetAdminPasswordHash(hash string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(bucketMeta)
-		if bucket.Get(keyAdminHash) == nil {
-			return ErrNotFound
-		}
-		return bucket.Put(keyAdminHash, []byte(hash))
-	})
+	res := s.db.Model(&metaRow{}).Where("key = ?", metaKeyAdminHash).Update("value", hash)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) RuntimeSettings() (model.RuntimeSettings, error) {
-	var settings model.RuntimeSettings
-	err := s.db.View(func(tx *bolt.Tx) error {
-		raw := tx.Bucket(bucketMeta).Get(keyRuntimeSettings)
-		if raw == nil {
-			return ErrNotFound
-		}
-		return readJSON(raw, &settings)
-	})
+	var row metaRow
+	err := s.db.Where("key = ?", metaKeyRuntimeSettings).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.RuntimeSettings{}, ErrNotFound
+	}
 	if err != nil {
 		return model.RuntimeSettings{}, err
+	}
+	var settings model.RuntimeSettings
+	if err := json.Unmarshal([]byte(row.Value), &settings); err != nil {
+		return model.RuntimeSettings{}, fmt.Errorf("decoding runtime settings: %w", err)
 	}
 	return settings.WithCommentDefaults(), nil
 }
@@ -152,140 +140,99 @@ func (s *Store) PutRuntimeSettings(settings model.RuntimeSettings) error {
 	if err := settings.Validate(); err != nil {
 		return err
 	}
-	return s.db.Update(func(tx *bolt.Tx) error {
-		return putJSON(tx.Bucket(bucketMeta), keyRuntimeSettings, settings)
-	})
-}
-
-func encryptedAAD(bucket, key []byte) []byte {
-	aad := make([]byte, 0, len(bucket)+1+len(key))
-	aad = append(aad, bucket...)
-	aad = append(aad, 0)
-	return append(aad, key...)
-}
-
-func (s *Store) putEncrypted(b *bolt.Bucket, bucket, key []byte, value any) error {
-	raw, err := json.Marshal(value)
+	raw, err := json.Marshal(settings)
 	if err != nil {
-		return fmt.Errorf("encoding encrypted record: %w", err)
+		return fmt.Errorf("encoding runtime settings: %w", err)
 	}
-	sealed, err := s.vault.Seal(raw, encryptedAAD(bucket, key))
-	if err != nil {
-		return err
-	}
-	return b.Put(key, sealed)
-}
-
-func (s *Store) getEncrypted(b *bolt.Bucket, bucket, key []byte, dst any) error {
-	sealed := b.Get(key)
-	if sealed == nil {
-		return ErrNotFound
-	}
-	raw, err := s.vault.Open(sealed, encryptedAAD(bucket, key))
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(raw, dst); err != nil {
-		return fmt.Errorf("decoding encrypted record: %w", err)
-	}
-	return nil
-}
-
-func putJSON(b *bolt.Bucket, key []byte, value any) error {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("encoding record: %w", err)
-	}
-	return b.Put(key, raw)
-}
-
-func readJSON(raw []byte, dst any) error {
-	if raw == nil {
-		return ErrNotFound
-	}
-	if err := json.Unmarshal(raw, dst); err != nil {
-		return fmt.Errorf("decoding record: %w", err)
-	}
-	return nil
+	return s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value"}),
+	}).Create(&metaRow{Key: metaKeyRuntimeSettings, Value: string(raw)}).Error
 }
 
 func (s *Store) ListUPs() ([]model.UP, error) {
-	ups := make([]model.UP, 0)
-	err := s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketUPs).ForEach(func(_, raw []byte) error {
-			var up model.UP
-			if err := readJSON(raw, &up); err != nil {
-				return err
-			}
-			ups = append(ups, up)
-			return nil
-		})
-	})
+	var rows []upRow
+	if err := s.db.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	ups := make([]model.UP, 0, len(rows))
+	for _, row := range rows {
+		ups = append(ups, row.toModel())
+	}
 	slices.SortFunc(ups, func(a, b model.UP) int { return a.UIDCompare(b) })
-	return ups, err
+	return ups, nil
 }
 
 func (s *Store) UP(uid string) (model.UP, error) {
-	var up model.UP
-	err := s.db.View(func(tx *bolt.Tx) error { return readJSON(tx.Bucket(bucketUPs).Get([]byte(uid)), &up) })
-	return up, err
+	var row upRow
+	err := s.db.Where("uid = ?", uid).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.UP{}, ErrNotFound
+	}
+	if err != nil {
+		return model.UP{}, err
+	}
+	return row.toModel(), nil
 }
 
 func (s *Store) PutUP(up model.UP) error {
 	if err := up.Validate(); err != nil {
 		return err
 	}
-	return s.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(bucketUPs)
-		if bucket.Get([]byte(up.UID)) == nil {
-			stats := bucket.Stats()
-			if stats.KeyN >= 100 {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&upRow{}).Where("uid = ?", up.UID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			var total int64
+			if err := tx.Model(&upRow{}).Count(&total).Error; err != nil {
+				return err
+			}
+			if total >= 100 {
 				return errors.New("at most 100 UPs can be configured")
 			}
 		}
-		return putJSON(bucket, []byte(up.UID), up)
+		row := upFromModel(up)
+		return tx.Save(&row).Error
 	})
 }
 
 func (s *Store) DeleteUP(uid string) error {
-	if err := s.db.Update(func(tx *bolt.Tx) error {
-		if err := tx.Bucket(bucketUPs).Delete([]byte(uid)); err != nil {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("uid = ?", uid).Delete(&upRow{}).Error; err != nil {
 			return err
 		}
-		if err := deleteBucketIfExists(tx.Bucket(bucketSeen), []byte(uid)); err != nil {
+		if err := tx.Where("uid = ?", uid).Delete(&seenDynamicRow{}).Error; err != nil {
 			return err
 		}
-		if err := deleteBucketIfExists(tx.Bucket(bucketSeenComments), []byte(uid)); err != nil {
+		if err := tx.Where("uid = ?", uid).Delete(&seenCommentRow{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Bucket(bucketCommentTargets).Delete([]byte(uid)); err != nil {
+		if err := tx.Where("uid = ?", uid).Delete(&commentTargetRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("uid = ?", uid).Delete(&dynamicRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("up_uid = ?", uid).Delete(&commentRow{}).Error; err != nil {
 			return err
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	return s.content.DeleteUPContent(uid)
-}
-
-func deleteBucketIfExists(parent *bolt.Bucket, key []byte) error {
-	if parent == nil {
-		return nil
-	}
-	err := parent.DeleteBucket(key)
-	if errors.Is(err, bolt.ErrBucketNotFound) {
-		return nil
-	}
-	return err
+	})
 }
 
 func (s *Store) SetUPResult(uid, name string, at time.Time, pollErr error) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketUPs)
-		var up model.UP
-		if err := readJSON(b.Get([]byte(uid)), &up); err != nil {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var row upRow
+		err := tx.Where("uid = ?", uid).Take(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		if err != nil {
 			return err
 		}
+		up := row.toModel()
 		up.LastPollAt = at
 		if name != "" {
 			up.Name = name
@@ -298,33 +245,42 @@ func (s *Store) SetUPResult(uid, name string, at time.Time, pollErr error) error
 			up.LastError = pollErr.Error()
 			up.ConsecutiveFail++
 		}
-		return putJSON(b, []byte(uid), up)
+		row = upFromModel(up)
+		return tx.Save(&row).Error
 	})
 }
 
 func (s *Store) ListChannels() ([]model.Channel, error) {
-	channels := make([]model.Channel, 0)
-	err := s.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketChannels)
-		return b.ForEach(func(k, _ []byte) error {
-			var ch model.Channel
-			if err := s.getEncrypted(b, bucketChannels, k, &ch); err != nil {
-				return err
-			}
-			channels = append(channels, ch)
-			return nil
-		})
-	})
+	var rows []channelRow
+	if err := s.db.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	channels := make([]model.Channel, 0, len(rows))
+	for _, row := range rows {
+		var ch model.Channel
+		if err := openJSON(s.vault, tableChannels, row.ID, row.Sealed, &ch); err != nil {
+			return nil, err
+		}
+		channels = append(channels, ch)
+	}
 	slices.SortFunc(channels, func(a, b model.Channel) int { return a.NameCompare(b) })
-	return channels, err
+	return channels, nil
 }
 
 func (s *Store) Channel(id string) (model.Channel, error) {
+	var row channelRow
+	err := s.db.Where("id = ?", id).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.Channel{}, ErrNotFound
+	}
+	if err != nil {
+		return model.Channel{}, err
+	}
 	var ch model.Channel
-	err := s.db.View(func(tx *bolt.Tx) error {
-		return s.getEncrypted(tx.Bucket(bucketChannels), bucketChannels, []byte(id), &ch)
-	})
-	return ch, err
+	if err := openJSON(s.vault, tableChannels, row.ID, row.Sealed, &ch); err != nil {
+		return model.Channel{}, err
+	}
+	return ch, nil
 }
 
 func (s *Store) PutChannel(ch model.Channel) (model.Channel, error) {
@@ -341,17 +297,27 @@ func (s *Store) PutChannel(ch model.Channel) (model.Channel, error) {
 		ch.CreatedAt = now
 	}
 	ch.UpdatedAt = now
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		return s.putEncrypted(tx.Bucket(bucketChannels), bucketChannels, []byte(ch.ID), ch)
-	})
-	return ch, err
+	sealed, err := sealJSON(s.vault, tableChannels, ch.ID, ch)
+	if err != nil {
+		return model.Channel{}, err
+	}
+	if err := s.db.Save(&channelRow{ID: ch.ID, Sealed: sealed}).Error; err != nil {
+		return model.Channel{}, err
+	}
+	return ch, nil
 }
 
 func (s *Store) UpdateChannelSettings(id string, settings map[string]string) (model.Channel, error) {
 	var channel model.Channel
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(bucketChannels)
-		if err := s.getEncrypted(bucket, bucketChannels, []byte(id), &channel); err != nil {
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var row channelRow
+		if err := tx.Where("id = ?", id).Take(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if err := openJSON(s.vault, tableChannels, row.ID, row.Sealed, &channel); err != nil {
 			return err
 		}
 		if channel.Settings == nil {
@@ -364,78 +330,91 @@ func (s *Store) UpdateChannelSettings(id string, settings map[string]string) (mo
 		if err := channel.Validate(); err != nil {
 			return err
 		}
-		return s.putEncrypted(bucket, bucketChannels, []byte(id), channel)
+		sealed, err := sealJSON(s.vault, tableChannels, channel.ID, channel)
+		if err != nil {
+			return err
+		}
+		return tx.Save(&channelRow{ID: channel.ID, Sealed: sealed}).Error
 	})
 	return channel, err
 }
 
 func (s *Store) DeleteChannel(id string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketDeliveries)
-		if err := b.ForEach(func(_, raw []byte) error {
-			var d model.Delivery
-			if err := readJSON(raw, &d); err != nil {
-				return err
-			}
-			if d.ChannelID == id {
-				return errors.New("channel has pending deliveries")
-			}
-			return nil
-		}); err != nil {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&deliveryRow{}).Where("channel_id = ?", id).Count(&count).Error; err != nil {
 			return err
 		}
-		return tx.Bucket(bucketChannels).Delete([]byte(id))
+		if count > 0 {
+			return errors.New("channel has pending deliveries")
+		}
+		res := tx.Where("id = ?", id).Delete(&channelRow{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
 	})
 }
 
 func (s *Store) SaveSession(session model.BiliSession) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		return s.putEncrypted(tx.Bucket(bucketAuth), bucketAuth, keySession, session)
-	})
+	sealed, err := sealJSON(s.vault, tableAuthSession, authSessionID, session)
+	if err != nil {
+		return err
+	}
+	return s.db.Save(&authSessionRow{ID: authSessionID, Sealed: sealed}).Error
 }
 
 func (s *Store) Session() (model.BiliSession, error) {
+	var row authSessionRow
+	err := s.db.Where("id = ?", authSessionID).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.BiliSession{}, ErrNotFound
+	}
+	if err != nil {
+		return model.BiliSession{}, err
+	}
 	var session model.BiliSession
-	err := s.db.View(func(tx *bolt.Tx) error {
-		return s.getEncrypted(tx.Bucket(bucketAuth), bucketAuth, keySession, &session)
-	})
-	return session, err
+	if err := openJSON(s.vault, tableAuthSession, authSessionID, row.Sealed, &session); err != nil {
+		return model.BiliSession{}, err
+	}
+	return session, nil
 }
 
 func (s *Store) ClearSession() error {
-	return s.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(bucketAuth).Delete(keySession) })
+	return s.db.Where("id = ?", authSessionID).Delete(&authSessionRow{}).Error
 }
 
 func (s *Store) Seen(uid, dynamicID string) (bool, error) {
-	var seen bool
-	err := s.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketSeen).Bucket([]byte(uid))
-		seen = b != nil && b.Get([]byte(dynamicID)) != nil
-		return nil
-	})
-	return seen, err
+	var count int64
+	err := s.db.Model(&seenDynamicRow{}).Where("uid = ? AND dynamic_id = ?", uid, dynamicID).Count(&count).Error
+	return count > 0, err
 }
 
-// RecordDynamics archives full content, then atomically marks unseen dynamics and creates deliveries.
-// Archive runs before the bbolt transaction so a failed seen-write can be retried without losing content.
+// RecordDynamics archives full content and atomically marks unseen dynamics and creates deliveries.
 func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs []string, baseline bool) (int, error) {
-	if err := s.content.ArchiveDynamics(dynamics, baseline); err != nil {
-		return 0, err
-	}
 	created := 0
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		seenRoot := tx.Bucket(bucketSeen)
-		seen, err := seenRoot.CreateBucketIfNotExists([]byte(uid))
-		if err != nil {
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := archiveDynamicsTx(tx, dynamics, baseline); err != nil {
 			return err
 		}
-		deliveries := tx.Bucket(bucketDeliveries)
+		now := time.Now()
 		for _, dynamic := range dynamics {
-			if seen.Get([]byte(dynamic.ID)) != nil {
+			if dynamic.ID == "" {
 				continue
 			}
-			if err := seen.Put([]byte(dynamic.ID), []byte(dynamic.PublishedAt.Format(time.RFC3339Nano))); err != nil {
-				return err
+			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seenDynamicRow{
+				UID:       uid,
+				DynamicID: dynamic.ID,
+				SeenAt:    dynamic.PublishedAt.Unix(),
+			})
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				continue
 			}
 			if baseline {
 				continue
@@ -447,23 +426,27 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 					Dynamic:   dynamic,
 					ChannelID: channelID,
 					State:     model.DeliveryPending,
-					NextAt:    time.Now(),
-					CreatedAt: time.Now(),
+					NextAt:    now,
+					CreatedAt: now,
 				}
-				if err := putJSON(deliveries, []byte(d.ID), d); err != nil {
+				if err := putDeliveryTx(tx, d); err != nil {
 					return err
 				}
 			}
 			created++
 		}
 		if baseline {
-			ups := tx.Bucket(bucketUPs)
-			var up model.UP
-			if err := readJSON(ups.Get([]byte(uid)), &up); err != nil {
+			var row upRow
+			if err := tx.Where("uid = ?", uid).Take(&row).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrNotFound
+				}
 				return err
 			}
+			up := row.toModel()
 			up.BaselineReady = true
-			return putJSON(ups, []byte(uid), up)
+			updated := upFromModel(up)
+			return tx.Save(&updated).Error
 		}
 		return nil
 	})
@@ -471,23 +454,20 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 }
 
 // UpsertCommentTargets merges discovered commentable contents for one UP and keeps the newest n.
-// Existing BaselineReady / Closed / LastError for the same target key are preserved.
 func (s *Store) UpsertCommentTargets(uid string, discovered []model.CommentTarget, n int) ([]model.CommentTarget, error) {
 	if n < 1 {
 		return nil, fmt.Errorf("comment track n must be positive")
 	}
 	var kept []model.CommentTarget
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(bucketCommentTargets)
-		existing := make([]model.CommentTarget, 0)
-		if raw := bucket.Get([]byte(uid)); raw != nil {
-			if err := readJSON(raw, &existing); err != nil {
-				return err
-			}
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var rows []commentTargetRow
+		if err := tx.Where("uid = ?", uid).Find(&rows).Error; err != nil {
+			return err
 		}
-		byKey := make(map[string]model.CommentTarget, len(existing)+len(discovered))
-		for _, target := range existing {
-			byKey[target.Key()] = target
+		byKey := make(map[string]model.CommentTarget, len(rows)+len(discovered))
+		for _, row := range rows {
+			t := row.toModel()
+			byKey[t.Key()] = t
 		}
 		for _, target := range discovered {
 			if target.CommentType <= 0 || target.CommentOID == "" {
@@ -500,7 +480,6 @@ func (s *Store) UpsertCommentTargets(uid string, discovered []model.CommentTarge
 				target.Closed = prev.Closed
 				target.LastPollAt = prev.LastPollAt
 				target.LastError = prev.LastError
-				// Preserve closed state unless rediscovered with same coords.
 			}
 			byKey[key] = target
 		}
@@ -518,103 +497,103 @@ func (s *Store) UpsertCommentTargets(uid string, discovered []model.CommentTarge
 			merged = merged[:n]
 		}
 		kept = merged
-		return putJSON(bucket, []byte(uid), merged)
+		if err := tx.Where("uid = ?", uid).Delete(&commentTargetRow{}).Error; err != nil {
+			return err
+		}
+		for _, target := range kept {
+			row := commentTargetFromModel(target)
+			if err := tx.Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	return kept, err
 }
 
 func (s *Store) ListCommentTargets(uid string) ([]model.CommentTarget, error) {
-	var targets []model.CommentTarget
-	err := s.db.View(func(tx *bolt.Tx) error {
-		raw := tx.Bucket(bucketCommentTargets).Get([]byte(uid))
-		if raw == nil {
-			targets = []model.CommentTarget{}
-			return nil
-		}
-		return readJSON(raw, &targets)
-	})
-	return targets, err
+	var rows []commentTargetRow
+	if err := s.db.Where("uid = ?", uid).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	targets := make([]model.CommentTarget, 0, len(rows))
+	for _, row := range rows {
+		targets = append(targets, row.toModel())
+	}
+	return targets, nil
 }
 
 func (s *Store) ListAllCommentTargets() ([]model.CommentTarget, error) {
-	targets := make([]model.CommentTarget, 0)
-	err := s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketCommentTargets).ForEach(func(_, raw []byte) error {
-			var list []model.CommentTarget
-			if err := readJSON(raw, &list); err != nil {
-				return err
-			}
-			targets = append(targets, list...)
-			return nil
-		})
-	})
-	return targets, err
+	var rows []commentTargetRow
+	if err := s.db.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	targets := make([]model.CommentTarget, 0, len(rows))
+	for _, row := range rows {
+		targets = append(targets, row.toModel())
+	}
+	return targets, nil
 }
 
 func (s *Store) PutCommentTargets(uid string, targets []model.CommentTarget) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		return putJSON(tx.Bucket(bucketCommentTargets), []byte(uid), targets)
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("uid = ?", uid).Delete(&commentTargetRow{}).Error; err != nil {
+			return err
+		}
+		for _, target := range targets {
+			target.UID = uid
+			row := commentTargetFromModel(target)
+			if err := tx.Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
 func (s *Store) UpdateCommentTarget(target model.CommentTarget) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(bucketCommentTargets)
-		var list []model.CommentTarget
-		raw := bucket.Get([]byte(target.UID))
-		if raw != nil {
-			if err := readJSON(raw, &list); err != nil {
-				return err
-			}
-		}
-		found := false
-		for i, item := range list {
-			if item.Key() == target.Key() {
-				list[i] = target
-				found = true
-				break
-			}
-		}
-		if !found {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var row commentTargetRow
+		err := tx.Where("uid = ? AND comment_type = ? AND comment_oid = ?", target.UID, target.CommentType, target.CommentOID).Take(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
-		return putJSON(bucket, []byte(target.UID), list)
+		if err != nil {
+			return err
+		}
+		updated := commentTargetFromModel(target)
+		return tx.Save(&updated).Error
 	})
 }
 
 func (s *Store) CommentSeen(uid, rpid string) (bool, error) {
-	var seen bool
-	err := s.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketSeenComments).Bucket([]byte(uid))
-		seen = b != nil && b.Get([]byte(rpid)) != nil
-		return nil
-	})
-	return seen, err
+	var count int64
+	err := s.db.Model(&seenCommentRow{}).Where("uid = ? AND rpid = ?", uid, rpid).Count(&count).Error
+	return count > 0, err
 }
 
-// RecordCommentNotifications archives full threads, then marks UP reply rpids seen and enqueues deliveries.
-// baseline=true writes seen only (no deliveries) and marks the target baseline ready.
+// RecordCommentNotifications archives full threads, marks UP reply rpids seen, and enqueues deliveries.
 func (s *Store) RecordCommentNotifications(target model.CommentTarget, notes []model.CommentNotification, channelIDs []string, baseline bool) (int, error) {
-	if err := s.content.ArchiveComments(notes, baseline); err != nil {
-		return 0, err
-	}
 	created := 0
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		seenRoot := tx.Bucket(bucketSeenComments)
-		seen, err := seenRoot.CreateBucketIfNotExists([]byte(target.UID))
-		if err != nil {
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := archiveCommentsTx(tx, notes, baseline); err != nil {
 			return err
 		}
-		deliveries := tx.Bucket(bucketDeliveries)
+		now := time.Now()
 		for _, note := range notes {
 			if note.RPID == "" {
 				continue
 			}
-			if seen.Get([]byte(note.RPID)) != nil {
-				continue
+			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seenCommentRow{
+				UID:    target.UID,
+				RPID:   note.RPID,
+				SeenAt: note.PublishedAt.Unix(),
+			})
+			if res.Error != nil {
+				return res.Error
 			}
-			if err := seen.Put([]byte(note.RPID), []byte(note.PublishedAt.Format(time.RFC3339Nano))); err != nil {
-				return err
+			if res.RowsAffected == 0 {
+				continue
 			}
 			if baseline {
 				continue
@@ -627,85 +606,74 @@ func (s *Store) RecordCommentNotifications(target model.CommentTarget, notes []m
 					Comment:   &n,
 					ChannelID: channelID,
 					State:     model.DeliveryPending,
-					NextAt:    time.Now(),
-					CreatedAt: time.Now(),
+					NextAt:    now,
+					CreatedAt: now,
 				}
-				if err := putJSON(deliveries, []byte(d.ID), d); err != nil {
+				if err := putDeliveryTx(tx, d); err != nil {
 					return err
 				}
 			}
 			created++
 		}
-		// Update target metadata in the same transaction.
-		bucket := tx.Bucket(bucketCommentTargets)
-		var list []model.CommentTarget
-		if raw := bucket.Get([]byte(target.UID)); raw != nil {
-			if err := readJSON(raw, &list); err != nil {
-				return err
-			}
+		var row commentTargetRow
+		err := tx.Where("uid = ? AND comment_type = ? AND comment_oid = ?", target.UID, target.CommentType, target.CommentOID).Take(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
 		}
-		for i, item := range list {
-			if item.Key() == target.Key() {
-				item.BaselineReady = true
-				item.LastPollAt = time.Now()
-				item.LastError = target.LastError
-				item.Closed = target.Closed
-				item.CommentCount = target.CommentCount
-				list[i] = item
-				return putJSON(bucket, []byte(target.UID), list)
-			}
+		if err != nil {
+			return err
 		}
-		// Target may have been pruned between scan and record; still keep seen/deliveries.
-		return nil
+		item := row.toModel()
+		item.BaselineReady = true
+		item.LastPollAt = now
+		item.LastError = target.LastError
+		item.Closed = target.Closed
+		item.CommentCount = target.CommentCount
+		updated := commentTargetFromModel(item)
+		return tx.Save(&updated).Error
 	})
 	return created, err
 }
 
 func (s *Store) ListDeliveries(limit int) ([]model.Delivery, error) {
-	deliveries := make([]model.Delivery, 0)
-	err := s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketDeliveries).ForEach(func(_, raw []byte) error {
-			var d model.Delivery
-			if err := readJSON(raw, &d); err != nil {
-				return err
-			}
-			deliveries = append(deliveries, d)
-			return nil
-		})
-	})
-	slices.SortFunc(deliveries, func(a, b model.Delivery) int { return a.NextAt.Compare(b.NextAt) })
-	if limit > 0 && len(deliveries) > limit {
-		deliveries = deliveries[:limit]
+	var rows []deliveryRow
+	q := s.db.Order("next_at ASC")
+	if limit > 0 {
+		q = q.Limit(limit)
 	}
-	return deliveries, err
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return decodeDeliveries(rows)
 }
 
 func (s *Store) DueDeliveries(now time.Time, limit int) ([]model.Delivery, error) {
-	all, err := s.ListDeliveries(0)
-	if err != nil {
+	var rows []deliveryRow
+	q := s.db.Where("state = ? AND next_at <= ?", string(model.DeliveryPending), now.Unix()).Order("next_at ASC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	due := make([]model.Delivery, 0, min(limit, len(all)))
-	for _, d := range all {
-		if d.State == model.DeliveryPending && !d.NextAt.After(now) {
-			due = append(due, d)
-			if len(due) == limit {
-				break
-			}
-		}
-	}
-	return due, nil
+	return decodeDeliveries(rows)
 }
 
 func (s *Store) CompleteDelivery(id string) error {
-	return s.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(bucketDeliveries).Delete([]byte(id)) })
+	return s.db.Where("id = ?", id).Delete(&deliveryRow{}).Error
 }
 
 func (s *Store) FailDelivery(id string, blocked bool, next time.Time, deliveryErr error) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketDeliveries)
-		var d model.Delivery
-		if err := readJSON(b.Get([]byte(id)), &d); err != nil {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var row deliveryRow
+		if err := tx.Where("id = ?", id).Take(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		d, err := decodeDelivery(row)
+		if err != nil {
 			return err
 		}
 		d.Attempts++
@@ -714,35 +682,81 @@ func (s *Store) FailDelivery(id string, blocked bool, next time.Time, deliveryEr
 		if blocked {
 			d.State = model.DeliveryBlocked
 		}
-		return putJSON(b, []byte(id), d)
+		return putDeliveryTx(tx, d)
 	})
 }
 
 func (s *Store) UnblockChannel(channelID string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketDeliveries)
-		var updates []model.Delivery
-		if err := b.ForEach(func(_, raw []byte) error {
-			var d model.Delivery
-			if err := readJSON(raw, &d); err != nil {
-				return err
-			}
-			if d.ChannelID == channelID && d.State == model.DeliveryBlocked {
-				d.State = model.DeliveryPending
-				d.NextAt = time.Now()
-				updates = append(updates, d)
-			}
-			return nil
-		}); err != nil {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var rows []deliveryRow
+		if err := tx.Where("channel_id = ? AND state = ?", channelID, string(model.DeliveryBlocked)).Find(&rows).Error; err != nil {
 			return err
 		}
-		for _, d := range updates {
-			if err := putJSON(b, []byte(d.ID), d); err != nil {
+		now := time.Now().Unix()
+		for _, row := range rows {
+			d, err := decodeDelivery(row)
+			if err != nil {
+				return err
+			}
+			d.State = model.DeliveryPending
+			d.NextAt = time.Unix(now, 0)
+			if err := putDeliveryTx(tx, d); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+func putDeliveryTx(tx *gorm.DB, d model.Delivery) error {
+	raw, err := json.Marshal(d)
+	if err != nil {
+		return fmt.Errorf("encoding delivery: %w", err)
+	}
+	kind := string(d.EffectiveKind())
+	row := deliveryRow{
+		ID:          d.ID,
+		Kind:        kind,
+		ChannelID:   d.ChannelID,
+		State:       string(d.State),
+		Attempts:    d.Attempts,
+		NextAt:      d.NextAt.Unix(),
+		LastError:   d.LastError,
+		CreatedAt:   d.CreatedAt.Unix(),
+		PayloadJSON: string(raw),
+	}
+	return tx.Save(&row).Error
+}
+
+func decodeDeliveries(rows []deliveryRow) ([]model.Delivery, error) {
+	out := make([]model.Delivery, 0, len(rows))
+	for _, row := range rows {
+		d, err := decodeDelivery(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+func decodeDelivery(row deliveryRow) (model.Delivery, error) {
+	var d model.Delivery
+	if err := json.Unmarshal([]byte(row.PayloadJSON), &d); err != nil {
+		return model.Delivery{}, fmt.Errorf("decoding delivery %s: %w", row.ID, err)
+	}
+	// Prefer column values for scheduling fields in case payload is stale.
+	d.ID = row.ID
+	d.ChannelID = row.ChannelID
+	d.State = model.DeliveryState(row.State)
+	d.Attempts = row.Attempts
+	d.NextAt = time.Unix(row.NextAt, 0)
+	d.LastError = row.LastError
+	d.CreatedAt = time.Unix(row.CreatedAt, 0)
+	if row.Kind != "" {
+		d.Kind = model.DeliveryKind(row.Kind)
+	}
+	return d, nil
 }
 
 func randomID() (string, error) {
@@ -751,4 +765,11 @@ func randomID() (string, error) {
 		return "", fmt.Errorf("generating channel ID: %w", err)
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }

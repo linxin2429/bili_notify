@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	StateFileName     = "state.db"
-	ContentFileName   = "content.db"
+	DataFileName      = "data.db"
+	LegacyStateFile   = "state.db"
+	LegacyContentFile = "content.db"
 	MasterKeyFileName = "master.key"
 	TLSFileName       = "tls.pem"
 )
@@ -23,7 +24,7 @@ const (
 // Config contains process startup settings.
 // DataDir, listen addresses, and LogLevel are immutable for the process lifetime.
 // PollInterval, RequestRate, and RequestConcurrency are first-run defaults only:
-// when bbolt has no runtime settings yet they seed the store; afterwards the admin UI owns them.
+// when the store has no runtime settings yet they seed the store; afterwards the admin UI owns them.
 type Config struct {
 	DataDir            string        `mapstructure:"data_dir"`
 	AdminAddr          string        `mapstructure:"admin_addr"`
@@ -70,13 +71,32 @@ func (c Config) SeedRuntimeSettings() model.RuntimeSettings {
 	}
 }
 
-func Paths(dataDir string) (statePath, keyPath, tlsPath string) {
-	return filepath.Join(dataDir, StateFileName), filepath.Join(dataDir, MasterKeyFileName), filepath.Join(dataDir, TLSFileName)
+// Paths returns data.db, master.key, and tls.pem under dataDir.
+func Paths(dataDir string) (dataPath, keyPath, tlsPath string) {
+	return filepath.Join(dataDir, DataFileName), filepath.Join(dataDir, MasterKeyFileName), filepath.Join(dataDir, TLSFileName)
 }
 
-// ContentPath returns the SQLite content archive path under dataDir.
-func ContentPath(dataDir string) string {
-	return filepath.Join(dataDir, ContentFileName)
+// DataPath returns the SQLite database path under dataDir.
+func DataPath(dataDir string) string {
+	return filepath.Join(dataDir, DataFileName)
+}
+
+// RefuseLegacyDataDir fails closed when an older bbolt/content dual-store volume is present.
+// This version only supports a fresh data directory with data.db (no automatic import).
+func RefuseLegacyDataDir(dataDir string) error {
+	var found []string
+	for _, name := range []string{LegacyStateFile, LegacyContentFile} {
+		path := filepath.Join(dataDir, name)
+		if _, err := os.Stat(path); err == nil {
+			found = append(found, name)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("checking legacy database %s: %w", name, err)
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	return fmt.Errorf("legacy %s found in %s; this version only supports a fresh data directory with data.db (no automatic import)", strings.Join(found, " and "), dataDir)
 }
 
 // LoadOrCreateMasterKey returns the installation key, creating it for a new data directory.
@@ -87,7 +107,7 @@ func LoadOrCreateMasterKey(dataDir string) ([]byte, error) {
 	if err := os.Chmod(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("securing data directory: %w", err)
 	}
-	statePath, keyPath, _ := Paths(dataDir)
+	dataPath, keyPath, _ := Paths(dataDir)
 	key, err := os.ReadFile(keyPath)
 	if err == nil {
 		info, statErr := os.Stat(keyPath)
@@ -105,7 +125,12 @@ func LoadOrCreateMasterKey(dataDir string) ([]byte, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("reading master key: %w", err)
 	}
-	for _, databasePath := range []string{statePath, filepath.Join(dataDir, "bili-notify.db")} {
+	for _, databasePath := range []string{
+		dataPath,
+		filepath.Join(dataDir, LegacyStateFile),
+		filepath.Join(dataDir, LegacyContentFile),
+		filepath.Join(dataDir, "bili-notify.db"),
+	} {
 		if _, err := os.Stat(databasePath); err == nil {
 			return nil, errors.New("state database exists without its master key; use a fresh data directory")
 		} else if !errors.Is(err, os.ErrNotExist) {

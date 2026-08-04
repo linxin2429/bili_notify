@@ -1,18 +1,44 @@
+# Bili Notify — local / self-hosted compose
+#
+# 首次启动会在数据卷中创建：
+#   /data/data.db     SQLite（配置、Outbox、内容档案；启动时 goose 迁移）
+#   /data/master.key  AES-256 主密钥
+#   /data/tls.pem     自签名 TLS 证书
+#
+# 若卷中仍有旧版 state.db / content.db，服务会拒绝启动（不自动导入）。
+# 升级到 v0.2+ 请使用全新命名卷，或自行清空旧数据后重建。
+#
+# 使用：
+#   docker compose up -d --build
+#   docker compose logs -f bili-notify
+#   # 浏览器打开 https://localhost:8443 ，用日志中的 setup_code 初始化
+
 services:
   bili-notify:
     build:
       context: .
-    image: bili-notify:local
+      args:
+        VERSION: ${VERSION:-0.2.0}
+        COMMIT: ${COMMIT:-local}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+        GOPROXY: ${GOPROXY:-https://mirrors.aliyun.com/goproxy,direct}
+    image: ${IMAGE:-bili-notify:0.2.0}
+    container_name: bili-notify
     restart: unless-stopped
-    network_mode: bridge
     ports:
-      - "8443:8443"
+      - "${ADMIN_PORT:-8443}:8443"
+      # 观测口默认不暴露；需要 Prometheus/health 时取消下一行注释
+      # - "${OBSERVE_PORT:-9090}:9090"
     environment:
-      TZ: Asia/Shanghai
-      BILI_NOTIFY_LOG_LEVEL: info
-      BILI_NOTIFY_POLL_INTERVAL: 30s
-      BILI_NOTIFY_REQUEST_RATE: "2"
-      BILI_NOTIFY_REQUEST_CONCURRENCY: "4"
+      TZ: ${TZ:-Asia/Shanghai}
+      BILI_NOTIFY_DATA_DIR: /data
+      BILI_NOTIFY_ADMIN_ADDR: ":8443"
+      BILI_NOTIFY_OBSERVE_ADDR: ":9090"
+      BILI_NOTIFY_LOG_LEVEL: ${BILI_NOTIFY_LOG_LEVEL:-info}
+      # 以下三项仅在空库首次启动时写入 data.db，之后由管理台热更新
+      BILI_NOTIFY_POLL_INTERVAL: ${BILI_NOTIFY_POLL_INTERVAL:-30s}
+      BILI_NOTIFY_REQUEST_RATE: ${BILI_NOTIFY_REQUEST_RATE:-2}
+      BILI_NOTIFY_REQUEST_CONCURRENCY: ${BILI_NOTIFY_REQUEST_CONCURRENCY:-4}
     volumes:
       - bili-notify-data:/data
     read_only: true
@@ -22,6 +48,13 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    healthcheck:
+      test: ["CMD", "/bili-notify", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
 volumes:
   bili-notify-data:
+    name: ${DATA_VOLUME:-bili-notify-data}

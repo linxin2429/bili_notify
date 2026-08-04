@@ -468,11 +468,7 @@ func (s *Server) dispatch(parent context.Context, action string, raw json.RawMes
 		if err != nil {
 			return nil, invalidRequest(err)
 		}
-		cs := s.store.Content()
-		if cs == nil {
-			return nil, &wsAPIError{Code: "unavailable", Message: "content archive is not configured"}
-		}
-		items, total, err := cs.QueryDynamics(q)
+		items, total, err := s.store.QueryDynamics(q)
 		if err != nil {
 			return nil, apiError(err)
 		}
@@ -487,11 +483,7 @@ func (s *Server) dispatch(parent context.Context, action string, raw json.RawMes
 		if err != nil {
 			return nil, invalidRequest(err)
 		}
-		cs := s.store.Content()
-		if cs == nil {
-			return nil, &wsAPIError{Code: "unavailable", Message: "content archive is not configured"}
-		}
-		items, total, err := cs.QueryComments(q)
+		items, total, err := s.store.QueryComments(q)
 		if err != nil {
 			return nil, apiError(err)
 		}
@@ -511,11 +503,7 @@ func (s *Server) dispatch(parent context.Context, action string, raw json.RawMes
 		if strings.TrimSpace(input.ID) == "" {
 			return nil, invalidRequest(errors.New("id is required"))
 		}
-		cs := s.store.Content()
-		if cs == nil {
-			return nil, &wsAPIError{Code: "unavailable", Message: "content archive is not configured"}
-		}
-		dynamic, err := cs.GetDynamic(input.ID)
+		dynamic, err := s.store.GetDynamic(input.ID)
 		if err != nil {
 			return nil, apiError(err)
 		}
@@ -530,11 +518,7 @@ func (s *Server) dispatch(parent context.Context, action string, raw json.RawMes
 		if strings.TrimSpace(input.RPID) == "" {
 			return nil, invalidRequest(errors.New("rpid is required"))
 		}
-		cs := s.store.Content()
-		if cs == nil {
-			return nil, &wsAPIError{Code: "unavailable", Message: "content archive is not configured"}
-		}
-		note, err := cs.GetComment(input.RPID)
+		note, err := s.store.GetComment(input.RPID)
 		if err != nil {
 			return nil, apiError(err)
 		}

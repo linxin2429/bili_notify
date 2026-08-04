@@ -36,7 +36,7 @@ func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
 
 	v, err := vault.New(bytes.Repeat([]byte{8}, 32))
 	require.NoError(t, err)
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"), v)
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), v)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	up := model.UP{UID: "42", Enabled: true}
@@ -79,7 +79,7 @@ func TestPollUPLogsSchemaFailure(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"), mustTestVault(t))
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	up := model.UP{UID: "42", Name: "configured name", Enabled: true}
@@ -119,7 +119,7 @@ func testSettings(pollSec int, rate float64, concurrency int) model.RuntimeSetti
 
 func TestUpdateSettingsHotReloadsAndPersists(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"), mustTestVault(t))
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
@@ -147,7 +147,7 @@ func TestUpdateSettingsHotReloadsAndPersists(t *testing.T) {
 
 func TestStatusReadyUsesPollIntervalWindow(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"), mustTestVault(t))
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 

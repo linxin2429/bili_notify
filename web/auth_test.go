@@ -29,7 +29,7 @@ func TestAdministratorInitializationPersists(t *testing.T) {
 	t.Parallel()
 	v, err := vault.New(make([]byte, 32))
 	require.NoError(t, err)
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"), v)
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), v)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 

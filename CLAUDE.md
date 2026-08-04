@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Single-instance Go service that polls Bilibili UP dynamics via logged-in web APIs and delivers notifications to email (SMTP), Microsoft Graph (OAuth device code), DingTalk, Feishu, and WeCom robots. Runtime config (UPs, channels, Bilibili session) is managed through a TLS admin console and persisted in bbolt. Secrets (cookies, tokens, webhooks) are AES-256-GCM encrypted with a file-based master key.
+Single-instance Go service that polls Bilibili UP dynamics via logged-in web APIs and delivers notifications to email (SMTP), Microsoft Graph (OAuth device code), DingTalk, Feishu, and WeCom robots. Runtime config (UPs, channels, Bilibili session), Outbox, and content archive live in a single SQLite `data.db` (GORM + goose SQL migrations on every startup). Secrets (cookies, tokens, webhooks) are AES-256-GCM encrypted with a file-based master key.
 
 Bilibili has no stable public push API for arbitrary UPs. This uses unofficial web endpoints and does **not** implement captcha solving, proxy pools, or other risk-control evasion. Unknown dynamic schemas must fail loudly, not be guessed.
 
@@ -62,7 +62,7 @@ CI (`.github/workflows/ci.yml`):
 - `docker`: multi-stage image with `GOPROXY=proxy.golang.org` and `VERSION`/`COMMIT`/`BUILD_DATE` build-args; PR/main smoke `--help`; only `v*` tags push `dengxinlin/bili-notify` (`X.Y.Z`, `X.Y`, `X`, `latest`)
 - Playwright e2e is local-only. Secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
 
-Never commit material under `secrets/`, bbolt DBs, cookies, OAuth tokens, webhooks, or TLS private keys.
+Never commit material under `secrets/`, SQLite DBs (`data.db`), cookies, OAuth tokens, webhooks, or TLS private keys.
 
 ## Architecture
 
@@ -75,20 +75,20 @@ main.go → cmd/ (Cobra CLI + Viper/BILI_NOTIFY_* env)
 | --- | --- |
 | `cmd/` | CLI only: `serve`, `admin hash-password`, `healthcheck`, `rekey`. Startup flags/env defaults. |
 | `app/` | Composition root: validate config, open store, build engine + dual HTTP servers. |
-| `config/` | Startup settings: paths, listen addrs, log level are process-immutable. Poll interval / request rate / concurrency / comment knobs are **first-run defaults** only; after seed they live in bbolt and hot-reload via admin UI. |
+| `config/` | Startup settings: paths, listen addrs, log level are process-immutable. Poll interval / request rate / concurrency / comment knobs are **first-run defaults** only; after seed they live in SQLite and hot-reload via admin UI. |
 | `model/` | Shared domain types + validation (UP, Channel, Dynamic, Delivery, BiliSession). |
 | `bilibili/` | Web API client: QR login, session validate, space dynamics feed, strict dynamic parsing. |
-| `state/` | bbolt store: UPs, channels, encrypted session/secrets, seen dynamics, Outbox deliveries. |
-| `vault/` | AES-256-GCM seal/open with per-record nonce; AAD = bucket+key. |
+| `state/` | Single SQLite store (`data.db`): UPs, encrypted channels/session, seen, Outbox, content archive; goose migrations on open. |
+| `vault/` | AES-256-GCM seal/open with per-record nonce; AAD = table+key. |
 | `service/` | Engine: poll loop, Outbox delivery loop, auth loop, QR/Microsoft login sessions, metrics, system alerts. |
 | `notify/` | Channel adapters (`Sender` interface): SMTP, Microsoft Graph, DingTalk/Feishu/WeCom robots. |
 | `web/` | TLS 1.3 admin UI (`index.html` + JSON API) on `:8443`; observe (`/healthz`, `/readyz`, `/metrics`) on `:9090`. |
 
 ### Core runtime flow
 
-1. **Collect** (`service.Engine.collectLoop`): every ~runtime `poll_interval` (seed default 30s), rate-limited (seed default 2 rps, 4 concurrency) fetch each enabled UP's dynamics. These collector knobs are stored in bbolt and hot-reloaded from the admin UI. Paginate up to 10 pages until a known dynamic ID; more than 10 pages is a state gap — stop that UP without committing (no silent loss). Discovered commentable contents refresh each UP's recent-N comment targets.
+1. **Collect** (`service.Engine.collectLoop`): every ~runtime `poll_interval` (seed default 30s), rate-limited (seed default 2 rps, 4 concurrency) fetch each enabled UP's dynamics. These collector knobs are stored in SQLite and hot-reloaded from the admin UI. Paginate up to 10 pages until a known dynamic ID; more than 10 pages is a state gap — stop that UP without committing (no silent loss). Discovered commentable contents refresh each UP's recent-N comment targets.
 2. **Baseline vs notify**: first successful poll for a new UP only records seen IDs (`BaselineReady`); no historical notifications. Later polls create Outbox tasks.
-3. **Atomic Outbox** (`state.Store.RecordDynamics` / `RecordCommentNotifications`): in one bbolt write txn, mark dynamics/comments seen and enqueue one delivery per enabled channel (dynamic key = dynamic ID + channel ID; comment key = `comment:` + rpid + channel ID).
+3. **Atomic Outbox** (`state.Store.RecordDynamics` / `RecordCommentNotifications`): in one SQLite transaction, archive content, mark dynamics/comments seen, and enqueue one delivery per enabled channel (dynamic key = dynamic ID + channel ID; comment key = `comment:` + rpid + channel ID).
 4. **Comment replies** (`service.Engine.commentLoop`): slower batch (seed default 120s) scans tracked content via `/x/v2/reply` + `/x/v2/reply/reply`, keeps only UP-authored replies, expands root→trigger thread, baselines on first success per target.
 5. **Deliver** (`deliveryLoop`): due tasks are sent via `notify.Sender`. Success deletes the task. Transient failures retry with jittered backoff (5s → 30s → 2m → 10m → max 1h). Permanent/auth/config errors **block** the delivery until the channel is updated.
 6. **Auth**: invalid Bilibili session fails readiness and pauses collection; Outbox delivery continues. Microsoft access tokens refresh automatically and persist via channel settings updates.
@@ -101,7 +101,8 @@ main.go → cmd/ (Cobra CLI + Viper/BILI_NOTIFY_* env)
 - Deleting a UP clears its seen state; re-adding re-baselines.
 - Logs/metrics must never include cookies, OAuth tokens, SMTP passwords, webhooks, or dynamic body text.
 - Unknown Bilibili dynamic types/fields → schema error; do not invent a generic fallback notification.
-- Single process: bbolt file lock enforces one writer; no multi-instance HA.
+- Single process: SQLite single-writer (`MaxOpenConns=1` + WAL); no multi-instance HA.
+- Legacy dual-store volumes (`state.db` / `content.db`) refuse start; only fresh `data.db` is supported.
 
 ### Config surface
 

@@ -25,6 +25,9 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	if err := config.RefuseLegacyDataDir(cfg.DataDir); err != nil {
+		return err
+	}
 	key, err := config.LoadOrCreateMasterKey(cfg.DataDir)
 	if err != nil {
 		return err
@@ -33,8 +36,8 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	if err != nil {
 		return err
 	}
-	statePath, _, tlsPath := config.Paths(cfg.DataDir)
-	store, err := state.OpenWithContent(statePath, config.ContentPath(cfg.DataDir), v)
+	dataPath, _, tlsPath := config.Paths(cfg.DataDir)
+	store, err := state.Open(dataPath, v)
 	if err != nil {
 		return err
 	}

@@ -302,7 +302,7 @@ const (
 	DefaultCommentBatchSec     = 120
 )
 
-// RuntimeSettings is the hot-reloadable collector configuration persisted in bbolt.
+// RuntimeSettings is the hot-reloadable collector configuration persisted in the store.
 type RuntimeSettings struct {
 	PollIntervalSec         int     `json:"poll_interval_sec"`
 	RequestRate             float64 `json:"request_rate"`
