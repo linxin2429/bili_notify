@@ -1,6 +1,12 @@
 package web
 
-import "testing"
+import (
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/linxin2429/bili_notify/model"
+)
 
 func TestMicrosoftIdentityChanged(t *testing.T) {
 	tests := []struct {
@@ -33,5 +39,18 @@ func TestMicrosoftIdentityChanged(t *testing.T) {
 				t.Fatalf("microsoftIdentityChanged() = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestChannelViewNeverReturnsSecrets(t *testing.T) {
+	view := toChannelView(model.Channel{
+		ID: "channel", Name: "mail", Type: model.ChannelEmail, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		Settings: map[string]string{"host": "smtp.example.com", "password": "secret", "webhook": "https://secret"},
+	})
+	if view.Settings["password"] != "" || view.Settings["webhook"] != "" {
+		t.Fatalf("secret settings leaked: %#v", view.Settings)
+	}
+	if !slices.Equal(view.ConfiguredSecrets, []string{"password", "webhook"}) {
+		t.Fatalf("configured secrets=%v", view.ConfiguredSecrets)
 	}
 }

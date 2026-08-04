@@ -46,7 +46,7 @@ func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
-	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), 30*time.Second, 100, 1)
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), 30*time.Second, 100, 1, nil)
 	if err := engine.pollUP(t.Context(), up, []string{"channel"}); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestPollUPLogsSchemaFailure(t *testing.T) {
 	}
 	var logs bytes.Buffer
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
-	engine := NewEngine(store, client, slog.New(slog.NewJSONHandler(&logs, nil)), NewMetrics(prometheus.NewRegistry()), 30*time.Second, 100, 1)
+	engine := NewEngine(store, client, slog.New(slog.NewJSONHandler(&logs, nil)), NewMetrics(prometheus.NewRegistry()), 30*time.Second, 100, 1, nil)
 	if err := engine.pollUP(t.Context(), up, []string{"channel"}); err != nil {
 		t.Fatal(err)
 	}

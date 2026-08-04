@@ -14,7 +14,6 @@ services:
       BILI_NOTIFY_REQUEST_CONCURRENCY: "4"
     volumes:
       - bili-notify-data:/data
-      - ./secrets:/run/secrets:ro
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -35,11 +36,15 @@ type Engine struct {
 	backlogAlerted   atomic.Bool
 	loginMu          sync.Mutex
 	login            *LoginSession
+	loginCancel      context.CancelFunc
+	loginWG          sync.WaitGroup
+	runCtx           context.Context
 	microsoftSendMu  sync.Mutex
 	microsoftLoginMu sync.Mutex
 	microsoftLoginWG sync.WaitGroup
 	microsoftRunCtx  context.Context
 	microsoftLogins  map[string]*MicrosoftLoginSession
+	events           *EventBus
 }
 
 type LoginSession struct {
@@ -75,7 +80,10 @@ type Status struct {
 	RiskPausedUntil time.Time `json:"risk_paused_until,omitzero"`
 }
 
-func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, pollInterval time.Duration, requestsPerSecond float64, concurrency int) *Engine {
+func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, pollInterval time.Duration, requestsPerSecond float64, concurrency int, events *EventBus) *Engine {
+	if events == nil {
+		events = NewEventBus()
+	}
 	return &Engine{
 		store: store, client: client, logger: logger, metrics: metrics,
 		pollInterval:    pollInterval,
@@ -83,14 +91,25 @@ func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger,
 		concurrency:     concurrency,
 		httpTimeout:     10 * time.Second,
 		microsoftLogins: make(map[string]*MicrosoftLoginSession),
+		events:          events,
 	}
 }
 
 func (e *Engine) Run(ctx context.Context) error {
+	e.loginMu.Lock()
+	e.runCtx = ctx
+	e.loginMu.Unlock()
 	e.microsoftLoginMu.Lock()
 	e.microsoftRunCtx = ctx
 	e.microsoftLoginMu.Unlock()
 	defer func() {
+		e.loginMu.Lock()
+		e.runCtx = nil
+		if e.loginCancel != nil {
+			e.loginCancel()
+		}
+		e.loginMu.Unlock()
+		e.loginWG.Wait()
 		e.microsoftLoginMu.Lock()
 		e.microsoftRunCtx = nil
 		for _, session := range e.microsoftLogins {
@@ -146,6 +165,7 @@ func (e *Engine) collectLoop(ctx context.Context) error {
 }
 
 func (e *Engine) collectOnce(ctx context.Context) error {
+	defer e.publish(TopicStatus | TopicUPs | TopicDeliveries)
 	started := time.Now()
 	if !e.authValid.Load() {
 		e.logger.Debug("collection cycle skipped", "reason", "Bilibili session is not authenticated")
@@ -159,7 +179,7 @@ func (e *Engine) collectOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listing UPs: %w", err)
 	}
-	channels, err := e.store.ListChannels(false)
+	channels, err := e.store.ListChannels()
 	if err != nil {
 		return fmt.Errorf("listing channels: %w", err)
 	}
@@ -306,6 +326,7 @@ func (e *Engine) deliveryLoop(ctx context.Context) error {
 }
 
 func (e *Engine) dispatchOnce(ctx context.Context) error {
+	defer e.publish(TopicStatus | TopicChannels | TopicDeliveries)
 	deliveries, err := e.store.DueDeliveries(time.Now().UTC(), 50)
 	if err != nil {
 		return err
@@ -430,6 +451,7 @@ func (e *Engine) authLoop(ctx context.Context) error {
 }
 
 func (e *Engine) setAuth(valid bool) {
+	defer e.publish(TopicStatus)
 	previous := e.authValid.Swap(valid)
 	if valid {
 		e.metrics.AuthState.Set(1)
@@ -452,7 +474,7 @@ func (e *Engine) setAuth(valid bool) {
 }
 
 func (e *Engine) enqueueSystem(summary string) {
-	channels, err := e.store.ListChannels(false)
+	channels, err := e.store.ListChannels()
 	if err != nil {
 		e.logger.Error("unable to list channels for system alert", "err", err)
 		return
@@ -468,7 +490,9 @@ func (e *Engine) enqueueSystem(summary string) {
 	}
 	if _, err := e.store.RecordDynamics("system", []model.Dynamic{dynamic}, ids, false); err != nil {
 		e.logger.Error("unable to queue system alert", "err", err)
+		return
 	}
+	e.publish(TopicStatus | TopicDeliveries)
 }
 
 func (e *Engine) StartLogin(ctx context.Context) (LoginSession, error) {
@@ -478,10 +502,58 @@ func (e *Engine) StartLogin(ctx context.Context) (LoginSession, error) {
 	}
 	session := LoginSession{Key: login.Key, URL: login.URL, Status: bilibili.QRWaiting, ExpiresAt: time.Now().Add(3 * time.Minute).UTC()}
 	e.loginMu.Lock()
+	if e.runCtx == nil {
+		e.loginMu.Unlock()
+		return LoginSession{}, errors.New("notification engine is not running")
+	}
+	if e.loginCancel != nil {
+		e.loginCancel()
+	}
+	loginCtx, cancel := context.WithCancel(e.runCtx)
 	e.login = &session
+	e.loginCancel = cancel
+	e.loginWG.Add(1)
 	e.loginMu.Unlock()
 	e.logger.Info("Bilibili QR login started", "expires_at", session.ExpiresAt)
+	e.publish(TopicBiliLogin)
+	go func() {
+		defer e.loginWG.Done()
+		e.pollLoginLoop(loginCtx, session.Key)
+	}()
 	return session, nil
+}
+
+func (e *Engine) pollLoginLoop(ctx context.Context, id string) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pollCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
+			login, err := e.PollLogin(pollCtx, id)
+			cancel()
+			if err != nil {
+				e.logger.Warn("Bilibili QR login poll failed", "err", err)
+				e.publish(TopicBiliLogin)
+				continue
+			}
+			e.publish(TopicBiliLogin | TopicStatus)
+			if login.Status == bilibili.QRSuccess || login.Status == bilibili.QRExpired {
+				return
+			}
+		}
+	}
+}
+
+func (e *Engine) Login() (LoginSession, bool) {
+	e.loginMu.Lock()
+	defer e.loginMu.Unlock()
+	if e.login == nil {
+		return LoginSession{}, false
+	}
+	return *e.login, true
 }
 
 func (e *Engine) LoginURL(id string) (string, error) {
@@ -503,6 +575,11 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 	e.loginMu.Unlock()
 	if time.Now().After(current.ExpiresAt) {
 		current.Status = bilibili.QRExpired
+		e.loginMu.Lock()
+		if e.login != nil && e.login.Key == id {
+			*e.login = current
+		}
+		e.loginMu.Unlock()
 		return current, nil
 	}
 	status, session, err := e.client.PollQR(ctx, id)
@@ -536,10 +613,15 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 
 func (e *Engine) CancelLogin(id string) {
 	e.loginMu.Lock()
-	defer e.loginMu.Unlock()
 	if e.login != nil && e.login.Key == id {
+		if e.loginCancel != nil {
+			e.loginCancel()
+		}
+		e.loginCancel = nil
 		e.login = nil
 	}
+	e.loginMu.Unlock()
+	e.publish(TopicBiliLogin)
 }
 
 func (e *Engine) TestChannel(ctx context.Context, id string) error {
@@ -571,6 +653,9 @@ func (e *Engine) TestChannel(ctx context.Context, id string) error {
 func (e *Engine) newSender(channel model.Channel) (notify.Sender, error) {
 	return notify.NewSender(channel, nil, func(settings map[string]string) error {
 		_, err := e.store.UpdateChannelSettings(channel.ID, settings)
+		if err == nil {
+			e.publish(TopicChannels)
+		}
 		return err
 	})
 }
@@ -613,6 +698,7 @@ func (e *Engine) StartMicrosoftLogin(ctx context.Context, channelID string) (Mic
 	e.microsoftLoginMu.Unlock()
 	public := publicMicrosoftLogin(session)
 	e.logger.Info("Microsoft authorization started", "channel_id", channelID, "tenant", channel.Settings["tenant"], "expires_at", session.ExpiresAt)
+	e.publish(TopicMicrosoftLogin)
 	go func() {
 		defer e.microsoftLoginWG.Done()
 		e.completeMicrosoftLogin(loginCtx, session)
@@ -621,6 +707,7 @@ func (e *Engine) StartMicrosoftLogin(ctx context.Context, channelID string) (Mic
 }
 
 func (e *Engine) completeMicrosoftLogin(ctx context.Context, session *MicrosoftLoginSession) {
+	defer e.publish(TopicMicrosoftLogin | TopicChannels | TopicStatus | TopicDeliveries)
 	settings, err := session.auth.Exchange(ctx, nil)
 	if err == nil {
 		e.microsoftSendMu.Lock()
@@ -674,6 +761,22 @@ func (e *Engine) CancelMicrosoftLogin(channelID string) {
 		}
 		session.Status = "canceled"
 	}
+	e.publish(TopicMicrosoftLogin)
+}
+
+func (e *Engine) MicrosoftLogins() []MicrosoftLoginSession {
+	e.microsoftLoginMu.Lock()
+	defer e.microsoftLoginMu.Unlock()
+	logins := make([]MicrosoftLoginSession, 0, len(e.microsoftLogins))
+	for _, session := range e.microsoftLogins {
+		logins = append(logins, publicMicrosoftLogin(session))
+	}
+	slices.SortFunc(logins, func(a, b MicrosoftLoginSession) int { return cmp.Compare(a.ChannelID, b.ChannelID) })
+	return logins
+}
+
+func (e *Engine) publish(topics Topic) {
+	e.events.Publish(topics)
 }
 
 func publicMicrosoftLogin(session *MicrosoftLoginSession) MicrosoftLoginSession {
@@ -689,7 +792,7 @@ func (e *Engine) Status() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	channels, err := e.store.ListChannels(false)
+	channels, err := e.store.ListChannels()
 	if err != nil {
 		return Status{}, err
 	}

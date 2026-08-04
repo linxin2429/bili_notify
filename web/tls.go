@@ -1,111 +1,118 @@
 package web
 
 import (
-	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
-	"log/slog"
+	"math/big"
+	"net"
+	"os"
 	"path/filepath"
-	"sync/atomic"
 	"time"
-
-	"github.com/fsnotify/fsnotify"
 )
 
-type certificateReloader struct {
-	certFile string
-	keyFile  string
-	logger   *slog.Logger
-	current  atomic.Pointer[tls.Certificate]
+func loadOrCreateTLSConfig(path string) (*tls.Config, error) {
+	bundle, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		bundle, err = generateSelfSignedBundle()
+		if err != nil {
+			return nil, err
+		}
+		if err := writeExclusive(path, bundle, 0o600); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, fmt.Errorf("reading TLS bundle: %w", err)
+	} else {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			return nil, fmt.Errorf("checking TLS bundle permissions: %w", statErr)
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			return nil, fmt.Errorf("TLS bundle permissions are %o, want 600", info.Mode().Perm())
+		}
+	}
+	certificate, err := tls.X509KeyPair(bundle, bundle)
+	if err != nil {
+		return nil, fmt.Errorf("loading TLS bundle: %w", err)
+	}
+	leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+	if err != nil {
+		return nil, fmt.Errorf("parsing TLS certificate: %w", err)
+	}
+	now := time.Now()
+	if now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
+		return nil, fmt.Errorf("TLS certificate is not currently valid: %s to %s", leaf.NotBefore, leaf.NotAfter)
+	}
+	certificate.Leaf = leaf
+	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}}, nil
 }
 
-func newCertificateReloader(certFile, keyFile string, logger *slog.Logger) (*certificateReloader, error) {
-	var err error
-	certFile, err = filepath.Abs(certFile)
+func generateSelfSignedBundle() ([]byte, error) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("resolving certificate path: %w", err)
+		return nil, fmt.Errorf("generating TLS private key: %w", err)
 	}
-	keyFile, err = filepath.Abs(keyFile)
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, serialLimit)
 	if err != nil {
-		return nil, fmt.Errorf("resolving private key path: %w", err)
+		return nil, fmt.Errorf("generating TLS certificate serial: %w", err)
 	}
-	r := &certificateReloader{certFile: certFile, keyFile: keyFile, logger: logger}
-	if err := r.reload(); err != nil {
-		return nil, err
+	hostname, _ := os.Hostname()
+	dnsNames := []string{"localhost"}
+	if hostname != "" && hostname != "localhost" {
+		dnsNames = append(dnsNames, hostname)
 	}
-	return r, nil
+	now := time.Now().UTC()
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "Bili Notify"},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.AddDate(10, 0, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     dnsNames,
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("creating TLS certificate: %w", err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling TLS private key: %w", err)
+	}
+	bundle := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	bundle = append(bundle, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})...)
+	return bundle, nil
 }
 
-func (r *certificateReloader) TLSConfig() *tls.Config {
-	return &tls.Config{
-		MinVersion: tls.VersionTLS13,
-		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-			cert := r.current.Load()
-			if cert == nil {
-				return nil, errors.New("TLS certificate is unavailable")
-			}
-			return cert, nil
-		},
+func writeExclusive(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("creating TLS directory: %w", err)
 	}
-}
-
-func (r *certificateReloader) reload() error {
-	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
-		return fmt.Errorf("loading TLS key pair: %w", err)
+		return fmt.Errorf("creating TLS bundle: %w", err)
 	}
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return fmt.Errorf("parsing TLS certificate: %w", err)
+	writeErr := error(nil)
+	if _, err := file.Write(data); err != nil {
+		writeErr = fmt.Errorf("writing TLS bundle: %w", err)
+	} else if err := file.Sync(); err != nil {
+		writeErr = fmt.Errorf("syncing TLS bundle: %w", err)
 	}
-	if time.Now().Before(leaf.NotBefore) || time.Now().After(leaf.NotAfter) {
-		return fmt.Errorf("TLS certificate is not currently valid: %s to %s", leaf.NotBefore, leaf.NotAfter)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
 	}
-	cert.Leaf = leaf
-	r.current.Store(&cert)
+	if closeErr != nil {
+		return fmt.Errorf("closing TLS bundle: %w", closeErr)
+	}
 	return nil
-}
-
-func (r *certificateReloader) Run(ctx context.Context) error {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return fmt.Errorf("creating certificate watcher: %w", err)
-	}
-	defer watcher.Close()
-	dirs := map[string]bool{filepath.Dir(r.certFile): true, filepath.Dir(r.keyFile): true}
-	for dir := range dirs {
-		if err := watcher.Add(dir); err != nil {
-			return fmt.Errorf("watching certificate directory %s: %w", dir, err)
-		}
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case err, ok := <-watcher.Errors:
-			if !ok {
-				return nil
-			}
-			if err != nil {
-				r.logger.Warn("TLS certificate watcher error", "err", err)
-			}
-		case event, ok := <-watcher.Events:
-			if !ok {
-				return nil
-			}
-			if event.Name != r.certFile && event.Name != r.keyFile {
-				continue
-			}
-			if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) == 0 {
-				continue
-			}
-			if err := r.reload(); err != nil {
-				r.logger.Warn("rejected replacement TLS certificate", "err", err)
-				continue
-			}
-			r.logger.Info("TLS certificate reloaded")
-		}
-	}
 }

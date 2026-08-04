@@ -31,9 +31,12 @@ go.work.sum
 # .idea/
 # .vscode/
 
-# Runtime secrets and state
+# Runtime state
 /secrets/*
-!/secrets/.gitkeep
 *.db
 *.db.lock
 /bili-notify
+/web/ui/node_modules/
+/web/ui/*.tsbuildinfo
+/web/ui/test-results/
+/web/ui/playwright-report/

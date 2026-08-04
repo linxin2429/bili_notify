@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -26,7 +25,7 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	key, err := config.ReadMasterKey(cfg.MasterKeyFile)
+	key, err := config.LoadOrCreateMasterKey(cfg.DataDir)
 	if err != nil {
 		return err
 	}
@@ -34,19 +33,13 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	if err != nil {
 		return err
 	}
-	adminHash, err := config.ReadSecret(cfg.AdminHashFile)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(cfg.DataPath), 0o700); err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
-	}
-	store, err := state.Open(cfg.DataPath, v)
+	statePath, _, tlsPath := config.Paths(cfg.DataDir)
+	store, err := state.Open(statePath, v)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	if _, err := store.ListChannels(false); err != nil {
+	if _, err := store.ListChannels(); err != nil {
 		return fmt.Errorf("validating encrypted channel configuration: %w", err)
 	}
 	if _, err := store.Session(); err != nil && !errors.Is(err, state.ErrNotFound) {
@@ -78,8 +71,9 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	client := bilibili.New(httpClient, "bili-notify/"+version)
 	registry := prometheus.NewRegistry()
 	metrics := service.NewMetrics(registry)
-	engine := service.NewEngine(store, client, logger, metrics, cfg.PollInterval, cfg.RequestRate, cfg.RequestConcurrency)
-	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, cfg.TLSCertFile, cfg.TLSKeyFile, string(adminHash), engine, store, logger, registry)
+	events := service.NewEventBus()
+	engine := service.NewEngine(store, client, logger, metrics, cfg.PollInterval, cfg.RequestRate, cfg.RequestConcurrency, events)
+	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, store, events, logger, registry)
 	if err != nil {
 		return err
 	}

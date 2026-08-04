@@ -7,11 +7,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/linxin2429/bili_notify/state"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -24,17 +26,31 @@ type authSession struct {
 }
 
 type authenticator struct {
-	passwordHash string
-	mu           sync.Mutex
-	sessions     map[string]authSession
-	failures     map[string][]time.Time
+	store     *state.Store
+	setupCode string
+	mu        sync.Mutex
+	sessions  map[string]authSession
+	failures  map[string][]time.Time
 }
 
-func newAuthenticator(passwordHash string) (*authenticator, error) {
-	if _, err := parsePasswordHash(passwordHash); err != nil {
-		return nil, fmt.Errorf("invalid admin password hash: %w", err)
+func newAuthenticator(store *state.Store) (*authenticator, string, error) {
+	a := &authenticator{store: store, sessions: make(map[string]authSession), failures: make(map[string][]time.Time)}
+	hash, err := store.AdminPasswordHash()
+	if err == nil {
+		if _, err := parsePasswordHash(hash); err != nil {
+			return nil, "", fmt.Errorf("invalid administrator password hash: %w", err)
+		}
+		return a, "", nil
 	}
-	return &authenticator{passwordHash: passwordHash, sessions: make(map[string]authSession), failures: make(map[string][]time.Time)}, nil
+	if !errors.Is(err, state.ErrNotFound) {
+		return nil, "", err
+	}
+	code, err := randomSetupCode()
+	if err != nil {
+		return nil, "", fmt.Errorf("generating setup code: %w", err)
+	}
+	a.setupCode = code
+	return a, code, nil
 }
 
 func HashPassword(password string) (string, error) {
@@ -92,11 +108,55 @@ func verifyPassword(encoded, password string) bool {
 	return subtle.ConstantTimeCompare(actual, p.hash) == 1
 }
 
-func (a *authenticator) loginAllowed(remoteAddr string) bool {
-	host := remoteAddr
-	if i := strings.LastIndex(host, ":"); i >= 0 {
-		host = host[:i]
+func (a *authenticator) initialized() (bool, error) {
+	_, err := a.store.AdminPasswordHash()
+	if err == nil {
+		return true, nil
 	}
+	if errors.Is(err, state.ErrNotFound) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (a *authenticator) initialize(code, password string) error {
+	a.mu.Lock()
+	validCode := subtle.ConstantTimeCompare([]byte(strings.ToUpper(strings.TrimSpace(code))), []byte(a.setupCode)) == 1 && a.setupCode != ""
+	a.mu.Unlock()
+	if !validCode {
+		return errors.New("invalid setup code")
+	}
+	hash, err := HashPassword(password)
+	if err != nil {
+		return err
+	}
+	if err := a.store.InitializeAdminPasswordHash(hash); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.setupCode = ""
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *authenticator) authenticate(password string) bool {
+	hash, err := a.store.AdminPasswordHash()
+	return err == nil && verifyPassword(hash, password)
+}
+
+func (a *authenticator) changePassword(current, replacement string) error {
+	if !a.authenticate(current) {
+		return errors.New("current password is incorrect")
+	}
+	hash, err := HashPassword(replacement)
+	if err != nil {
+		return err
+	}
+	return a.store.SetAdminPasswordHash(hash)
+}
+
+func (a *authenticator) loginAllowed(remoteAddr string) bool {
+	host := remoteHost(remoteAddr)
 	now := time.Now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -113,14 +173,19 @@ func (a *authenticator) loginAllowed(remoteAddr string) bool {
 }
 
 func (a *authenticator) recordFailure(remoteAddr string) {
-	host := remoteAddr
-	if i := strings.LastIndex(host, ":"); i >= 0 {
-		host = host[:i]
-	}
+	host := remoteHost(remoteAddr)
 	a.mu.Lock()
 	a.failures[host] = append(a.failures[host], time.Now())
 	a.failures["*"] = append(a.failures["*"], time.Now())
 	a.mu.Unlock()
+}
+
+func remoteHost(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return host
+	}
+	return remoteAddr
 }
 
 func (a *authenticator) createSession() (token, csrf string, err error) {
@@ -139,30 +204,45 @@ func (a *authenticator) createSession() (token, csrf string, err error) {
 	return token, csrf, nil
 }
 
-func (a *authenticator) validate(r *http.Request) (authSession, bool) {
+func (a *authenticator) validate(r *http.Request) (string, authSession, bool) {
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil {
-		return authSession{}, false
+		return "", authSession{}, false
 	}
+	session, ok := a.validateToken(cookie.Value, true)
+	return cookie.Value, session, ok
+}
+
+func (a *authenticator) validateToken(token string, touch bool) (authSession, bool) {
 	now := time.Now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	session, ok := a.sessions[cookie.Value]
+	session, ok := a.sessions[token]
 	if !ok || now.Sub(session.CreatedAt) > 24*time.Hour || now.Sub(session.LastSeenAt) > 8*time.Hour {
-		delete(a.sessions, cookie.Value)
+		delete(a.sessions, token)
 		return authSession{}, false
 	}
-	session.LastSeenAt = now
-	a.sessions[cookie.Value] = session
+	if touch {
+		session.LastSeenAt = now
+		a.sessions[token] = session
+	}
 	return session, true
 }
 
-func (a *authenticator) logout(r *http.Request) {
+func (a *authenticator) logout(r *http.Request) string {
 	if cookie, err := r.Cookie(sessionCookie); err == nil {
 		a.mu.Lock()
 		delete(a.sessions, cookie.Value)
 		a.mu.Unlock()
+		return cookie.Value
 	}
+	return ""
+}
+
+func (a *authenticator) invalidateAll() {
+	a.mu.Lock()
+	clear(a.sessions)
+	a.mu.Unlock()
 }
 
 func randomHex(size int) (string, error) {
@@ -171,6 +251,19 @@ func randomHex(size int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func randomSetupCode() (string, error) {
+	const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	raw := make([]byte, 12)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	code := make([]byte, len(raw))
+	for i, value := range raw {
+		code[i] = alphabet[int(value)&31]
+	}
+	return string(code), nil
 }
 
 func secureCookie(name, value string, maxAge int) *http.Cookie {

@@ -59,7 +59,7 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	}
 }
 
-func TestEncryptedRecordsAndRekey(t *testing.T) {
+func TestEncryptedRecords(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	oldVault := mustVault(t, 2)
 	store, err := Open(path, oldVault)
@@ -72,28 +72,15 @@ func TestEncryptedRecordsAndRekey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newVault := mustVault(t, 3)
-	if err := store.Rekey(newVault); err != nil {
-		t.Fatal(err)
-	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-
-	wrong, err := Open(path, oldVault)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := wrong.ListChannels(false); err == nil {
-		t.Fatal("old master key decrypted rekeyed channel")
-	}
-	_ = wrong.Close()
-	correct, err := Open(path, newVault)
+	correct, err := Open(path, oldVault)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer correct.Close()
-	channels, err := correct.ListChannels(false)
+	channels, err := correct.ListChannels()
 	if err != nil || channels[0].Settings["password"] != "secret" {
 		t.Fatalf("channels=%#v err=%v", channels, err)
 	}
@@ -107,6 +94,29 @@ func TestMissingSession(t *testing.T) {
 	defer store.Close()
 	if _, err := store.Session(); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Session() error=%v, want ErrNotFound", err)
+	}
+}
+
+func TestAdministratorPasswordInitializationIsAtomic(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 9))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.AdminPasswordHash(); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("AdminPasswordHash() error=%v, want ErrNotFound", err)
+	}
+	if err := store.InitializeAdminPasswordHash("first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitializeAdminPasswordHash("second"); !errors.Is(err, ErrInitialized) {
+		t.Fatalf("second initialization error=%v, want ErrInitialized", err)
+	}
+	if err := store.SetAdminPasswordHash("changed"); err != nil {
+		t.Fatal(err)
+	}
+	if hash, err := store.AdminPasswordHash(); err != nil || hash != "changed" {
+		t.Fatalf("hash=%q err=%v", hash, err)
 	}
 }
 

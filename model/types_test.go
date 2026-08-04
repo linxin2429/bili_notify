@@ -2,7 +2,7 @@ package model
 
 import "testing"
 
-func TestMicrosoftChannelValidationAndMasking(t *testing.T) {
+func TestMicrosoftChannelValidation(t *testing.T) {
 	channel := Channel{
 		Name: "outlook", Type: ChannelMicrosoft,
 		Settings: map[string]string{
@@ -13,13 +13,6 @@ func TestMicrosoftChannelValidationAndMasking(t *testing.T) {
 	}
 	if err := channel.Validate(); err != nil {
 		t.Fatal(err)
-	}
-	masked := channel.Masked()
-	if masked.Settings["access_token"] != "********" || masked.Settings["refresh_token"] != "********" {
-		t.Fatalf("tokens were not masked: %#v", masked.Settings)
-	}
-	if masked.Settings["client_id"] != channel.Settings["client_id"] {
-		t.Fatal("client ID should remain visible")
 	}
 }
 

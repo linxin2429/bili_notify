@@ -22,7 +22,9 @@ var (
 	bucketSeen       = []byte("seen")
 	bucketDeliveries = []byte("deliveries")
 	keySession       = []byte("session")
+	keyAdminHash     = []byte("admin_password_hash")
 	ErrNotFound      = errors.New("record not found")
+	ErrInitialized   = errors.New("administrator is already initialized")
 )
 
 type Store struct {
@@ -53,9 +55,9 @@ func (s *Store) init() error {
 		meta := tx.Bucket(bucketMeta)
 		version := meta.Get([]byte("schema_version"))
 		if version == nil {
-			return meta.Put([]byte("schema_version"), []byte("1"))
+			return meta.Put([]byte("schema_version"), []byte("2"))
 		}
-		if string(version) != "1" {
+		if string(version) != "2" {
 			return fmt.Errorf("unsupported database schema %q", version)
 		}
 		return nil
@@ -64,41 +66,37 @@ func (s *Store) init() error {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-// Rekey atomically re-encrypts every sensitive record with a new master key.
-func (s *Store) Rekey(newVault *vault.Vault) error {
-	if newVault == nil {
-		return errors.New("new vault is required")
-	}
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		for _, bucketName := range [][]byte{bucketChannels, bucketAuth} {
-			bucket := tx.Bucket(bucketName)
-			var updates = make(map[string][]byte)
-			if err := bucket.ForEach(func(key, sealed []byte) error {
-				plain, err := s.vault.Open(sealed, encryptedAAD(bucketName, key))
-				if err != nil {
-					return fmt.Errorf("decrypting %s/%s: %w", bucketName, key, err)
-				}
-				resealed, err := newVault.Seal(plain, encryptedAAD(bucketName, key))
-				if err != nil {
-					return fmt.Errorf("encrypting %s/%s: %w", bucketName, key, err)
-				}
-				updates[string(key)] = resealed
-				return nil
-			}); err != nil {
-				return err
-			}
-			for key, value := range updates {
-				if err := bucket.Put([]byte(key), value); err != nil {
-					return err
-				}
-			}
+func (s *Store) AdminPasswordHash() (string, error) {
+	var hash string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		value := tx.Bucket(bucketMeta).Get(keyAdminHash)
+		if value == nil {
+			return ErrNotFound
 		}
+		hash = string(value)
 		return nil
 	})
-	if err == nil {
-		s.vault = newVault
-	}
-	return err
+	return hash, err
+}
+
+func (s *Store) InitializeAdminPasswordHash(hash string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketMeta)
+		if bucket.Get(keyAdminHash) != nil {
+			return ErrInitialized
+		}
+		return bucket.Put(keyAdminHash, []byte(hash))
+	})
+}
+
+func (s *Store) SetAdminPasswordHash(hash string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketMeta)
+		if bucket.Get(keyAdminHash) == nil {
+			return ErrNotFound
+		}
+		return bucket.Put(keyAdminHash, []byte(hash))
+	})
 }
 
 func encryptedAAD(bucket, key []byte) []byte {
@@ -154,7 +152,7 @@ func readJSON(raw []byte, dst any) error {
 }
 
 func (s *Store) ListUPs() ([]model.UP, error) {
-	var ups []model.UP
+	ups := make([]model.UP, 0)
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketUPs).ForEach(func(_, raw []byte) error {
 			var up model.UP
@@ -227,17 +225,14 @@ func (s *Store) SetUPResult(uid, name string, at time.Time, pollErr error) error
 	})
 }
 
-func (s *Store) ListChannels(mask bool) ([]model.Channel, error) {
-	var channels []model.Channel
+func (s *Store) ListChannels() ([]model.Channel, error) {
+	channels := make([]model.Channel, 0)
 	err := s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketChannels)
 		return b.ForEach(func(k, _ []byte) error {
 			var ch model.Channel
 			if err := s.getEncrypted(b, bucketChannels, k, &ch); err != nil {
 				return err
-			}
-			if mask {
-				ch = ch.Masked()
 			}
 			channels = append(channels, ch)
 			return nil
@@ -394,7 +389,7 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 }
 
 func (s *Store) ListDeliveries(limit int) ([]model.Delivery, error) {
-	var deliveries []model.Delivery
+	deliveries := make([]model.Delivery, 0)
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketDeliveries).ForEach(func(_, raw []byte) error {
 			var d model.Delivery

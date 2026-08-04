@@ -1,4 +1,12 @@
 # syntax=docker/dockerfile:1.7
+FROM node:24-alpine AS ui
+
+WORKDIR /src/web/ui
+COPY web/ui/package.json web/ui/package-lock.json ./
+RUN npm ci
+COPY web/ui/ ./
+RUN npm run build
+
 FROM golang:1.26.5-alpine AS build
 
 WORKDIR /src
@@ -8,6 +16,7 @@ RUN apk add --no-cache ca-certificates
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=ui /src/web/dist ./web/dist
 ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown

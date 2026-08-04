@@ -112,22 +112,6 @@ func (c Channel) Validate() error {
 	return nil
 }
 
-func (c Channel) Masked() Channel {
-	clone := c
-	clone.Settings = make(map[string]string, len(c.Settings))
-	for k, v := range c.Settings {
-		switch k {
-		case "password", "secret", "webhook", "access_token", "refresh_token":
-			if v != "" {
-				clone.Settings[k] = "********"
-			}
-		default:
-			clone.Settings[k] = v
-		}
-	}
-	return clone
-}
-
 func isGUID(value string) bool {
 	parts := strings.Split(strings.TrimSpace(value), "-")
 	if len(parts) != 5 || len(parts[0]) != 8 || len(parts[1]) != 4 || len(parts[2]) != 4 || len(parts[3]) != 4 || len(parts[4]) != 12 {

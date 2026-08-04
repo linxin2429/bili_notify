@@ -1,7 +1,9 @@
 .git
-.github
+AGENTS.md
+CLAUDE.md
 secrets
+web/ui/node_modules
+web/ui/test-results
+web/ui/playwright-report
 *.db
-*.log
-Dockerfile*
-docs
+*.db.lock
