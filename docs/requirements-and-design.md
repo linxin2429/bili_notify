@@ -4,16 +4,16 @@
 
 Bili Notify 面向个人或小团队，在一个 Docker 容器中监控最多 100 个公开 B 站 UP 主。B 站没有面向任意 UP 主动态的官方推送能力，因此服务使用登录后的网页接口轮询；“及时”是接口可用和未触发风控时的服务目标，不是无条件保证。
 
-系统处理新发布的公开动态（文字、图片、视频投稿、专栏、转发、PGC 和通用内容卡片），并在启用时额外监控 UP 本人在其最近 N 条视频/动态/专栏评论区中的回复。直播状态、动态编辑、置顶变化、删除、关键词过滤、粉丝评论全量监听、UP 在他人内容下的发言、多租户、多实例高可用和历史回补不在范围内。未知动态结构不会被猜测解析或标记为已处理；无法确定评论区坐标（type/oid）的内容不会进入评论跟踪。
+系统处理新发布的公开动态（文字、图片、视频投稿、专栏、转发、PGC 和通用内容卡片），并在启用时额外监控 UP 本人在其最近 N 条视频/动态/专栏评论区中的回复。直播状态、动态编辑、置顶变化、删除、关键词过滤、粉丝评论全量监听、UP 在他人内容下的发言、多租户、多实例高可用和**向 B 站主动历史回补**不在范围内。已采集内容会写入本地内容库供管理台查询。未知动态结构不会被猜测解析或标记为已处理；无法确定评论区坐标（type/oid）的内容不会进入评论跟踪。
 
 主要目标：
 
 - 最多 100 个 UP 时，动态发现延迟 P95 不超过 60 秒；健康渠道投递 P95 不超过 10 秒。
-- 首次添加 UP 只建立当前页基线，不发送历史内容；新纳入评论跟踪的内容同样只 baseline 已有 UP 回复。
+- 首次添加 UP 只建立当前页基线，不发送历史内容；新纳入评论跟踪的内容同样只 baseline 已有 UP 回复。基线内容仍会写入内容库，便于管理台回看。
 - 每条新动态或新的 UP 回复广播给全部已启用渠道；容器重启不丢失待投递通知。
 - UP 回复通知必须从根评论展开完整对话串；仅保证在「最近 N 条内容」与根/子评论翻页窗口内可发现。
 - 部署前不生成或挂载任何主密钥、管理员密码哈希或 TLS 私钥。
-- 管理台在桌面和手机上提供可访问、实时且明确区分在线与过期数据的运维视图。
+- 管理台在桌面和手机上提供可访问、实时且明确区分在线与过期数据的运维视图；并支持对已采集动态/UP 回复的分页检索。
 
 ## 2. 系统结构
 
@@ -22,10 +22,12 @@ flowchart LR
     B[B站登录及动态接口] --> C[限流轮询器]
     C --> P[严格解析与去重]
     P -->|同一事务| S[(bbolt)]
+    P -->|先写档案| ADB[(content.db SQLite)]
     S --> O[持久化 Outbox]
     O --> N[SMTP / Graph / 群机器人]
     A[React TLS 管理台] <-->|HTTP Auth + WebSocket| W[Go Web 服务]
     W --> S
+    W --> ADB
     W --> B
     E[领域事件总线] --> W
     C --> E
@@ -34,13 +36,13 @@ flowchart LR
     H --> O
 ```
 
-代码按功能划分为顶层包：`bilibili` 负责网页接口与二维码登录，`state` 负责事务和持久化，`notify` 负责投递协议，`service` 负责编排轮询、OAuth、Outbox 和领域事件，`web` 负责认证、WebSocket 与嵌入式管理台，`cmd` 只处理命令和非秘密启动配置。
+代码按功能划分为顶层包：`bilibili` 负责网页接口与二维码登录，`state` 负责事务和持久化（bbolt 配置/Outbox + SQLite 内容档案），`notify` 负责投递协议，`service` 负责编排轮询、OAuth、Outbox 和领域事件，`web` 负责认证、WebSocket 与嵌入式管理台，`cmd` 只处理命令和非秘密启动配置。
 
 轮询器默认以 30 秒为目标周期、全局 2 请求/秒、4 个并发请求；这三项作为空库首次默认值写入 bbolt，之后可在管理台热更新并立即生效。每个 UP 最多翻 10 页直至遇到已持久化动态；超过上限会停止该 UP 的提交，避免静默丢失。
 
 评论监控使用独立较慢的批次周期（默认 120 秒），与动态轮询共用全局速率与并发预算。每个 UP 仅跟踪最近 N 条（默认 10）可映射评论区坐标的内容；每内容最多翻根评论 P 页（默认 2）、子评论 R 页（默认 5）。`comment_enabled`、`comment_track_n`、`comment_root_pages`、`comment_reply_pages`、`comment_batch_interval_sec` 与动态三项一并热更新。
 
-新动态按发布时间由旧到新处理。动态 `seen`、评论 `seen-comments` 与对应启用渠道的投递任务均在同一 bbolt 写事务内提交。任务只有在平台 HTTP 状态和业务码均成功后才删除；网络错误、429 和 5xx 分级重试，不可恢复配置或鉴权错误进入阻塞状态。
+新动态按发布时间由旧到新处理。完整正文先写入 SQLite 内容库（`INSERT OR IGNORE`，含 baseline；系统告警 `uid=system` 不入库），再在 bbolt 写事务内提交动态 `seen`、评论 `seen-comments` 与对应启用渠道的投递任务。任务只有在平台 HTTP 状态和业务码均成功后才删除；网络错误、429 和 5xx 分级重试，不可恢复配置或鉴权错误进入阻塞状态。删除 UP 会同时清除 bbolt 去重状态与该 UP 的内容库记录。v1 内容库无自动淘汰，体积随监控时长增长。
 
 ## 3. B站与通知协议
 
@@ -67,7 +69,7 @@ HTTP 只承担认证生命周期：
 | `PUT /api/v1/session/password` | 验证当前密码并修改密码 |
 | `GET /api/v1/ws` | 校验会话并升级 WebSocket |
 
-WebSocket 请求为 `id/action/payload`，响应使用相同 `id` 和 `ok/data/error`。服务端事件包含 `event/revision/data`；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、采集参数、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。写操作包含 `settings.update`，payload 为完整采集参数：动态三项 `poll_interval_sec`、`request_rate`、`request_concurrency`，以及评论五项 `comment_enabled`、`comment_track_n`、`comment_root_pages`、`comment_reply_pages`、`comment_batch_interval_sec`。断线客户端不重放未知结果的写操作，重连后使用快照修复状态。
+WebSocket 请求为 `id/action/payload`，响应使用相同 `id` 和 `ok/data/error`。服务端事件包含 `event/revision/data`；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、采集参数、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。写操作包含 `settings.update`，payload 为完整采集参数：动态三项 `poll_interval_sec`、`request_rate`、`request_concurrency`，以及评论五项 `comment_enabled`、`comment_track_n`、`comment_root_pages`、`comment_reply_pages`、`comment_batch_interval_sec`。历史查询为按需命令（不进入 snapshot）：`dynamics.query` / `comments.query`（payload：`uid?`、`q?`、`from?`、`to?` RFC3339、`limit?` 默认 20 最大 100、`offset?`；时间范围为半开区间 `[from, to)`；返回 `items/total/limit/offset`），以及 `dynamics.get` / `comments.get` 取完整 payload。断线客户端不重放未知结果的写操作，重连后使用快照修复状态。
 
 领域事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。所有消息限制为 1 MiB，命令和写入均有超时。
 
@@ -80,6 +82,7 @@ WebSocket 请求为 `id/action/payload`，响应使用相同 `id` 和 `ok/data/e
 服务使用单一 `data_dir`，默认 `/data`。首次启动自动创建：
 
 - `state.db`，bbolt schema 2，文件模式 `0600`；
+- `content.db`，SQLite 内容档案（动态/UP 回复），与 `state.db` 同卷；
 - `master.key`，32 字节随机 AES-256 主密钥，模式 `0600`；
 - `tls.pem`，ECDSA P-256 自签名证书和私钥，模式 `0600`。
 
@@ -93,9 +96,9 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 
 ## 6. 管理台设计
 
-前端使用 React、TypeScript、Vite、MUI、React Router 和 Zod，构建产物提交并通过 Go `embed` 打入单一二进制。页面采用实时运维工作台而不是等权卡片墙：概览首先显示整体就绪状态和阻塞原因，再显示 B站会话、UP、渠道与队列证据，最后提供操作。设置页可修改采集参数（动态轮询间隔、请求速率、并发，以及评论监控开关、跟踪条数、根/子评论页数、评论批次间隔），以及外观主题和管理员密码。
+前端使用 React、TypeScript、Vite、MUI、React Router 和 Zod，构建产物提交并通过 Go `embed` 打入单一二进制。页面采用实时运维工作台而不是等权卡片墙：概览首先显示整体就绪状态和阻塞原因，再显示 B站会话、UP、渠道与队列证据，最后提供操作。设置页可修改采集参数（动态轮询间隔、请求速率、并发，以及评论监控开关、跟踪条数、根/子评论页数、评论批次间隔），以及外观主题和管理员密码。历史页按需查询 `content.db`，支持动态/UP 回复 Tab、UP 过滤、时间范围、关键字与分页；筛选进入 URL。
 
-后端没有历史时间序列，因此界面不制造无依据图表。数据使用 KPI、状态标签、卡片和明细列表；成功、警告、失败状态同时使用颜色、图标和文字。主题支持跟随系统、浅色和深色，偏好只存 localStorage；路由和筛选进入 URL，秘密和会话不进入浏览器持久化存储。
+后端没有指标历史时间序列，因此界面不制造无依据图表。数据使用 KPI、状态标签、卡片和明细列表；成功、警告、失败状态同时使用颜色、图标和文字。主题支持跟随系统、浅色和深色，偏好只存 localStorage；路由和筛选进入 URL，秘密和会话不进入浏览器持久化存储。
 
 桌面使用侧栏，360–430px 手机使用底部导航、卡片列表和全屏编辑对话框。主要触控区域至少 44px，键盘焦点、屏幕阅读器标签和减少动画偏好必须可用。实时连接中断时保留最后成功数据、显示更新时间和过期警告，并按 1–30 秒指数退避重连。
 

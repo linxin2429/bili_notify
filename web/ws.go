@@ -62,14 +62,16 @@ type dashboardSnapshot struct {
 }
 
 type deliveryView struct {
-	ID        string              `json:"id"`
-	Dynamic   dynamicPreview      `json:"dynamic"`
-	ChannelID string              `json:"channel_id"`
-	State     model.DeliveryState `json:"state"`
-	Attempts  int                 `json:"attempts"`
-	NextAt    time.Time           `json:"next_at"`
-	LastError string              `json:"last_error,omitempty"`
-	CreatedAt time.Time           `json:"created_at"`
+	ID        string                  `json:"id"`
+	Kind      model.DeliveryKind      `json:"kind,omitempty"`
+	Dynamic   dynamicPreview          `json:"dynamic,omitzero"`
+	Comment   *commentDeliveryPreview `json:"comment,omitempty"`
+	ChannelID string                  `json:"channel_id"`
+	State     model.DeliveryState     `json:"state"`
+	Attempts  int                     `json:"attempts"`
+	NextAt    time.Time               `json:"next_at"`
+	LastError string                  `json:"last_error,omitempty"`
+	CreatedAt time.Time               `json:"created_at"`
 }
 
 type dynamicPreview struct {
@@ -80,6 +82,62 @@ type dynamicPreview struct {
 	PublishedAt time.Time `json:"published_at"`
 	Summary     string    `json:"summary"`
 	URL         string    `json:"url"`
+}
+
+type commentDeliveryPreview struct {
+	RPID         string    `json:"rpid"`
+	UPUID        string    `json:"up_uid"`
+	UPName       string    `json:"up_name"`
+	ContentType  string    `json:"content_type"`
+	ContentID    string    `json:"content_id"`
+	ContentTitle string    `json:"content_title,omitempty"`
+	ContentURL   string    `json:"content_url"`
+	PublishedAt  time.Time `json:"published_at"`
+}
+
+type contentQueryInput struct {
+	UID    string `json:"uid,omitempty"`
+	Q      string `json:"q,omitempty"`
+	From   string `json:"from,omitempty"`
+	To     string `json:"to,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Offset int    `json:"offset,omitempty"`
+}
+
+type contentPage struct {
+	Items  any `json:"items"`
+	Total  int `json:"total"`
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
+type dynamicHistoryView struct {
+	ID           string    `json:"id"`
+	UID          string    `json:"uid"`
+	UPName       string    `json:"up_name"`
+	Type         string    `json:"type"`
+	PublishedAt  time.Time `json:"published_at"`
+	DiscoveredAt time.Time `json:"discovered_at"`
+	Baseline     bool      `json:"baseline"`
+	Title        string    `json:"title,omitempty"`
+	Summary      string    `json:"summary,omitempty"`
+	URL          string    `json:"url,omitempty"`
+	TargetURL    string    `json:"target_url,omitempty"`
+	Badge        string    `json:"badge,omitempty"`
+}
+
+type commentHistoryView struct {
+	RPID         string    `json:"rpid"`
+	UPUID        string    `json:"up_uid"`
+	UPName       string    `json:"up_name"`
+	ContentType  string    `json:"content_type,omitempty"`
+	ContentID    string    `json:"content_id,omitempty"`
+	ContentTitle string    `json:"content_title,omitempty"`
+	ContentURL   string    `json:"content_url,omitempty"`
+	PublishedAt  time.Time `json:"published_at"`
+	DiscoveredAt time.Time `json:"discovered_at"`
+	Baseline     bool      `json:"baseline"`
+	Incomplete   bool      `json:"incomplete,omitempty"`
 }
 
 type biliLoginView struct {
@@ -405,6 +463,82 @@ func (s *Server) dispatch(parent context.Context, action string, raw json.RawMes
 			return nil, apiError(err)
 		}
 		return s.engine.Settings(), nil
+	case "dynamics.query":
+		q, err := parseContentQuery(raw)
+		if err != nil {
+			return nil, invalidRequest(err)
+		}
+		cs := s.store.Content()
+		if cs == nil {
+			return nil, &wsAPIError{Code: "unavailable", Message: "content archive is not configured"}
+		}
+		items, total, err := cs.QueryDynamics(q)
+		if err != nil {
+			return nil, apiError(err)
+		}
+		limit, offset := normalizeQueryPage(q.Limit, q.Offset)
+		views := make([]dynamicHistoryView, 0, len(items))
+		for _, item := range items {
+			views = append(views, toDynamicHistoryView(item))
+		}
+		return contentPage{Items: views, Total: total, Limit: limit, Offset: offset}, nil
+	case "comments.query":
+		q, err := parseContentQuery(raw)
+		if err != nil {
+			return nil, invalidRequest(err)
+		}
+		cs := s.store.Content()
+		if cs == nil {
+			return nil, &wsAPIError{Code: "unavailable", Message: "content archive is not configured"}
+		}
+		items, total, err := cs.QueryComments(q)
+		if err != nil {
+			return nil, apiError(err)
+		}
+		limit, offset := normalizeQueryPage(q.Limit, q.Offset)
+		views := make([]commentHistoryView, 0, len(items))
+		for _, item := range items {
+			views = append(views, toCommentHistoryView(item))
+		}
+		return contentPage{Items: views, Total: total, Limit: limit, Offset: offset}, nil
+	case "dynamics.get":
+		var input struct {
+			ID string `json:"id"`
+		}
+		if err := decodePayload(raw, &input); err != nil {
+			return nil, invalidRequest(err)
+		}
+		if strings.TrimSpace(input.ID) == "" {
+			return nil, invalidRequest(errors.New("id is required"))
+		}
+		cs := s.store.Content()
+		if cs == nil {
+			return nil, &wsAPIError{Code: "unavailable", Message: "content archive is not configured"}
+		}
+		dynamic, err := cs.GetDynamic(input.ID)
+		if err != nil {
+			return nil, apiError(err)
+		}
+		return dynamic, nil
+	case "comments.get":
+		var input struct {
+			RPID string `json:"rpid"`
+		}
+		if err := decodePayload(raw, &input); err != nil {
+			return nil, invalidRequest(err)
+		}
+		if strings.TrimSpace(input.RPID) == "" {
+			return nil, invalidRequest(errors.New("rpid is required"))
+		}
+		cs := s.store.Content()
+		if cs == nil {
+			return nil, &wsAPIError{Code: "unavailable", Message: "content archive is not configured"}
+		}
+		note, err := cs.GetComment(input.RPID)
+		if err != nil {
+			return nil, apiError(err)
+		}
+		return note, nil
 	default:
 		return nil, &wsAPIError{Code: "unknown_action", Message: "unknown action"}
 	}
@@ -440,18 +574,86 @@ func (s *Server) snapshot() (dashboardSnapshot, error) {
 func deliveryViews(deliveries []model.Delivery) []deliveryView {
 	views := make([]deliveryView, 0, len(deliveries))
 	for _, delivery := range deliveries {
-		views = append(views, deliveryView{
-			ID: delivery.ID,
-			Dynamic: dynamicPreview{
+		view := deliveryView{
+			ID: delivery.ID, Kind: delivery.EffectiveKind(),
+			ChannelID: delivery.ChannelID, State: delivery.State, Attempts: delivery.Attempts,
+			NextAt: delivery.NextAt, LastError: delivery.LastError, CreatedAt: delivery.CreatedAt,
+		}
+		if delivery.EffectiveKind() == model.DeliveryKindComment && delivery.Comment != nil {
+			view.Comment = &commentDeliveryPreview{
+				RPID: delivery.Comment.RPID, UPUID: delivery.Comment.UPUID, UPName: delivery.Comment.UPName,
+				ContentType: delivery.Comment.ContentType, ContentID: delivery.Comment.ContentID,
+				ContentTitle: delivery.Comment.ContentTitle, ContentURL: delivery.Comment.ContentURL,
+				PublishedAt: delivery.Comment.PublishedAt,
+			}
+		} else {
+			view.Dynamic = dynamicPreview{
 				ID: delivery.Dynamic.ID, UID: delivery.Dynamic.UID, UPName: delivery.Dynamic.UPName,
 				Type: delivery.Dynamic.Type, PublishedAt: delivery.Dynamic.PublishedAt,
 				Summary: previewText(delivery.Dynamic.Summary, 240), URL: delivery.Dynamic.URL,
-			},
-			ChannelID: delivery.ChannelID, State: delivery.State, Attempts: delivery.Attempts,
-			NextAt: delivery.NextAt, LastError: delivery.LastError, CreatedAt: delivery.CreatedAt,
-		})
+			}
+		}
+		views = append(views, view)
 	}
 	return views
+}
+
+func parseContentQuery(raw json.RawMessage) (state.ContentQuery, error) {
+	var input contentQueryInput
+	if err := decodePayload(raw, &input); err != nil {
+		return state.ContentQuery{}, err
+	}
+	q := state.ContentQuery{UID: strings.TrimSpace(input.UID), Q: input.Q, Limit: input.Limit, Offset: input.Offset}
+	if input.From != "" {
+		from, err := time.Parse(time.RFC3339, input.From)
+		if err != nil {
+			return state.ContentQuery{}, fmt.Errorf("from must be RFC3339: %w", err)
+		}
+		q.From = from
+	}
+	if input.To != "" {
+		to, err := time.Parse(time.RFC3339, input.To)
+		if err != nil {
+			return state.ContentQuery{}, fmt.Errorf("to must be RFC3339: %w", err)
+		}
+		q.To = to
+	}
+	if !q.From.IsZero() && !q.To.IsZero() && !q.From.Before(q.To) {
+		return state.ContentQuery{}, errors.New("from must be earlier than to")
+	}
+	return q, nil
+}
+
+func normalizeQueryPage(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
+func toDynamicHistoryView(item state.DynamicRecord) dynamicHistoryView {
+	return dynamicHistoryView{
+		ID: item.ID, UID: item.UID, UPName: item.UPName, Type: item.Type,
+		PublishedAt: item.PublishedAt, DiscoveredAt: item.DiscoveredAt, Baseline: item.Baseline,
+		Title: item.Title, Summary: previewText(item.Summary, 240),
+		URL: item.URL, TargetURL: item.TargetURL, Badge: item.Badge,
+	}
+}
+
+func toCommentHistoryView(item state.CommentRecord) commentHistoryView {
+	return commentHistoryView{
+		RPID: item.RPID, UPUID: item.UPUID, UPName: item.UPName,
+		ContentType: item.ContentType, ContentID: item.ContentID,
+		ContentTitle: item.ContentTitle, ContentURL: item.ContentURL,
+		PublishedAt: item.PublishedAt, DiscoveredAt: item.DiscoveredAt,
+		Baseline: item.Baseline, Incomplete: item.Incomplete,
+	}
 }
 
 func previewText(value string, limit int) string {

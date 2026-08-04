@@ -26,10 +26,15 @@ const channelSchema = z.object({
 
 const deliverySchema = z.object({
   id: z.string(),
+  kind: z.enum(['dynamic', 'comment']).optional(),
   dynamic: z.object({
     id: z.string(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(),
     summary: z.string(), url: z.string(),
-  }),
+  }).optional().default({ id: '', uid: '', up_name: '', type: '', published_at: '', summary: '', url: '' }),
+  comment: z.object({
+    rpid: z.string(), up_uid: z.string(), up_name: z.string(), content_type: z.string(), content_id: z.string(),
+    content_title: z.string().optional(), content_url: z.string(), published_at: z.string(),
+  }).optional(),
   channel_id: z.string(), state: z.enum(['pending', 'blocked']), attempts: z.number(), next_at: z.string(),
   last_error: z.string().optional(), created_at: z.string(),
 })
@@ -48,6 +53,11 @@ const settingsSchema = z.object({
   poll_interval_sec: z.number().int(),
   request_rate: z.number(),
   request_concurrency: z.number().int(),
+  comment_enabled: z.boolean().optional(),
+  comment_track_n: z.number().int().optional(),
+  comment_root_pages: z.number().int().optional(),
+  comment_reply_pages: z.number().int().optional(),
+  comment_batch_interval_sec: z.number().int().optional(),
 })
 
 const snapshotSchema = z.object({

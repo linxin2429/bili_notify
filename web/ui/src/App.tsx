@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  Add, Autorenew, BrightnessAuto, CheckCircle, DarkMode, Dashboard, Delete, Edit, Email,
-  ErrorOutlined, Hub, LightMode, LiveTv, Logout, Menu as MenuIcon, NotificationsActive,
+  Add, Autorenew, BrightnessAuto, CheckCircle, ChevronLeft, ChevronRight, DarkMode, Dashboard, Delete, Edit, Email,
+  ErrorOutlined, History, Hub, LightMode, LiveTv, Logout, Menu as MenuIcon, NotificationsActive, OpenInNew,
   Password, People, PlayArrow, QrCode2, Refresh, Science, Settings, WarningAmber,
 } from '@mui/icons-material'
 import {
@@ -13,8 +13,9 @@ import {
   TextField, ThemeProvider, Toolbar, Tooltip, Typography, createTheme, useMediaQuery,
 } from '@mui/material'
 import type {
-  BiliLogin, Channel, ChannelDraft, ChannelType, ConnectionState, DashboardSnapshot,
-  Delivery, MicrosoftLogin, RuntimeSettings, ThemePreference, UP,
+  BiliLogin, Channel, ChannelDraft, ChannelType, CommentDetail, CommentHistoryItem, ConnectionState,
+  ContentPage, DashboardSnapshot, Delivery, DynamicDetail, DynamicHistoryItem, MicrosoftLogin,
+  RuntimeSettings, ThemePreference, UP,
 } from './types'
 import { RealtimeClient } from './realtime'
 
@@ -24,8 +25,10 @@ const navigation = [
   { path: '/ups', label: 'UP 主', icon: <People /> },
   { path: '/channels', label: '通知渠道', icon: <NotificationsActive /> },
   { path: '/deliveries', label: '投递队列', icon: <Hub /> },
+  { path: '/history', label: '历史', icon: <History /> },
   { path: '/settings', label: '设置', icon: <Settings /> },
 ]
+const pageSize = 20
 
 interface SessionState { setup_required: boolean; authenticated: boolean; csrf_token?: string }
 
@@ -141,10 +144,10 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
     return () => { client.stop(); clientRef.current = null }
   }, [onAuthLost])
 
-  const command = async <T,>(action: string, payload: unknown = {}): Promise<T> => {
+  const command = useCallback(async <T,>(action: string, payload: unknown = {}): Promise<T> => {
     try { return await clientRef.current!.command<T>(action, payload) }
     catch (error) { setMessage(errorMessage(error)); throw error }
-  }
+  }, [])
   const logout = async () => {
     try { await httpJSON('/api/v1/session', { method: 'DELETE' }, csrf) } finally { await onAuthLost() }
   }
@@ -175,12 +178,13 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
             <Route path="/ups" element={<UPsPage ups={snapshot.ups} command={command} />} />
             <Route path="/channels" element={<ChannelsPage channels={snapshot.channels} logins={snapshot.microsoft_logins} command={command} />} />
             <Route path="/deliveries" element={<DeliveriesPage deliveries={snapshot.deliveries} channels={snapshot.channels} total={snapshot.status.outbox_depth} />} />
+            <Route path="/history" element={<HistoryPage ups={snapshot.ups} command={command} />} />
             <Route path="/settings" element={<SettingsPage csrf={csrf} preference={themePreference} setPreference={setThemePreference} settings={snapshot.settings} command={command} onChanged={onAuthLost} />} />
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>}
       </Container>
     </Box>
-    {mobile && <Paper elevation={6} sx={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: theme => theme.zIndex.appBar }}><BottomNavigation value={activePath} onChange={(_, value) => navigateTo(value)} showLabels>{navigation.slice(0, 4).map(item => <BottomNavigationAction key={item.path} value={item.path} label={item.label} icon={item.icon} />)}</BottomNavigation></Paper>}
+    {mobile && <Paper elevation={6} sx={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: theme => theme.zIndex.appBar }}><BottomNavigation value={activePath} onChange={(_, value) => navigateTo(value)} showLabels>{navigation.slice(0, 5).map(item => <BottomNavigationAction key={item.path} value={item.path} label={item.label} icon={item.icon} />)}</BottomNavigation></Paper>}
     <Snackbar open={Boolean(message)} autoHideDuration={6000} onClose={() => setMessage('')} message={message} />
   </Box>
 }
@@ -293,6 +297,202 @@ function DeliveriesPage({ deliveries, channels, total }: { deliveries: Delivery[
   const setFilter = (value: string) => setParams(value === 'all' ? {} : { state: value })
   const visible = deliveries.filter(delivery => filter === 'all' || delivery.state === filter)
   return <Stack spacing={3}><PageHeader title="投递队列" subtitle={`共 ${total} 个任务，页面展示前 ${deliveries.length} 个。`} /><Paper><Tabs value={filter} onChange={(_, value) => setFilter(value)} variant="scrollable"><Tab value="all" label="全部" /><Tab value="pending" label="等待重试" /><Tab value="blocked" label="已阻塞" /></Tabs></Paper>{visible.length === 0 ? <EmptyState icon={<CheckCircle />} title="当前筛选下没有待投递任务" /> : <Stack spacing={1.5}>{visible.map(delivery => <Card key={delivery.id}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box minWidth={0}><Stack direction="row" spacing={1} alignItems="center"><Chip size="small" color={delivery.state === 'blocked' ? 'error' : 'warning'} label={delivery.state === 'blocked' ? '已阻塞' : '等待重试'} /><Typography fontWeight={750}>{deliveryTitle(delivery)}</Typography></Stack><Typography className="summary-clamp" sx={{ mt: 1 }}>{deliverySummary(delivery)}</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>渠道：{channels.find(channel => channel.id === delivery.channel_id)?.name || delivery.channel_id} · 已尝试 {delivery.attempts} 次</Typography>{delivery.last_error && <Typography variant="body2" color="error" sx={{ mt: .5 }}>{delivery.last_error}</Typography>}</Box><Box flexShrink={0}><Typography variant="body2" color="text.secondary">下次处理</Typography><Typography>{formatDate(delivery.next_at)}</Typography></Box></Stack></CardContent></Card>)}</Stack>}</Stack>
+}
+
+function HistoryPage({ ups, command }: { ups: UP[]; command: <T>(action: string, payload?: unknown) => Promise<T> }) {
+  const [params, setParams] = useSearchParams()
+  const tab = params.get('tab') === 'comments' ? 'comments' : 'dynamics'
+  const uid = params.get('uid') || ''
+  const q = params.get('q') || ''
+  const from = params.get('from') || ''
+  const to = params.get('to') || ''
+  const offset = Math.max(0, Number(params.get('offset') || '0') || 0)
+  const [draftQ, setDraftQ] = useState(q)
+  const [items, setItems] = useState<Array<DynamicHistoryItem | CommentHistoryItem>>([])
+  const [total, setTotal] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [detail, setDetail] = useState<{ kind: 'dynamics' | 'comments'; data: DynamicDetail | CommentDetail } | null>(null)
+  const mobile = useMediaQuery(theme => theme.breakpoints.down('sm'))
+
+  const updateParams = (patch: Record<string, string | undefined>) => {
+    const next = new URLSearchParams(params)
+    for (const [key, value] of Object.entries(patch)) {
+      if (!value) next.delete(key)
+      else next.set(key, value)
+    }
+    if (!('offset' in patch)) next.delete('offset')
+    setParams(next)
+  }
+
+  useEffect(() => { setDraftQ(q) }, [q])
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      if (draftQ !== q) updateParams({ q: draftQ || undefined })
+    }, 300)
+    return () => window.clearTimeout(handle)
+  }, [draftQ])
+
+  useEffect(() => {
+    let cancelled = false
+    const run = async () => {
+      setBusy(true); setError('')
+      try {
+        const payload = {
+          ...(uid ? { uid } : {}),
+          ...(q ? { q } : {}),
+          ...(from ? { from: localInputToRFC3339(from) } : {}),
+          ...(to ? { to: localInputToRFC3339(to) } : {}),
+          limit: pageSize,
+          offset,
+        }
+        const action = tab === 'comments' ? 'comments.query' : 'dynamics.query'
+        const page = await command<ContentPage<DynamicHistoryItem | CommentHistoryItem>>(action, payload)
+        if (!cancelled) {
+          setItems(page.items || [])
+          setTotal(page.total || 0)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setItems([])
+          setTotal(0)
+          setError(errorMessage(err))
+        }
+      } finally {
+        if (!cancelled) setBusy(false)
+      }
+    }
+    void run()
+    return () => { cancelled = true }
+  }, [tab, uid, q, from, to, offset, command])
+
+  const openDetail = async (kind: 'dynamics' | 'comments', id: string) => {
+    try {
+      if (kind === 'dynamics') {
+        const data = await command<DynamicDetail>('dynamics.get', { id })
+        setDetail({ kind, data })
+      } else {
+        const data = await command<CommentDetail>('comments.get', { rpid: id })
+        setDetail({ kind, data })
+      }
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
+  const pageEnd = Math.min(offset + pageSize, total)
+  return <Stack spacing={3}>
+    <PageHeader title="历史内容" subtitle="浏览已采集的动态与 UP 回复；首次基线内容也会入库，但不发通知。" />
+    <Paper><Tabs value={tab} onChange={(_, value) => updateParams({ tab: value === 'comments' ? 'comments' : undefined })} variant="scrollable">
+      <Tab value="dynamics" label="动态" /><Tab value="comments" label="UP 回复" />
+    </Tabs></Paper>
+    <Paper sx={{ p: 2 }}><Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+      <FormControl sx={{ minWidth: 180 }}><InputLabel id="history-up-label">UP 主</InputLabel>
+        <Select labelId="history-up-label" label="UP 主" value={uid} onChange={e => updateParams({ uid: e.target.value || undefined })}>
+          <MenuItem value="">全部</MenuItem>
+          {ups.map(up => <MenuItem key={up.uid} value={up.uid}>{up.name || up.uid}</MenuItem>)}
+        </Select>
+      </FormControl>
+      <TextField label="关键字" value={draftQ} onChange={e => setDraftQ(e.target.value)} fullWidth />
+      <TextField label="开始时间" type="datetime-local" value={from} onChange={e => updateParams({ from: e.target.value || undefined })} InputLabelProps={{ shrink: true }} sx={{ minWidth: 210 }} />
+      <TextField label="结束时间" type="datetime-local" value={to} onChange={e => updateParams({ to: e.target.value || undefined })} InputLabelProps={{ shrink: true }} sx={{ minWidth: 210 }} />
+    </Stack></Paper>
+    {error && <Alert severity="error">{error}</Alert>}
+    {busy && items.length === 0 ? <Box display="grid" sx={{ placeItems: 'center', py: 8 }}><CircularProgress /></Box>
+      : items.length === 0 ? <EmptyState icon={<History />} title="当前筛选下没有历史记录" />
+        : <Stack spacing={1.5}>{items.map(item => tab === 'comments'
+          ? <CommentHistoryCard key={(item as CommentHistoryItem).rpid} item={item as CommentHistoryItem} onOpen={() => void openDetail('comments', (item as CommentHistoryItem).rpid)} />
+          : <DynamicHistoryCard key={(item as DynamicHistoryItem).id} item={item as DynamicHistoryItem} onOpen={() => void openDetail('dynamics', (item as DynamicHistoryItem).id)} />)}</Stack>}
+    {total > 0 && <Stack direction="row" justifyContent="space-between" alignItems="center">
+      <Typography variant="body2" color="text.secondary">共 {total} 条，当前 {offset + 1}-{pageEnd}</Typography>
+      <Stack direction="row" spacing={1}>
+        <Button startIcon={<ChevronLeft />} disabled={offset <= 0 || busy} onClick={() => updateParams({ offset: String(Math.max(0, offset - pageSize)) })}>上一页</Button>
+        <Button endIcon={<ChevronRight />} disabled={offset + pageSize >= total || busy} onClick={() => updateParams({ offset: String(offset + pageSize) })}>下一页</Button>
+      </Stack>
+    </Stack>}
+    <HistoryDetailDialog open={Boolean(detail)} detail={detail} fullScreen={mobile} onClose={() => setDetail(null)} />
+  </Stack>
+}
+
+function DynamicHistoryCard({ item, onOpen }: { item: DynamicHistoryItem; onOpen: () => void }) {
+  return <Card sx={{ cursor: 'pointer' }} onClick={onOpen}><CardContent>
+    <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}>
+      <Box minWidth={0}>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+          <Typography fontWeight={750}>{item.title || item.summary || item.id}</Typography>
+          {item.badge && <Chip size="small" label={item.badge} />}
+          {item.baseline && <Chip size="small" label="基线" variant="outlined" />}
+        </Stack>
+        <Typography className="summary-clamp" sx={{ mt: 1 }}>{item.summary || '（无正文摘要）'}</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>{item.up_name || item.uid} · {dynamicTypeLabel(item.type)}</Typography>
+      </Box>
+      <Box flexShrink={0}><Typography variant="body2" color="text.secondary">发布时间</Typography><Typography>{formatDate(item.published_at)}</Typography></Box>
+    </Stack>
+  </CardContent></Card>
+}
+
+function CommentHistoryCard({ item, onOpen }: { item: CommentHistoryItem; onOpen: () => void }) {
+  return <Card sx={{ cursor: 'pointer' }} onClick={onOpen}><CardContent>
+    <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}>
+      <Box minWidth={0}>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+          <Typography fontWeight={750}>{item.content_title || 'UP 回复'}</Typography>
+          {item.baseline && <Chip size="small" label="基线" variant="outlined" />}
+          {item.incomplete && <Chip size="small" color="warning" label="串不完整" />}
+        </Stack>
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>{item.up_name || item.up_uid} · {dynamicTypeLabel(item.content_type || '')}</Typography>
+      </Box>
+      <Box flexShrink={0}><Typography variant="body2" color="text.secondary">回复时间</Typography><Typography>{formatDate(item.published_at)}</Typography></Box>
+    </Stack>
+  </CardContent></Card>
+}
+
+function HistoryDetailDialog({ open, detail, fullScreen, onClose }: {
+  open: boolean
+  detail: { kind: 'dynamics' | 'comments'; data: DynamicDetail | CommentDetail } | null
+  fullScreen: boolean
+  onClose: () => void
+}) {
+  if (!detail) return <Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm" />
+  if (detail.kind === 'dynamics') {
+    const d = detail.data as DynamicDetail
+    return <Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm">
+      <DialogTitle>{d.title || d.summary || d.id}</DialogTitle>
+      <DialogContent><Stack spacing={1.5} sx={{ pt: 1 }}>
+        <Typography variant="body2" color="text.secondary">{d.up_name} · {dynamicTypeLabel(d.type)} · {formatDate(d.published_at)}</Typography>
+        {d.badge && <Chip size="small" label={d.badge} sx={{ alignSelf: 'flex-start' }} />}
+        {d.summary && <Typography whiteSpace="pre-wrap">{d.summary}</Typography>}
+        {d.description && <Typography color="text.secondary" whiteSpace="pre-wrap">{d.description}</Typography>}
+        {d.media?.map(media => <Box key={media.url} component="img" src={media.url} alt="" sx={{ maxWidth: '100%', borderRadius: 2 }} />)}
+        {d.original && <Alert severity="info">转发原文：{d.original.up_name} · {d.original.title || d.original.summary}</Alert>}
+      </Stack></DialogContent>
+      <DialogActions>
+        {(d.target_url || d.url) && <Button startIcon={<OpenInNew />} href={(d.target_url || d.url)!} target="_blank" rel="noopener noreferrer">打开原内容</Button>}
+        <Button onClick={onClose}>关闭</Button>
+      </DialogActions>
+    </Dialog>
+  }
+  const c = detail.data as CommentDetail
+  return <Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm">
+    <DialogTitle>{c.content_title || 'UP 回复'}</DialogTitle>
+    <DialogContent><Stack spacing={1.5} sx={{ pt: 1 }}>
+      <Typography variant="body2" color="text.secondary">{c.up_name} · {formatDate(c.published_at)}</Typography>
+      {c.incomplete && <Alert severity="warning">对话串可能不完整（翻页窗口外）。</Alert>}
+      {c.thread?.map(node => <Paper key={node.rpid} variant="outlined" sx={{ p: 1.5, bgcolor: node.is_trigger ? 'action.selected' : 'background.paper' }}>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+          <Typography fontWeight={700}>{node.name}</Typography>
+          {node.is_up && <Chip size="small" label="UP" color="primary" />}
+          {node.is_trigger && <Chip size="small" label="触发" />}
+          <Typography variant="caption" color="text.secondary">{formatDate(node.time)}</Typography>
+        </Stack>
+        <Typography sx={{ mt: .75 }} whiteSpace="pre-wrap">{node.message}</Typography>
+      </Paper>)}
+    </Stack></DialogContent>
+    <DialogActions>
+      {c.content_url && <Button startIcon={<OpenInNew />} href={c.content_url} target="_blank" rel="noopener noreferrer">打开原内容</Button>}
+      <Button onClick={onClose}>关闭</Button>
+    </DialogActions>
+  </Dialog>
 }
 
 function SettingsPage({ csrf, preference, setPreference, settings, command, onChanged }: {
@@ -529,6 +729,27 @@ function formatDate(value: string) {
     ...(displayTimeZone ? { timeZone: displayTimeZone } : {}),
   }).format(date)
 }
+
+// datetime-local values are wall-clock local; convert to RFC3339 for the API.
+function localInputToRFC3339(value: string) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.valueOf())) return value
+  return date.toISOString()
+}
+
+function dynamicTypeLabel(value: string) {
+  return ({
+    DYNAMIC_TYPE_WORD: '文字',
+    DYNAMIC_TYPE_DRAW: '图文',
+    DYNAMIC_TYPE_AV: '视频',
+    DYNAMIC_TYPE_ARTICLE: '专栏',
+    DYNAMIC_TYPE_FORWARD: '转发',
+    DYNAMIC_TYPE_PGC: '番剧',
+    DYNAMIC_TYPE_COMMON_SQUARE: '通用卡片',
+  } as Record<string, string>)[value] || value || '内容'
+}
+
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : '发生未知错误' }
 
 export { applyUpdate, readinessMessage }

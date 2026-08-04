@@ -34,7 +34,7 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 		return err
 	}
 	statePath, _, tlsPath := config.Paths(cfg.DataDir)
-	store, err := state.Open(statePath, v)
+	store, err := state.OpenWithContent(statePath, config.ContentPath(cfg.DataDir), v)
 	if err != nil {
 		return err
 	}

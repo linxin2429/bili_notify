@@ -113,3 +113,87 @@ export interface ChannelDraft {
   settings: Record<string, string>
   secrets?: Record<string, string>
 }
+
+export interface ContentQuery {
+  uid?: string
+  q?: string
+  from?: string
+  to?: string
+  limit?: number
+  offset?: number
+}
+
+export interface DynamicHistoryItem {
+  id: string
+  uid: string
+  up_name: string
+  type: string
+  published_at: string
+  discovered_at: string
+  baseline: boolean
+  title?: string
+  summary?: string
+  url?: string
+  target_url?: string
+  badge?: string
+}
+
+export interface CommentHistoryItem {
+  rpid: string
+  up_uid: string
+  up_name: string
+  content_type?: string
+  content_id?: string
+  content_title?: string
+  content_url?: string
+  published_at: string
+  discovered_at: string
+  baseline: boolean
+  incomplete?: boolean
+}
+
+export interface ContentPage<T> {
+  items: T[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface DynamicDetail {
+  id: string
+  uid: string
+  up_name: string
+  type: string
+  published_at: string
+  summary?: string
+  url?: string
+  title?: string
+  description?: string
+  target_url?: string
+  badge?: string
+  links?: { text: string; url: string }[]
+  media?: { kind: string; url: string; width?: number; height?: number }[]
+  original?: DynamicDetail
+}
+
+export interface CommentDetail {
+  rpid: string
+  up_uid: string
+  up_name: string
+  content_type: string
+  content_id: string
+  content_title?: string
+  content_url: string
+  published_at: string
+  incomplete?: boolean
+  thread: {
+    rpid: string
+    parent?: string
+    mid: string
+    name: string
+    message: string
+    time: string
+    is_up?: boolean
+    is_trigger?: boolean
+  }[]
+}

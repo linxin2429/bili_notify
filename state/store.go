@@ -32,12 +32,23 @@ var (
 )
 
 type Store struct {
-	db    *bolt.DB
-	vault *vault.Vault
+	db      *bolt.DB
+	vault   *vault.Vault
+	content *ContentStore
 }
 
+// Open opens the bbolt state database. Use OpenWithContent when the content archive is required.
 func Open(path string, v *vault.Vault) (*Store, error) {
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 2 * time.Second})
+	return open(path, "", v)
+}
+
+// OpenWithContent opens bbolt state and the SQLite content archive.
+func OpenWithContent(statePath, contentPath string, v *vault.Vault) (*Store, error) {
+	return open(statePath, contentPath, v)
+}
+
+func open(statePath, contentPath string, v *vault.Vault) (*Store, error) {
+	db, err := bolt.Open(statePath, 0o600, &bolt.Options{Timeout: 2 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("opening state database: %w", err)
 	}
@@ -45,6 +56,14 @@ func Open(path string, v *vault.Vault) (*Store, error) {
 	if err := s.init(); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if contentPath != "" {
+		cs, err := OpenContent(contentPath)
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		s.content = cs
 	}
 	return s, nil
 }
@@ -68,7 +87,17 @@ func (s *Store) init() error {
 	})
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	var errs []error
+	if s.content != nil {
+		errs = append(errs, s.content.Close())
+	}
+	errs = append(errs, s.db.Close())
+	return errors.Join(errs...)
+}
+
+// Content returns the content archive, or nil when opened without one (tests).
+func (s *Store) Content() *ContentStore { return s.content }
 
 func (s *Store) AdminPasswordHash() (string, error) {
 	var hash string
@@ -219,7 +248,7 @@ func (s *Store) PutUP(up model.UP) error {
 }
 
 func (s *Store) DeleteUP(uid string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
+	if err := s.db.Update(func(tx *bolt.Tx) error {
 		if err := tx.Bucket(bucketUPs).Delete([]byte(uid)); err != nil {
 			return err
 		}
@@ -233,7 +262,10 @@ func (s *Store) DeleteUP(uid string) error {
 			return err
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	return s.content.DeleteUPContent(uid)
 }
 
 func deleteBucketIfExists(parent *bolt.Bucket, key []byte) error {
@@ -384,8 +416,12 @@ func (s *Store) Seen(uid, dynamicID string) (bool, error) {
 	return seen, err
 }
 
-// RecordDynamics atomically records unseen dynamics and creates one delivery per enabled channel.
+// RecordDynamics archives full content, then atomically marks unseen dynamics and creates deliveries.
+// Archive runs before the bbolt transaction so a failed seen-write can be retried without losing content.
 func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs []string, baseline bool) (int, error) {
+	if err := s.content.ArchiveDynamics(dynamics, baseline); err != nil {
+		return 0, err
+	}
 	created := 0
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		seenRoot := tx.Bucket(bucketSeen)
@@ -556,9 +592,12 @@ func (s *Store) CommentSeen(uid, rpid string) (bool, error) {
 	return seen, err
 }
 
-// RecordCommentNotifications marks UP reply rpids seen and enqueues deliveries.
+// RecordCommentNotifications archives full threads, then marks UP reply rpids seen and enqueues deliveries.
 // baseline=true writes seen only (no deliveries) and marks the target baseline ready.
 func (s *Store) RecordCommentNotifications(target model.CommentTarget, notes []model.CommentNotification, channelIDs []string, baseline bool) (int, error) {
+	if err := s.content.ArchiveComments(notes, baseline); err != nil {
+		return 0, err
+	}
 	created := 0
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		seenRoot := tx.Bucket(bucketSeenComments)

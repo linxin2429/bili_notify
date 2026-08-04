@@ -15,6 +15,7 @@ import (
 
 const (
 	StateFileName     = "state.db"
+	ContentFileName   = "content.db"
 	MasterKeyFileName = "master.key"
 	TLSFileName       = "tls.pem"
 )
@@ -71,6 +72,11 @@ func (c Config) SeedRuntimeSettings() model.RuntimeSettings {
 
 func Paths(dataDir string) (statePath, keyPath, tlsPath string) {
 	return filepath.Join(dataDir, StateFileName), filepath.Join(dataDir, MasterKeyFileName), filepath.Join(dataDir, TLSFileName)
+}
+
+// ContentPath returns the SQLite content archive path under dataDir.
+func ContentPath(dataDir string) string {
+	return filepath.Join(dataDir, ContentFileName)
 }
 
 // LoadOrCreateMasterKey returns the installation key, creating it for a new data directory.
