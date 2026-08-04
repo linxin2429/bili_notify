@@ -4,11 +4,16 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseDynamic(t *testing.T) {
+	t.Parallel()
 	for _, timestamp := range []string{`1700000000`, `"1700000000"`} {
 		t.Run(timestamp, func(t *testing.T) {
+			t.Parallel()
 			raw := json.RawMessage(`{
 				"id_str":"12345",
 				"type":"DYNAMIC_TYPE_AV",
@@ -19,26 +24,29 @@ func TestParseDynamic(t *testing.T) {
 				}
 			}`)
 			got, name, err := parseDynamic("42", raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.ID != "12345" || got.UID != "42" || name != "tester" || got.Summary != "new video" || got.PublishedAt.Unix() != 1700000000 {
-				t.Fatalf("parseDynamic() = %#v, %q", got, name)
-			}
-			if got.Title != "title" || got.Description != "description" || got.TargetURL != "https://www.bilibili.com/video/BV1" {
-				t.Fatalf("content card = %#v", got)
-			}
-			if len(got.Media) != 1 || got.Media[0].URL != "https://i0.hdslb.com/cover.jpg" || got.Video == nil || got.Video.Duration != "03:21" {
-				t.Fatalf("media/video = %#v %#v", got.Media, got.Video)
-			}
-			if got.Stats == nil || got.Stats.Comments != 2 || len(got.Links) != 1 || got.Links[0].URL != "https://www.bilibili.com/v/topic/detail" {
-				t.Fatalf("stats/links = %#v %#v", got.Stats, got.Links)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, "12345", got.ID)
+			assert.Equal(t, "42", got.UID)
+			assert.Equal(t, "tester", name)
+			assert.Equal(t, "new video", got.Summary)
+			assert.Equal(t, int64(1700000000), got.PublishedAt.Unix())
+			assert.Equal(t, "title", got.Title)
+			assert.Equal(t, "description", got.Description)
+			assert.Equal(t, "https://www.bilibili.com/video/BV1", got.TargetURL)
+			require.Len(t, got.Media, 1)
+			assert.Equal(t, "https://i0.hdslb.com/cover.jpg", got.Media[0].URL)
+			require.NotNil(t, got.Video)
+			assert.Equal(t, "03:21", got.Video.Duration)
+			require.NotNil(t, got.Stats)
+			assert.Equal(t, int64(2), got.Stats.Comments)
+			require.Len(t, got.Links, 1)
+			assert.Equal(t, "https://www.bilibili.com/v/topic/detail", got.Links[0].URL)
 		})
 	}
 }
 
 func TestParseDynamicContentTypes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		raw       string
@@ -77,77 +85,91 @@ func TestParseDynamicContentTypes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, _, err := parseDynamic("42", json.RawMessage(tt.raw))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Title != tt.wantTitle || len(got.Media) != tt.wantMedia {
-				t.Fatalf("parseDynamic() = %#v", got)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantTitle, got.Title)
+			assert.Len(t, got.Media, tt.wantMedia)
 		})
 	}
 }
 
 func TestParseForwardedDynamic(t *testing.T) {
+	t.Parallel()
 	raw := json.RawMessage(`{
 		"id_str":"10","type":"DYNAMIC_TYPE_FORWARD",
 		"modules":{"module_author":{"name":"forwarder","pub_ts":2},"module_dynamic":{"desc":{"text":"recommended"},"major":null}},
 		"orig":{"id_str":"9","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"mid":"7","name":"author","pub_ts":1},"module_dynamic":{"desc":{"text":"original body"},"major":null}}}
 	}`)
 	got, _, err := parseDynamic("42", raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Original == nil || got.Original.UID != "7" || got.Original.UPName != "author" || got.Original.Summary != "original body" {
-		t.Fatalf("original = %#v", got.Original)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, got.Original)
+	assert.Equal(t, "7", got.Original.UID)
+	assert.Equal(t, "author", got.Original.UPName)
+	assert.Equal(t, "original body", got.Original.Summary)
 }
 
 func TestParseDynamicDoesNotTruncateBody(t *testing.T) {
+	t.Parallel()
 	body := strings.Repeat("动态正文", 300)
 	raw := json.RawMessage(`{"id_str":"1","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":` + mustJSON(t, body) + `},"major":null}}}`)
 	got, _, err := parseDynamic("42", raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Summary != body {
-		t.Fatalf("summary length = %d, want %d", len([]rune(got.Summary)), len([]rune(body)))
-	}
+	require.NoError(t, err)
+	assert.Equal(t, body, got.Summary)
 }
 
 func mustJSON(t *testing.T, value string) string {
 	t.Helper()
 	raw, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(raw)
 }
 
-func TestParseDynamicRejectsInvalidTimestamp(t *testing.T) {
-	raw := json.RawMessage(`{"id_str":"1","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"pub_ts":"not-a-timestamp"}}}`)
-	if _, _, err := parseDynamic("42", raw); err == nil {
-		t.Fatal("parseDynamic() accepted invalid timestamp")
+func TestParseDynamicRejectsInvalidPayloads(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "invalid timestamp",
+			raw:  `{"id_str":"1","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"pub_ts":"not-a-timestamp"}}}`,
+		},
+		{
+			name: "unknown type",
+			raw:  `{"id_str":"1","type":"NEW_TYPE","modules":{"module_author":{"pub_ts":1}}}`,
+		},
+		{
+			name: "unexpected major",
+			raw:  `{"id_str":"1","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"pub_ts":1},"module_dynamic":{"major":{"archive":{"title":"wrong"}}}}}`,
+		},
+		{
+			name: "missing content card",
+			raw:  `{"id_str":"1","type":"DYNAMIC_TYPE_AV","modules":{"module_author":{"pub_ts":1},"module_dynamic":{"major":null}}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := parseDynamic("42", json.RawMessage(tt.raw))
+			require.Error(t, err)
+		})
 	}
 }
 
-func TestParseDynamicRejectsUnknownType(t *testing.T) {
-	raw := json.RawMessage(`{"id_str":"1","type":"NEW_TYPE","modules":{"module_author":{"pub_ts":1}}}`)
-	if _, _, err := parseDynamic("42", raw); err == nil {
-		t.Fatal("parseDynamic() accepted unknown type")
+func FuzzParseDynamic(f *testing.F) {
+	seeds := []string{
+		`{"id_str":"1","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":"word"},"major":null}}}`,
+		`{"id_str":"2","type":"DYNAMIC_TYPE_AV","modules":{"module_author":{"mid":42,"name":"tester","pub_ts":1700000000},"module_dynamic":{"major":{"archive":{"title":"t","jump_url":"//www.bilibili.com/video/BV1"}}}}}`,
+		`{"id_str":"3","type":"NEW_TYPE","modules":{"module_author":{"pub_ts":1}}}`,
+		`not-json`,
+		`{}`,
 	}
-}
-
-func TestParseDynamicRejectsUnexpectedMajor(t *testing.T) {
-	raw := json.RawMessage(`{"id_str":"1","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"pub_ts":1},"module_dynamic":{"major":{"archive":{"title":"wrong"}}}}}`)
-	if _, _, err := parseDynamic("42", raw); err == nil {
-		t.Fatal("parseDynamic() accepted a mismatched major")
+	for _, seed := range seeds {
+		f.Add(seed)
 	}
-}
-
-func TestParseDynamicRejectsMissingContentCard(t *testing.T) {
-	raw := json.RawMessage(`{"id_str":"1","type":"DYNAMIC_TYPE_AV","modules":{"module_author":{"pub_ts":1},"module_dynamic":{"major":null}}}`)
-	if _, _, err := parseDynamic("42", raw); err == nil {
-		t.Fatal("parseDynamic() accepted a video without an archive card")
-	}
+	f.Fuzz(func(t *testing.T, raw string) {
+		// Fuzz must never panic; success or schema error are both acceptable.
+		_, _, _ = parseDynamic("42", json.RawMessage(raw))
+	})
 }

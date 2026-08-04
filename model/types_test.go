@@ -12,46 +12,46 @@ import (
 func TestRuntimeSettingsValidate(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name    string
+		name     string
 		settings RuntimeSettings
-		wantErr string
+		wantErr  string
 	}{
 		{
-			name: "valid defaults",
+			name:     "valid defaults",
 			settings: RuntimeSettings{PollIntervalSec: 30, RequestRate: 2, RequestConcurrency: 4},
 		},
 		{
-			name: "minimum bounds",
+			name:     "minimum bounds",
 			settings: RuntimeSettings{PollIntervalSec: 10, RequestRate: 0.1, RequestConcurrency: 1},
 		},
 		{
-			name: "maximum bounds",
+			name:     "maximum bounds",
 			settings: RuntimeSettings{PollIntervalSec: 3600, RequestRate: 10, RequestConcurrency: 16},
 		},
 		{
-			name: "poll too short",
+			name:     "poll too short",
 			settings: RuntimeSettings{PollIntervalSec: 9, RequestRate: 2, RequestConcurrency: 4},
-			wantErr: "poll interval must be at least 10s",
+			wantErr:  "poll interval must be at least 10s",
 		},
 		{
-			name: "rate zero",
+			name:     "rate zero",
 			settings: RuntimeSettings{PollIntervalSec: 30, RequestRate: 0, RequestConcurrency: 4},
-			wantErr: "request rate must be in (0, 10]",
+			wantErr:  "request rate must be in (0, 10]",
 		},
 		{
-			name: "rate too high",
+			name:     "rate too high",
 			settings: RuntimeSettings{PollIntervalSec: 30, RequestRate: 10.1, RequestConcurrency: 4},
-			wantErr: "request rate must be in (0, 10]",
+			wantErr:  "request rate must be in (0, 10]",
 		},
 		{
-			name: "concurrency too low",
+			name:     "concurrency too low",
 			settings: RuntimeSettings{PollIntervalSec: 30, RequestRate: 2, RequestConcurrency: 0},
-			wantErr: "request concurrency must be in [1, 16]",
+			wantErr:  "request concurrency must be in [1, 16]",
 		},
 		{
-			name: "concurrency too high",
+			name:     "concurrency too high",
 			settings: RuntimeSettings{PollIntervalSec: 30, RequestRate: 2, RequestConcurrency: 17},
-			wantErr: "request concurrency must be in [1, 16]",
+			wantErr:  "request concurrency must be in [1, 16]",
 		},
 	}
 	for _, tt := range tests {
@@ -81,41 +81,56 @@ func TestValidateCollectorParamsJoinsErrors(t *testing.T) {
 }
 
 func TestMicrosoftChannelValidation(t *testing.T) {
-	channel := Channel{
-		Name: "outlook", Type: ChannelMicrosoft,
-		Settings: map[string]string{
-			"client_id": "11111111-2222-3333-4444-555555555555",
-			"tenant":    "common", "to": "one@example.com,Two <two@example.com>",
-			"access_token": "access", "refresh_token": "refresh",
+	t.Parallel()
+	tests := []struct {
+		name    string
+		channel Channel
+		wantErr string
+	}{
+		{
+			name: "authorized valid",
+			channel: Channel{
+				Name: "outlook", Type: ChannelMicrosoft,
+				Settings: map[string]string{
+					"client_id": "11111111-2222-3333-4444-555555555555",
+					"tenant":    "common", "to": "one@example.com,Two <two@example.com>",
+					"access_token": "access", "refresh_token": "refresh",
+				},
+			},
+		},
+		{
+			name: "invalid tenant",
+			channel: Channel{
+				Name: "outlook", Type: ChannelMicrosoft,
+				Settings: map[string]string{
+					"client_id": "11111111-2222-3333-4444-555555555555",
+					"tenant":    "../token", "to": "one@example.com",
+				},
+			},
+			wantErr: "microsoft tenant",
+		},
+		{
+			name: "must authorize before enable",
+			channel: Channel{
+				Name: "outlook", Type: ChannelMicrosoft, Enabled: true,
+				Settings: map[string]string{
+					"client_id": "11111111-2222-3333-4444-555555555555",
+					"tenant":    "common", "to": "one@example.com",
+				},
+			},
+			wantErr: "must be authorized",
 		},
 	}
-	if err := channel.Validate(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestMicrosoftChannelRejectsInvalidTenant(t *testing.T) {
-	channel := Channel{
-		Name: "outlook", Type: ChannelMicrosoft,
-		Settings: map[string]string{
-			"client_id": "11111111-2222-3333-4444-555555555555",
-			"tenant":    "../token", "to": "one@example.com",
-		},
-	}
-	if err := channel.Validate(); err == nil {
-		t.Fatal("invalid tenant was accepted")
-	}
-}
-
-func TestMicrosoftChannelMustBeAuthorizedBeforeEnable(t *testing.T) {
-	channel := Channel{
-		Name: "outlook", Type: ChannelMicrosoft, Enabled: true,
-		Settings: map[string]string{
-			"client_id": "11111111-2222-3333-4444-555555555555",
-			"tenant":    "common", "to": "one@example.com",
-		},
-	}
-	if err := channel.Validate(); err == nil {
-		t.Fatal("unauthorized Microsoft channel was enabled")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.channel.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
 	}
 }

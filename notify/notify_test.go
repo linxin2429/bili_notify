@@ -1,7 +1,6 @@
 package notify
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,34 +10,30 @@ import (
 	"unicode/utf8"
 
 	"github.com/linxin2429/bili_notify/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWeComSender(t *testing.T) {
+	t.Parallel()
 	var got map[string]any
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Error(err)
-		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
 		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	sender, err := NewSender(model.Channel{
 		Name: "wecom", Type: model.ChannelWeCom,
 		Settings: map[string]string{"webhook": server.URL},
 	}, server.Client(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sender.Send(context.Background(), TextMessage("s", "hello")); err != nil {
-		t.Fatal(err)
-	}
-	if got["msgtype"] != "markdown" {
-		t.Fatalf("msgtype = %v", got["msgtype"])
-	}
+	require.NoError(t, err)
+	require.NoError(t, sender.Send(t.Context(), TextMessage("s", "hello")))
+	assert.Equal(t, "markdown", got["msgtype"])
 }
 
 func TestDynamicMessageRendersRichContent(t *testing.T) {
+	t.Parallel()
 	dynamic := model.Dynamic{
 		ID: "10", UID: "42", UPName: "tester", Type: "DYNAMIC_TYPE_AV",
 		PublishedAt: time.Date(2026, 8, 4, 1, 2, 3, 0, time.UTC),
@@ -59,116 +54,104 @@ func TestDynamicMessageRendersRichContent(t *testing.T) {
 	message := DynamicMessage(dynamic)
 	plain := renderPlainText(message)
 	for _, expected := range []string{"视频标题", "视频简介", "播放：1.2万", "原动态正文", "https://t.bilibili.com/10"} {
-		if !strings.Contains(plain, expected) {
-			t.Fatalf("plain text does not contain %q:\n%s", expected, plain)
-		}
+		assert.Contains(t, plain, expected)
 	}
 	htmlBody := renderHTML(message)
-	if strings.Contains(htmlBody, "<script>") || !strings.Contains(htmlBody, "&lt;script&gt;") || !strings.Contains(htmlBody, `<img src="https://i0.hdslb.com/cover.jpg"`) {
-		t.Fatalf("HTML = %s", htmlBody)
-	}
+	assert.NotContains(t, htmlBody, "<script>")
+	assert.Contains(t, htmlBody, "&lt;script&gt;")
+	assert.Contains(t, htmlBody, `<img src="https://i0.hdslb.com/cover.jpg"`)
 	markdown := renderMarkdown(message, 20_000, false, true)
-	if !strings.Contains(markdown, `![封面](https://i0.hdslb.com/cover.jpg)`) || !strings.Contains(markdown, "转发自 author") {
-		t.Fatalf("Markdown = %s", markdown)
-	}
+	assert.Contains(t, markdown, `![封面](https://i0.hdslb.com/cover.jpg)`)
+	assert.Contains(t, markdown, "转发自 author")
 }
 
 func TestMarkdownLengthLimitsPreserveUTF8AndSourceLink(t *testing.T) {
+	t.Parallel()
 	message := Message{
 		Subject:  "长动态",
 		Sections: []Section{{Paragraphs: []string{strings.Repeat("正文🙂", 3000)}, Images: []Image{{Label: "图片", URL: "https://i0.hdslb.com/image.jpg"}}}},
 		Action:   Link{Label: "查看原动态", URL: "https://t.bilibili.com/1"},
 	}
 	wecom := renderMarkdown(message, 4096, true, false)
-	if len(wecom) > 4096 || !utf8.ValidString(wecom) || !strings.Contains(wecom, "内容已截断") || !strings.Contains(wecom, message.Action.URL) || !strings.Contains(wecom, message.Sections[0].Images[0].URL) {
-		t.Fatalf("WeCom markdown bytes=%d valid=%v:\n%s", len(wecom), utf8.ValidString(wecom), wecom)
-	}
+	assert.LessOrEqual(t, len(wecom), 4096)
+	assert.True(t, utf8.ValidString(wecom))
+	assert.Contains(t, wecom, "内容已截断")
+	assert.Contains(t, wecom, message.Action.URL)
+	assert.Contains(t, wecom, message.Sections[0].Images[0].URL)
+
 	dingTalk := renderMarkdown(message, 20_000, false, true)
-	if len([]rune(dingTalk)) > 20_000 || !utf8.ValidString(dingTalk) || !strings.Contains(dingTalk, message.Action.URL) {
-		t.Fatalf("DingTalk markdown runes=%d", len([]rune(dingTalk)))
-	}
+	assert.LessOrEqual(t, len([]rune(dingTalk)), 20_000)
+	assert.True(t, utf8.ValidString(dingTalk))
+	assert.Contains(t, dingTalk, message.Action.URL)
 }
 
 func TestFeishuPostIsRichTextAndWithinLimit(t *testing.T) {
+	t.Parallel()
 	message := Message{
 		Subject:  "长动态",
 		Sections: []Section{{Paragraphs: []string{strings.Repeat("正文🙂", 7000)}, Images: []Image{{Label: "图片", URL: "https://i0.hdslb.com/image.jpg"}}}},
 		Action:   Link{Label: "查看原动态", URL: "https://t.bilibili.com/1"},
 	}
 	payload := renderFeishuPayload(message, "1", "sign")
-	if payload["msg_type"] != "post" || payloadSize(payload) > 20*1024 {
-		t.Fatalf("payload type=%v size=%d", payload["msg_type"], payloadSize(payload))
-	}
+	assert.Equal(t, "post", payload["msg_type"])
+	assert.LessOrEqual(t, payloadSize(payload), 20*1024)
 	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for _, expected := range []string{"内容已截断", "https://i0.hdslb.com/image.jpg", "https://t.bilibili.com/1"} {
-		if !strings.Contains(string(raw), expected) {
-			t.Fatalf("payload does not contain %q: %s", expected, raw)
-		}
+		assert.Contains(t, string(raw), expected)
 	}
 }
 
 func TestRobotSenderUsesChannelSpecificFormats(t *testing.T) {
+	t.Parallel()
 	for _, channelType := range []model.ChannelType{model.ChannelDingTalk, model.ChannelFeishu} {
 		t.Run(string(channelType), func(t *testing.T) {
+			t.Parallel()
 			var got map[string]any
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-					t.Error(err)
-				}
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
 				_, _ = w.Write([]byte(`{"errcode":0,"code":0}`))
 			}))
-			defer server.Close()
+			t.Cleanup(server.Close)
 			sender, err := NewSender(model.Channel{
 				Name: string(channelType), Type: channelType,
 				Settings: map[string]string{"webhook": server.URL, "secret": "secret"},
 			}, server.Client(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			message := Message{
 				Subject: "subject", Sections: []Section{{Paragraphs: []string{"body"}, Images: []Image{{Label: "image", URL: "https://example.com/image.jpg"}}}},
 			}
-			if err := sender.Send(t.Context(), message); err != nil {
-				t.Fatal(err)
-			}
-			if channelType == model.ChannelDingTalk && got["msgtype"] != "markdown" {
-				t.Fatalf("DingTalk payload = %#v", got)
-			}
-			if channelType == model.ChannelFeishu && got["msg_type"] != "post" {
-				t.Fatalf("Feishu payload = %#v", got)
+			require.NoError(t, sender.Send(t.Context(), message))
+			switch channelType {
+			case model.ChannelDingTalk:
+				assert.Equal(t, "markdown", got["msgtype"])
+			case model.ChannelFeishu:
+				assert.Equal(t, "post", got["msg_type"])
 			}
 		})
 	}
 }
 
 func TestMicrosoftSenderRefreshesTokenAndSendsGraphMail(t *testing.T) {
+	t.Parallel()
 	var gotAuthorization string
 	var gotPayload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token":
-			if err := r.ParseForm(); err != nil {
-				t.Error(err)
-			}
-			if r.Form.Get("refresh_token") != "old-refresh" {
-				t.Errorf("refresh_token = %q", r.Form.Get("refresh_token"))
-			}
+			require.NoError(t, r.ParseForm())
+			assert.Equal(t, "old-refresh", r.Form.Get("refresh_token"))
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"access_token":"new-access","refresh_token":"new-refresh","token_type":"Bearer","expires_in":3600}`))
 		case "/send":
 			gotAuthorization = r.Header.Get("Authorization")
-			if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
-				t.Error(err)
-			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&gotPayload))
 			w.WriteHeader(http.StatusAccepted)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	settings := map[string]string{
 		"client_id": "11111111-2222-3333-4444-555555555555", "tenant": "common",
@@ -181,49 +164,36 @@ func TestMicrosoftSenderRefreshesTokenAndSendsGraphMail(t *testing.T) {
 		updated = values
 		return nil
 	}, microsoftEndpoints{tokenURL: server.URL + "/token", graphSendURL: server.URL + "/send"})
-	if err := sender.Send(t.Context(), TextMessage("subject", "body")); err != nil {
-		t.Fatal(err)
-	}
-	if gotAuthorization != "Bearer new-access" {
-		t.Fatalf("Authorization = %q", gotAuthorization)
-	}
-	if updated["refresh_token"] != "new-refresh" || updated["authorized"] != "true" {
-		t.Fatalf("updated settings = %#v", updated)
-	}
+	require.NoError(t, sender.Send(t.Context(), TextMessage("subject", "body")))
+	assert.Equal(t, "Bearer new-access", gotAuthorization)
+	assert.Equal(t, "new-refresh", updated["refresh_token"])
+	assert.Equal(t, "true", updated["authorized"])
 	message, ok := gotPayload["message"].(map[string]any)
-	if !ok || message["subject"] != "subject" {
-		t.Fatalf("payload = %#v", gotPayload)
-	}
+	require.True(t, ok)
+	assert.Equal(t, "subject", message["subject"])
 	recipients, ok := message["toRecipients"].([]any)
-	if !ok || len(recipients) != 2 {
-		t.Fatalf("recipients = %#v", message["toRecipients"])
-	}
+	require.True(t, ok)
+	assert.Len(t, recipients, 2)
 }
 
 func TestStartMicrosoftDeviceAuth(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/device" {
 			http.NotFound(w, r)
 			return
 		}
-		if err := r.ParseForm(); err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(r.Form.Get("scope"), "Mail.Send") {
-			t.Errorf("scope = %q", r.Form.Get("scope"))
-		}
+		require.NoError(t, r.ParseForm())
+		assert.Contains(t, r.Form.Get("scope"), "Mail.Send")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"device_code":"device","user_code":"ABCD-EFGH","verification_uri":"https://microsoft.com/devicelogin","expires_in":900,"interval":5}`))
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	auth, err := startMicrosoftDeviceAuth(t.Context(), map[string]string{
 		"client_id": "11111111-2222-3333-4444-555555555555",
 	}, server.Client(), microsoftEndpoints{deviceAuthURL: server.URL + "/device", tokenURL: server.URL + "/token"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if auth.UserCode != "ABCD-EFGH" || auth.VerificationURI != "https://microsoft.com/devicelogin" {
-		t.Fatalf("authorization = %#v", auth)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "ABCD-EFGH", auth.UserCode)
+	assert.Equal(t, "https://microsoft.com/devicelogin", auth.VerificationURI)
 }

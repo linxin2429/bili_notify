@@ -2,7 +2,6 @@ package state
 
 import (
 	"bytes"
-	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,29 +13,26 @@ import (
 )
 
 func TestBaselineAndDurableOutbox(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.db")
 	v := mustVault(t, 1)
 	store, err := Open(path, v)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	up := model.UP{UID: "42", Enabled: true}
-	if err := store.PutUP(up); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.PutUP(up))
 	channel := model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com/hook"}}
 	channel, err = store.PutChannel(channel)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	first := model.Dynamic{ID: "1", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now().UTC(), URL: "https://t.bilibili.com/1"}
 	created, err := store.RecordDynamics("42", []model.Dynamic{first}, []string{channel.ID}, true)
-	if err != nil || created != 0 {
-		t.Fatalf("baseline created=%d err=%v", created, err)
-	}
-	if deliveries, _ := store.ListDeliveries(0); len(deliveries) != 0 {
-		t.Fatalf("baseline created %d deliveries", len(deliveries))
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 0, created)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	assert.Empty(t, deliveries)
+
 	second := first
 	second.ID = "2"
 	second.Summary = "full body"
@@ -45,98 +41,79 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	second.Stats = &model.DynamicStats{Forwards: 1, Comments: 2, Likes: 3}
 	second.Original = &model.Dynamic{ID: "original", UPName: "author", Type: "DYNAMIC_TYPE_WORD", Summary: "original body"}
 	created, err = store.RecordDynamics("42", []model.Dynamic{first, second}, []string{channel.ID}, false)
-	if err != nil || created != 1 {
-		t.Fatalf("new dynamics created=%d err=%v", created, err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 1, created)
+	require.NoError(t, store.Close())
 
 	store, err = Open(path, v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	deliveries, err := store.ListDeliveries(0)
-	if err != nil || len(deliveries) != 1 || deliveries[0].Dynamic.ID != "2" {
-		t.Fatalf("deliveries=%#v err=%v", deliveries, err)
-	}
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	deliveries, err = store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, "2", deliveries[0].Dynamic.ID)
+
 	persisted := deliveries[0].Dynamic
-	if persisted.Title != "video title" || len(persisted.Media) != 1 || persisted.Stats == nil || persisted.Stats.Likes != 3 || persisted.Original == nil || persisted.Original.Summary != "original body" {
-		t.Fatalf("rich dynamic was not preserved: %#v", persisted)
-	}
-	if err := store.CompleteDelivery(deliveries[0].ID); err != nil {
-		t.Fatal(err)
-	}
+	assert.Equal(t, "video title", persisted.Title)
+	require.Len(t, persisted.Media, 1)
+	require.NotNil(t, persisted.Stats)
+	assert.Equal(t, int64(3), persisted.Stats.Likes)
+	require.NotNil(t, persisted.Original)
+	assert.Equal(t, "original body", persisted.Original.Summary)
+	require.NoError(t, store.CompleteDelivery(deliveries[0].ID))
 }
 
 func TestEncryptedRecords(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.db")
 	oldVault := mustVault(t, 2)
 	store, err := Open(path, oldVault)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	_, err = store.PutChannel(model.Channel{Name: "mail", Type: model.ChannelEmail, Settings: map[string]string{
 		"host": "smtp.example.com", "port": "465", "tls": "tls", "from": "a@example.com", "to": "b@example.com", "password": "secret",
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+
 	correct, err := Open(path, oldVault)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer correct.Close()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = correct.Close() })
 	channels, err := correct.ListChannels()
-	if err != nil || channels[0].Settings["password"] != "secret" {
-		t.Fatalf("channels=%#v err=%v", channels, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, channels, 1)
+	assert.Equal(t, "secret", channels[0].Settings["password"])
 }
 
 func TestMissingSession(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 4))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if _, err := store.Session(); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("Session() error=%v, want ErrNotFound", err)
-	}
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	_, err = store.Session()
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestAdministratorPasswordInitializationIsAtomic(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 9))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if _, err := store.AdminPasswordHash(); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("AdminPasswordHash() error=%v, want ErrNotFound", err)
-	}
-	if err := store.InitializeAdminPasswordHash("first"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.InitializeAdminPasswordHash("second"); !errors.Is(err, ErrInitialized) {
-		t.Fatalf("second initialization error=%v, want ErrInitialized", err)
-	}
-	if err := store.SetAdminPasswordHash("changed"); err != nil {
-		t.Fatal(err)
-	}
-	if hash, err := store.AdminPasswordHash(); err != nil || hash != "changed" {
-		t.Fatalf("hash=%q err=%v", hash, err)
-	}
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	_, err = store.AdminPasswordHash()
+	require.ErrorIs(t, err, ErrNotFound)
+	require.NoError(t, store.InitializeAdminPasswordHash("first"))
+	require.ErrorIs(t, store.InitializeAdminPasswordHash("second"), ErrInitialized)
+	require.NoError(t, store.SetAdminPasswordHash("changed"))
+	hash, err := store.AdminPasswordHash()
+	require.NoError(t, err)
+	assert.Equal(t, "changed", hash)
 }
 
 func TestUpdateChannelSettingsMergesEncryptedRecord(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 5))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
 	channel, err := store.PutChannel(model.Channel{
 		Name: "outlook", Type: model.ChannelMicrosoft,
 		Settings: map[string]string{
@@ -144,20 +121,14 @@ func TestUpdateChannelSettingsMergesEncryptedRecord(t *testing.T) {
 			"tenant":    "common", "to": "receiver@example.com",
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	updated, err := store.UpdateChannelSettings(channel.ID, map[string]string{"refresh_token": "secret", "authorized": "true"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.Settings["to"] != "receiver@example.com" || updated.Settings["refresh_token"] != "secret" {
-		t.Fatalf("settings = %#v", updated.Settings)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "receiver@example.com", updated.Settings["to"])
+	assert.Equal(t, "secret", updated.Settings["refresh_token"])
 	loaded, err := store.Channel(channel.ID)
-	if err != nil || loaded.Settings["refresh_token"] != "secret" {
-		t.Fatalf("loaded=%#v err=%v", loaded, err)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "secret", loaded.Settings["refresh_token"])
 }
 
 func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
@@ -215,8 +186,6 @@ func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
 func mustVault(t *testing.T, fill byte) *vault.Vault {
 	t.Helper()
 	v, err := vault.New(bytes.Repeat([]byte{fill}, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return v
 }

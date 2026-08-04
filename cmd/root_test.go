@@ -1,14 +1,17 @@
 package cmd
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestServeFlagBinding(t *testing.T) {
+	t.Parallel()
 	root := NewRootCmd()
 	root.SetArgs([]string{"serve", "--request-rate", "0"})
-	if err := root.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "request rate") {
-		t.Fatalf("Execute() error=%v, want request rate validation", err)
-	}
+	err := root.ExecuteContext(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "request rate")
 }

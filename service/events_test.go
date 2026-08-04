@@ -1,21 +1,23 @@
 package service
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestEventBusCoalescesTopicsWithoutLosingRevision(t *testing.T) {
+	t.Parallel()
 	bus := NewEventBus()
 	subscription := bus.Subscribe()
-	defer subscription.Close()
+	t.Cleanup(subscription.Close)
+
 	bus.Publish(TopicStatus)
 	bus.Publish(TopicUPs | TopicDeliveries)
+
 	topics, revision, err := subscription.Next(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := TopicStatus | TopicUPs | TopicDeliveries; topics != want {
-		t.Fatalf("topics=%b, want %b", topics, want)
-	}
-	if revision != 2 {
-		t.Fatalf("revision=%d, want 2", revision)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, TopicStatus|TopicUPs|TopicDeliveries, topics)
+	assert.Equal(t, uint64(2), revision)
 }

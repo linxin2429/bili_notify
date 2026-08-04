@@ -6,9 +6,12 @@ import (
 	"time"
 
 	"github.com/linxin2429/bili_notify/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMicrosoftIdentityChanged(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		current map[string]string
@@ -33,24 +36,22 @@ func TestMicrosoftIdentityChanged(t *testing.T) {
 			want:    true,
 		},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := microsoftIdentityChanged(test.current, test.update); got != test.want {
-				t.Fatalf("microsoftIdentityChanged() = %v, want %v", got, test.want)
-			}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, microsoftIdentityChanged(tt.current, tt.update))
 		})
 	}
 }
 
 func TestChannelViewNeverReturnsSecrets(t *testing.T) {
+	t.Parallel()
 	view := toChannelView(model.Channel{
 		ID: "channel", Name: "mail", Type: model.ChannelEmail, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		Settings: map[string]string{"host": "smtp.example.com", "password": "secret", "webhook": "https://secret"},
 	})
-	if view.Settings["password"] != "" || view.Settings["webhook"] != "" {
-		t.Fatalf("secret settings leaked: %#v", view.Settings)
-	}
-	if !slices.Equal(view.ConfiguredSecrets, []string{"password", "webhook"}) {
-		t.Fatalf("configured secrets=%v", view.ConfiguredSecrets)
-	}
+	assert.Empty(t, view.Settings["password"])
+	assert.Empty(t, view.Settings["webhook"])
+	assert.Equal(t, "smtp.example.com", view.Settings["host"])
+	require.True(t, slices.Equal(view.ConfiguredSecrets, []string{"password", "webhook"}))
 }

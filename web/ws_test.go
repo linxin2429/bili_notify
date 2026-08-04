@@ -19,17 +19,16 @@ import (
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
 	"github.com/linxin2429/bili_notify/vault"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWebSocketRequiresSessionAndPublishesUpdates(t *testing.T) {
+	t.Parallel()
 	store := openWebTestStore(t)
 	auth, setupCode, err := newAuthenticator(store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := auth.initialize(setupCode, "correct horse battery staple"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, auth.initialize(setupCode, "correct horse battery staple"))
 	events := service.NewEventBus()
 	server := &Server{
 		auth: auth,
@@ -46,96 +45,78 @@ func TestWebSocketRequiresSessionAndPublishesUpdates(t *testing.T) {
 		connections: make(map[string]map[*websocket.Conn]struct{}),
 	}
 	httpServer := httptest.NewTLSServer(server.adminHandler())
-	defer httpServer.Close()
+	t.Cleanup(httpServer.Close)
 	wsURL := "wss" + strings.TrimPrefix(httpServer.URL, "https") + "/api/v1/ws"
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	connection, response, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: httpServer.Client()})
 	if connection != nil {
 		_ = connection.CloseNow()
 	}
-	if err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated dial: err=%v status=%v", err, responseStatus(response))
-	}
+	require.Error(t, err)
+	require.NotNil(t, response)
+	assert.Equal(t, http.StatusUnauthorized, response.StatusCode)
 	_ = response.Body.Close()
 
 	token, _, err := auth.createSession()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	headers := http.Header{}
 	headers.Set("Cookie", (&http.Cookie{Name: sessionCookie, Value: token}).String())
 	headers.Set("Origin", httpServer.URL)
 	connection, response, err = websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: httpServer.Client(), HTTPHeader: headers})
-	if err != nil {
-		t.Fatalf("authenticated dial: %v (status=%v)", err, responseStatus(response))
-	}
-	defer connection.CloseNow()
+	require.NoError(t, err, "authenticated dial status=%v", responseStatus(response))
+	t.Cleanup(func() { _ = connection.CloseNow() })
 
 	var initial testWSEnvelope
-	if err := wsjson.Read(ctx, connection, &initial); err != nil {
-		t.Fatal(err)
-	}
-	if initial.Event != "snapshot" {
-		t.Fatalf("first event=%q, want snapshot", initial.Event)
-	}
+	require.NoError(t, wsjson.Read(ctx, connection, &initial))
+	assert.Equal(t, "snapshot", initial.Event)
 	var snapshot dashboardSnapshot
-	if err := json.Unmarshal(initial.Data, &snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.UPs == nil || snapshot.Channels == nil || snapshot.Deliveries == nil || snapshot.MicrosoftLogins == nil {
-		t.Fatalf("snapshot contains null collections: %#v", snapshot)
-	}
+	require.NoError(t, json.Unmarshal(initial.Data, &snapshot))
+	assert.NotNil(t, snapshot.UPs)
+	assert.NotNil(t, snapshot.Channels)
+	assert.NotNil(t, snapshot.Deliveries)
+	assert.NotNil(t, snapshot.MicrosoftLogins)
 
 	request := wsRequest{
 		ID:      "create-up",
 		Action:  "up.create",
 		Payload: json.RawMessage(`{"uid":"42","name":"Test UP","enabled":true}`),
 	}
-	if err := wsjson.Write(ctx, connection, request); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, wsjson.Write(ctx, connection, request))
 
 	var gotResponse, gotUpdate bool
 	for range 4 {
 		var envelope testWSEnvelope
-		if err := wsjson.Read(ctx, connection, &envelope); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, wsjson.Read(ctx, connection, &envelope))
 		switch {
 		case envelope.ID == request.ID:
-			if !envelope.OK || envelope.Error != nil {
-				t.Fatalf("command failed: %#v", envelope.Error)
-			}
+			require.True(t, envelope.OK)
+			assert.Nil(t, envelope.Error)
 			var up model.UP
-			if err := json.Unmarshal(envelope.Data, &up); err != nil {
-				t.Fatal(err)
-			}
-			if up.UID != "42" || up.Name != "Test UP" || !up.Enabled {
-				t.Fatalf("unexpected response UP: %#v", up)
-			}
+			require.NoError(t, json.Unmarshal(envelope.Data, &up))
+			assert.Equal(t, "42", up.UID)
+			assert.Equal(t, "Test UP", up.Name)
+			assert.True(t, up.Enabled)
 			gotResponse = true
 		case envelope.Event == "ups.updated":
 			var ups []model.UP
-			if err := json.Unmarshal(envelope.Data, &ups); err != nil {
-				t.Fatal(err)
-			}
-			if len(ups) != 1 || ups[0].UID != "42" || envelope.Revision == 0 {
-				t.Fatalf("unexpected UP update: revision=%d ups=%#v", envelope.Revision, ups)
-			}
+			require.NoError(t, json.Unmarshal(envelope.Data, &ups))
+			require.Len(t, ups, 1)
+			assert.Equal(t, "42", ups[0].UID)
+			assert.NotZero(t, envelope.Revision)
 			gotUpdate = true
 		}
 		if gotResponse && gotUpdate {
 			break
 		}
 	}
-	if !gotResponse || !gotUpdate {
-		t.Fatalf("got response=%v update=%v", gotResponse, gotUpdate)
-	}
+	assert.True(t, gotResponse, "missing command response")
+	assert.True(t, gotUpdate, "missing ups.updated event")
 }
 
 func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
+	t.Parallel()
 	deliveries := make([]model.Delivery, 100)
 	for i := range deliveries {
 		deliveries[i] = model.Delivery{
@@ -152,15 +133,10 @@ func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
 	}
 	views := deliveryViews(deliveries)
 	raw, err := json.Marshal(views)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(raw) >= 1<<20 {
-		t.Fatalf("delivery views size = %d", len(raw))
-	}
-	if strings.Contains(string(raw), "不应进入管理台") || len([]rune(views[0].Dynamic.Summary)) > 241 {
-		t.Fatalf("delivery view contains rich payload: %s", raw[:min(len(raw), 1000)])
-	}
+	require.NoError(t, err)
+	assert.Less(t, len(raw), 1<<20)
+	assert.NotContains(t, string(raw), "不应进入管理台")
+	assert.LessOrEqual(t, len([]rune(views[0].Dynamic.Summary)), 241)
 }
 
 type testWSEnvelope struct {
@@ -175,13 +151,9 @@ type testWSEnvelope struct {
 func openWebTestStore(t *testing.T) *state.Store {
 	t.Helper()
 	v, err := vault.New(make([]byte, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"), v)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	return store
 }

@@ -5,39 +5,32 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadOrCreateTLSConfig(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "tls.pem")
 	config, err := loadOrCreateTLSConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if config.MinVersion != tls.VersionTLS13 || len(config.Certificates) != 1 {
-		t.Fatalf("unexpected TLS config: %#v", config)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, uint16(tls.VersionTLS13), config.MinVersion)
+	require.Len(t, config.Certificates, 1)
+
 	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("TLS bundle mode=%o, want 600", info.Mode().Perm())
-	}
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
 	second, err := loadOrCreateTLSConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.Certificates[0].Leaf.SerialNumber.Cmp(config.Certificates[0].Leaf.SerialNumber) != 0 {
-		t.Fatal("existing TLS certificate was not reused")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 0, second.Certificates[0].Leaf.SerialNumber.Cmp(config.Certificates[0].Leaf.SerialNumber))
 }
 
 func TestInvalidTLSBundleRejected(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "tls.pem")
-	if err := os.WriteFile(path, []byte("invalid"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadOrCreateTLSConfig(path); err == nil {
-		t.Fatal("invalid TLS bundle was accepted")
-	}
+	require.NoError(t, os.WriteFile(path, []byte("invalid"), 0o600))
+	_, err := loadOrCreateTLSConfig(path)
+	require.Error(t, err)
 }

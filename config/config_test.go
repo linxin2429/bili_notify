@@ -5,47 +5,74 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestConfigRejectsUnknownLogLevel(t *testing.T) {
-	config := Config{
+func TestConfigValidate(t *testing.T) {
+	t.Parallel()
+	valid := Config{
 		DataDir: "/data", AdminAddr: ":8443", ObserveAddr: ":9090", PollInterval: 30 * time.Second,
-		RequestRate: 2, RequestConcurrency: 4, LogLevel: "verbose",
+		RequestRate: 2, RequestConcurrency: 4, LogLevel: "info",
 	}
-	if err := config.Validate(); err == nil {
-		t.Fatal("unknown log level was accepted")
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{name: "valid"},
+		{
+			name:    "unknown log level",
+			mutate:  func(c *Config) { c.LogLevel = "verbose" },
+			wantErr: "log level",
+		},
+		{
+			name:    "missing data dir",
+			mutate:  func(c *Config) { c.DataDir = "" },
+			wantErr: "data directory",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := valid
+			if tt.mutate != nil {
+				tt.mutate(&cfg)
+			}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
 	}
 }
 
 func TestLoadOrCreateMasterKey(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	first, err := LoadOrCreateMasterKey(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Len(t, first, 32)
+
 	second, err := LoadOrCreateMasterKey(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(first) != string(second) || len(first) != 32 {
-		t.Fatal("master key was not reused")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, first, second)
+
 	_, keyPath, _ := Paths(dir)
 	info, err := os.Stat(keyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("master key mode=%o, want 600", info.Mode().Perm())
-	}
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 
 func TestDatabaseWithoutKeyRejected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, StateFileName), []byte("state"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadOrCreateMasterKey(dir); err == nil {
-		t.Fatal("database without key was accepted")
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, StateFileName), []byte("state"), 0o600))
+	_, err := LoadOrCreateMasterKey(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "master key")
 }
