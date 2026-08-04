@@ -1,33 +1,32 @@
-# Bili Notify — local / self-hosted compose
+# Bili Notify — pull from Docker Hub
 #
-# 首次启动会在数据卷中创建：
-#   /data/data.db     SQLite（配置、Outbox、内容档案；启动时 goose 迁移）
+# 镜像：dengxinlin/bili-notify（tag 由 git tag vX.Y.Z 发布时推送）
+#   0.2.0 / 0.2 / 0 / latest
+#
+# 数据卷首次启动自动创建：
+#   /data/data.db     SQLite（配置、Outbox、内容档案；启动 goose 迁移）
 #   /data/master.key  AES-256 主密钥
-#   /data/tls.pem     自签名 TLS 证书
+#   /data/tls.pem     自签名 TLS
 #
-# 若卷中仍有旧版 state.db / content.db，服务会拒绝启动（不自动导入）。
-# 升级到 v0.2+ 请使用全新命名卷，或自行清空旧数据后重建。
+# 注意：v0.2+ 不再使用 state.db / content.db。若命名卷里还有旧文件，
+# 服务会拒绝启动；请换新卷或清空后重建。
 #
 # 使用：
-#   docker compose up -d --build
-#   docker compose logs -f bili-notify
-#   # 浏览器打开 https://localhost:8443 ，用日志中的 setup_code 初始化
+#   docker-compose pull
+#   docker-compose up -d
+#   docker-compose logs -f bili-notify
+#   # 打开 https://localhost:8443 ，用日志中的 setup_code 初始化管理员
+
+version: "3.8"
 
 services:
   bili-notify:
-    build:
-      context: .
-      args:
-        VERSION: ${VERSION:-0.2.0}
-        COMMIT: ${COMMIT:-local}
-        BUILD_DATE: ${BUILD_DATE:-unknown}
-        GOPROXY: ${GOPROXY:-https://mirrors.aliyun.com/goproxy,direct}
-    image: ${IMAGE:-bili-notify:0.2.0}
+    image: dengxinlin/bili-notify:${IMAGE_TAG:-0.2.0}
     container_name: bili-notify
     restart: unless-stopped
     ports:
       - "${ADMIN_PORT:-8443}:8443"
-      # 观测口默认不暴露；需要 Prometheus/health 时取消下一行注释
+      # 需要 /healthz /readyz /metrics 时取消注释：
       # - "${OBSERVE_PORT:-9090}:9090"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
@@ -35,7 +34,7 @@ services:
       BILI_NOTIFY_ADMIN_ADDR: ":8443"
       BILI_NOTIFY_OBSERVE_ADDR: ":9090"
       BILI_NOTIFY_LOG_LEVEL: ${BILI_NOTIFY_LOG_LEVEL:-info}
-      # 以下三项仅在空库首次启动时写入 data.db，之后由管理台热更新
+      # 仅空库首次启动写入 data.db，之后由管理台热更新
       BILI_NOTIFY_POLL_INTERVAL: ${BILI_NOTIFY_POLL_INTERVAL:-30s}
       BILI_NOTIFY_REQUEST_RATE: ${BILI_NOTIFY_REQUEST_RATE:-2}
       BILI_NOTIFY_REQUEST_CONCURRENCY: ${BILI_NOTIFY_REQUEST_CONCURRENCY:-4}
@@ -57,4 +56,3 @@ services:
 
 volumes:
   bili-notify-data:
-    name: ${DATA_VOLUME:-bili-notify-data}
