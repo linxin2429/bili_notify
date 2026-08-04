@@ -93,6 +93,82 @@ func TestQueryDynamicsFilters(t *testing.T) {
 	}
 }
 
+func TestQueryDynamicsBuildsPreviewFromArchivedPayload(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		dynamic      model.Dynamic
+		wantMedia    int
+		wantOriginal bool
+	}{
+		{name: "plain text", dynamic: model.Dynamic{ID: "word", Type: "DYNAMIC_TYPE_WORD", Summary: "正文"}},
+		{name: "single image", dynamic: model.Dynamic{ID: "single", Type: "DYNAMIC_TYPE_DRAW", Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.com/1.jpg"}}}, wantMedia: 1},
+		{name: "multiple images", dynamic: model.Dynamic{ID: "multi", Type: "DYNAMIC_TYPE_DRAW", Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.com/1.jpg"}, {Kind: model.DynamicMediaImage, URL: "https://example.com/2.jpg"}}}, wantMedia: 2},
+		{name: "video cover", dynamic: model.Dynamic{ID: "video", Type: "DYNAMIC_TYPE_AV", Media: []model.DynamicMedia{{Kind: model.DynamicMediaCover, URL: "https://example.com/cover.jpg"}}}, wantMedia: 1},
+		{name: "mixed text and image", dynamic: model.Dynamic{ID: "mixed", Type: "DYNAMIC_TYPE_DRAW", Description: "正文", Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.com/3.jpg"}}}, wantMedia: 1},
+		{name: "forward preview", dynamic: model.Dynamic{ID: "forward", Type: "DYNAMIC_TYPE_FORWARD", Summary: "转发语", Original: &model.Dynamic{ID: "original", UPName: "原作者", Summary: "原文"}}, wantOriginal: true},
+		{name: "no media", dynamic: model.Dynamic{ID: "empty", Type: "DYNAMIC_TYPE_COMMON_SQUARE"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store := openTestStore(t, 31)
+			tt.dynamic.UID = "42"
+			tt.dynamic.UPName = "UP"
+			tt.dynamic.PublishedAt = base
+			require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
+			_, err := store.RecordDynamics("42", []model.Dynamic{tt.dynamic}, nil, false)
+			require.NoError(t, err)
+
+			items, total, err := store.QueryDynamics(ContentQuery{})
+			require.NoError(t, err)
+			assert.Equal(t, 1, total)
+			require.Len(t, items, 1)
+			assert.Len(t, items[0].Media, tt.wantMedia)
+			if tt.wantOriginal {
+				require.NotNil(t, items[0].Original)
+				assert.Equal(t, "原文", items[0].Original.Summary)
+			} else {
+				assert.Nil(t, items[0].Original)
+			}
+		})
+	}
+}
+
+func TestQueryDynamicsDegradesCorruptArchivedPayload(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 32)
+	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
+	pub := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	_, err := store.RecordDynamics("42", []model.Dynamic{
+		{
+			ID: "broken", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_DRAW", PublishedAt: pub, Summary: "坏档",
+			Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.com/lost.jpg"}},
+		},
+		{
+			ID: "ok", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_DRAW", PublishedAt: pub.Add(time.Hour), Summary: "好档",
+			Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.com/ok.jpg"}},
+		},
+	}, nil, false)
+	require.NoError(t, err)
+	require.NoError(t, store.db.Model(&dynamicRow{}).Where("id = ?", "broken").Update("payload_json", "{").Error)
+
+	items, total, err := store.QueryDynamics(ContentQuery{})
+	require.NoError(t, err)
+	assert.Equal(t, 2, total)
+	require.Len(t, items, 2)
+	assert.Equal(t, "ok", items[0].ID)
+	assert.Equal(t, "好档", items[0].Summary)
+	require.Len(t, items[0].Media, 1)
+	assert.Equal(t, "https://example.com/ok.jpg", items[0].Media[0].URL)
+	assert.Equal(t, "broken", items[1].ID)
+	assert.Equal(t, "坏档", items[1].Summary)
+	assert.Empty(t, items[1].Media)
+	assert.Nil(t, items[1].Original)
+}
+
 func TestArchiveAndQueryComments(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, 22)

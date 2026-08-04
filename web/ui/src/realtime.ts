@@ -141,9 +141,9 @@ export class RealtimeClient {
   private receive(raw: string) {
     try {
       const envelope = envelopeSchema.parse(JSON.parse(raw))
-	  const revision = nextRevision(this.revision, envelope.event, envelope.revision)
-	  if (revision === null) return
-	  this.revision = revision
+      const revision = nextRevision(this.revision, envelope.event, envelope.revision)
+      if (revision === null) return
+      this.revision = revision
       const data = parseEvent(envelope.event, envelope.data)
       if (envelope.event === 'snapshot') this.callbacks.onSnapshot(data as DashboardSnapshot)
       else this.callbacks.onEvent(envelope.event, data, envelope.revision)

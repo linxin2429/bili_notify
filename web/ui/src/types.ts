@@ -133,9 +133,33 @@ export interface DynamicHistoryItem {
   baseline: boolean
   title?: string
   summary?: string
+  description?: string
   url?: string
   target_url?: string
   badge?: string
+  media?: DynamicMedia[]
+  original?: DynamicPreview
+}
+
+export interface DynamicMedia {
+  kind: string
+  url: string
+  width?: number
+  height?: number
+}
+
+export interface DynamicPreview {
+  id?: string
+  uid?: string
+  up_name?: string
+  type?: string
+  title?: string
+  summary?: string
+  description?: string
+  url?: string
+  target_url?: string
+  badge?: string
+  media?: DynamicMedia[]
 }
 
 export interface CommentHistoryItem {
@@ -172,7 +196,7 @@ export interface DynamicDetail {
   target_url?: string
   badge?: string
   links?: { text: string; url: string }[]
-  media?: { kind: string; url: string; width?: number; height?: number }[]
+  media?: DynamicMedia[]
   original?: DynamicDetail
 }
 

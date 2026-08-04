@@ -1,10 +1,34 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import {
-  Add, Autorenew, BrightnessAuto, CheckCircle, ChevronLeft, ChevronRight, DarkMode, Dashboard, Delete, Edit, Email,
-  ErrorOutlined, History, Hub, LightMode, LiveTv, Logout, Menu as MenuIcon, NotificationsActive, OpenInNew,
-  Password, People, PlayArrow, QrCode2, Refresh, Science, Settings, WarningAmber,
-} from '@mui/icons-material'
+import Add from '@mui/icons-material/Add'
+import Autorenew from '@mui/icons-material/Autorenew'
+import BrightnessAuto from '@mui/icons-material/BrightnessAuto'
+import BrokenImage from '@mui/icons-material/BrokenImage'
+import CheckCircle from '@mui/icons-material/CheckCircle'
+import ChevronLeft from '@mui/icons-material/ChevronLeft'
+import ChevronRight from '@mui/icons-material/ChevronRight'
+import DarkMode from '@mui/icons-material/DarkMode'
+import Dashboard from '@mui/icons-material/Dashboard'
+import Delete from '@mui/icons-material/Delete'
+import Edit from '@mui/icons-material/Edit'
+import Email from '@mui/icons-material/Email'
+import ErrorOutlined from '@mui/icons-material/ErrorOutlined'
+import History from '@mui/icons-material/History'
+import Hub from '@mui/icons-material/Hub'
+import LightMode from '@mui/icons-material/LightMode'
+import LiveTv from '@mui/icons-material/LiveTv'
+import Logout from '@mui/icons-material/Logout'
+import MenuIcon from '@mui/icons-material/Menu'
+import NotificationsActive from '@mui/icons-material/NotificationsActive'
+import OpenInNew from '@mui/icons-material/OpenInNew'
+import Password from '@mui/icons-material/Password'
+import People from '@mui/icons-material/People'
+import PlayArrow from '@mui/icons-material/PlayArrow'
+import QrCode2 from '@mui/icons-material/QrCode2'
+import Refresh from '@mui/icons-material/Refresh'
+import Science from '@mui/icons-material/Science'
+import Settings from '@mui/icons-material/Settings'
+import WarningAmber from '@mui/icons-material/WarningAmber'
 import {
   Alert, AppBar, Avatar, BottomNavigation, BottomNavigationAction, Box, Button, Card, CardContent,
   Chip, CircularProgress, Container, CssBaseline, Dialog, DialogActions, DialogContent, DialogTitle,
@@ -389,7 +413,7 @@ function HistoryPage({ ups, api }: { ups: UP[]; api: AdminAPI }) {
         }
         const page = tab === 'comments'
           ? await api.queryComments<CommentHistoryItem>(payload)
-          : await api.queryDynamics<DynamicHistoryItem>(payload)
+          : await api.queryDynamics(payload)
         if (!cancelled) {
           setItems(page.items || [])
           setTotal(page.total || 0)
@@ -456,21 +480,102 @@ function HistoryPage({ ups, api }: { ups: UP[]; api: AdminAPI }) {
   </Stack>
 }
 
-function DynamicHistoryCard({ item, onOpen }: { item: DynamicHistoryItem; onOpen: () => void }) {
+export function DynamicHistoryCard({ item, onOpen }: { item: DynamicHistoryItem; onOpen: () => void }) {
+  const [expanded, setExpanded] = useState(false)
+  const [clamped, setClamped] = useState(false)
+  const bodyRef = useRef<HTMLElement | null>(null)
+  const body = composePreviewBody(item.summary, item.description)
+  const heading = (item.title || item.summary || item.id || '').trim()
+  useLayoutEffect(() => {
+    if (expanded) {
+      setClamped(false)
+      return
+    }
+    const node = bodyRef.current
+    if (!node) {
+      setClamped(false)
+      return
+    }
+    setClamped(node.scrollHeight > node.clientHeight + 1)
+  }, [body, expanded])
   return <Card sx={{ cursor: 'pointer' }} onClick={onOpen}><CardContent>
     <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}>
-      <Box minWidth={0}>
+      <Box minWidth={0} flex={1}>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-          <Typography fontWeight={750}>{item.title || item.summary || item.id}</Typography>
+          <Typography fontWeight={750}>{heading}</Typography>
           {item.badge && <Chip size="small" label={item.badge} />}
           {item.baseline && <Chip size="small" label="基线" variant="outlined" />}
         </Stack>
-        <Typography className="summary-clamp" sx={{ mt: 1 }}>{item.summary || '（无正文摘要）'}</Typography>
+        {body && <>
+          <Typography ref={bodyRef} className={expanded ? undefined : 'history-text-clamp'} sx={{ mt: 1, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{body}</Typography>
+          {(expanded || clamped) && <Button size="small" sx={{ mt: .5, px: 0 }} onClick={event => { event.stopPropagation(); setExpanded(value => !value) }}>{expanded ? '收起' : '展开全文'}</Button>}
+        </>}
+        <DynamicMediaGrid media={item.media || []} />
+        {item.original && <OriginalDynamicPreview item={item.original} />}
+        {!body && !item.media?.length && !item.original && <Typography color="text.secondary" sx={{ mt: 1 }}>（该归档没有可预览的正文或媒体）</Typography>}
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>{item.up_name || item.uid} · {dynamicTypeLabel(item.type)}</Typography>
       </Box>
       <Box flexShrink={0}><Typography variant="body2" color="text.secondary">发布时间</Typography><Typography>{formatDate(item.published_at)}</Typography></Box>
     </Stack>
   </CardContent></Card>
+}
+
+function DynamicMediaGrid({ media }: { media: NonNullable<DynamicHistoryItem['media']> }) {
+  const available = media.filter(item => item.url)
+  const visible = available.slice(0, 9)
+  if (visible.length === 0) return null
+  const single = visible.length === 1
+  return <Box className={`history-media-grid ${single ? 'history-media-single' : ''}`} sx={{ mt: 1.5 }}>
+    {visible.map((item, index) => <MediaTile key={`${item.url}-${index}`} item={item} extra={index === 8 ? available.length - 9 : 0} single={single} />)}
+  </Box>
+}
+
+function MediaTile({ item, extra, single }: { item: NonNullable<DynamicHistoryItem['media']>[number]; extra: number; single: boolean }) {
+  const [failed, setFailed] = useState(false)
+  const src = historyMediaURL(item.url, single ? 720 : 240)
+  return <Box className="history-media-tile" sx={item.width && item.height ? { aspectRatio: `${item.width} / ${item.height}` } : undefined}>
+    {failed ? <Stack className="history-media-fallback" alignItems="center" justifyContent="center"><BrokenImage /><Typography variant="caption">媒体加载失败</Typography></Stack>
+      : <img src={src} alt={item.kind === 'cover' ? '内容封面' : '动态图片'} loading="lazy" onError={() => setFailed(true)} />}
+    {extra > 0 && <Box className="history-media-extra">+{extra}</Box>}
+  </Box>
+}
+
+function OriginalDynamicPreview({ item }: { item: NonNullable<DynamicHistoryItem['original']> }) {
+  const body = composePreviewBody(item.summary, item.description)
+  const title = (item.title || '').trim()
+  return <Paper variant="outlined" sx={{ mt: 1.5, p: 1.5, bgcolor: 'action.hover' }}>
+    <Typography variant="caption" color="text.secondary">转发自 {item.up_name || item.uid || '原动态'}</Typography>
+    {title && <Typography fontWeight={700} sx={{ mt: .5 }}>{title}</Typography>}
+    {body && normalizePreviewText(body) !== normalizePreviewText(title) && <Typography className="history-original-clamp" sx={{ mt: .5, whiteSpace: 'pre-wrap' }}>{body}</Typography>}
+    <DynamicMediaGrid media={item.media || []} />
+    {!title && !body && !item.media?.length && <Typography color="text.secondary" sx={{ mt: .5 }}>原动态内容未被归档</Typography>}
+  </Paper>
+}
+
+export function composePreviewBody(summary?: string, description?: string) {
+  const parts = [summary, description].map(value => (value || '').trim()).filter(Boolean)
+  if (parts.length === 0) return ''
+  if (parts.length === 1) return parts[0]
+  if (normalizePreviewText(parts[0]) === normalizePreviewText(parts[1])) return parts[0]
+  return parts.join('\n\n')
+}
+
+export function historyMediaURL(url: string, width: number) {
+  const value = url.trim()
+  if (!value || width <= 0) return value
+  try {
+    const parsed = new URL(value, 'https://www.bilibili.com')
+    if (!/(^|\.)hdslb\.com$/i.test(parsed.hostname) || !parsed.pathname.includes('/bfs/')) return value
+    // Bilibili CDN accepts @<width>w on bfs assets for list-size tiles.
+    parsed.pathname = parsed.pathname.replace(/@[^/]*$/, '') + `@${Math.round(width)}w`
+    return parsed.toString()
+  } catch {
+    return value
+  }
+}
+
+export function normalizePreviewText(value: string) {
+  return value.trim().replace(/\s+/g, ' ')
 }
 
 function CommentHistoryCard({ item, onOpen }: { item: CommentHistoryItem; onOpen: () => void }) {

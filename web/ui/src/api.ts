@@ -1,9 +1,42 @@
+import { z } from 'zod'
 import type {
   BiliLogin, Channel, ChannelDraft, CommentDetail, ContentPage, DashboardSnapshot, DynamicDetail,
-  MicrosoftLogin, RuntimeSettings, UP,
+  DynamicHistoryItem, MicrosoftLogin, RuntimeSettings, UP,
 } from './types'
 
 const requestTimeoutMS = 25_000
+
+const dynamicMediaSchema = z.object({
+  kind: z.string(), url: z.string(), width: z.number().int().optional(), height: z.number().int().optional(),
+})
+
+const dynamicPreviewSchema = z.object({
+  id: z.string().optional(), uid: z.string().optional(), up_name: z.string().optional(), type: z.string().optional(),
+  title: z.string().optional(), summary: z.string().optional(), description: z.string().optional(),
+  url: z.string().optional(), target_url: z.string().optional(), badge: z.string().optional(),
+  media: z.array(dynamicMediaSchema).optional(),
+})
+
+const dynamicHistorySchema = z.object({
+  id: z.string(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(), discovered_at: z.string(),
+  baseline: z.boolean(), title: z.string().optional(), summary: z.string().optional(), description: z.string().optional(),
+  url: z.string().optional(), target_url: z.string().optional(), badge: z.string().optional(),
+  media: z.array(dynamicMediaSchema).optional(), original: dynamicPreviewSchema.optional(),
+})
+
+const dynamicHistoryPageSchema = z.object({
+  items: z.array(z.unknown()), total: z.number().int(), limit: z.number().int(), offset: z.number().int(),
+})
+
+export function parseDynamicHistoryPage(data: unknown): ContentPage<DynamicHistoryItem> {
+  const page = dynamicHistoryPageSchema.parse(data)
+  const items: DynamicHistoryItem[] = []
+  for (const item of page.items) {
+    const parsed = dynamicHistorySchema.safeParse(item)
+    if (parsed.success) items.push(parsed.data)
+  }
+  return { items, total: page.total, limit: page.limit, offset: page.offset }
+}
 
 export async function httpJSON<T>(path: string, options: RequestInit = {}, csrf = ''): Promise<T> {
   const headers = new Headers(options.headers)
@@ -81,7 +114,9 @@ export class AdminAPI {
 
   updateSettings(settings: RuntimeSettings) { return this.write<RuntimeSettings>('/api/v1/settings', 'PUT', settings) }
 
-  queryDynamics<T>(query: ContentQuery) { return httpJSON<ContentPage<T>>(`/api/v1/dynamics?${queryString(query)}`) }
+  async queryDynamics(query: ContentQuery) {
+    return parseDynamicHistoryPage(await httpJSON<unknown>(`/api/v1/dynamics?${queryString(query)}`))
+  }
 
   queryComments<T>(query: ContentQuery) { return httpJSON<ContentPage<T>>(`/api/v1/comments?${queryString(query)}`) }
 

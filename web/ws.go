@@ -113,18 +113,21 @@ type contentPage struct {
 }
 
 type dynamicHistoryView struct {
-	ID           string    `json:"id"`
-	UID          string    `json:"uid"`
-	UPName       string    `json:"up_name"`
-	Type         string    `json:"type"`
-	PublishedAt  time.Time `json:"published_at"`
-	DiscoveredAt time.Time `json:"discovered_at"`
-	Baseline     bool      `json:"baseline"`
-	Title        string    `json:"title,omitempty"`
-	Summary      string    `json:"summary,omitempty"`
-	URL          string    `json:"url,omitempty"`
-	TargetURL    string    `json:"target_url,omitempty"`
-	Badge        string    `json:"badge,omitempty"`
+	ID           string                `json:"id"`
+	UID          string                `json:"uid"`
+	UPName       string                `json:"up_name"`
+	Type         string                `json:"type"`
+	PublishedAt  time.Time             `json:"published_at"`
+	DiscoveredAt time.Time             `json:"discovered_at"`
+	Baseline     bool                  `json:"baseline"`
+	Title        string                `json:"title,omitempty"`
+	Summary      string                `json:"summary,omitempty"`
+	URL          string                `json:"url,omitempty"`
+	TargetURL    string                `json:"target_url,omitempty"`
+	Badge        string                `json:"badge,omitempty"`
+	Description  string                `json:"description,omitempty"`
+	Media        []model.DynamicMedia  `json:"media,omitempty"`
+	Original     *state.DynamicPreview `json:"original,omitempty"`
 }
 
 type commentHistoryView struct {
@@ -405,12 +408,55 @@ func normalizeQueryPage(limit, offset int) (int, int) {
 	return limit, offset
 }
 
+const (
+	historyPreviewTextLimit  = 2000
+	historyPreviewMediaLimit = 9
+)
+
 func toDynamicHistoryView(item state.DynamicRecord) dynamicHistoryView {
 	return dynamicHistoryView{
 		ID: item.ID, UID: item.UID, UPName: item.UPName, Type: item.Type,
 		PublishedAt: item.PublishedAt, DiscoveredAt: item.DiscoveredAt, Baseline: item.Baseline,
-		Title: item.Title, Summary: previewText(item.Summary, 240),
-		URL: item.URL, TargetURL: item.TargetURL, Badge: item.Badge,
+		Title: item.Title, Summary: previewText(item.Summary, historyPreviewTextLimit),
+		Description: previewText(item.Description, historyPreviewTextLimit),
+		URL:         item.URL, TargetURL: item.TargetURL, Badge: item.Badge,
+		Media:    boundHistoryMedia(item.Media, historyPreviewMediaLimit),
+		Original: boundHistoryOriginal(item.Original),
+	}
+}
+
+func boundHistoryMedia(media []model.DynamicMedia, limit int) []model.DynamicMedia {
+	if limit <= 0 || len(media) == 0 {
+		return nil
+	}
+	if len(media) > limit {
+		media = media[:limit]
+	}
+	out := make([]model.DynamicMedia, 0, len(media))
+	for _, item := range media {
+		item.URL = strings.TrimSpace(item.URL)
+		if item.URL == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func boundHistoryOriginal(original *state.DynamicPreview) *state.DynamicPreview {
+	if original == nil {
+		return nil
+	}
+	return &state.DynamicPreview{
+		ID: original.ID, UID: original.UID, UPName: original.UPName, Type: original.Type,
+		Title:       original.Title,
+		Summary:     previewText(original.Summary, historyPreviewTextLimit),
+		Description: previewText(original.Description, historyPreviewTextLimit),
+		URL:         original.URL, TargetURL: original.TargetURL, Badge: original.Badge,
+		Media: boundHistoryMedia(original.Media, historyPreviewMediaLimit),
 	}
 }
 
