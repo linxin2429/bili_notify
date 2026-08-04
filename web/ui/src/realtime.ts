@@ -72,32 +72,11 @@ const snapshotSchema = z.object({
   updated_at: z.string(),
 })
 
-const dynamicMediaSchema = z.object({
-  kind: z.string(), url: z.string(), width: z.number().int().optional(), height: z.number().int().optional(),
-})
+const envelopeSchema = z.object({ event: z.string(), revision: z.number(), data: z.unknown() })
 
-const dynamicPreviewSchema = z.object({
-  id: z.string().optional(), uid: z.string().optional(), up_name: z.string().optional(), type: z.string().optional(),
-  title: z.string().optional(), summary: z.string().optional(), description: z.string().optional(),
-  url: z.string().optional(), target_url: z.string().optional(), badge: z.string().optional(),
-  media: z.array(dynamicMediaSchema).optional(),
-})
-
-const dynamicHistorySchema = z.object({
-  id: z.string(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(), discovered_at: z.string(),
-  baseline: z.boolean(), title: z.string().optional(), summary: z.string().optional(), description: z.string().optional(),
-  url: z.string().optional(), target_url: z.string().optional(), badge: z.string().optional(),
-  media: z.array(dynamicMediaSchema).optional(), original: dynamicPreviewSchema.optional(),
-})
-
-const dynamicHistoryPageSchema = z.object({
-  items: z.array(dynamicHistorySchema), total: z.number().int(), limit: z.number().int(), offset: z.number().int(),
-})
-
-const envelopeSchema = z.union([
-  z.object({ event: z.string(), revision: z.number(), data: z.unknown() }),
-  z.object({ id: z.string(), ok: z.boolean(), data: z.unknown().optional(), error: z.object({ code: z.string(), message: z.string() }).optional() }),
-])
+export function nextRevision(current: number, event: string, incoming: number): number | null {
+  return event === 'snapshot' || incoming >= current ? incoming : null
+}
 
 export interface RealtimeCallbacks {
   onSnapshot: (snapshot: DashboardSnapshot) => void
@@ -121,18 +100,11 @@ export function parseEvent(event: string, data: unknown): unknown {
   }
 }
 
-export function parseCommandResponse(action: string, data: unknown): unknown {
-  if (action === 'dynamics.query') return dynamicHistoryPageSchema.parse(data)
-  return data
-}
-
 export class RealtimeClient {
   private socket?: WebSocket
   private stopped = false
   private retry = 0
   private revision = 0
-  private pending = new Map<string, { action: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: number }>()
-
   constructor(private readonly callbacks: RealtimeCallbacks) {}
 
   start() {
@@ -144,26 +116,11 @@ export class RealtimeClient {
     this.stopped = true
     this.socket?.close(1000, 'client closed')
     this.socket = undefined
-    this.rejectPending('连接已关闭，操作结果未知')
-  }
-
-  command<T = unknown>(action: string, payload: unknown = {}): Promise<T> {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error('实时连接不可用，请等待重新连接'))
-    }
-    const id = crypto.randomUUID()
-    return new Promise<T>((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error('操作超时，结果未知，请检查最新状态'))
-      }, 25000)
-      this.pending.set(id, { action, resolve: value => resolve(value as T), reject, timer })
-      this.socket?.send(JSON.stringify({ id, action, payload }))
-    })
   }
 
   private connect() {
     if (this.stopped) return
+    this.revision = 0
     this.callbacks.onState(this.retry === 0 ? 'connecting' : 'reconnecting')
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const socket = new WebSocket(`${protocol}//${location.host}/api/v1/ws`)
@@ -176,7 +133,6 @@ export class RealtimeClient {
     socket.onerror = () => this.callbacks.onState('stale')
     socket.onclose = () => {
       if (this.stopped) return
-      this.rejectPending('实时连接已断开，操作结果未知，请检查最新状态')
       this.callbacks.onState('stale')
       void this.verifySessionAndReconnect()
     }
@@ -185,20 +141,12 @@ export class RealtimeClient {
   private receive(raw: string) {
     try {
       const envelope = envelopeSchema.parse(JSON.parse(raw))
-      if ('event' in envelope) {
-        if (envelope.revision < this.revision) return
-        this.revision = envelope.revision
-        const data = parseEvent(envelope.event, envelope.data)
-        if (envelope.event === 'snapshot') this.callbacks.onSnapshot(data as DashboardSnapshot)
-        else this.callbacks.onEvent(envelope.event, data, envelope.revision)
-        return
-      }
-      const request = this.pending.get(envelope.id)
-      if (!request) return
-      window.clearTimeout(request.timer)
-      this.pending.delete(envelope.id)
-      if (envelope.ok) request.resolve(parseCommandResponse(request.action, envelope.data))
-      else request.reject(new Error(envelope.error?.message || '操作失败'))
+      const revision = nextRevision(this.revision, envelope.event, envelope.revision)
+      if (revision === null) return
+      this.revision = revision
+      const data = parseEvent(envelope.event, envelope.data)
+      if (envelope.event === 'snapshot') this.callbacks.onSnapshot(data as DashboardSnapshot)
+      else this.callbacks.onEvent(envelope.event, data, envelope.revision)
     } catch (error) {
       this.callbacks.onError(error instanceof Error ? error.message : '无法解析服务器消息')
     }
@@ -218,14 +166,6 @@ export class RealtimeClient {
     const delay = Math.min(30000, 1000 * 2 ** this.retry++)
     if (!this.stopped) window.setTimeout(() => this.connect(), delay)
   }
-
-  private rejectPending(message: string) {
-    for (const request of this.pending.values()) {
-      window.clearTimeout(request.timer)
-      request.reject(new Error(message))
-    }
-    this.pending.clear()
-  }
 }
 
-export const schemasForTest = { snapshotSchema, statusSchema, dynamicHistoryPageSchema }
+export const schemasForTest = { snapshotSchema, statusSchema }

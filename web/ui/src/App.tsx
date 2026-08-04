@@ -1,10 +1,34 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import {
-  Add, Autorenew, BrightnessAuto, BrokenImage, CheckCircle, ChevronLeft, ChevronRight, DarkMode, Dashboard, Delete, Edit, Email,
-  ErrorOutlined, History, Hub, LightMode, LiveTv, Logout, Menu as MenuIcon, NotificationsActive, OpenInNew,
-  Password, People, PlayArrow, QrCode2, Refresh, Science, Settings, WarningAmber,
-} from '@mui/icons-material'
+import Add from '@mui/icons-material/Add'
+import Autorenew from '@mui/icons-material/Autorenew'
+import BrightnessAuto from '@mui/icons-material/BrightnessAuto'
+import BrokenImage from '@mui/icons-material/BrokenImage'
+import CheckCircle from '@mui/icons-material/CheckCircle'
+import ChevronLeft from '@mui/icons-material/ChevronLeft'
+import ChevronRight from '@mui/icons-material/ChevronRight'
+import DarkMode from '@mui/icons-material/DarkMode'
+import Dashboard from '@mui/icons-material/Dashboard'
+import Delete from '@mui/icons-material/Delete'
+import Edit from '@mui/icons-material/Edit'
+import Email from '@mui/icons-material/Email'
+import ErrorOutlined from '@mui/icons-material/ErrorOutlined'
+import History from '@mui/icons-material/History'
+import Hub from '@mui/icons-material/Hub'
+import LightMode from '@mui/icons-material/LightMode'
+import LiveTv from '@mui/icons-material/LiveTv'
+import Logout from '@mui/icons-material/Logout'
+import MenuIcon from '@mui/icons-material/Menu'
+import NotificationsActive from '@mui/icons-material/NotificationsActive'
+import OpenInNew from '@mui/icons-material/OpenInNew'
+import Password from '@mui/icons-material/Password'
+import People from '@mui/icons-material/People'
+import PlayArrow from '@mui/icons-material/PlayArrow'
+import QrCode2 from '@mui/icons-material/QrCode2'
+import Refresh from '@mui/icons-material/Refresh'
+import Science from '@mui/icons-material/Science'
+import Settings from '@mui/icons-material/Settings'
+import WarningAmber from '@mui/icons-material/WarningAmber'
 import {
   Alert, AppBar, Avatar, BottomNavigation, BottomNavigationAction, Box, Button, Card, CardContent,
   Chip, CircularProgress, Container, CssBaseline, Dialog, DialogActions, DialogContent, DialogTitle,
@@ -14,10 +38,15 @@ import {
 } from '@mui/material'
 import type {
   BiliLogin, Channel, ChannelDraft, ChannelType, CommentDetail, CommentHistoryItem, ConnectionState,
-  ContentPage, DashboardSnapshot, Delivery, DynamicDetail, DynamicHistoryItem, MicrosoftLogin,
+  DashboardSnapshot, Delivery, DynamicDetail, DynamicHistoryItem, MicrosoftLogin,
   RuntimeSettings, ThemePreference, UP,
 } from './types'
 import { RealtimeClient } from './realtime'
+import { AdminAPI, httpJSON } from './api'
+import {
+  applyBiliLoginMutation, applyChannelDeletion, applyChannelMutation, applyMicrosoftLoginDeletion,
+  applyMicrosoftLoginMutation, applySettingsMutation, applyUpdate, applyUPDeletion, applyUPMutation, readinessMessage,
+} from './dashboard'
 
 const drawerWidth = 236
 const navigation = [
@@ -31,17 +60,8 @@ const navigation = [
 const pageSize = 20
 
 interface SessionState { setup_required: boolean; authenticated: boolean; csrf_token?: string }
-
-async function httpJSON<T>(path: string, options: RequestInit = {}, csrf = ''): Promise<T> {
-  const headers = new Headers(options.headers)
-  if (options.body) headers.set('Content-Type', 'application/json')
-  if (csrf) headers.set('X-CSRF-Token', csrf)
-  const response = await fetch(path, { ...options, headers, credentials: 'same-origin' })
-  if (response.status === 204) return undefined as T
-  const body = await response.json()
-  if (!response.ok) throw new Error(body.error?.message || response.statusText)
-  return body as T
-}
+type SnapshotMutation<T> = (snapshot: DashboardSnapshot, value: T) => DashboardSnapshot
+type RunMutation = <T>(request: () => Promise<T>, update?: SnapshotMutation<T>) => Promise<T>
 
 function useThemePreference() {
   const [preference, setPreference] = useState<ThemePreference>(() => (localStorage.getItem('theme') as ThemePreference) || 'system')
@@ -126,7 +146,7 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
   const [connection, setConnection] = useState<ConnectionState>('connecting')
   const [message, setMessage] = useState('')
   const [mobileOpen, setMobileOpen] = useState(false)
-  const clientRef = useRef<RealtimeClient | null>(null)
+  const api = useMemo(() => new AdminAPI(csrf), [csrf])
   const mobile = useMediaQuery(theme => theme.breakpoints.down('md'))
   const location = useLocation()
   const navigate = useNavigate()
@@ -139,14 +159,18 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
       onAuthLost,
       onError: setMessage,
     })
-    clientRef.current = client
     client.start()
-    return () => { client.stop(); clientRef.current = null }
+    return () => client.stop()
   }, [onAuthLost])
-
-  const command = useCallback(async <T,>(action: string, payload: unknown = {}): Promise<T> => {
-    try { return await clientRef.current!.command<T>(action, payload) }
-    catch (error) { setMessage(errorMessage(error)); throw error }
+  const runMutation = useCallback<RunMutation>(async (request, update) => {
+    try {
+      const value = await request()
+      if (update) setSnapshot(current => current ? update(current, value) : current)
+      return value
+    } catch (error) {
+      setMessage(errorMessage(error))
+      throw error
+    }
   }, [])
   const logout = async () => {
     try { await httpJSON('/api/v1/session', { method: 'DELETE' }, csrf) } finally { await onAuthLost() }
@@ -174,12 +198,12 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
       <Container maxWidth="xl" sx={{ py: { xs: 2, sm: 3 } }}>
         {!snapshot ? <Box minHeight="50vh" display="grid" sx={{ placeItems: 'center' }}><Stack alignItems="center" spacing={2}><CircularProgress /><Typography color="text.secondary">正在加载实时状态</Typography></Stack></Box> :
           <Routes>
-            <Route path="/overview" element={<Overview snapshot={snapshot} command={command} />} />
-            <Route path="/ups" element={<UPsPage ups={snapshot.ups} command={command} />} />
-            <Route path="/channels" element={<ChannelsPage channels={snapshot.channels} logins={snapshot.microsoft_logins} command={command} />} />
+            <Route path="/overview" element={<Overview snapshot={snapshot} api={api} runMutation={runMutation} />} />
+            <Route path="/ups" element={<UPsPage ups={snapshot.ups} api={api} runMutation={runMutation} />} />
+            <Route path="/channels" element={<ChannelsPage channels={snapshot.channels} logins={snapshot.microsoft_logins} api={api} runMutation={runMutation} />} />
             <Route path="/deliveries" element={<DeliveriesPage deliveries={snapshot.deliveries} channels={snapshot.channels} total={snapshot.status.outbox_depth} />} />
-            <Route path="/history" element={<HistoryPage ups={snapshot.ups} command={command} />} />
-            <Route path="/settings" element={<SettingsPage csrf={csrf} preference={themePreference} setPreference={setThemePreference} settings={snapshot.settings} command={command} onChanged={onAuthLost} />} />
+            <Route path="/history" element={<HistoryPage ups={snapshot.ups} api={api} />} />
+            <Route path="/settings" element={<SettingsPage csrf={csrf} preference={themePreference} setPreference={setThemePreference} settings={snapshot.settings} api={api} runMutation={runMutation} onChanged={onAuthLost} />} />
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>}
       </Container>
@@ -189,10 +213,19 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
   </Box>
 }
 
-function Overview({ snapshot, command }: { snapshot: DashboardSnapshot; command: <T>(action: string, payload?: unknown) => Promise<T> }) {
+function Overview({ snapshot, api, runMutation }: { snapshot: DashboardSnapshot; api: AdminAPI; runMutation: RunMutation }) {
   const status = snapshot.status
   const [busy, setBusy] = useState(false)
-  const startLogin = async () => { setBusy(true); try { await command('bilibili.login.start') } finally { setBusy(false) } }
+  const startLogin = async () => {
+    setBusy(true)
+    try { await runMutation(() => api.startBiliLogin(), applyBiliLoginMutation) }
+    catch { /* The shared mutation handler reports the failure. */ }
+    finally { setBusy(false) }
+  }
+  const cancelLogin = async (id: string) => {
+    try { await runMutation(() => api.cancelBiliLogin(id), current => applyBiliLoginMutation(current, null)) }
+    catch { /* The shared mutation handler reports the failure. */ }
+  }
   return <Stack spacing={3}>
     <Box><Typography variant="h4" fontWeight={850}>运行概览</Typography><Typography color="text.secondary">第一眼确认服务是否正在发现并可靠投递动态。</Typography></Box>
     <Alert severity={status.ready ? 'success' : 'warning'} icon={status.ready ? <CheckCircle /> : <WarningAmber />} sx={{ py: 1.5 }}>
@@ -208,7 +241,7 @@ function Overview({ snapshot, command }: { snapshot: DashboardSnapshot; command:
     {status.risk_paused_until && <Alert severity="error" icon={<ErrorOutlined />}>B站风控暂停至 {formatDate(status.risk_paused_until)}，程序不会尝试绕过风控。</Alert>}
     <Typography variant="body2" color="text.secondary">当前采集参数：每 {snapshot.settings.poll_interval_sec} 秒轮询 · {snapshot.settings.request_rate} 请求/秒 · 并发 {snapshot.settings.request_concurrency} · 评论监控{snapshot.settings.comment_enabled ? '开' : '关'}（N={snapshot.settings.comment_track_n}，批次 {snapshot.settings.comment_batch_interval_sec}s）</Typography>
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1.35fr) minmax(320px, .65fr)' }, gap: 2 }}>
-      <Card><CardContent><Stack spacing={2}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="h6" fontWeight={800}>B站账号</Typography><Typography color="text.secondary">使用哔哩哔哩 App 扫码建立网页会话</Typography></Box><QrCode2 color="primary" /></Stack><BiliLoginPanel login={snapshot.bili_login || null} busy={busy} start={() => void startLogin()} cancel={id => void command('bilibili.login.cancel', { id })} /></Stack></CardContent></Card>
+      <Card><CardContent><Stack spacing={2}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="h6" fontWeight={800}>B站账号</Typography><Typography color="text.secondary">使用哔哩哔哩 App 扫码建立网页会话</Typography></Box><QrCode2 color="primary" /></Stack><BiliLoginPanel login={snapshot.bili_login || null} busy={busy} start={() => void startLogin()} cancel={id => void cancelLogin(id)} /></Stack></CardContent></Card>
       <Card><CardContent><Typography variant="h6" fontWeight={800} gutterBottom>启动检查</Typography><Stack spacing={1.5}><Checklist done={status.auth_valid} label="B站账号已登录" /><Checklist done={snapshot.channels.some(channel => channel.enabled)} label="至少一个通知渠道已启用" /><Checklist done={snapshot.ups.some(up => up.enabled)} label="至少一个 UP 主已启用" /></Stack><Divider sx={{ my: 2 }} /><Typography variant="body2" color="text.secondary">最后成功采集：{status.last_success_at ? formatDate(status.last_success_at) : '尚无记录'}</Typography></CardContent></Card>
     </Box>
   </Stack>
@@ -227,11 +260,18 @@ function BiliLoginPanel({ login, busy, start, cancel }: { login: BiliLogin | nul
   return <Stack alignItems="center"><Chip label={loginLabel(login.status)} color={login.status === 'scanned' ? 'info' : 'warning'} />{login.qr_data_url && <img src={login.qr_data_url} className="qr-image" alt="哔哩哔哩登录二维码" />}<Typography color="text.secondary">二维码有效至 {formatDate(login.expires_at)}</Typography><Button color="inherit" onClick={() => cancel(login.id)}>取消本次登录</Button></Stack>
 }
 
-function UPsPage({ ups, command }: { ups: UP[]; command: <T>(action: string, payload?: unknown) => Promise<T> }) {
+function UPsPage({ ups, api, runMutation }: { ups: UP[]; api: AdminAPI; runMutation: RunMutation }) {
   const [editing, setEditing] = useState<UP | null | undefined>(undefined)
   const mobile = useMediaQuery(theme => theme.breakpoints.down('sm'))
-  const save = async (value: { uid: string; name: string; enabled: boolean }) => { await command(editing ? 'up.update' : 'up.create', value); setEditing(undefined) }
-  const remove = async (uid: string) => { if (confirm('删除该 UP 主及其去重状态？')) await command('up.delete', { uid }) }
+  const save = async (value: { uid: string; name: string; enabled: boolean }) => {
+    await runMutation(() => editing ? api.updateUP(value) : api.createUP(value), applyUPMutation)
+    setEditing(undefined)
+  }
+  const remove = async (uid: string) => {
+    if (!confirm('删除该 UP 主及其去重状态？')) return
+    try { await runMutation(() => api.deleteUP(uid), current => applyUPDeletion(current, uid)) }
+    catch { /* The shared mutation handler reports the failure. */ }
+  }
   return <Stack spacing={3}><PageHeader title="UP 主" subtitle="管理需要轮询的公开账号；首次采集只建立基线。" action={<Button variant="contained" startIcon={<Add />} onClick={() => setEditing(null)}>添加 UP 主</Button>} />
     {ups.length === 0 ? <EmptyState icon={<People />} title="尚未添加 UP 主" action={<Button variant="contained" onClick={() => setEditing(null)}>添加第一个 UP 主</Button>} /> :
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'repeat(2, 1fr)' }, gap: 2 }}>{ups.map(up => <Card key={up.uid}><CardContent><Stack spacing={2}><Stack direction="row" justifyContent="space-between" alignItems="start"><Box><Typography variant="h6" fontWeight={800}>{up.name || `UID ${up.uid}`}</Typography><Typography color="text.secondary">UID {up.uid}</Typography></Box><Chip label={up.enabled ? '已启用' : '已停用'} color={up.enabled ? 'success' : 'default'} /></Stack><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={up.baseline_ready ? '基线已建立' : '等待基线'} /><Chip size="small" label={`连续失败 ${up.consecutive_fail} 次`} color={up.consecutive_fail ? 'warning' : 'default'} /></Stack>{up.last_error && <Alert severity="error">{up.last_error}</Alert>}<Typography variant="body2" color="text.secondary">最后成功：{up.last_success_at ? formatDate(up.last_success_at) : '尚无记录'}</Typography><Stack direction="row" spacing={1}><Button startIcon={<Edit />} onClick={() => setEditing(up)}>编辑</Button><Button color="error" startIcon={<Delete />} onClick={() => void remove(up.uid)}>删除</Button></Stack></Stack></CardContent></Card>)}</Box>}
@@ -240,25 +280,47 @@ function UPsPage({ ups, command }: { ups: UP[]; command: <T>(action: string, pay
 }
 
 function UPDialog({ open, value, fullScreen, onClose, onSave }: { open: boolean; value?: UP; fullScreen: boolean; onClose: () => void; onSave: (value: { uid: string; name: string; enabled: boolean }) => Promise<void> }) {
-  const [uid, setUID] = useState(''); const [name, setName] = useState(''); const [enabled, setEnabled] = useState(true); const [busy, setBusy] = useState(false)
-  useEffect(() => { setUID(value?.uid || ''); setName(value?.name || ''); setEnabled(value?.enabled ?? true) }, [value, open])
-  const submit = async () => { setBusy(true); try { await onSave({ uid, name, enabled }) } finally { setBusy(false) } }
-  return <Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm"><DialogTitle>{value ? '编辑 UP 主' : '添加 UP 主'}</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}><TextField label="UID" value={uid} onChange={e => setUID(e.target.value)} disabled={Boolean(value)} inputMode="numeric" required /><TextField label="备注名" value={name} onChange={e => setName(e.target.value)} /><FormControlLabel control={<Switch checked={enabled} onChange={e => setEnabled(e.target.checked)} />} label="启用轮询" /></Stack></DialogContent><DialogActions><Button onClick={onClose}>取消</Button><Button variant="contained" disabled={busy || !uid} onClick={() => void submit()}>保存</Button></DialogActions></Dialog>
+  const [uid, setUID] = useState(''); const [name, setName] = useState(''); const [enabled, setEnabled] = useState(true); const [busy, setBusy] = useState(false); const [error, setError] = useState('')
+  useEffect(() => { setUID(value?.uid || ''); setName(value?.name || ''); setEnabled(value?.enabled ?? true); setError('') }, [value, open])
+  const submit = async () => {
+    setBusy(true); setError('')
+    try { await onSave({ uid, name, enabled }) }
+    catch (err) { setError(errorMessage(err)) }
+    finally { setBusy(false) }
+  }
+  return <Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm"><DialogTitle>{value ? '编辑 UP 主' : '添加 UP 主'}</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}>{error && <Alert severity="error">{error}</Alert>}<TextField label="UID" value={uid} onChange={e => setUID(e.target.value)} disabled={Boolean(value)} inputMode="numeric" required /><TextField label="备注名" value={name} onChange={e => setName(e.target.value)} /><FormControlLabel control={<Switch checked={enabled} onChange={e => setEnabled(e.target.checked)} />} label="启用轮询" /></Stack></DialogContent><DialogActions><Button onClick={onClose}>取消</Button><Button variant="contained" disabled={busy || !uid} onClick={() => void submit()}>保存</Button></DialogActions></Dialog>
 }
 
-function ChannelsPage({ channels, logins, command }: { channels: Channel[]; logins: MicrosoftLogin[]; command: <T>(action: string, payload?: unknown) => Promise<T> }) {
+function ChannelsPage({ channels, logins, api, runMutation }: { channels: Channel[]; logins: MicrosoftLogin[]; api: AdminAPI; runMutation: RunMutation }) {
   const [editing, setEditing] = useState<Channel | null | undefined>(undefined)
   const mobile = useMediaQuery(theme => theme.breakpoints.down('sm'))
-  const save = async (draft: ChannelDraft) => { await command(draft.id ? 'channel.update' : 'channel.create', draft); setEditing(undefined) }
-  const remove = async (id: string) => { if (confirm('存在待投递任务时不能删除渠道。继续？')) await command('channel.delete', { id }) }
+  const save = async (draft: ChannelDraft) => {
+    await runMutation(() => draft.id ? api.updateChannel(draft as ChannelDraft & { id: string }) : api.createChannel(draft), applyChannelMutation)
+    setEditing(undefined)
+  }
+  const remove = async (id: string) => {
+    if (!confirm('存在待投递任务时不能删除渠道。继续？')) return
+    try { await runMutation(() => api.deleteChannel(id), current => applyChannelDeletion(current, id)) }
+    catch { /* The shared mutation handler reports the failure. */ }
+  }
   const authorize = async (channelID: string) => {
-    const login = await command<MicrosoftLogin>('microsoft.login.start', { channel_id: channelID })
-    const url = login.verification_uri_complete || login.verification_uri
-    if (url) window.open(url, '_blank', 'noopener,noreferrer')
+    try {
+      const login = await runMutation(() => api.startMicrosoftLogin(channelID), applyMicrosoftLoginMutation)
+      const url = login.verification_uri_complete || login.verification_uri
+      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+    } catch { /* The shared mutation handler reports the failure. */ }
+  }
+  const cancelAuthorization = async (channelID: string) => {
+    try { await runMutation(() => api.cancelMicrosoftLogin(channelID), current => applyMicrosoftLoginDeletion(current, channelID)) }
+    catch { /* The shared mutation handler reports the failure. */ }
+  }
+  const test = async (channelID: string) => {
+    try { await runMutation(() => api.testChannel(channelID)) }
+    catch { /* The shared mutation handler reports the failure. */ }
   }
   return <Stack spacing={3}><PageHeader title="通知渠道" subtitle="秘密字段仅写入，不会返回浏览器。" action={<Button variant="contained" startIcon={<Add />} onClick={() => setEditing(null)}>添加渠道</Button>} />
     {channels.length === 0 ? <EmptyState icon={<NotificationsActive />} title="尚未配置通知渠道" action={<Button variant="contained" onClick={() => setEditing(null)}>添加第一个渠道</Button>} /> :
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: 'repeat(2, 1fr)' }, gap: 2 }}>{channels.map(channel => { const login = logins.find(item => item.channel_id === channel.id); return <Card key={channel.id}><CardContent><Stack spacing={2}><Stack direction="row" justifyContent="space-between"><Stack direction="row" spacing={1.5} alignItems="center"><Avatar sx={{ bgcolor: 'secondary.main' }}><Email /></Avatar><Box><Typography variant="h6" fontWeight={800}>{channel.name}</Typography><Typography color="text.secondary">{channelTypeLabel(channel.type)}</Typography></Box></Stack><Chip label={channel.enabled ? '已启用' : '已停用'} color={channel.enabled ? 'success' : 'default'} /></Stack><Divider /><ChannelSummary channel={channel} />{channel.type === 'microsoft' && <MicrosoftAuthorization channel={channel} login={login} authorize={() => void authorize(channel.id)} cancel={() => void command('microsoft.login.cancel', { channel_id: channel.id })} />}<Stack direction="row" spacing={1} flexWrap="wrap"><Button startIcon={<Edit />} onClick={() => setEditing(channel)}>编辑</Button><Button startIcon={<Science />} onClick={() => void command('channel.test', { id: channel.id })}>发送测试</Button><Button color="error" startIcon={<Delete />} onClick={() => void remove(channel.id)}>删除</Button></Stack></Stack></CardContent></Card> })}</Box>}
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: 'repeat(2, 1fr)' }, gap: 2 }}>{channels.map(channel => { const login = logins.find(item => item.channel_id === channel.id); return <Card key={channel.id}><CardContent><Stack spacing={2}><Stack direction="row" justifyContent="space-between"><Stack direction="row" spacing={1.5} alignItems="center"><Avatar sx={{ bgcolor: 'secondary.main' }}><Email /></Avatar><Box><Typography variant="h6" fontWeight={800}>{channel.name}</Typography><Typography color="text.secondary">{channelTypeLabel(channel.type)}</Typography></Box></Stack><Chip label={channel.enabled ? '已启用' : '已停用'} color={channel.enabled ? 'success' : 'default'} /></Stack><Divider /><ChannelSummary channel={channel} />{channel.type === 'microsoft' && <MicrosoftAuthorization channel={channel} login={login} authorize={() => void authorize(channel.id)} cancel={() => void cancelAuthorization(channel.id)} />}<Stack direction="row" spacing={1} flexWrap="wrap"><Button startIcon={<Edit />} onClick={() => setEditing(channel)}>编辑</Button><Button startIcon={<Science />} onClick={() => void test(channel.id)}>发送测试</Button><Button color="error" startIcon={<Delete />} onClick={() => void remove(channel.id)}>删除</Button></Stack></Stack></CardContent></Card> })}</Box>}
     <ChannelDialog open={editing !== undefined} channel={editing || undefined} fullScreen={mobile} onClose={() => setEditing(undefined)} onSave={save} />
   </Stack>
 }
@@ -277,17 +339,20 @@ function MicrosoftAuthorization({ channel, login, authorize, cancel }: { channel
 
 function ChannelDialog({ open, channel, fullScreen, onClose, onSave }: { open: boolean; channel?: Channel; fullScreen: boolean; onClose: () => void; onSave: (draft: ChannelDraft) => Promise<void> }) {
   const [name, setName] = useState(''); const [type, setType] = useState<ChannelType>('email'); const [enabled, setEnabled] = useState(true)
-  const [fields, setFields] = useState<Record<string, string>>({}); const [secrets, setSecrets] = useState<Record<string, string>>({}); const [busy, setBusy] = useState(false)
-  useEffect(() => { setName(channel?.name || ''); setType(channel?.type || 'email'); setEnabled(channel?.enabled ?? true); setFields(channel?.settings || {}); setSecrets({}) }, [channel, open])
+  const [fields, setFields] = useState<Record<string, string>>({}); const [secrets, setSecrets] = useState<Record<string, string>>({}); const [busy, setBusy] = useState(false); const [error, setError] = useState('')
+  useEffect(() => { setName(channel?.name || ''); setType(channel?.type || 'email'); setEnabled(channel?.enabled ?? true); setFields(channel?.settings || {}); setSecrets({}); setError('') }, [channel, open])
   useEffect(() => { if (!channel && type === 'microsoft') setEnabled(false) }, [type, channel])
   const setField = (key: string, value: string) => setFields(current => ({ ...current, [key]: value }))
   const setSecret = (key: string, value: string) => setSecrets(current => ({ ...current, [key]: value }))
   const submit = async () => {
     const settings = channelFields(type).filter(field => !field.secret).reduce<Record<string, string>>((result, field) => ({ ...result, [field.key]: fields[field.key] || field.defaultValue || '' }), {})
     const changedSecrets = Object.fromEntries(Object.entries(secrets).filter(([, value]) => value !== ''))
-    setBusy(true); try { await onSave({ id: channel?.id, name, type, enabled, settings, ...(Object.keys(changedSecrets).length ? { secrets: changedSecrets } : {}) }) } finally { setBusy(false) }
+    setBusy(true); setError('')
+    try { await onSave({ id: channel?.id, name, type, enabled, settings, ...(Object.keys(changedSecrets).length ? { secrets: changedSecrets } : {}) }) }
+    catch (err) { setError(errorMessage(err)) }
+    finally { setBusy(false) }
   }
-  return <Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm"><DialogTitle>{channel ? '编辑通知渠道' : '添加通知渠道'}</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}><TextField label="渠道名称" value={name} onChange={e => setName(e.target.value)} required /><FormControl><InputLabel id="channel-type-label">渠道类型</InputLabel><Select labelId="channel-type-label" label="渠道类型" value={type} onChange={e => { setType(e.target.value as ChannelType); setFields({}); setSecrets({}) }}>{(['email', 'microsoft', 'dingtalk', 'feishu', 'wecom'] as ChannelType[]).map(value => <MenuItem key={value} value={value}>{channelTypeLabel(value)}</MenuItem>)}</Select></FormControl>{channelFields(type).map(field => <TextField key={field.key} label={field.label} type={field.secret ? 'password' : 'text'} value={field.secret ? secrets[field.key] || '' : fields[field.key] || field.defaultValue || ''} onChange={e => field.secret ? setSecret(field.key, e.target.value) : setField(field.key, e.target.value)} required={field.required && !(channel?.configured_secrets.includes(field.key))} helperText={field.secret && channel?.configured_secrets.includes(field.key) ? '已安全保存；留空表示保留原值' : field.help} />)}<FormControlLabel control={<Switch checked={enabled} onChange={e => setEnabled(e.target.checked)} />} label="启用渠道" />{type === 'microsoft' && <Alert severity="info">保存后需要完成 Microsoft 设备码授权，再启用渠道。</Alert>}</Stack></DialogContent><DialogActions><Button onClick={onClose}>取消</Button><Button variant="contained" disabled={busy || !name} onClick={() => void submit()}>保存</Button></DialogActions></Dialog>
+  return <Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm"><DialogTitle>{channel ? '编辑通知渠道' : '添加通知渠道'}</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}>{error && <Alert severity="error">{error}</Alert>}<TextField label="渠道名称" value={name} onChange={e => setName(e.target.value)} required /><FormControl><InputLabel id="channel-type-label">渠道类型</InputLabel><Select labelId="channel-type-label" label="渠道类型" value={type} onChange={e => { setType(e.target.value as ChannelType); setFields({}); setSecrets({}) }}>{(['email', 'microsoft', 'dingtalk', 'feishu', 'wecom'] as ChannelType[]).map(value => <MenuItem key={value} value={value}>{channelTypeLabel(value)}</MenuItem>)}</Select></FormControl>{channelFields(type).map(field => <TextField key={field.key} label={field.label} type={field.secret ? 'password' : 'text'} value={field.secret ? secrets[field.key] || '' : fields[field.key] || field.defaultValue || ''} onChange={e => field.secret ? setSecret(field.key, e.target.value) : setField(field.key, e.target.value)} required={field.required && !(channel?.configured_secrets.includes(field.key))} helperText={field.secret && channel?.configured_secrets.includes(field.key) ? '已安全保存；留空表示保留原值' : field.help} />)}<FormControlLabel control={<Switch checked={enabled} onChange={e => setEnabled(e.target.checked)} />} label="启用渠道" />{type === 'microsoft' && <Alert severity="info">保存后需要完成 Microsoft 设备码授权，再启用渠道。</Alert>}</Stack></DialogContent><DialogActions><Button onClick={onClose}>取消</Button><Button variant="contained" disabled={busy || !name} onClick={() => void submit()}>保存</Button></DialogActions></Dialog>
 }
 
 function DeliveriesPage({ deliveries, channels, total }: { deliveries: Delivery[]; channels: Channel[]; total: number }) {
@@ -299,7 +364,7 @@ function DeliveriesPage({ deliveries, channels, total }: { deliveries: Delivery[
   return <Stack spacing={3}><PageHeader title="投递队列" subtitle={`共 ${total} 个任务，页面展示前 ${deliveries.length} 个。`} /><Paper><Tabs value={filter} onChange={(_, value) => setFilter(value)} variant="scrollable"><Tab value="all" label="全部" /><Tab value="pending" label="等待重试" /><Tab value="blocked" label="已阻塞" /></Tabs></Paper>{visible.length === 0 ? <EmptyState icon={<CheckCircle />} title="当前筛选下没有待投递任务" /> : <Stack spacing={1.5}>{visible.map(delivery => <Card key={delivery.id}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box minWidth={0}><Stack direction="row" spacing={1} alignItems="center"><Chip size="small" color={delivery.state === 'blocked' ? 'error' : 'warning'} label={delivery.state === 'blocked' ? '已阻塞' : '等待重试'} /><Typography fontWeight={750}>{deliveryTitle(delivery)}</Typography></Stack><Typography className="summary-clamp" sx={{ mt: 1 }}>{deliverySummary(delivery)}</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>渠道：{channels.find(channel => channel.id === delivery.channel_id)?.name || delivery.channel_id} · 已尝试 {delivery.attempts} 次</Typography>{delivery.last_error && <Typography variant="body2" color="error" sx={{ mt: .5 }}>{delivery.last_error}</Typography>}</Box><Box flexShrink={0}><Typography variant="body2" color="text.secondary">下次处理</Typography><Typography>{formatDate(delivery.next_at)}</Typography></Box></Stack></CardContent></Card>)}</Stack>}</Stack>
 }
 
-function HistoryPage({ ups, command }: { ups: UP[]; command: <T>(action: string, payload?: unknown) => Promise<T> }) {
+function HistoryPage({ ups, api }: { ups: UP[]; api: AdminAPI }) {
   const [params, setParams] = useSearchParams()
   const tab = params.get('tab') === 'comments' ? 'comments' : 'dynamics'
   const uid = params.get('uid') || ''
@@ -346,8 +411,9 @@ function HistoryPage({ ups, command }: { ups: UP[]; command: <T>(action: string,
           limit: pageSize,
           offset,
         }
-        const action = tab === 'comments' ? 'comments.query' : 'dynamics.query'
-        const page = await command<ContentPage<DynamicHistoryItem | CommentHistoryItem>>(action, payload)
+        const page = tab === 'comments'
+          ? await api.queryComments<CommentHistoryItem>(payload)
+          : await api.queryDynamics(payload)
         if (!cancelled) {
           setItems(page.items || [])
           setTotal(page.total || 0)
@@ -364,15 +430,15 @@ function HistoryPage({ ups, command }: { ups: UP[]; command: <T>(action: string,
     }
     void run()
     return () => { cancelled = true }
-  }, [tab, uid, q, from, to, offset, command])
+  }, [tab, uid, q, from, to, offset, api])
 
   const openDetail = async (kind: 'dynamics' | 'comments', id: string) => {
     try {
       if (kind === 'dynamics') {
-        const data = await command<DynamicDetail>('dynamics.get', { id })
+        const data = await api.getDynamic(id)
         setDetail({ kind, data })
       } else {
-        const data = await command<CommentDetail>('comments.get', { rpid: id })
+        const data = await api.getComment(id)
         setDetail({ kind, data })
       }
     } catch (err) {
@@ -539,12 +605,13 @@ function HistoryDetailDialog({ open, detail, fullScreen, onClose }: {
   </Dialog>
 }
 
-function SettingsPage({ csrf, preference, setPreference, settings, command, onChanged }: {
+function SettingsPage({ csrf, preference, setPreference, settings, api, runMutation, onChanged }: {
   csrf: string
   preference: ThemePreference
   setPreference: (value: ThemePreference) => void
   settings: RuntimeSettings
-  command: <T>(action: string, payload?: unknown) => Promise<T>
+  api: AdminAPI
+  runMutation: RunMutation
   onChanged: () => void
 }) {
   const [current, setCurrent] = useState('')
@@ -626,7 +693,7 @@ function SettingsPage({ csrf, preference, setPreference, settings, command, onCh
     setSettingsBusy(true)
     setSettingsMessage('')
     try {
-      await command('settings.update', {
+      await runMutation(() => api.updateSettings({
         poll_interval_sec,
         request_rate,
         request_concurrency,
@@ -635,7 +702,7 @@ function SettingsPage({ csrf, preference, setPreference, settings, command, onCh
         comment_root_pages,
         comment_reply_pages,
         comment_batch_interval_sec,
-      })
+      }), applySettingsMutation)
     } catch (error) {
       setSettingsMessage(errorMessage(error))
     } finally {
@@ -690,29 +757,6 @@ function SettingsPage({ csrf, preference, setPreference, settings, command, onCh
 
 function PageHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: React.ReactNode }) { return <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={2}><Box><Typography variant="h4" fontWeight={850}>{title}</Typography><Typography color="text.secondary">{subtitle}</Typography></Box>{action}</Stack> }
 function EmptyState({ icon, title, action }: { icon: React.ReactNode; title: string; action?: React.ReactNode }) { return <Paper sx={{ py: 8, px: 2, textAlign: 'center' }}><Avatar sx={{ mx: 'auto', mb: 2, bgcolor: 'action.selected', color: 'text.secondary' }}>{icon}</Avatar><Typography variant="h6" gutterBottom>{title}</Typography>{action}</Paper> }
-
-function applyUpdate(current: DashboardSnapshot | null, event: string, data: unknown): DashboardSnapshot | null {
-  if (!current) return current
-  const updated = { ...current, updated_at: new Date().toISOString() }
-  displayTimeZone = usableTimeZone(current.timezone)
-  if (event === 'status.updated') updated.status = data as DashboardSnapshot['status']
-  if (event === 'settings.updated') updated.settings = data as DashboardSnapshot['settings']
-  if (event === 'ups.updated') updated.ups = data as UP[]
-  if (event === 'channels.updated') updated.channels = data as Channel[]
-  if (event === 'deliveries.updated') updated.deliveries = data as Delivery[]
-  if (event === 'bilibili.login.updated') updated.bili_login = data as BiliLogin | null
-  if (event === 'microsoft.login.updated') updated.microsoft_logins = data as MicrosoftLogin[]
-  return updated
-}
-
-function readinessMessage(snapshot: DashboardSnapshot) {
-  if (!snapshot.status.auth_valid) return '请先完成 B站扫码登录。'
-  if (!snapshot.channels.some(channel => channel.enabled)) return '请配置并启用至少一个通知渠道。'
-  if (!snapshot.ups.some(up => up.enabled)) return '请添加并启用至少一个 UP 主。'
-  if (snapshot.status.risk_paused_until) return '采集因 B站风控暂时暂停。'
-  if (!snapshot.status.last_success_at) return '配置已完成，正在等待首次采集。'
-  return '登录、采集目标和通知渠道均正常。'
-}
 
 function channelFields(type: ChannelType) {
   const fields: Record<ChannelType, Array<{ key: string; label: string; required?: boolean; secret?: boolean; help?: string; defaultValue?: string }>> = {
@@ -795,5 +839,3 @@ function dynamicTypeLabel(value: string) {
 }
 
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : '发生未知错误' }
-
-export { applyUpdate, readinessMessage }

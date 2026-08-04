@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { DynamicHistoryCard, applyUpdate, readinessMessage } from './App'
-import { parseCommandResponse } from './realtime'
+import { DynamicHistoryCard } from './App'
+import { parseDynamicHistoryPage } from './api'
+import { applyBiliLoginMutation, applyUPMutation, applyUpdate, readinessMessage } from './dashboard'
+import { nextRevision } from './realtime'
 import type { DashboardSnapshot, DynamicHistoryItem } from './types'
 
 const snapshot: DashboardSnapshot = {
@@ -49,6 +51,24 @@ describe('dashboard state', () => {
     })
     expect(next?.status.ready).toBe(false)
   })
+
+  it('applies successful HTTP mutation payloads without waiting for realtime', () => {
+    const withUP = applyUPMutation(snapshot, {
+      uid: '42', name: 'tester', enabled: true, baseline_ready: false, consecutive_fail: 0,
+    })
+    const withQR = applyBiliLoginMutation(withUP, {
+      id: 'login', status: 'waiting', expires_at: '2026-01-01T00:05:00+08:00', qr_data_url: 'data:image/png;base64,qr',
+    })
+
+    expect(withQR.ups).toHaveLength(1)
+    expect(withQR.status.up_count).toBe(1)
+    expect(withQR.bili_login?.qr_data_url).toBe('data:image/png;base64,qr')
+  })
+
+  it('accepts a lower snapshot revision after the server restarts', () => {
+    expect(nextRevision(100, 'snapshot', 0)).toBe(0)
+    expect(nextRevision(100, 'status.updated', 1)).toBeNull()
+  })
 })
 
 describe('dynamic history previews', () => {
@@ -79,7 +99,7 @@ describe('dynamic history response validation', () => {
     { name: 'accepts original preview', item: { id: '2', uid: '42', up_name: 'UP', type: 'DYNAMIC_TYPE_FORWARD', published_at: '2026-01-01T00:00:00Z', discovered_at: '2026-01-01T00:00:01Z', baseline: false, original: { summary: '原文' } }, valid: true },
     { name: 'rejects malformed media dimensions', item: { id: '3', uid: '42', up_name: 'UP', type: 'DYNAMIC_TYPE_DRAW', published_at: '2026-01-01T00:00:00Z', discovered_at: '2026-01-01T00:00:01Z', baseline: false, media: [{ kind: 'image', url: 'https://example.com/1.jpg', width: 'wide' }] }, valid: false },
   ])('$name', ({ item, valid }) => {
-    const parse = () => parseCommandResponse('dynamics.query', { items: [item], total: 1, limit: 20, offset: 0 })
+    const parse = () => parseDynamicHistoryPage({ items: [item], total: 1, limit: 20, offset: 0 })
     if (valid) expect(parse).not.toThrow()
     else expect(parse).toThrow()
   })

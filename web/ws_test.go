@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,7 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestWebSocketRequiresSessionAndPublishesUpdates(t *testing.T) {
+func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	t.Parallel()
 	store := openWebTestStore(t)
 	auth, setupCode, err := newAuthenticator(store)
@@ -63,7 +64,7 @@ func TestWebSocketRequiresSessionAndPublishesUpdates(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, response.StatusCode)
 	_ = response.Body.Close()
 
-	token, _, err := auth.createSession()
+	token, csrf, err := auth.createSession()
 	require.NoError(t, err)
 	headers := http.Header{}
 	headers.Set("Cookie", (&http.Cookie{Name: sessionCookie, Value: token}).String())
@@ -82,28 +83,36 @@ func TestWebSocketRequiresSessionAndPublishesUpdates(t *testing.T) {
 	assert.NotNil(t, snapshot.Deliveries)
 	assert.NotNil(t, snapshot.MicrosoftLogins)
 
-	request := wsRequest{
-		ID:      "create-up",
-		Action:  "up.create",
-		Payload: json.RawMessage(`{"uid":"42","name":"Test UP","enabled":true}`),
-	}
-	require.NoError(t, wsjson.Write(ctx, connection, request))
+	badRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v1/ups", strings.NewReader(`{"uid":"42","name":"Test UP","enabled":true}`))
+	require.NoError(t, err)
+	badRequest.Header.Set("Content-Type", "application/json")
+	badRequest.Header.Set("X-CSRF-Token", "invalid")
+	badRequest.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	badResponse, err := httpServer.Client().Do(badRequest)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = badResponse.Body.Close() })
+	assert.Equal(t, http.StatusForbidden, badResponse.StatusCode)
 
-	var gotResponse, gotUpdate bool
-	for range 4 {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v1/ups", strings.NewReader(`{"uid":"42","name":"Test UP","enabled":true}`))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	apiResponse, err := httpServer.Client().Do(request)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = apiResponse.Body.Close() })
+	assert.Equal(t, http.StatusCreated, apiResponse.StatusCode)
+	var up model.UP
+	require.NoError(t, json.NewDecoder(apiResponse.Body).Decode(&up))
+	assert.Equal(t, "42", up.UID)
+	assert.Equal(t, "Test UP", up.Name)
+	assert.True(t, up.Enabled)
+
+	var gotUpdate bool
+	for range 3 {
 		var envelope testWSEnvelope
 		require.NoError(t, wsjson.Read(ctx, connection, &envelope))
-		switch {
-		case envelope.ID == request.ID:
-			require.True(t, envelope.OK)
-			assert.Nil(t, envelope.Error)
-			var up model.UP
-			require.NoError(t, json.Unmarshal(envelope.Data, &up))
-			assert.Equal(t, "42", up.UID)
-			assert.Equal(t, "Test UP", up.Name)
-			assert.True(t, up.Enabled)
-			gotResponse = true
-		case envelope.Event == "ups.updated":
+		if envelope.Event == "ups.updated" {
 			var ups []model.UP
 			require.NoError(t, json.Unmarshal(envelope.Data, &ups))
 			require.Len(t, ups, 1)
@@ -111,11 +120,10 @@ func TestWebSocketRequiresSessionAndPublishesUpdates(t *testing.T) {
 			assert.NotZero(t, envelope.Revision)
 			gotUpdate = true
 		}
-		if gotResponse && gotUpdate {
+		if gotUpdate {
 			break
 		}
 	}
-	assert.True(t, gotResponse, "missing command response")
 	assert.True(t, gotUpdate, "missing ups.updated event")
 }
 
@@ -143,13 +151,33 @@ func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
 	assert.LessOrEqual(t, len([]rune(views[0].Dynamic.Summary)), 241)
 }
 
+func TestAPIErrorClassification(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		err         error
+		wantCode    string
+		wantMessage string
+	}{
+		{name: "validation", err: validationFailure(errors.New("uid is invalid")), wantCode: "validation_failed", wantMessage: "uid is invalid"},
+		{name: "conflict", err: conflictFailure(errors.New("already exists")), wantCode: "conflict", wantMessage: "already exists"},
+		{name: "not found", err: state.ErrNotFound, wantCode: "not_found", wantMessage: "resource not found"},
+		{name: "internal", err: errors.New("database is unavailable"), wantCode: "internal", wantMessage: "internal server error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := apiError(tt.err)
+			assert.Equal(t, tt.wantCode, got.Code)
+			assert.Equal(t, tt.wantMessage, got.Message)
+		})
+	}
+}
+
 type testWSEnvelope struct {
-	ID       string          `json:"id"`
-	OK       bool            `json:"ok"`
 	Event    string          `json:"event"`
 	Revision uint64          `json:"revision"`
 	Data     json.RawMessage `json:"data"`
-	Error    *wsAPIError     `json:"error"`
 }
 
 func openWebTestStore(t *testing.T) *state.Store {

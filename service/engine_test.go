@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -42,7 +43,8 @@ func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
 	up := model.UP{UID: "42", Enabled: true}
 	require.NoError(t, store.PutUP(up))
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
-	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil)
+	events := NewEventBus()
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), events)
 	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
 	got, err := store.ListDeliveries(0)
 	require.NoError(t, err)
@@ -57,6 +59,10 @@ func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, "2", got[0].Dynamic.ID)
+
+	beforeIdlePoll := events.Revision()
+	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
+	assert.Equal(t, beforeIdlePoll, events.Revision(), "an idle successful poll should not publish unchanged status or UP data")
 }
 
 func dynamicFixture(id string, timestamp int64) string {
@@ -170,4 +176,103 @@ func TestStatusReadyUsesPollIntervalWindow(t *testing.T) {
 	status, err = engine.Status()
 	require.NoError(t, err)
 	assert.False(t, status.Ready, "beyond 2*poll_interval should be unready")
+}
+
+func TestClockDerivedStatusPublishesOnlyOnBoundaryChanges(t *testing.T) {
+	t.Parallel()
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.PutUP(model.UP{UID: "1", Enabled: true, BaselineReady: true}))
+	_, err = store.PutChannel(model.Channel{
+		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
+		Settings: map[string]string{"webhook": "https://example.com/hook"},
+	})
+	require.NoError(t, err)
+
+	events := NewEventBus()
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), events)
+	engine.authValid.Store(true)
+	engine.lastSuccess.Store(time.Now().Unix())
+	engine.riskUntil.Store(time.Now().Add(5 * time.Minute).Unix())
+
+	require.NoError(t, engine.publishClockStatusIfChanged())
+	beforeUnchanged := events.Revision()
+	require.NoError(t, engine.publishClockStatusIfChanged())
+	assert.Equal(t, beforeUnchanged, events.Revision())
+
+	engine.riskUntil.Store(time.Now().Add(-time.Second).Unix())
+	require.NoError(t, engine.publishClockStatusIfChanged())
+	assert.Equal(t, beforeUnchanged+1, events.Revision(), "risk expiry must publish the newly derived status")
+}
+
+func TestPollUPPublishesCommittedOutboxBeforeLaterBookkeepingFailure(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","items":[%s]}}`, dynamicFixture("new", 1700000000))
+	}))
+	t.Cleanup(server.Close)
+
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	events := NewEventBus()
+	subscription := events.Subscribe()
+	t.Cleanup(subscription.Close)
+	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), events)
+
+	err = engine.pollUP(t.Context(), model.UP{UID: "42", Name: "tester", Enabled: true, BaselineReady: true}, []string{"channel"})
+	require.ErrorIs(t, err, state.ErrNotFound)
+	deliveries, listErr := store.ListDeliveries(0)
+	require.NoError(t, listErr)
+	require.Len(t, deliveries, 1)
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	t.Cleanup(cancel)
+	topics, _, eventErr := subscription.Next(ctx)
+	require.NoError(t, eventErr)
+	assert.NotZero(t, topics&TopicStatus)
+	assert.NotZero(t, topics&TopicDeliveries)
+}
+
+func TestDispatchOnceDoesNotPublishWhenQueueIsIdle(t *testing.T) {
+	t.Parallel()
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	events := NewEventBus()
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), events)
+
+	before := events.Revision()
+	require.NoError(t, engine.dispatchOnce(t.Context()))
+	assert.Equal(t, before, events.Revision())
+}
+
+func TestDispatchOncePublishesMinimalTopicsAfterDeliveryChanges(t *testing.T) {
+	t.Parallel()
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	created, err := store.RecordDynamics("42", []model.Dynamic{{
+		ID: "dynamic", UID: "42", UPName: "tester", Type: "DYNAMIC_TYPE_WORD",
+		PublishedAt: time.Now(), Summary: "hello", URL: "https://t.bilibili.com/1",
+	}}, []string{"missing-channel"}, false)
+	require.NoError(t, err)
+	require.Equal(t, 1, created)
+
+	events := NewEventBus()
+	subscription := events.Subscribe()
+	t.Cleanup(subscription.Close)
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), events)
+	require.NoError(t, engine.dispatchOnce(t.Context()))
+
+	topics, _, err := subscription.Next(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, TopicStatus|TopicDeliveries, topics)
+	assert.Zero(t, topics&TopicChannels)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, model.DeliveryBlocked, deliveries[0].State)
 }
