@@ -125,6 +125,99 @@ func mustJSON(t *testing.T, value string) string {
 	return string(raw)
 }
 
+func TestFlexibleIntUnmarshalJSON(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		raw     string
+		want    flexibleInt
+		wantErr bool
+	}{
+		{name: "bare", raw: `10`, want: 10},
+		{name: "quoted", raw: `"10"`, want: 10},
+		{name: "zero", raw: `0`, want: 0},
+		{name: "quoted zero", raw: `"0"`, want: 0},
+		{name: "null", raw: `null`, want: 0},
+		{name: "empty string", raw: `""`, want: 0},
+		{name: "quoted spaces", raw: `" 42 "`, want: 42},
+		{name: "non-numeric", raw: `"abc"`, wantErr: true},
+		{name: "float", raw: `1.5`, wantErr: true},
+		{name: "quoted float", raw: `"1.5"`, wantErr: true},
+		{name: "bool", raw: `true`, wantErr: true},
+		{name: "object", raw: `{}`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var got flexibleInt
+			err := json.Unmarshal([]byte(tt.raw), &got)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestParseDynamicAcceptsStringMediaDimensions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		raw        string
+		wantWidth  int
+		wantHeight int
+		wantMedia  int
+	}{
+		{
+			name:       "draw quoted dimensions",
+			raw:        `{"id_str":"2","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":"draw"},"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/1.jpg","width":"10","height":"20"}]}}}}}`,
+			wantWidth:  10,
+			wantHeight: 20,
+			wantMedia:  1,
+		},
+		{
+			name:       "draw mixed dimensions",
+			raw:        `{"id_str":"2","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":"draw"},"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/1.jpg","width":10,"height":"20"}]}}}}}`,
+			wantWidth:  10,
+			wantHeight: 20,
+			wantMedia:  1,
+		},
+		{
+			name:       "draw missing dimensions",
+			raw:        `{"id_str":"2","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":"draw"},"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/1.jpg"}]}}}}}`,
+			wantWidth:  0,
+			wantHeight: 0,
+			wantMedia:  1,
+		},
+		{
+			name:       "draw null dimensions",
+			raw:        `{"id_str":"2","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":"draw"},"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/1.jpg","width":null,"height":null}]}}}}}`,
+			wantWidth:  0,
+			wantHeight: 0,
+			wantMedia:  1,
+		},
+		{
+			name:       "opus quoted dimensions",
+			raw:        `{"id_str":"6","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"opus":{"title":"opus","summary":{"text":"desc"},"pics":[{"url":"https://i0.hdslb.com/o.jpg","width":"1080","height":"720"}],"jump_url":"https://www.bilibili.com/opus/6"}}}}}`,
+			wantWidth:  1080,
+			wantHeight: 720,
+			wantMedia:  1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, _, err := parseDynamic("42", json.RawMessage(tt.raw))
+			require.NoError(t, err)
+			require.Len(t, got.Media, tt.wantMedia)
+			assert.Equal(t, tt.wantWidth, got.Media[0].Width)
+			assert.Equal(t, tt.wantHeight, got.Media[0].Height)
+		})
+	}
+}
+
 func TestParseDynamicRejectsInvalidPayloads(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -146,6 +239,14 @@ func TestParseDynamicRejectsInvalidPayloads(t *testing.T) {
 		{
 			name: "missing content card",
 			raw:  `{"id_str":"1","type":"DYNAMIC_TYPE_AV","modules":{"module_author":{"pub_ts":1},"module_dynamic":{"major":null}}}`,
+		},
+		{
+			name: "non-numeric draw width",
+			raw:  `{"id_str":"2","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/1.jpg","width":"abc","height":20}]}}}}}`,
+		},
+		{
+			name: "float draw width",
+			raw:  `{"id_str":"2","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/1.jpg","width":1.5,"height":20}]}}}}}`,
 		},
 	}
 	for _, tt := range tests {

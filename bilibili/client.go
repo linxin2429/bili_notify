@@ -337,6 +337,34 @@ func (t *unixTimestamp) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// flexibleInt accepts bare or quoted JSON integers. Bilibili sometimes serializes
+// media dimensions as strings (e.g. "1080") instead of numbers.
+type flexibleInt int
+
+func (v *flexibleInt) UnmarshalJSON(data []byte) error {
+	value := strings.TrimSpace(string(data))
+	if value == "null" || value == "" {
+		*v = 0
+		return nil
+	}
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		if err := json.Unmarshal(data, &value); err != nil {
+			return fmt.Errorf("decoding quoted integer: %w", err)
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			*v = 0
+			return nil
+		}
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fmt.Errorf("parsing integer %q: %w", value, err)
+	}
+	*v = flexibleInt(parsed)
+	return nil
+}
+
 type displayText string
 
 func (t *displayText) UnmarshalJSON(data []byte) error {
@@ -414,9 +442,9 @@ type rawMajor struct {
 	} `json:"archive"`
 	Draw *struct {
 		Items []struct {
-			Src    string `json:"src"`
-			Width  int    `json:"width"`
-			Height int    `json:"height"`
+			Src    string      `json:"src"`
+			Width  flexibleInt `json:"width"`
+			Height flexibleInt `json:"height"`
 		} `json:"items"`
 	} `json:"draw"`
 	Article *struct {
@@ -451,10 +479,10 @@ type rawMajor struct {
 			RichTextNodes []rawRichTextNode `json:"rich_text_nodes"`
 		} `json:"summary"`
 		Pics []struct {
-			URL    string `json:"url"`
-			Src    string `json:"src"`
-			Width  int    `json:"width"`
-			Height int    `json:"height"`
+			URL    string      `json:"url"`
+			Src    string      `json:"src"`
+			Width  flexibleInt `json:"width"`
+			Height flexibleInt `json:"height"`
 		} `json:"pics"`
 	} `json:"opus"`
 }
@@ -549,7 +577,7 @@ func parseMajor(dynamic *model.Dynamic, raw json.RawMessage) error {
 			return unexpectedMajor(dynamic.Type, "draw")
 		}
 		for _, picture := range major.Draw.Items {
-			appendMedia(dynamic, model.DynamicMediaImage, picture.Src, picture.Width, picture.Height)
+			appendMedia(dynamic, model.DynamicMediaImage, picture.Src, int(picture.Width), int(picture.Height))
 		}
 	}
 	if major.Article != nil {
@@ -600,7 +628,7 @@ func parseMajor(dynamic *model.Dynamic, raw json.RawMessage) error {
 			if pictureURL == "" {
 				pictureURL = picture.Src
 			}
-			appendMedia(dynamic, model.DynamicMediaImage, pictureURL, picture.Width, picture.Height)
+			appendMedia(dynamic, model.DynamicMediaImage, pictureURL, int(picture.Width), int(picture.Height))
 		}
 	}
 	if recognized == 0 {
