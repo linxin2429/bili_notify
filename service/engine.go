@@ -41,6 +41,9 @@ type Engine struct {
 	authEverValid        atomic.Bool
 	lastSuccess          atomic.Int64
 	riskUntil            atomic.Int64
+	clockStatusMu        sync.Mutex
+	clockStatus          clockStatus
+	clockStatusKnown     bool
 	backlogAlerted       atomic.Bool
 	loginMu              sync.Mutex
 	login                *LoginSession
@@ -97,6 +100,9 @@ func (e *Engine) UpdateSettings(settings model.RuntimeSettings) error {
 	settings = settings.WithCommentDefaults()
 	if err := settings.Validate(); err != nil {
 		return err
+	}
+	if e.Settings() == settings {
+		return nil
 	}
 	if err := e.store.PutRuntimeSettings(settings); err != nil {
 		return err
@@ -183,6 +189,11 @@ type Status struct {
 	RiskPausedUntil time.Time `json:"risk_paused_until,omitzero"`
 }
 
+type clockStatus struct {
+	Ready           bool
+	RiskPausedUntil int64
+}
+
 func (e *Engine) Run(ctx context.Context) error {
 	e.loginMu.Lock()
 	e.runCtx = ctx
@@ -261,7 +272,9 @@ func (e *Engine) collectLoop(ctx context.Context) error {
 }
 
 func (e *Engine) collectOnce(ctx context.Context) error {
-	defer e.publish(TopicStatus | TopicUPs | TopicDeliveries)
+	if err := e.publishClockStatusIfChanged(); err != nil {
+		return fmt.Errorf("checking time-derived status: %w", err)
+	}
 	started := time.Now()
 	if !e.authValid.Load() {
 		e.logger.Debug("collection cycle skipped", "reason", "Bilibili session is not authenticated")
@@ -327,6 +340,7 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 				now := time.Now()
 				previousUntil := e.riskUntil.Swap(now.Add(5 * time.Minute).Unix())
 				if previousUntil <= now.Unix() {
+					e.publish(TopicStatus)
 					e.enqueueSystem("B站接口触发风控，采集已暂停五分钟；服务不会尝试绕过风控。")
 				}
 			}
@@ -359,6 +373,15 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 	if err != nil {
 		return fmt.Errorf("recording dynamics: %w", err)
 	}
+	if created > 0 {
+		// RecordDynamics commits content, seen markers, and outbox rows atomically.
+		// Publish that committed state before later bookkeeping can fail.
+		e.publish(TopicStatus | TopicDeliveries)
+	}
+	if !up.BaselineReady {
+		// BaselineReady is committed by RecordDynamics as well.
+		e.publish(TopicUPs)
+	}
 	if err := e.refreshCommentTargets(up, name, items); err != nil {
 		return err
 	}
@@ -375,6 +398,12 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 	e.metrics.PollTotal.WithLabelValues("success").Inc()
 	e.metrics.LastPollSuccess.Set(float64(now.Unix()))
 	e.lastSuccess.Store(now.Unix())
+	if up.BaselineReady && (name != "" && name != up.Name || up.ConsecutiveFail > 0) {
+		e.publish(TopicUPs)
+	}
+	if err := e.publishClockStatusIfChanged(); err != nil {
+		return fmt.Errorf("checking time-derived status after poll: %w", err)
+	}
 	for _, dynamic := range items {
 		if up.BaselineReady {
 			e.metrics.DiscoveryDelay.Observe(max(0, now.Sub(dynamic.PublishedAt).Seconds()))
@@ -469,7 +498,6 @@ func (e *Engine) commentLoop(ctx context.Context) error {
 }
 
 func (e *Engine) commentOnce(ctx context.Context) error {
-	defer e.publish(TopicStatus | TopicDeliveries)
 	enabled, _, rootPages, replyPages := e.currentCommentSettings()
 	if !enabled {
 		return nil
@@ -664,6 +692,7 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 	if created > 0 {
 		e.metrics.CommentFoundTotal.Add(float64(created))
 		e.logger.Info("new UP replies queued", "uid", target.UID, "comment_oid", target.CommentOID, "reply_count", created)
+		e.publish(TopicStatus | TopicDeliveries)
 	}
 	return nil
 }
@@ -749,6 +778,7 @@ func (e *Engine) handleCommentPollError(target model.CommentTarget, pollErr erro
 		now := time.Now()
 		previousUntil := e.riskUntil.Swap(now.Add(5 * time.Minute).Unix())
 		if previousUntil <= now.Unix() {
+			e.publish(TopicStatus)
 			e.enqueueSystem("B站接口触发风控，采集已暂停五分钟；服务不会尝试绕过风控。")
 		}
 	}
@@ -775,6 +805,7 @@ func (e *Engine) failPoll(up model.UP, name string, started time.Time, pollErr e
 	if err := e.store.SetUPResult(up.UID, name, time.Now(), pollErr); err != nil {
 		return fmt.Errorf("recording failed poll for UP %s: %w", up.UID, err)
 	}
+	e.publish(TopicStatus | TopicUPs)
 	kind := "other"
 	var apiErr *bilibili.APIError
 	if errors.As(pollErr, &apiErr) {
@@ -803,7 +834,6 @@ func (e *Engine) deliveryLoop(ctx context.Context) error {
 }
 
 func (e *Engine) dispatchOnce(ctx context.Context) error {
-	defer e.publish(TopicStatus | TopicChannels | TopicDeliveries)
 	deliveries, err := e.store.DueDeliveries(time.Now(), 50)
 	if err != nil {
 		return err
@@ -828,24 +858,35 @@ func (e *Engine) dispatchOnce(ctx context.Context) error {
 	}
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(8)
+	var changed atomic.Bool
 	for _, delivery := range deliveries {
-		g.Go(func() error { return e.deliver(gctx, delivery) })
+		g.Go(func() error {
+			deliveryChanged, err := e.deliver(gctx, delivery)
+			if deliveryChanged {
+				changed.Store(true)
+			}
+			return err
+		})
 	}
-	return g.Wait()
+	err = g.Wait()
+	if changed.Load() {
+		e.publish(TopicStatus | TopicDeliveries)
+	}
+	return err
 }
 
-func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
+func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (bool, error) {
 	channel, err := e.store.Channel(delivery.ChannelID)
 	if err != nil {
 		deliveryErr := errors.New("channel no longer exists")
 		if err := e.store.FailDelivery(delivery.ID, true, time.Now(), deliveryErr); err != nil {
-			return err
+			return false, err
 		}
 		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "err", deliveryErr)
-		return nil
+		return true, nil
 	}
 	if !channel.Enabled {
-		return nil
+		return false, nil
 	}
 	if channel.Type == model.ChannelMicrosoft {
 		e.microsoftSendMu.Lock()
@@ -854,27 +895,27 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 		if err != nil {
 			deliveryErr := errors.New("channel no longer exists")
 			if err := e.store.FailDelivery(delivery.ID, true, time.Now(), deliveryErr); err != nil {
-				return err
+				return false, err
 			}
 			e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "err", deliveryErr)
-			return nil
+			return true, nil
 		}
 	}
 	sender, err := e.newSender(channel)
 	if err != nil {
 		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now(), err); storeErr != nil {
-			return storeErr
+			return false, storeErr
 		}
 		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "err", err)
-		return nil
+		return true, nil
 	}
 	message, contentID, err := deliveryMessage(delivery)
 	if err != nil {
 		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now(), err); storeErr != nil {
-			return storeErr
+			return false, storeErr
 		}
 		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "content_id", contentID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "err", err)
-		return nil
+		return true, nil
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	started := time.Now()
@@ -884,10 +925,10 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 	if err == nil {
 		e.metrics.DeliveryTotal.WithLabelValues(string(channel.Type), "success").Inc()
 		if err := e.store.CompleteDelivery(delivery.ID); err != nil {
-			return err
+			return false, err
 		}
 		e.logger.Info("notification delivered", "delivery_id", delivery.ID, "content_id", contentID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "duration", elapsed(started))
-		return nil
+		return true, nil
 	}
 	blocked := notify.IsPermanent(err)
 	result := "retry"
@@ -897,10 +938,10 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 	e.metrics.DeliveryTotal.WithLabelValues(string(channel.Type), result).Inc()
 	next := time.Now().Add(retryDelay(delivery.Attempts))
 	if storeErr := e.store.FailDelivery(delivery.ID, blocked, next, err); storeErr != nil {
-		return storeErr
+		return false, storeErr
 	}
 	e.logger.Warn("notification delivery failed", "delivery_id", delivery.ID, "content_id", contentID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "result", result, "next_attempt_at", next, "duration", elapsed(started), "err", err)
-	return nil
+	return true, nil
 }
 
 func deliveryMessage(delivery model.Delivery) (notify.Message, string, error) {
@@ -948,7 +989,6 @@ func (e *Engine) authLoop(ctx context.Context) error {
 }
 
 func (e *Engine) setAuth(valid bool) {
-	defer e.publish(TopicStatus)
 	previous := e.authValid.Swap(valid)
 	if valid {
 		e.metrics.AuthState.Set(1)
@@ -967,6 +1007,9 @@ func (e *Engine) setAuth(valid bool) {
 		if previous && e.authEverValid.Load() {
 			e.enqueueSystem("B站登录失效，请在管理控制台重新扫码登录。")
 		}
+	}
+	if previous != valid {
+		e.publish(TopicStatus)
 	}
 }
 
@@ -1028,15 +1071,17 @@ func (e *Engine) pollLoginLoop(ctx context.Context, id string) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			previous, _ := e.Login()
 			pollCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
 			login, err := e.PollLogin(pollCtx, id)
 			cancel()
 			if err != nil {
 				e.logger.Warn("Bilibili QR login poll failed", "err", err)
-				e.publish(TopicBiliLogin)
 				continue
 			}
-			e.publish(TopicBiliLogin | TopicStatus)
+			if login.Status != previous.Status {
+				e.publish(TopicBiliLogin)
+			}
 			if login.Status == bilibili.QRSuccess || login.Status == bilibili.QRExpired {
 				return
 			}
@@ -1110,15 +1155,19 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 
 func (e *Engine) CancelLogin(id string) {
 	e.loginMu.Lock()
+	changed := false
 	if e.login != nil && e.login.Key == id {
 		if e.loginCancel != nil {
 			e.loginCancel()
 		}
 		e.loginCancel = nil
 		e.login = nil
+		changed = true
 	}
 	e.loginMu.Unlock()
-	e.publish(TopicBiliLogin)
+	if changed {
+		e.publish(TopicBiliLogin)
+	}
 }
 
 func (e *Engine) TestChannel(ctx context.Context, id string) error {
@@ -1251,14 +1300,20 @@ func (e *Engine) MicrosoftLogin(channelID string) (MicrosoftLoginSession, error)
 
 func (e *Engine) CancelMicrosoftLogin(channelID string) {
 	e.microsoftLoginMu.Lock()
-	defer e.microsoftLoginMu.Unlock()
+	changed := false
 	if session := e.microsoftLogins[channelID]; session != nil {
 		if session.cancel != nil {
 			session.cancel()
 		}
-		session.Status = "canceled"
+		if session.Status != "canceled" {
+			session.Status = "canceled"
+			changed = true
+		}
 	}
-	e.publish(TopicMicrosoftLogin)
+	e.microsoftLoginMu.Unlock()
+	if changed {
+		e.publish(TopicMicrosoftLogin)
+	}
 }
 
 func (e *Engine) MicrosoftLogins() []MicrosoftLoginSession {
@@ -1274,6 +1329,26 @@ func (e *Engine) MicrosoftLogins() []MicrosoftLoginSession {
 
 func (e *Engine) publish(topics Topic) {
 	e.events.Publish(topics)
+}
+
+func (e *Engine) publishClockStatusIfChanged() error {
+	status, err := e.Status()
+	if err != nil {
+		return err
+	}
+	next := clockStatus{Ready: status.Ready}
+	if !status.RiskPausedUntil.IsZero() {
+		next.RiskPausedUntil = status.RiskPausedUntil.Unix()
+	}
+	e.clockStatusMu.Lock()
+	changed := !e.clockStatusKnown || e.clockStatus != next
+	e.clockStatus = next
+	e.clockStatusKnown = true
+	e.clockStatusMu.Unlock()
+	if changed {
+		e.publish(TopicStatus)
+	}
+	return nil
 }
 
 func publicMicrosoftLogin(session *MicrosoftLoginSession) MicrosoftLoginSession {

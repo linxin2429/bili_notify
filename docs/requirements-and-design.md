@@ -24,7 +24,7 @@ flowchart LR
     P -->|同一事务 archive+seen+Outbox| S[(data.db SQLite)]
     S --> O[持久化 Outbox]
     O --> N[SMTP / Graph / 群机器人]
-    A[React TLS 管理台] <-->|HTTP Auth + WebSocket| W[Go Web 服务]
+    A[React TLS 管理台] <-->|HTTP Auth/Management + WebSocket Events| W[Go Web 服务]
     W --> S
     W --> B
     E[领域事件总线] --> W
@@ -34,7 +34,7 @@ flowchart LR
     H --> O
 ```
 
-代码按功能划分为顶层包：`bilibili` 负责网页接口与二维码登录，`state` 负责事务和持久化（单一 SQLite `data.db`：配置/Outbox/内容档案，GORM + goose 版本化迁移），`notify` 负责投递协议，`service` 负责编排轮询、OAuth、Outbox 和领域事件，`web` 负责认证、WebSocket 与嵌入式管理台，`cmd` 只处理命令和非秘密启动配置。
+代码按功能划分为顶层包：`bilibili` 负责网页接口与二维码登录，`state` 负责事务和持久化（单一 SQLite `data.db`：配置/Outbox/内容档案，GORM + goose 版本化迁移），`notify` 负责投递协议，`service` 负责编排轮询、OAuth、Outbox 和领域事件，`web` 负责认证、管理 REST API、WebSocket 事件流与嵌入式管理台，`cmd` 只处理命令和非秘密启动配置。
 
 轮询器默认以 30 秒为目标周期、全局 2 请求/秒、4 个并发请求；这三项作为空库首次默认值写入 SQLite，之后可在管理台热更新并立即生效。每个 UP 最多翻 10 页直至遇到已持久化动态；超过上限会停止该 UP 的提交，避免静默丢失。
 
@@ -56,7 +56,7 @@ SMTP 只支持隐式 TLS 和 STARTTLS，并校验证书。Microsoft 使用 OAuth
 
 管理服务默认监听 `:8443`，只接受 TLS 1.3。静态 React 页面、认证接口和 WebSocket 同源部署。
 
-HTTP 只承担认证生命周期：
+HTTP 承担认证生命周期和全部管理资源 API：
 
 | 方法与路径 | 用途 |
 | --- | --- |
@@ -65,11 +65,19 @@ HTTP 只承担认证生命周期：
 | `POST /api/v1/session` | 登录 |
 | `DELETE /api/v1/session` | 注销 |
 | `PUT /api/v1/session/password` | 验证当前密码并修改密码 |
+| `GET /api/v1/dashboard` | 获取完整管理台快照 |
+| `POST /api/v1/ups`、`PUT/DELETE /api/v1/ups/{uid}` | 创建、更新或删除 UP 主 |
+| `POST /api/v1/channels`、`PUT/DELETE /api/v1/channels/{id}` | 创建、更新或删除通知渠道 |
+| `POST /api/v1/channels/{id}/test` | 发送渠道测试通知 |
+| `POST/DELETE /api/v1/bilibili-login[/{id}]` | 启动或取消 B 站扫码登录 |
+| `POST/DELETE /api/v1/channels/{id}/microsoft-login` | 启动或取消 Microsoft 授权 |
+| `PUT /api/v1/settings` | 完整更新运行时采集设置 |
+| `GET /api/v1/dynamics[/{id}]`、`GET /api/v1/comments[/{rpid}]` | 查询历史列表或内容详情 |
 | `GET /api/v1/ws` | 校验会话并升级 WebSocket |
 
-WebSocket 请求为 `id/action/payload`，响应使用相同 `id` 和 `ok/data/error`。服务端事件包含 `event/revision/data`；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、采集参数、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。写操作包含 `settings.update`，payload 为完整采集参数：动态三项 `poll_interval_sec`、`request_rate`、`request_concurrency`，以及评论五项 `comment_enabled`、`comment_track_n`、`comment_root_pages`、`comment_reply_pages`、`comment_batch_interval_sec`。历史查询为按需命令（不进入 snapshot）：`dynamics.query` / `comments.query`（payload：`uid?`、`q?`、`from?`、`to?` RFC3339、`limit?` 默认 20 最大 100、`offset?`；时间范围为半开区间 `[from, to)`；返回 `items/total/limit/offset`），以及 `dynamics.get` / `comments.get` 取完整 payload。断线客户端不重放未知结果的写操作，重连后使用快照修复状态。
+HTTP 负责全部浏览器主动请求：资源写操作使用 JSON body，写请求必须携带会话中的 CSRF Token；历史查询使用 `uid?`、`q?`、`from?`、`to?`（RFC3339）、`limit?`（默认 20，最大 100）和 `offset?`，时间范围为半开区间 `[from, to)`。WebSocket 仅承载服务端事件 `event/revision/data`，不接受业务命令；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、采集参数、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。重连后使用新快照修复断线期间遗漏的状态。
 
-领域事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。所有消息限制为 1 MiB，命令和写入均有超时。
+领域事件主要由实际状态写入驱动：空闲投递周期不发布事件，空闲采集不广播整份 UP 列表；只有就绪状态或风控暂停等时间派生状态跨越边界时，采集时钟才发布轻量状态事件。投递成功、失败、重试或阻塞只标记状态和投递主题；渠道授权信息只有在实际变化时才标记渠道主题。事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。WebSocket 消息限制为 1 MiB，并以独立的 30 秒 Ping 保活。
 
 管理员会话 Cookie 为 Secure、HttpOnly、SameSite=Strict，空闲 8 小时或创建 24 小时后失效。登录和初始化按来源地址与全局失败次数限流。WebSocket 必须通过会话 Cookie 和同源 Origin 校验；密码修改会清空所有会话并关闭全部连接。
 
@@ -112,7 +120,7 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 - 各动态类型的富内容解析、评论区坐标映射、UP 回复发现与根串展开、基线、去重、Outbox、渠道渲染、篇幅边界、重试与通知协议；
 - 自动主密钥/TLS 生成、权限、损坏文件和旧 schema 拒绝；
 - Argon2id、一次性初始化、会话、限流、密码变更与连接失效；
-- WebSocket 协议、领域事件合并、重连快照和秘密读模型；
+- HTTP 管理 API、WebSocket 单向事件、空闲周期不推送、领域事件合并、重连快照和秘密读模型；
 - React 状态归约、结构化表单、桌面/移动端以及明暗主题。
 
 提交前执行前端类型检查、单元测试和构建，以及 `go build ./...`、`go test ./...`、`go test -race ./...` 和 `go vet ./...`。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像。

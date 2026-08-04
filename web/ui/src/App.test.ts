@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { applyUpdate, readinessMessage } from './App'
+import { applyBiliLoginMutation, applyUPMutation, applyUpdate, readinessMessage } from './dashboard'
+import { nextRevision } from './realtime'
 import type { DashboardSnapshot } from './types'
 
 const snapshot: DashboardSnapshot = {
@@ -46,5 +47,23 @@ describe('dashboard state', () => {
       comment_batch_interval_sec: 60,
     })
     expect(next?.status.ready).toBe(false)
+  })
+
+  it('applies successful HTTP mutation payloads without waiting for realtime', () => {
+    const withUP = applyUPMutation(snapshot, {
+      uid: '42', name: 'tester', enabled: true, baseline_ready: false, consecutive_fail: 0,
+    })
+    const withQR = applyBiliLoginMutation(withUP, {
+      id: 'login', status: 'waiting', expires_at: '2026-01-01T00:05:00+08:00', qr_data_url: 'data:image/png;base64,qr',
+    })
+
+    expect(withQR.ups).toHaveLength(1)
+    expect(withQR.status.up_count).toBe(1)
+    expect(withQR.bili_login?.qr_data_url).toBe('data:image/png;base64,qr')
+  })
+
+  it('accepts a lower snapshot revision after the server restarts', () => {
+    expect(nextRevision(100, 'snapshot', 0)).toBe(0)
+    expect(nextRevision(100, 'status.updated', 1)).toBeNull()
   })
 })

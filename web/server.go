@@ -122,6 +122,7 @@ func (s *Server) adminHandler() http.Handler {
 	mux.HandleFunc("POST /api/v1/session", s.login)
 	mux.HandleFunc("DELETE /api/v1/session", s.requireSession(true, s.logout))
 	mux.HandleFunc("PUT /api/v1/session/password", s.requireSession(true, s.changePassword))
+	s.registerAdminAPI(mux)
 	mux.HandleFunc("GET /api/v1/ws", s.webSocket)
 	mux.Handle("GET /assets/", http.FileServer(http.FS(s.static)))
 	mux.HandleFunc("GET /{$}", s.index)
