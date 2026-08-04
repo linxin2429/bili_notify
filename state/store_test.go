@@ -178,7 +178,7 @@ func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
 			require.NoError(t, err)
 			loaded, err := local.RuntimeSettings()
 			require.NoError(t, err)
-			assert.Equal(t, tt.settings, loaded)
+			assert.Equal(t, tt.settings.WithCommentDefaults(), loaded)
 		})
 	}
 }
@@ -188,4 +188,78 @@ func mustVault(t *testing.T, fill byte) *vault.Vault {
 	v, err := vault.New(bytes.Repeat([]byte{fill}, 32))
 	require.NoError(t, err)
 	return v
+}
+
+func TestCommentTargetsAndOutbox(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"), mustVault(t, 8))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
+	channel, err := store.PutChannel(model.Channel{
+		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
+		Settings: map[string]string{"webhook": "https://example.com/hook"},
+	})
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	discovered := []model.CommentTarget{
+		{UID: "42", DynamicID: "d1", ContentType: "DYNAMIC_TYPE_AV", Title: "v1", URL: "https://t.bilibili.com/d1", CommentType: 1, CommentOID: "100", PublishedAt: now.Add(-time.Hour)},
+		{UID: "42", DynamicID: "d2", ContentType: "DYNAMIC_TYPE_WORD", Title: "w2", URL: "https://t.bilibili.com/d2", CommentType: 17, CommentOID: "200", PublishedAt: now},
+		{UID: "42", DynamicID: "d0", ContentType: "DYNAMIC_TYPE_WORD", URL: "https://t.bilibili.com/d0", CommentType: 17, CommentOID: "50", PublishedAt: now.Add(-2 * time.Hour)},
+	}
+	kept, err := store.UpsertCommentTargets("42", discovered, 2)
+	require.NoError(t, err)
+	require.Len(t, kept, 2)
+	assert.Equal(t, "200", kept[0].CommentOID)
+	assert.Equal(t, "100", kept[1].CommentOID)
+
+	// Preserve baseline flag across upsert.
+	kept[0].BaselineReady = true
+	require.NoError(t, store.PutCommentTargets("42", kept))
+	again, err := store.UpsertCommentTargets("42", []model.CommentTarget{{
+		UID: "42", DynamicID: "d2", ContentType: "DYNAMIC_TYPE_WORD", URL: "https://t.bilibili.com/d2",
+		CommentType: 17, CommentOID: "200", PublishedAt: now, CommentCount: 9,
+	}}, 2)
+	require.NoError(t, err)
+	require.True(t, again[0].BaselineReady)
+	assert.Equal(t, int64(9), again[0].CommentCount)
+
+	target := again[0]
+	note := model.CommentNotification{
+		RPID: "r1", UPUID: "42", UPName: "up", ContentType: "DYNAMIC_TYPE_WORD",
+		ContentID: "d2", ContentURL: target.URL, PublishedAt: now,
+		Thread: []model.CommentNode{{RPID: "r0", Name: "fan", Message: "hi"}, {RPID: "r1", Name: "up", Message: "reply", IsUP: true, IsTrigger: true}},
+	}
+	created, err := store.RecordCommentNotifications(target, []model.CommentNotification{note}, []string{channel.ID}, true)
+	require.NoError(t, err)
+	assert.Equal(t, 0, created)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	assert.Empty(t, deliveries)
+	seen, err := store.CommentSeen("42", "r1")
+	require.NoError(t, err)
+	assert.True(t, seen)
+
+	note2 := note
+	note2.RPID = "r2"
+	note2.Thread = append(note2.Thread, model.CommentNode{RPID: "r2", Name: "up", Message: "again", IsUP: true, IsTrigger: true})
+	created, err = store.RecordCommentNotifications(target, []model.CommentNotification{note, note2}, []string{channel.ID}, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, created)
+	deliveries, err = store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, model.DeliveryKindComment, deliveries[0].EffectiveKind())
+	require.NotNil(t, deliveries[0].Comment)
+	assert.Equal(t, "r2", deliveries[0].Comment.RPID)
+
+	require.NoError(t, store.DeleteUP("42"))
+	targets, err := store.ListCommentTargets("42")
+	require.NoError(t, err)
+	assert.Empty(t, targets)
+	seen, err = store.CommentSeen("42", "r2")
+	require.NoError(t, err)
+	assert.False(t, seen)
 }

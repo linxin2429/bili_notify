@@ -21,33 +21,133 @@ import (
 )
 
 type Engine struct {
-	store            *state.Store
-	client           *bilibili.Client
-	logger           *slog.Logger
-	metrics          *Metrics
-	settingsMu       sync.RWMutex
-	pollInterval     time.Duration
-	requestRate      float64
-	concurrency      int
-	limiter          *rate.Limiter
-	settingsNotify   chan struct{}
-	httpTimeout      time.Duration
-	authValid        atomic.Bool
-	authEverValid    atomic.Bool
-	lastSuccess      atomic.Int64
-	riskUntil        atomic.Int64
-	backlogAlerted   atomic.Bool
-	loginMu          sync.Mutex
-	login            *LoginSession
-	loginCancel      context.CancelFunc
-	loginWG          sync.WaitGroup
-	runCtx           context.Context
-	microsoftSendMu  sync.Mutex
-	microsoftLoginMu sync.Mutex
-	microsoftLoginWG sync.WaitGroup
-	microsoftRunCtx  context.Context
-	microsoftLogins  map[string]*MicrosoftLoginSession
-	events           *EventBus
+	store                *state.Store
+	client               *bilibili.Client
+	logger               *slog.Logger
+	metrics              *Metrics
+	settingsMu           sync.RWMutex
+	pollInterval         time.Duration
+	requestRate          float64
+	concurrency          int
+	commentEnabled       bool
+	commentTrackN        int
+	commentRootPages     int
+	commentReplyPages    int
+	commentBatchInterval time.Duration
+	limiter              *rate.Limiter
+	settingsNotify       chan struct{}
+	httpTimeout          time.Duration
+	authValid            atomic.Bool
+	authEverValid        atomic.Bool
+	lastSuccess          atomic.Int64
+	riskUntil            atomic.Int64
+	backlogAlerted       atomic.Bool
+	loginMu              sync.Mutex
+	login                *LoginSession
+	loginCancel          context.CancelFunc
+	loginWG              sync.WaitGroup
+	runCtx               context.Context
+	microsoftSendMu      sync.Mutex
+	microsoftLoginMu     sync.Mutex
+	microsoftLoginWG     sync.WaitGroup
+	microsoftRunCtx      context.Context
+	microsoftLogins      map[string]*MicrosoftLoginSession
+	events               *EventBus
+}
+
+func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, settings model.RuntimeSettings, events *EventBus) *Engine {
+	if events == nil {
+		events = NewEventBus()
+	}
+	settings = settings.WithCommentDefaults()
+	return &Engine{
+		store: store, client: client, logger: logger, metrics: metrics,
+		pollInterval:         settings.PollInterval(),
+		requestRate:          settings.RequestRate,
+		concurrency:          settings.RequestConcurrency,
+		commentEnabled:       settings.CommentEnabled,
+		commentTrackN:        settings.CommentTrackN,
+		commentRootPages:     settings.CommentRootPages,
+		commentReplyPages:    settings.CommentReplyPages,
+		commentBatchInterval: settings.CommentBatchInterval(),
+		limiter:              rate.NewLimiter(rate.Limit(settings.RequestRate), max(1, int(settings.RequestRate))),
+		settingsNotify:       make(chan struct{}, 1),
+		httpTimeout:          10 * time.Second,
+		microsoftLogins:      make(map[string]*MicrosoftLoginSession),
+		events:               events,
+	}
+}
+
+func (e *Engine) Settings() model.RuntimeSettings {
+	e.settingsMu.RLock()
+	defer e.settingsMu.RUnlock()
+	return model.RuntimeSettings{
+		PollIntervalSec:         int(e.pollInterval / time.Second),
+		RequestRate:             e.requestRate,
+		RequestConcurrency:      e.concurrency,
+		CommentEnabled:          e.commentEnabled,
+		CommentTrackN:           e.commentTrackN,
+		CommentRootPages:        e.commentRootPages,
+		CommentReplyPages:       e.commentReplyPages,
+		CommentBatchIntervalSec: int(e.commentBatchInterval / time.Second),
+	}
+}
+
+func (e *Engine) UpdateSettings(settings model.RuntimeSettings) error {
+	settings = settings.WithCommentDefaults()
+	if err := settings.Validate(); err != nil {
+		return err
+	}
+	if err := e.store.PutRuntimeSettings(settings); err != nil {
+		return err
+	}
+	e.applySettings(settings)
+	e.publish(TopicSettings | TopicStatus)
+	return nil
+}
+
+func (e *Engine) applySettings(settings model.RuntimeSettings) {
+	settings = settings.WithCommentDefaults()
+	e.settingsMu.Lock()
+	e.pollInterval = settings.PollInterval()
+	e.requestRate = settings.RequestRate
+	e.concurrency = settings.RequestConcurrency
+	e.commentEnabled = settings.CommentEnabled
+	e.commentTrackN = settings.CommentTrackN
+	e.commentRootPages = settings.CommentRootPages
+	e.commentReplyPages = settings.CommentReplyPages
+	e.commentBatchInterval = settings.CommentBatchInterval()
+	e.limiter.SetLimit(rate.Limit(settings.RequestRate))
+	e.limiter.SetBurst(max(1, int(settings.RequestRate)))
+	e.settingsMu.Unlock()
+	select {
+	case e.settingsNotify <- struct{}{}:
+	default:
+	}
+}
+
+func (e *Engine) currentPollInterval() time.Duration {
+	e.settingsMu.RLock()
+	defer e.settingsMu.RUnlock()
+	return e.pollInterval
+}
+
+func (e *Engine) currentCommentBatchInterval() time.Duration {
+	e.settingsMu.RLock()
+	defer e.settingsMu.RUnlock()
+	return e.commentBatchInterval
+}
+
+func (e *Engine) currentCommentSettings() (enabled bool, trackN, rootPages, replyPages int) {
+	e.settingsMu.RLock()
+	defer e.settingsMu.RUnlock()
+	return e.commentEnabled, e.commentTrackN, e.commentRootPages, e.commentReplyPages
+}
+
+func (e *Engine) currentConcurrency() int {
+	e.settingsMu.RLock()
+	defer e.settingsMu.RUnlock()
+	return e.concurrency
 }
 
 type LoginSession struct {
@@ -81,71 +181,6 @@ type Status struct {
 	OldestDelivery  time.Time `json:"oldest_delivery,omitzero"`
 	Ready           bool      `json:"ready"`
 	RiskPausedUntil time.Time `json:"risk_paused_until,omitzero"`
-}
-
-func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, settings model.RuntimeSettings, events *EventBus) *Engine {
-	if events == nil {
-		events = NewEventBus()
-	}
-	return &Engine{
-		store: store, client: client, logger: logger, metrics: metrics,
-		pollInterval:    settings.PollInterval(),
-		requestRate:     settings.RequestRate,
-		concurrency:     settings.RequestConcurrency,
-		limiter:         rate.NewLimiter(rate.Limit(settings.RequestRate), max(1, int(settings.RequestRate))),
-		settingsNotify:  make(chan struct{}, 1),
-		httpTimeout:     10 * time.Second,
-		microsoftLogins: make(map[string]*MicrosoftLoginSession),
-		events:          events,
-	}
-}
-
-func (e *Engine) Settings() model.RuntimeSettings {
-	e.settingsMu.RLock()
-	defer e.settingsMu.RUnlock()
-	return model.RuntimeSettings{
-		PollIntervalSec:    int(e.pollInterval / time.Second),
-		RequestRate:        e.requestRate,
-		RequestConcurrency: e.concurrency,
-	}
-}
-
-func (e *Engine) UpdateSettings(settings model.RuntimeSettings) error {
-	if err := settings.Validate(); err != nil {
-		return err
-	}
-	if err := e.store.PutRuntimeSettings(settings); err != nil {
-		return err
-	}
-	e.applySettings(settings)
-	e.publish(TopicSettings | TopicStatus)
-	return nil
-}
-
-func (e *Engine) applySettings(settings model.RuntimeSettings) {
-	e.settingsMu.Lock()
-	e.pollInterval = settings.PollInterval()
-	e.requestRate = settings.RequestRate
-	e.concurrency = settings.RequestConcurrency
-	e.limiter.SetLimit(rate.Limit(settings.RequestRate))
-	e.limiter.SetBurst(max(1, int(settings.RequestRate)))
-	e.settingsMu.Unlock()
-	select {
-	case e.settingsNotify <- struct{}{}:
-	default:
-	}
-}
-
-func (e *Engine) currentPollInterval() time.Duration {
-	e.settingsMu.RLock()
-	defer e.settingsMu.RUnlock()
-	return e.pollInterval
-}
-
-func (e *Engine) currentConcurrency() int {
-	e.settingsMu.RLock()
-	defer e.settingsMu.RUnlock()
-	return e.concurrency
 }
 
 func (e *Engine) Run(ctx context.Context) error {
@@ -194,6 +229,7 @@ func (e *Engine) Run(ctx context.Context) error {
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return e.collectLoop(ctx) })
+	g.Go(func() error { return e.commentLoop(ctx) })
 	g.Go(func() error { return e.deliveryLoop(ctx) })
 	g.Go(func() error { return e.authLoop(ctx) })
 	return g.Wait()
@@ -323,6 +359,9 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 	if err != nil {
 		return fmt.Errorf("recording dynamics: %w", err)
 	}
+	if err := e.refreshCommentTargets(up, name, items); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	if err := e.store.SetUPResult(up.UID, name, now, nil); err != nil {
 		return err
@@ -347,6 +386,384 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 		e.logger.Info("Bilibili UP baseline established", "uid", up.UID, "up_name", name, "baseline_items", len(items), "duration", elapsed(started))
 	}
 	e.logger.Debug("Bilibili UP poll succeeded", "uid", up.UID, "up_name", name, "fetched_items", len(items), "queued_dynamics", created, "duration", elapsed(started))
+	return nil
+}
+
+func (e *Engine) refreshCommentTargets(up model.UP, name string, items []model.Dynamic) error {
+	enabled, trackN, _, _ := e.currentCommentSettings()
+	if !enabled || trackN < 1 {
+		return nil
+	}
+	discovered := make([]model.CommentTarget, 0, len(items))
+	for _, dynamic := range items {
+		if !dynamic.Commentable {
+			continue
+		}
+		title := dynamic.Title
+		if title == "" {
+			title = dynamic.Summary
+		}
+		contentURL := dynamic.TargetURL
+		if contentURL == "" {
+			contentURL = dynamic.URL
+		}
+		upName := name
+		if upName == "" {
+			upName = dynamic.UPName
+		}
+		if upName == "" {
+			upName = up.Name
+		}
+		discovered = append(discovered, model.CommentTarget{
+			UID:          up.UID,
+			UPName:       upName,
+			DynamicID:    dynamic.ID,
+			ContentType:  dynamic.Type,
+			Title:        title,
+			URL:          contentURL,
+			CommentType:  dynamic.CommentType,
+			CommentOID:   dynamic.CommentOID,
+			PublishedAt:  dynamic.PublishedAt,
+			CommentCount: dynamic.CommentCount,
+		})
+	}
+	if len(discovered) == 0 {
+		// Still re-trim existing targets if N shrank.
+		existing, err := e.store.ListCommentTargets(up.UID)
+		if err != nil {
+			return err
+		}
+		if len(existing) == 0 {
+			return nil
+		}
+		_, err = e.store.UpsertCommentTargets(up.UID, nil, trackN)
+		return err
+	}
+	_, err := e.store.UpsertCommentTargets(up.UID, discovered, trackN)
+	return err
+}
+
+func (e *Engine) commentLoop(ctx context.Context) error {
+	interval := e.currentCommentBatchInterval()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	if err := e.commentOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		e.logger.Error("initial comment cycle failed", "err", err)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			// Re-read interval each tick so settings updates apply without racing
+			// collectLoop for the single settingsNotify buffer.
+			if next := e.currentCommentBatchInterval(); next != interval {
+				ticker.Reset(next)
+				interval = next
+			}
+			if err := e.commentOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				e.logger.Error("comment cycle failed", "err", err)
+			}
+		}
+	}
+}
+
+func (e *Engine) commentOnce(ctx context.Context) error {
+	defer e.publish(TopicStatus | TopicDeliveries)
+	enabled, _, rootPages, replyPages := e.currentCommentSettings()
+	if !enabled {
+		return nil
+	}
+	if !e.authValid.Load() {
+		return nil
+	}
+	if until := e.riskUntil.Load(); until > time.Now().Unix() {
+		return nil
+	}
+	channels, err := e.store.ListChannels()
+	if err != nil {
+		return fmt.Errorf("listing channels for comments: %w", err)
+	}
+	channelIDs := enabledChannelIDs(channels)
+	if len(channelIDs) == 0 {
+		return nil
+	}
+	ups, err := e.store.ListUPs()
+	if err != nil {
+		return fmt.Errorf("listing UPs for comments: %w", err)
+	}
+	enabledUIDs := make(map[string]model.UP)
+	for _, up := range ups {
+		if up.Enabled {
+			enabledUIDs[up.UID] = up
+		}
+	}
+	targets, err := e.store.ListAllCommentTargets()
+	if err != nil {
+		return err
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(e.currentConcurrency())
+	scanned := 0
+	for _, target := range targets {
+		if _, ok := enabledUIDs[target.UID]; !ok {
+			continue
+		}
+		if target.Closed {
+			continue
+		}
+		scanned++
+		g.Go(func() error {
+			if err := e.limiter.Wait(gctx); err != nil {
+				return err
+			}
+			return e.pollCommentTarget(gctx, target, channelIDs, rootPages, replyPages)
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	if scanned > 0 {
+		e.logger.Debug("comment cycle completed", "targets", scanned)
+	}
+	return nil
+}
+
+func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarget, channelIDs []string, rootPages, replyPages int) error {
+	requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
+	defer cancel()
+
+	upReplies := make([]bilibili.Reply, 0)
+	// rootRPID -> root reply
+	roots := make(map[string]bilibili.Reply)
+	// child rpid -> reply
+	children := make(map[string]bilibili.Reply)
+	// roots that need full expansion because an UP reply lives under them
+	expandRoots := make(map[string]struct{})
+
+	for pn := 1; pn <= rootPages; pn++ {
+		if pn > 1 {
+			if err := e.limiter.Wait(ctx); err != nil {
+				return err
+			}
+		}
+		page, err := e.client.ListRootReplies(requestCtx, target.CommentType, target.CommentOID, pn, 20)
+		if err != nil {
+			return e.handleCommentPollError(target, err)
+		}
+		for _, reply := range page.Replies {
+			roots[reply.RPID] = reply
+			if reply.Mid == target.UID {
+				upReplies = append(upReplies, reply)
+			}
+			// Preview nested replies sometimes accompany roots; capture lightly.
+			_ = reply
+		}
+		if !page.HasMore {
+			break
+		}
+	}
+
+	// Scan root previews is not enough for nested-only UP replies; for each root with
+	// rcount>0 we do not expand unless we already saw an UP reply under it. Nested-only
+	// discovery requires expanding roots that grew — we expand any root that already
+	// has an UP reply, and also roots when target is baselining (to mark all current UP replies).
+	if !target.BaselineReady {
+		for _, root := range roots {
+			if root.RCount > 0 {
+				expandRoots[root.RPID] = struct{}{}
+			}
+			if root.Mid == target.UID {
+				// root itself is enough; no expand needed solely for that
+			}
+		}
+	}
+
+	// First pass already collected root-level UP replies. Expand when we need children.
+	// For ongoing monitoring, expand roots only when we found a nested UP candidate is
+	// impossible without scanning children. Practical approach: expand roots with rcount>0
+	// only during baseline; afterwards expand roots when any root-level page shows growth
+	// via comment count change. To keep nested UP replies discoverable without huge cost,
+	// expand each root with rcount>0 up to replyPages but stop early if no UP mid found
+	// after first child page unless baselining.
+	for rootID, root := range roots {
+		if root.RCount <= 0 {
+			continue
+		}
+		if target.BaselineReady {
+			// After baseline, expand only roots that may contain new activity.
+			// Without per-root rcount storage, expand every root with replies within window.
+			// Cap is replyPages; accept cost for N small.
+		}
+		expandRoots[rootID] = struct{}{}
+	}
+
+	for rootID := range expandRoots {
+		for pn := 1; pn <= replyPages; pn++ {
+			if err := e.limiter.Wait(ctx); err != nil {
+				return err
+			}
+			page, err := e.client.ListChildReplies(requestCtx, target.CommentType, target.CommentOID, rootID, pn, 20)
+			if err != nil {
+				return e.handleCommentPollError(target, err)
+			}
+			for _, reply := range page.Replies {
+				if reply.Root == "" {
+					reply.Root = rootID
+				}
+				children[reply.RPID] = reply
+				if reply.Mid == target.UID {
+					upReplies = append(upReplies, reply)
+				}
+			}
+			if !page.HasMore {
+				break
+			}
+		}
+	}
+
+	// Deduplicate UP replies by rpid.
+	unique := make(map[string]bilibili.Reply, len(upReplies))
+	for _, reply := range upReplies {
+		unique[reply.RPID] = reply
+	}
+
+	notes := make([]model.CommentNotification, 0, len(unique))
+	for _, reply := range unique {
+		seen, err := e.store.CommentSeen(target.UID, reply.RPID)
+		if err != nil {
+			return err
+		}
+		if seen && target.BaselineReady {
+			continue
+		}
+		thread, incomplete := buildCommentThread(target, reply, roots, children)
+		notes = append(notes, model.CommentNotification{
+			RPID:         reply.RPID,
+			UPUID:        target.UID,
+			UPName:       target.UPName,
+			ContentType:  target.ContentType,
+			ContentID:    target.DynamicID,
+			ContentTitle: target.Title,
+			ContentURL:   target.URL,
+			PublishedAt:  reply.CTime,
+			Incomplete:   incomplete,
+			Thread:       thread,
+		})
+	}
+	slices.SortFunc(notes, func(a, b model.CommentNotification) int {
+		return a.PublishedAt.Compare(b.PublishedAt)
+	})
+
+	target.LastError = ""
+	created, err := e.store.RecordCommentNotifications(target, notes, channelIDs, !target.BaselineReady)
+	if err != nil {
+		return err
+	}
+	e.metrics.CommentPollTotal.WithLabelValues("success").Inc()
+	if created > 0 {
+		e.metrics.CommentFoundTotal.Add(float64(created))
+		e.logger.Info("new UP replies queued", "uid", target.UID, "comment_oid", target.CommentOID, "reply_count", created)
+	}
+	return nil
+}
+
+func buildCommentThread(target model.CommentTarget, trigger bilibili.Reply, roots, children map[string]bilibili.Reply) ([]model.CommentNode, bool) {
+	incomplete := false
+	// Collect chain from trigger up to root via parent links.
+	byID := make(map[string]bilibili.Reply, len(roots)+len(children)+1)
+	for id, reply := range roots {
+		byID[id] = reply
+	}
+	for id, reply := range children {
+		byID[id] = reply
+	}
+	byID[trigger.RPID] = trigger
+
+	chain := make([]bilibili.Reply, 0, 8)
+	current := trigger
+	seen := map[string]struct{}{current.RPID: {}}
+	for {
+		chain = append(chain, current)
+		parentID := current.Parent
+		if parentID == "" || parentID == "0" {
+			// If this is not a root and we know root, ensure root is present.
+			if current.Root != "" && current.Root != current.RPID {
+				if root, ok := byID[current.Root]; ok {
+					if _, exists := seen[root.RPID]; !exists {
+						chain = append(chain, root)
+					}
+				} else {
+					incomplete = true
+				}
+			}
+			break
+		}
+		parent, ok := byID[parentID]
+		if !ok {
+			// Fall back to root if available.
+			if current.Root != "" {
+				if root, ok := byID[current.Root]; ok {
+					if _, exists := seen[root.RPID]; !exists {
+						chain = append(chain, root)
+					}
+				} else {
+					incomplete = true
+				}
+			} else {
+				incomplete = true
+			}
+			break
+		}
+		if _, exists := seen[parent.RPID]; exists {
+			break
+		}
+		seen[parent.RPID] = struct{}{}
+		current = parent
+	}
+	// chain is trigger -> ... -> root; reverse to root -> trigger.
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	nodes := make([]model.CommentNode, 0, len(chain))
+	for _, reply := range chain {
+		nodes = append(nodes, model.CommentNode{
+			RPID:      reply.RPID,
+			Parent:    reply.Parent,
+			Mid:       reply.Mid,
+			Name:      reply.Name,
+			Message:   reply.Message,
+			Time:      reply.CTime,
+			IsUP:      reply.Mid == target.UID,
+			IsTrigger: reply.RPID == trigger.RPID,
+		})
+	}
+	return nodes, incomplete
+}
+
+func (e *Engine) handleCommentPollError(target model.CommentTarget, pollErr error) error {
+	if bilibili.IsAuthentication(pollErr) {
+		e.setAuth(false)
+	}
+	if bilibili.IsRiskControl(pollErr) {
+		now := time.Now()
+		previousUntil := e.riskUntil.Swap(now.Add(5 * time.Minute).Unix())
+		if previousUntil <= now.Unix() {
+			e.enqueueSystem("B站接口触发风控，采集已暂停五分钟；服务不会尝试绕过风控。")
+		}
+	}
+	if bilibili.IsCommentClosed(pollErr) {
+		target.Closed = true
+		target.LastError = pollErr.Error()
+		_ = e.store.UpdateCommentTarget(target)
+		e.metrics.CommentPollTotal.WithLabelValues("closed").Inc()
+		e.logger.Info("comment area closed", "uid", target.UID, "comment_type", target.CommentType, "comment_oid", target.CommentOID)
+		return nil
+	}
+	target.LastError = pollErr.Error()
+	_ = e.store.UpdateCommentTarget(target)
+	e.metrics.CommentPollTotal.WithLabelValues("error").Inc()
+	e.logger.Warn("comment target poll failed", "uid", target.UID, "comment_oid", target.CommentOID, "err", pollErr)
 	return nil
 }
 
@@ -451,9 +868,17 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "err", err)
 		return nil
 	}
+	message, contentID, err := deliveryMessage(delivery)
+	if err != nil {
+		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now().UTC(), err); storeErr != nil {
+			return storeErr
+		}
+		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "content_id", contentID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "err", err)
+		return nil
+	}
 	sendCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	started := time.Now()
-	err = sender.Send(sendCtx, notify.DynamicMessage(delivery.Dynamic))
+	err = sender.Send(sendCtx, message)
 	cancel()
 	e.metrics.DeliveryDuration.Observe(time.Since(started).Seconds())
 	if err == nil {
@@ -461,7 +886,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 		if err := e.store.CompleteDelivery(delivery.ID); err != nil {
 			return err
 		}
-		e.logger.Info("notification delivered", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "duration", elapsed(started))
+		e.logger.Info("notification delivered", "delivery_id", delivery.ID, "content_id", contentID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "duration", elapsed(started))
 		return nil
 	}
 	blocked := notify.IsPermanent(err)
@@ -474,8 +899,20 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 	if storeErr := e.store.FailDelivery(delivery.ID, blocked, next, err); storeErr != nil {
 		return storeErr
 	}
-	e.logger.Warn("notification delivery failed", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "result", result, "next_attempt_at", next.UTC(), "duration", elapsed(started), "err", err)
+	e.logger.Warn("notification delivery failed", "delivery_id", delivery.ID, "content_id", contentID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "result", result, "next_attempt_at", next.UTC(), "duration", elapsed(started), "err", err)
 	return nil
+}
+
+func deliveryMessage(delivery model.Delivery) (notify.Message, string, error) {
+	switch delivery.EffectiveKind() {
+	case model.DeliveryKindComment:
+		if delivery.Comment == nil {
+			return notify.Message{}, "", errors.New("comment delivery is missing payload")
+		}
+		return notify.CommentThreadMessage(*delivery.Comment), delivery.Comment.RPID, nil
+	default:
+		return notify.DynamicMessage(delivery.Dynamic), delivery.Dynamic.ID, nil
+	}
 }
 
 func retryDelay(attempt int) time.Duration {

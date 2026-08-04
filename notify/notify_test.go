@@ -197,3 +197,26 @@ func TestStartMicrosoftDeviceAuth(t *testing.T) {
 	assert.Equal(t, "ABCD-EFGH", auth.UserCode)
 	assert.Equal(t, "https://microsoft.com/devicelogin", auth.VerificationURI)
 }
+
+func TestCommentThreadMessage(t *testing.T) {
+	t.Parallel()
+	note := model.CommentNotification{
+		RPID: "r2", UPUID: "42", UPName: "tester", ContentType: "DYNAMIC_TYPE_AV",
+		ContentID: "10", ContentTitle: "视频标题", ContentURL: "https://www.bilibili.com/video/BV1",
+		PublishedAt: time.Date(2026, 8, 4, 1, 2, 3, 0, time.UTC),
+		Thread: []model.CommentNode{
+			{RPID: "r0", Name: "fan", Message: "求更新", Time: time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC)},
+			{RPID: "r1", Parent: "r0", Name: "other", Message: "同求", Time: time.Date(2026, 8, 4, 0, 30, 0, 0, time.UTC)},
+			{RPID: "r2", Parent: "r1", Name: "tester", Message: "下周", IsUP: true, IsTrigger: true, Time: time.Date(2026, 8, 4, 1, 2, 3, 0, time.UTC)},
+		},
+	}
+	message := CommentThreadMessage(note)
+	assert.Equal(t, "[B站评论] tester 回复了评论", message.Subject)
+	plain := renderPlainText(message)
+	for _, expected := range []string{"视频标题", "fan：求更新", "↳ other：同求", "tester（UP） ★：下周", "https://www.bilibili.com/video/BV1"} {
+		assert.Contains(t, plain, expected)
+	}
+	markdown := renderMarkdown(message, 4096, true, false)
+	assert.Contains(t, markdown, "tester（UP）")
+	assert.True(t, utf8.ValidString(markdown))
+}

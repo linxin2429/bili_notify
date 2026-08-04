@@ -202,7 +202,7 @@ function Overview({ snapshot, command }: { snapshot: DashboardSnapshot; command:
       <MetricCard label="待投递" value={`${status.outbox_depth}`} detail={status.oldest_delivery ? `最早 ${formatDate(status.oldest_delivery)}` : '队列为空'} icon={<Hub />} tone={status.outbox_depth ? 'warning.main' : 'success.main'} />
     </Box>
     {status.risk_paused_until && <Alert severity="error" icon={<ErrorOutlined />}>B站风控暂停至 {formatDate(status.risk_paused_until)}，程序不会尝试绕过风控。</Alert>}
-    <Typography variant="body2" color="text.secondary">当前采集参数：每 {snapshot.settings.poll_interval_sec} 秒轮询 · {snapshot.settings.request_rate} 请求/秒 · 并发 {snapshot.settings.request_concurrency}</Typography>
+    <Typography variant="body2" color="text.secondary">当前采集参数：每 {snapshot.settings.poll_interval_sec} 秒轮询 · {snapshot.settings.request_rate} 请求/秒 · 并发 {snapshot.settings.request_concurrency} · 评论监控{snapshot.settings.comment_enabled ? '开' : '关'}（N={snapshot.settings.comment_track_n}，批次 {snapshot.settings.comment_batch_interval_sec}s）</Typography>
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1.35fr) minmax(320px, .65fr)' }, gap: 2 }}>
       <Card><CardContent><Stack spacing={2}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="h6" fontWeight={800}>B站账号</Typography><Typography color="text.secondary">使用哔哩哔哩 App 扫码建立网页会话</Typography></Box><QrCode2 color="primary" /></Stack><BiliLoginPanel login={snapshot.bili_login || null} busy={busy} start={() => void startLogin()} cancel={id => void command('bilibili.login.cancel', { id })} /></Stack></CardContent></Card>
       <Card><CardContent><Typography variant="h6" fontWeight={800} gutterBottom>启动检查</Typography><Stack spacing={1.5}><Checklist done={status.auth_valid} label="B站账号已登录" /><Checklist done={snapshot.channels.some(channel => channel.enabled)} label="至少一个通知渠道已启用" /><Checklist done={snapshot.ups.some(up => up.enabled)} label="至少一个 UP 主已启用" /></Stack><Divider sx={{ my: 2 }} /><Typography variant="body2" color="text.secondary">最后成功采集：{status.last_success_at ? formatDate(status.last_success_at) : '尚无记录'}</Typography></CardContent></Card>
@@ -292,7 +292,7 @@ function DeliveriesPage({ deliveries, channels, total }: { deliveries: Delivery[
   const filter = requested === 'pending' || requested === 'blocked' ? requested : 'all'
   const setFilter = (value: string) => setParams(value === 'all' ? {} : { state: value })
   const visible = deliveries.filter(delivery => filter === 'all' || delivery.state === filter)
-  return <Stack spacing={3}><PageHeader title="投递队列" subtitle={`共 ${total} 个任务，页面展示前 ${deliveries.length} 个。`} /><Paper><Tabs value={filter} onChange={(_, value) => setFilter(value)} variant="scrollable"><Tab value="all" label="全部" /><Tab value="pending" label="等待重试" /><Tab value="blocked" label="已阻塞" /></Tabs></Paper>{visible.length === 0 ? <EmptyState icon={<CheckCircle />} title="当前筛选下没有待投递任务" /> : <Stack spacing={1.5}>{visible.map(delivery => <Card key={delivery.id}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box minWidth={0}><Stack direction="row" spacing={1} alignItems="center"><Chip size="small" color={delivery.state === 'blocked' ? 'error' : 'warning'} label={delivery.state === 'blocked' ? '已阻塞' : '等待重试'} /><Typography fontWeight={750}>{delivery.dynamic.up_name || delivery.dynamic.uid}</Typography></Stack><Typography className="summary-clamp" sx={{ mt: 1 }}>{delivery.dynamic.summary}</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>渠道：{channels.find(channel => channel.id === delivery.channel_id)?.name || delivery.channel_id} · 已尝试 {delivery.attempts} 次</Typography>{delivery.last_error && <Typography variant="body2" color="error" sx={{ mt: .5 }}>{delivery.last_error}</Typography>}</Box><Box flexShrink={0}><Typography variant="body2" color="text.secondary">下次处理</Typography><Typography>{formatDate(delivery.next_at)}</Typography></Box></Stack></CardContent></Card>)}</Stack>}</Stack>
+  return <Stack spacing={3}><PageHeader title="投递队列" subtitle={`共 ${total} 个任务，页面展示前 ${deliveries.length} 个。`} /><Paper><Tabs value={filter} onChange={(_, value) => setFilter(value)} variant="scrollable"><Tab value="all" label="全部" /><Tab value="pending" label="等待重试" /><Tab value="blocked" label="已阻塞" /></Tabs></Paper>{visible.length === 0 ? <EmptyState icon={<CheckCircle />} title="当前筛选下没有待投递任务" /> : <Stack spacing={1.5}>{visible.map(delivery => <Card key={delivery.id}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box minWidth={0}><Stack direction="row" spacing={1} alignItems="center"><Chip size="small" color={delivery.state === 'blocked' ? 'error' : 'warning'} label={delivery.state === 'blocked' ? '已阻塞' : '等待重试'} /><Typography fontWeight={750}>{deliveryTitle(delivery)}</Typography></Stack><Typography className="summary-clamp" sx={{ mt: 1 }}>{deliverySummary(delivery)}</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>渠道：{channels.find(channel => channel.id === delivery.channel_id)?.name || delivery.channel_id} · 已尝试 {delivery.attempts} 次</Typography>{delivery.last_error && <Typography variant="body2" color="error" sx={{ mt: .5 }}>{delivery.last_error}</Typography>}</Box><Box flexShrink={0}><Typography variant="body2" color="text.secondary">下次处理</Typography><Typography>{formatDate(delivery.next_at)}</Typography></Box></Stack></CardContent></Card>)}</Stack>}</Stack>
 }
 
 function SettingsPage({ csrf, preference, setPreference, settings, command, onChanged }: {
@@ -311,6 +311,11 @@ function SettingsPage({ csrf, preference, setPreference, settings, command, onCh
   const [pollSec, setPollSec] = useState(String(settings.poll_interval_sec))
   const [requestRate, setRequestRate] = useState(String(settings.request_rate))
   const [concurrency, setConcurrency] = useState(String(settings.request_concurrency))
+  const [commentEnabled, setCommentEnabled] = useState(Boolean(settings.comment_enabled))
+  const [commentTrackN, setCommentTrackN] = useState(String(settings.comment_track_n ?? 10))
+  const [commentRootPages, setCommentRootPages] = useState(String(settings.comment_root_pages ?? 2))
+  const [commentReplyPages, setCommentReplyPages] = useState(String(settings.comment_reply_pages ?? 5))
+  const [commentBatchSec, setCommentBatchSec] = useState(String(settings.comment_batch_interval_sec ?? 120))
   const [settingsMessage, setSettingsMessage] = useState('')
   const [settingsBusy, setSettingsBusy] = useState(false)
 
@@ -318,7 +323,12 @@ function SettingsPage({ csrf, preference, setPreference, settings, command, onCh
     setPollSec(String(settings.poll_interval_sec))
     setRequestRate(String(settings.request_rate))
     setConcurrency(String(settings.request_concurrency))
-  }, [settings.poll_interval_sec, settings.request_rate, settings.request_concurrency])
+    setCommentEnabled(Boolean(settings.comment_enabled))
+    setCommentTrackN(String(settings.comment_track_n ?? 10))
+    setCommentRootPages(String(settings.comment_root_pages ?? 2))
+    setCommentReplyPages(String(settings.comment_reply_pages ?? 5))
+    setCommentBatchSec(String(settings.comment_batch_interval_sec ?? 120))
+  }, [settings.poll_interval_sec, settings.request_rate, settings.request_concurrency, settings.comment_enabled, settings.comment_track_n, settings.comment_root_pages, settings.comment_reply_pages, settings.comment_batch_interval_sec])
 
   const change = async () => {
     if (replacement !== confirm) { setMessage('两次输入的新密码不一致'); return }
@@ -337,6 +347,10 @@ function SettingsPage({ csrf, preference, setPreference, settings, command, onCh
     const poll_interval_sec = Number(pollSec)
     const request_rate = Number(requestRate)
     const request_concurrency = Number(concurrency)
+    const comment_track_n = Number(commentTrackN)
+    const comment_root_pages = Number(commentRootPages)
+    const comment_reply_pages = Number(commentReplyPages)
+    const comment_batch_interval_sec = Number(commentBatchSec)
     if (!Number.isInteger(poll_interval_sec) || poll_interval_sec < 10) {
       setSettingsMessage('轮询间隔至少为 10 秒的整数')
       return
@@ -349,10 +363,35 @@ function SettingsPage({ csrf, preference, setPreference, settings, command, onCh
       setSettingsMessage('并发数必须是 1 到 16 的整数')
       return
     }
+    if (!Number.isInteger(comment_track_n) || comment_track_n < 1 || comment_track_n > 50) {
+      setSettingsMessage('评论跟踪条数必须是 1 到 50 的整数')
+      return
+    }
+    if (!Number.isInteger(comment_root_pages) || comment_root_pages < 1 || comment_root_pages > 10) {
+      setSettingsMessage('根评论页数必须是 1 到 10 的整数')
+      return
+    }
+    if (!Number.isInteger(comment_reply_pages) || comment_reply_pages < 1 || comment_reply_pages > 20) {
+      setSettingsMessage('子评论页数必须是 1 到 20 的整数')
+      return
+    }
+    if (!Number.isInteger(comment_batch_interval_sec) || comment_batch_interval_sec < 30) {
+      setSettingsMessage('评论批次间隔至少为 30 秒')
+      return
+    }
     setSettingsBusy(true)
     setSettingsMessage('')
     try {
-      await command('settings.update', { poll_interval_sec, request_rate, request_concurrency })
+      await command('settings.update', {
+        poll_interval_sec,
+        request_rate,
+        request_concurrency,
+        comment_enabled: commentEnabled,
+        comment_track_n,
+        comment_root_pages,
+        comment_reply_pages,
+        comment_batch_interval_sec,
+      })
     } catch (error) {
       setSettingsMessage(errorMessage(error))
     } finally {
@@ -371,6 +410,11 @@ function SettingsPage({ csrf, preference, setPreference, settings, command, onCh
         <TextField label="轮询间隔（秒）" type="number" value={pollSec} onChange={e => setPollSec(e.target.value)} helperText="至少 10 秒" inputProps={{ min: 10, step: 1 }} />
         <TextField label="请求速率（次/秒）" type="number" value={requestRate} onChange={e => setRequestRate(e.target.value)} helperText="(0, 10]" inputProps={{ min: 0.1, max: 10, step: 0.1 }} />
         <TextField label="并发数" type="number" value={concurrency} onChange={e => setConcurrency(e.target.value)} helperText="1 到 16" inputProps={{ min: 1, max: 16, step: 1 }} />
+        <FormControlLabel control={<Switch checked={commentEnabled} onChange={e => setCommentEnabled(e.target.checked)} />} label="启用 UP 评论回复监控" />
+        <TextField label="每 UP 跟踪内容数 N" type="number" value={commentTrackN} onChange={e => setCommentTrackN(e.target.value)} helperText="1 到 50；仅最近 N 条视频/动态/专栏" inputProps={{ min: 1, max: 50, step: 1 }} disabled={!commentEnabled} />
+        <TextField label="根评论最大页数" type="number" value={commentRootPages} onChange={e => setCommentRootPages(e.target.value)} helperText="1 到 10，每页最多 20 条" inputProps={{ min: 1, max: 10, step: 1 }} disabled={!commentEnabled} />
+        <TextField label="子评论最大页数" type="number" value={commentReplyPages} onChange={e => setCommentReplyPages(e.target.value)} helperText="1 到 20，用于展开根串" inputProps={{ min: 1, max: 20, step: 1 }} disabled={!commentEnabled} />
+        <TextField label="评论批次间隔（秒）" type="number" value={commentBatchSec} onChange={e => setCommentBatchSec(e.target.value)} helperText="至少 30 秒；与动态轮询共用请求速率" inputProps={{ min: 30, step: 1 }} disabled={!commentEnabled} />
         {settingsMessage && <Alert severity="error">{settingsMessage}</Alert>}
         <Button variant="contained" disabled={settingsBusy} onClick={() => void saveSettings()}>保存采集参数</Button>
       </Stack>
@@ -450,6 +494,21 @@ function themeLabel(value: ThemePreference) { return value === 'system' ? '跟�
 function channelTypeLabel(value: ChannelType) { return ({ email: 'SMTP 邮件', microsoft: 'Microsoft Graph', dingtalk: '钉钉机器人', feishu: '飞书机器人', wecom: '企业微信机器人' })[value] }
 function settingLabel(value: string) { return ({ host: '主机', port: '端口', tls: 'TLS', from: '发件人', to: '收件人', username: '用户名', password: '密码', webhook: 'Webhook', secret: '签名密钥', client_id: '客户端 ID', tenant: '租户', access_token: '访问令牌', refresh_token: '刷新令牌' } as Record<string, string>)[value] || value }
 function loginLabel(value: string) { return ({ waiting: '等待扫码', scanned: '已扫码，请确认', success: '登录成功', expired: '二维码已过期' } as Record<string, string>)[value] || value }
+
+function deliveryTitle(delivery: Delivery) {
+  if (delivery.kind === 'comment' && delivery.comment) {
+    return `${delivery.comment.up_name || delivery.comment.up_uid} · 评论回复`
+  }
+  return delivery.dynamic?.up_name || delivery.dynamic?.uid || delivery.id
+}
+
+function deliverySummary(delivery: Delivery) {
+  if (delivery.kind === 'comment' && delivery.comment) {
+    return delivery.comment.content_title || delivery.comment.content_url || `评论 ${delivery.comment.rpid}`
+  }
+  return delivery.dynamic?.summary || ''
+}
+
 function formatDate(value: string) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? '—' : new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(date) }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : '发生未知错误' }
 

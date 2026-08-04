@@ -9,6 +9,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func validSettings(pollSec int, rate float64, concurrency int) RuntimeSettings {
+	trackN, rootPages, replyPages, batchSec, enabled := DefaultCommentSettings()
+	return RuntimeSettings{
+		PollIntervalSec:         pollSec,
+		RequestRate:             rate,
+		RequestConcurrency:      concurrency,
+		CommentEnabled:          enabled,
+		CommentTrackN:           trackN,
+		CommentRootPages:        rootPages,
+		CommentReplyPages:       replyPages,
+		CommentBatchIntervalSec: batchSec,
+	}
+}
+
 func TestRuntimeSettingsValidate(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -18,40 +32,58 @@ func TestRuntimeSettingsValidate(t *testing.T) {
 	}{
 		{
 			name:     "valid defaults",
-			settings: RuntimeSettings{PollIntervalSec: 30, RequestRate: 2, RequestConcurrency: 4},
+			settings: validSettings(30, 2, 4),
 		},
 		{
 			name:     "minimum bounds",
-			settings: RuntimeSettings{PollIntervalSec: 10, RequestRate: 0.1, RequestConcurrency: 1},
+			settings: validSettings(10, 0.1, 1),
 		},
 		{
 			name:     "maximum bounds",
-			settings: RuntimeSettings{PollIntervalSec: 3600, RequestRate: 10, RequestConcurrency: 16},
+			settings: validSettings(3600, 10, 16),
 		},
 		{
 			name:     "poll too short",
-			settings: RuntimeSettings{PollIntervalSec: 9, RequestRate: 2, RequestConcurrency: 4},
+			settings: validSettings(9, 2, 4),
 			wantErr:  "poll interval must be at least 10s",
 		},
 		{
 			name:     "rate zero",
-			settings: RuntimeSettings{PollIntervalSec: 30, RequestRate: 0, RequestConcurrency: 4},
+			settings: validSettings(30, 0, 4),
 			wantErr:  "request rate must be in (0, 10]",
 		},
 		{
 			name:     "rate too high",
-			settings: RuntimeSettings{PollIntervalSec: 30, RequestRate: 10.1, RequestConcurrency: 4},
+			settings: validSettings(30, 10.1, 4),
 			wantErr:  "request rate must be in (0, 10]",
 		},
 		{
 			name:     "concurrency too low",
-			settings: RuntimeSettings{PollIntervalSec: 30, RequestRate: 2, RequestConcurrency: 0},
+			settings: validSettings(30, 2, 0),
 			wantErr:  "request concurrency must be in [1, 16]",
 		},
 		{
 			name:     "concurrency too high",
-			settings: RuntimeSettings{PollIntervalSec: 30, RequestRate: 2, RequestConcurrency: 17},
+			settings: validSettings(30, 2, 17),
 			wantErr:  "request concurrency must be in [1, 16]",
+		},
+		{
+			name: "comment track n too high",
+			settings: func() RuntimeSettings {
+				s := validSettings(30, 2, 4)
+				s.CommentTrackN = MaxCommentTrackN + 1
+				return s
+			}(),
+			wantErr: "comment_track_n",
+		},
+		{
+			name: "comment batch too short",
+			settings: func() RuntimeSettings {
+				s := validSettings(30, 2, 4)
+				s.CommentBatchIntervalSec = MinCommentBatchIntervalSec - 1
+				return s
+			}(),
+			wantErr: "comment_batch_interval_sec",
 		},
 	}
 	for _, tt := range tests {

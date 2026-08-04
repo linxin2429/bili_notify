@@ -56,10 +56,16 @@ func (c Config) Validate() error {
 
 // SeedRuntimeSettings converts startup collector defaults into a runtime settings record.
 func (c Config) SeedRuntimeSettings() model.RuntimeSettings {
+	trackN, rootPages, replyPages, batchSec, enabled := model.DefaultCommentSettings()
 	return model.RuntimeSettings{
-		PollIntervalSec:    int(c.PollInterval / time.Second),
-		RequestRate:        c.RequestRate,
-		RequestConcurrency: c.RequestConcurrency,
+		PollIntervalSec:         int(c.PollInterval / time.Second),
+		RequestRate:             c.RequestRate,
+		RequestConcurrency:      c.RequestConcurrency,
+		CommentEnabled:          enabled,
+		CommentTrackN:           trackN,
+		CommentRootPages:        rootPages,
+		CommentReplyPages:       replyPages,
+		CommentBatchIntervalSec: batchSec,
 	}
 }
 

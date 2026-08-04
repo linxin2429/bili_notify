@@ -104,7 +104,17 @@ func mustTestVault(t *testing.T) *vault.Vault {
 }
 
 func testSettings(pollSec int, rate float64, concurrency int) model.RuntimeSettings {
-	return model.RuntimeSettings{PollIntervalSec: pollSec, RequestRate: rate, RequestConcurrency: concurrency}
+	trackN, rootPages, replyPages, batchSec, enabled := model.DefaultCommentSettings()
+	return model.RuntimeSettings{
+		PollIntervalSec:         pollSec,
+		RequestRate:             rate,
+		RequestConcurrency:      concurrency,
+		CommentEnabled:          enabled,
+		CommentTrackN:           trackN,
+		CommentRootPages:        rootPages,
+		CommentReplyPages:       replyPages,
+		CommentBatchIntervalSec: batchSec,
+	}
 }
 
 func TestUpdateSettingsHotReloadsAndPersists(t *testing.T) {

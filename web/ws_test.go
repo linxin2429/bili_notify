@@ -37,7 +37,11 @@ func TestWebSocketRequiresSessionAndPublishesUpdates(t *testing.T) {
 			bilibili.New(nil, "test"),
 			slog.New(slog.NewTextHandler(io.Discard, nil)),
 			nil,
-			model.RuntimeSettings{PollIntervalSec: 30, RequestRate: 2, RequestConcurrency: 4},
+			model.RuntimeSettings{
+				PollIntervalSec: 30, RequestRate: 2, RequestConcurrency: 4,
+				CommentEnabled: true, CommentTrackN: 10, CommentRootPages: 2,
+				CommentReplyPages: 5, CommentBatchIntervalSec: 120,
+			},
 			events,
 		),
 		store:       store,

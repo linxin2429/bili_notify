@@ -114,6 +114,62 @@ func DynamicMessage(d model.Dynamic) Message {
 	return message
 }
 
+func CommentThreadMessage(n model.CommentNotification) Message {
+	subject := fmt.Sprintf("[B站评论] %s 回复了评论", n.UPName)
+	contentLabel := dynamicTypeName(n.ContentType)
+	if contentLabel == n.ContentType {
+		contentLabel = "内容"
+	}
+	section := Section{
+		Heading: firstNonEmpty(n.ContentTitle, contentLabel),
+		Facts: []Fact{
+			{Label: "UP主", Value: n.UPName},
+			{Label: "内容类型", Value: contentLabel},
+			{Label: "回复时间", Value: n.PublishedAt.In(chinaStandardTime).Format("2006-01-02 15:04:05 MST")},
+		},
+	}
+	if n.ContentURL != "" {
+		section.Links = append(section.Links, Link{Label: "查看内容", URL: n.ContentURL})
+	}
+	if n.Incomplete {
+		section.Paragraphs = append(section.Paragraphs, "对话串可能不完整：子评论翻页达到上限。")
+	}
+	section.Paragraphs = append(section.Paragraphs, "对话：")
+	for i, node := range n.Thread {
+		prefix := ""
+		if i > 0 {
+			prefix = strings.Repeat("↳ ", min(i, 3))
+		}
+		label := node.Name
+		if label == "" {
+			label = node.Mid
+		}
+		if node.IsUP {
+			label += "（UP）"
+		}
+		if node.IsTrigger {
+			label += " ★"
+		}
+		line := prefix + label + "：" + node.Message
+		section.Paragraphs = append(section.Paragraphs, line)
+	}
+	actionURL := n.ContentURL
+	return Message{
+		Subject:  subject,
+		Sections: []Section{section},
+		Action:   Link{Label: "查看内容", URL: actionURL},
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func TextMessage(subject, body string) Message {
 	return Message{Subject: subject, Sections: []Section{{Paragraphs: []string{body}}}}
 }

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -15,17 +16,19 @@ import (
 )
 
 var (
-	bucketMeta       = []byte("meta")
-	bucketUPs        = []byte("ups")
-	bucketChannels   = []byte("channels")
-	bucketAuth       = []byte("auth")
-	bucketSeen       = []byte("seen")
-	bucketDeliveries = []byte("deliveries")
-	keySession         = []byte("session")
-	keyAdminHash       = []byte("admin_password_hash")
-	keyRuntimeSettings = []byte("runtime_settings")
-	ErrNotFound        = errors.New("record not found")
-	ErrInitialized     = errors.New("administrator is already initialized")
+	bucketMeta           = []byte("meta")
+	bucketUPs            = []byte("ups")
+	bucketChannels       = []byte("channels")
+	bucketAuth           = []byte("auth")
+	bucketSeen           = []byte("seen")
+	bucketSeenComments   = []byte("seen-comments")
+	bucketCommentTargets = []byte("comment-targets")
+	bucketDeliveries     = []byte("deliveries")
+	keySession           = []byte("session")
+	keyAdminHash         = []byte("admin_password_hash")
+	keyRuntimeSettings   = []byte("runtime_settings")
+	ErrNotFound          = errors.New("record not found")
+	ErrInitialized       = errors.New("administrator is already initialized")
 )
 
 type Store struct {
@@ -48,7 +51,7 @@ func Open(path string, v *vault.Vault) (*Store, error) {
 
 func (s *Store) init() error {
 	return s.db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketMeta, bucketUPs, bucketChannels, bucketAuth, bucketSeen, bucketDeliveries} {
+		for _, name := range [][]byte{bucketMeta, bucketUPs, bucketChannels, bucketAuth, bucketSeen, bucketSeenComments, bucketCommentTargets, bucketDeliveries} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return fmt.Errorf("creating bucket %q: %w", name, err)
 			}
@@ -109,10 +112,14 @@ func (s *Store) RuntimeSettings() (model.RuntimeSettings, error) {
 		}
 		return readJSON(raw, &settings)
 	})
-	return settings, err
+	if err != nil {
+		return model.RuntimeSettings{}, err
+	}
+	return settings.WithCommentDefaults(), nil
 }
 
 func (s *Store) PutRuntimeSettings(settings model.RuntimeSettings) error {
+	settings = settings.WithCommentDefaults()
 	if err := settings.Validate(); err != nil {
 		return err
 	}
@@ -216,12 +223,28 @@ func (s *Store) DeleteUP(uid string) error {
 		if err := tx.Bucket(bucketUPs).Delete([]byte(uid)); err != nil {
 			return err
 		}
-		err := tx.Bucket(bucketSeen).DeleteBucket([]byte(uid))
-		if errors.Is(err, bolt.ErrBucketNotFound) {
-			return nil
+		if err := deleteBucketIfExists(tx.Bucket(bucketSeen), []byte(uid)); err != nil {
+			return err
 		}
-		return err
+		if err := deleteBucketIfExists(tx.Bucket(bucketSeenComments), []byte(uid)); err != nil {
+			return err
+		}
+		if err := tx.Bucket(bucketCommentTargets).Delete([]byte(uid)); err != nil {
+			return err
+		}
+		return nil
 	})
+}
+
+func deleteBucketIfExists(parent *bolt.Bucket, key []byte) error {
+	if parent == nil {
+		return nil
+	}
+	err := parent.DeleteBucket(key)
+	if errors.Is(err, bolt.ErrBucketNotFound) {
+		return nil
+	}
+	return err
 }
 
 func (s *Store) SetUPResult(uid, name string, at time.Time, pollErr error) error {
@@ -384,6 +407,7 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 			for _, channelID := range channelIDs {
 				d := model.Delivery{
 					ID:        dynamic.ID + ":" + channelID,
+					Kind:      model.DeliveryKindDynamic,
 					Dynamic:   dynamic,
 					ChannelID: channelID,
 					State:     model.DeliveryPending,
@@ -405,6 +429,194 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 			up.BaselineReady = true
 			return putJSON(ups, []byte(uid), up)
 		}
+		return nil
+	})
+	return created, err
+}
+
+// UpsertCommentTargets merges discovered commentable contents for one UP and keeps the newest n.
+// Existing BaselineReady / Closed / LastError for the same target key are preserved.
+func (s *Store) UpsertCommentTargets(uid string, discovered []model.CommentTarget, n int) ([]model.CommentTarget, error) {
+	if n < 1 {
+		return nil, fmt.Errorf("comment track n must be positive")
+	}
+	var kept []model.CommentTarget
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketCommentTargets)
+		existing := make([]model.CommentTarget, 0)
+		if raw := bucket.Get([]byte(uid)); raw != nil {
+			if err := readJSON(raw, &existing); err != nil {
+				return err
+			}
+		}
+		byKey := make(map[string]model.CommentTarget, len(existing)+len(discovered))
+		for _, target := range existing {
+			byKey[target.Key()] = target
+		}
+		for _, target := range discovered {
+			if target.CommentType <= 0 || target.CommentOID == "" {
+				continue
+			}
+			target.UID = uid
+			key := target.Key()
+			if prev, ok := byKey[key]; ok {
+				target.BaselineReady = prev.BaselineReady
+				target.Closed = prev.Closed
+				target.LastPollAt = prev.LastPollAt
+				target.LastError = prev.LastError
+				// Preserve closed state unless rediscovered with same coords.
+			}
+			byKey[key] = target
+		}
+		merged := make([]model.CommentTarget, 0, len(byKey))
+		for _, target := range byKey {
+			merged = append(merged, target)
+		}
+		slices.SortFunc(merged, func(a, b model.CommentTarget) int {
+			if c := b.PublishedAt.Compare(a.PublishedAt); c != 0 {
+				return c
+			}
+			return cmp.Compare(a.Key(), b.Key())
+		})
+		if len(merged) > n {
+			merged = merged[:n]
+		}
+		kept = merged
+		return putJSON(bucket, []byte(uid), merged)
+	})
+	return kept, err
+}
+
+func (s *Store) ListCommentTargets(uid string) ([]model.CommentTarget, error) {
+	var targets []model.CommentTarget
+	err := s.db.View(func(tx *bolt.Tx) error {
+		raw := tx.Bucket(bucketCommentTargets).Get([]byte(uid))
+		if raw == nil {
+			targets = []model.CommentTarget{}
+			return nil
+		}
+		return readJSON(raw, &targets)
+	})
+	return targets, err
+}
+
+func (s *Store) ListAllCommentTargets() ([]model.CommentTarget, error) {
+	targets := make([]model.CommentTarget, 0)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketCommentTargets).ForEach(func(_, raw []byte) error {
+			var list []model.CommentTarget
+			if err := readJSON(raw, &list); err != nil {
+				return err
+			}
+			targets = append(targets, list...)
+			return nil
+		})
+	})
+	return targets, err
+}
+
+func (s *Store) PutCommentTargets(uid string, targets []model.CommentTarget) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return putJSON(tx.Bucket(bucketCommentTargets), []byte(uid), targets)
+	})
+}
+
+func (s *Store) UpdateCommentTarget(target model.CommentTarget) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketCommentTargets)
+		var list []model.CommentTarget
+		raw := bucket.Get([]byte(target.UID))
+		if raw != nil {
+			if err := readJSON(raw, &list); err != nil {
+				return err
+			}
+		}
+		found := false
+		for i, item := range list {
+			if item.Key() == target.Key() {
+				list[i] = target
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ErrNotFound
+		}
+		return putJSON(bucket, []byte(target.UID), list)
+	})
+}
+
+func (s *Store) CommentSeen(uid, rpid string) (bool, error) {
+	var seen bool
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketSeenComments).Bucket([]byte(uid))
+		seen = b != nil && b.Get([]byte(rpid)) != nil
+		return nil
+	})
+	return seen, err
+}
+
+// RecordCommentNotifications marks UP reply rpids seen and enqueues deliveries.
+// baseline=true writes seen only (no deliveries) and marks the target baseline ready.
+func (s *Store) RecordCommentNotifications(target model.CommentTarget, notes []model.CommentNotification, channelIDs []string, baseline bool) (int, error) {
+	created := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		seenRoot := tx.Bucket(bucketSeenComments)
+		seen, err := seenRoot.CreateBucketIfNotExists([]byte(target.UID))
+		if err != nil {
+			return err
+		}
+		deliveries := tx.Bucket(bucketDeliveries)
+		for _, note := range notes {
+			if note.RPID == "" {
+				continue
+			}
+			if seen.Get([]byte(note.RPID)) != nil {
+				continue
+			}
+			if err := seen.Put([]byte(note.RPID), []byte(note.PublishedAt.UTC().Format(time.RFC3339Nano))); err != nil {
+				return err
+			}
+			if baseline {
+				continue
+			}
+			for _, channelID := range channelIDs {
+				n := note
+				d := model.Delivery{
+					ID:        "comment:" + note.RPID + ":" + channelID,
+					Kind:      model.DeliveryKindComment,
+					Comment:   &n,
+					ChannelID: channelID,
+					State:     model.DeliveryPending,
+					NextAt:    time.Now().UTC(),
+					CreatedAt: time.Now().UTC(),
+				}
+				if err := putJSON(deliveries, []byte(d.ID), d); err != nil {
+					return err
+				}
+			}
+			created++
+		}
+		// Update target metadata in the same transaction.
+		bucket := tx.Bucket(bucketCommentTargets)
+		var list []model.CommentTarget
+		if raw := bucket.Get([]byte(target.UID)); raw != nil {
+			if err := readJSON(raw, &list); err != nil {
+				return err
+			}
+		}
+		for i, item := range list {
+			if item.Key() == target.Key() {
+				item.BaselineReady = true
+				item.LastPollAt = time.Now().UTC()
+				item.LastError = target.LastError
+				item.Closed = target.Closed
+				item.CommentCount = target.CommentCount
+				list[i] = item
+				return putJSON(bucket, []byte(target.UID), list)
+			}
+		}
+		// Target may have been pruned between scan and record; still keep seen/deliveries.
 		return nil
 	})
 	return created, err

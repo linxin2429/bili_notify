@@ -75,7 +75,7 @@ main.go → cmd/ (Cobra CLI + Viper/BILI_NOTIFY_* env)
 | --- | --- |
 | `cmd/` | CLI only: `serve`, `admin hash-password`, `healthcheck`, `rekey`. Startup flags/env defaults. |
 | `app/` | Composition root: validate config, open store, build engine + dual HTTP servers. |
-| `config/` | Startup settings: paths, listen addrs, log level are process-immutable. Poll interval / request rate / concurrency are **first-run defaults** only; after seed they live in bbolt and hot-reload via admin UI. |
+| `config/` | Startup settings: paths, listen addrs, log level are process-immutable. Poll interval / request rate / concurrency / comment knobs are **first-run defaults** only; after seed they live in bbolt and hot-reload via admin UI. |
 | `model/` | Shared domain types + validation (UP, Channel, Dynamic, Delivery, BiliSession). |
 | `bilibili/` | Web API client: QR login, session validate, space dynamics feed, strict dynamic parsing. |
 | `state/` | bbolt store: UPs, channels, encrypted session/secrets, seen dynamics, Outbox deliveries. |
@@ -86,11 +86,12 @@ main.go → cmd/ (Cobra CLI + Viper/BILI_NOTIFY_* env)
 
 ### Core runtime flow
 
-1. **Collect** (`service.Engine.collectLoop`): every ~runtime `poll_interval` (seed default 30s), rate-limited (seed default 2 rps, 4 concurrency) fetch each enabled UP's dynamics. These three knobs are stored in bbolt and hot-reloaded from the admin UI. Paginate up to 10 pages until a known dynamic ID; more than 10 pages is a state gap — stop that UP without committing (no silent loss).
+1. **Collect** (`service.Engine.collectLoop`): every ~runtime `poll_interval` (seed default 30s), rate-limited (seed default 2 rps, 4 concurrency) fetch each enabled UP's dynamics. These collector knobs are stored in bbolt and hot-reloaded from the admin UI. Paginate up to 10 pages until a known dynamic ID; more than 10 pages is a state gap — stop that UP without committing (no silent loss). Discovered commentable contents refresh each UP's recent-N comment targets.
 2. **Baseline vs notify**: first successful poll for a new UP only records seen IDs (`BaselineReady`); no historical notifications. Later polls create Outbox tasks.
-3. **Atomic Outbox** (`state.Store.RecordDynamics`): in one bbolt write txn, mark dynamics seen and enqueue one delivery per enabled channel (key = dynamic ID + channel ID).
-4. **Deliver** (`deliveryLoop`): due tasks are sent via `notify.Sender`. Success deletes the task. Transient failures retry with jittered backoff (5s → 30s → 2m → 10m → max 1h). Permanent/auth/config errors **block** the delivery until the channel is updated.
-5. **Auth**: invalid Bilibili session fails readiness and pauses collection; Outbox delivery continues. Microsoft access tokens refresh automatically and persist via channel settings updates.
+3. **Atomic Outbox** (`state.Store.RecordDynamics` / `RecordCommentNotifications`): in one bbolt write txn, mark dynamics/comments seen and enqueue one delivery per enabled channel (dynamic key = dynamic ID + channel ID; comment key = `comment:` + rpid + channel ID).
+4. **Comment replies** (`service.Engine.commentLoop`): slower batch (seed default 120s) scans tracked content via `/x/v2/reply` + `/x/v2/reply/reply`, keeps only UP-authored replies, expands root→trigger thread, baselines on first success per target.
+5. **Deliver** (`deliveryLoop`): due tasks are sent via `notify.Sender`. Success deletes the task. Transient failures retry with jittered backoff (5s → 30s → 2m → 10m → max 1h). Permanent/auth/config errors **block** the delivery until the channel is updated.
+6. **Auth**: invalid Bilibili session fails readiness and pauses collection; Outbox delivery continues. Microsoft access tokens refresh automatically and persist via channel settings updates.
 
 ### Important invariants
 

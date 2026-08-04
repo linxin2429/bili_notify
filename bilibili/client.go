@@ -395,9 +395,15 @@ type rawRichTextNode struct {
 }
 
 type rawDynamic struct {
-	ID      string          `json:"id_str"`
-	Type    string          `json:"type"`
-	Orig    json.RawMessage `json:"orig"`
+	ID    string          `json:"id_str"`
+	Type  string          `json:"type"`
+	Orig  json.RawMessage `json:"orig"`
+	Basic *struct {
+		CommentType  flexibleInt     `json:"comment_type"`
+		CommentIDStr string          `json:"comment_id_str"`
+		CommentID    json.RawMessage `json:"comment_id"`
+		RIDStr       string          `json:"rid_str"`
+	} `json:"basic"`
 	Modules struct {
 		Author struct {
 			MID   json.RawMessage `json:"mid"`
@@ -427,11 +433,13 @@ type rawDynamic struct {
 
 type rawMajor struct {
 	Archive *struct {
-		Title        string `json:"title"`
-		Desc         string `json:"desc"`
-		Cover        string `json:"cover"`
-		JumpURL      string `json:"jump_url"`
-		DurationText string `json:"duration_text"`
+		AID          json.RawMessage `json:"aid"`
+		BVID         string          `json:"bvid"`
+		Title        string          `json:"title"`
+		Desc         string          `json:"desc"`
+		Cover        string          `json:"cover"`
+		JumpURL      string          `json:"jump_url"`
+		DurationText string          `json:"duration_text"`
 		Badge        struct {
 			Text string `json:"text"`
 		} `json:"badge"`
@@ -441,6 +449,7 @@ type rawMajor struct {
 		} `json:"stat"`
 	} `json:"archive"`
 	Draw *struct {
+		ID    json.RawMessage `json:"id"`
 		Items []struct {
 			Src    string      `json:"src"`
 			Width  flexibleInt `json:"width"`
@@ -448,11 +457,12 @@ type rawMajor struct {
 		} `json:"items"`
 	} `json:"draw"`
 	Article *struct {
-		Title   string   `json:"title"`
-		Desc    string   `json:"desc"`
-		Covers  []string `json:"covers"`
-		JumpURL string   `json:"jump_url"`
-		Label   string   `json:"label"`
+		ID      json.RawMessage `json:"id"`
+		Title   string          `json:"title"`
+		Desc    string          `json:"desc"`
+		Covers  []string        `json:"covers"`
+		JumpURL string          `json:"jump_url"`
+		Label   string          `json:"label"`
 	} `json:"article"`
 	PGC *struct {
 		Title   string `json:"title"`
@@ -485,6 +495,38 @@ type rawMajor struct {
 			Height flexibleInt `json:"height"`
 		} `json:"pics"`
 	} `json:"opus"`
+}
+
+// Reply is one comment entry from Bilibili reply APIs.
+type Reply struct {
+	RPID    string
+	Root    string
+	Parent  string
+	Dialog  string
+	Mid     string
+	Name    string
+	Message string
+	CTime   time.Time
+	RCount  int64
+}
+
+type ReplyPage struct {
+	Replies   []Reply
+	RootCount int64
+	AllCount  int64
+	HasMore   bool
+}
+
+const (
+	CommentTypeVideo   = 1
+	CommentTypeAlbum   = 11
+	CommentTypeArticle = 12
+	CommentTypeDynamic = 17
+)
+
+func IsCommentClosed(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == 12002
 }
 
 func parseDynamic(uid string, raw json.RawMessage) (model.Dynamic, string, error) {
@@ -527,6 +569,7 @@ func parseDynamicItem(uid string, raw json.RawMessage) (model.Dynamic, error) {
 			Comments: item.Modules.Stat.Comment.Count,
 			Likes:    item.Modules.Stat.Like.Count,
 		}
+		dynamic.CommentCount = item.Modules.Stat.Comment.Count
 	}
 	if item.Type != "DYNAMIC_TYPE_LIVE_RCMD" {
 		if err := parseMajor(&dynamic, item.Modules.Dynamic.Major); err != nil {
@@ -540,7 +583,49 @@ func parseDynamicItem(uid string, raw json.RawMessage) (model.Dynamic, error) {
 		}
 		dynamic.Original = &original
 	}
+	applyCommentCoords(&dynamic, item)
 	return dynamic, nil
+}
+
+func applyCommentCoords(dynamic *model.Dynamic, item rawDynamic) {
+	if item.Basic != nil {
+		commentType := int(item.Basic.CommentType)
+		oid := strings.TrimSpace(item.Basic.CommentIDStr)
+		if oid == "" {
+			oid = rawString(item.Basic.CommentID)
+		}
+		if oid == "" {
+			oid = strings.TrimSpace(item.Basic.RIDStr)
+		}
+		if commentType > 0 && oid != "" && oid != "0" {
+			dynamic.Commentable = true
+			dynamic.CommentType = commentType
+			dynamic.CommentOID = oid
+			return
+		}
+	}
+	switch dynamic.Type {
+	case "DYNAMIC_TYPE_AV":
+		// aid is set by parseMajor into CommentOID temporarily via setAVComment
+		if dynamic.CommentOID != "" {
+			dynamic.Commentable = true
+			dynamic.CommentType = CommentTypeVideo
+		}
+	case "DYNAMIC_TYPE_WORD", "DYNAMIC_TYPE_FORWARD":
+		if dynamic.ID != "" {
+			dynamic.Commentable = true
+			dynamic.CommentType = CommentTypeDynamic
+			dynamic.CommentOID = dynamic.ID
+		}
+	case "DYNAMIC_TYPE_ARTICLE":
+		if dynamic.CommentOID != "" {
+			dynamic.Commentable = true
+			dynamic.CommentType = CommentTypeArticle
+		}
+	case "DYNAMIC_TYPE_DRAW":
+		// Without basic, album id vs dynamic id cannot be distinguished safely.
+		return
+	}
 }
 
 func parseMajor(dynamic *model.Dynamic, raw json.RawMessage) error {
@@ -570,6 +655,9 @@ func parseMajor(dynamic *model.Dynamic, raw json.RawMessage) error {
 			Views:    strings.TrimSpace(string(major.Archive.Stat.Play)),
 			Danmaku:  strings.TrimSpace(string(major.Archive.Stat.Danmaku)),
 		}
+		if aid := rawString(major.Archive.AID); aid != "" && aid != "0" {
+			dynamic.CommentOID = aid
+		}
 	}
 	if major.Draw != nil {
 		recognized++
@@ -591,6 +679,11 @@ func parseMajor(dynamic *model.Dynamic, raw json.RawMessage) error {
 		dynamic.Badge = strings.TrimSpace(major.Article.Label)
 		for _, cover := range major.Article.Covers {
 			appendMedia(dynamic, model.DynamicMediaCover, cover, 0, 0)
+		}
+		if cvid := rawString(major.Article.ID); cvid != "" && cvid != "0" {
+			dynamic.CommentOID = cvid
+		} else if cvid := articleCVID(major.Article.JumpURL); cvid != "" {
+			dynamic.CommentOID = cvid
 		}
 	}
 	if major.PGC != nil {
@@ -674,6 +767,31 @@ func webURL(value string) string {
 	return u.String()
 }
 
+func articleCVID(jumpURL string) string {
+	u, err := url.Parse(webURL(jumpURL))
+	if err != nil {
+		return ""
+	}
+	path := u.Path
+	const marker = "/read/cv"
+	idx := strings.Index(path, marker)
+	if idx < 0 {
+		return ""
+	}
+	id := path[idx+len(marker):]
+	if slash := strings.IndexByte(id, '/'); slash >= 0 {
+		id = id[:slash]
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+		return ""
+	}
+	return id
+}
+
 func rawString(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return ""
@@ -686,6 +804,176 @@ func rawString(raw json.RawMessage) string {
 		return ""
 	}
 	return strings.TrimSpace(string(raw))
+}
+
+func (c *Client) ListRootReplies(ctx context.Context, commentType int, oid string, pn, ps int) (ReplyPage, error) {
+	if commentType <= 0 || strings.TrimSpace(oid) == "" {
+		return ReplyPage{}, &APIError{Kind: ErrorSchema, Message: "comment type and oid are required"}
+	}
+	if pn < 1 {
+		pn = 1
+	}
+	if ps < 1 || ps > 20 {
+		ps = 20
+	}
+	query := url.Values{
+		"type":  {strconv.Itoa(commentType)},
+		"oid":   {oid},
+		"sort":  {"0"},
+		"nohot": {"1"},
+		"pn":    {strconv.Itoa(pn)},
+		"ps":    {strconv.Itoa(ps)},
+	}
+	_, body, err := c.get(ctx, c.apiURL+"/x/v2/reply", query, true)
+	if err != nil {
+		return ReplyPage{}, err
+	}
+	return parseReplyList(body, ps)
+}
+
+func (c *Client) ListChildReplies(ctx context.Context, commentType int, oid, root string, pn, ps int) (ReplyPage, error) {
+	if commentType <= 0 || strings.TrimSpace(oid) == "" || strings.TrimSpace(root) == "" {
+		return ReplyPage{}, &APIError{Kind: ErrorSchema, Message: "comment type, oid, and root are required"}
+	}
+	if pn < 1 {
+		pn = 1
+	}
+	if ps < 1 || ps > 20 {
+		ps = 20
+	}
+	query := url.Values{
+		"type": {strconv.Itoa(commentType)},
+		"oid":  {oid},
+		"root": {root},
+		"pn":   {strconv.Itoa(pn)},
+		"ps":   {strconv.Itoa(ps)},
+	}
+	_, body, err := c.get(ctx, c.apiURL+"/x/v2/reply/reply", query, true)
+	if err != nil {
+		return ReplyPage{}, err
+	}
+	return parseReplyList(body, ps)
+}
+
+func parseReplyList(body []byte, pageSize int) (ReplyPage, error) {
+	var env envelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return ReplyPage{}, &APIError{Kind: ErrorSchema, Message: "invalid reply envelope: " + err.Error()}
+	}
+	if env.Code != 0 {
+		kind := ErrorTemporary
+		switch env.Code {
+		case -101, -111:
+			kind = ErrorAuthentication
+		case -352, -412:
+			kind = ErrorRiskControl
+		case 12002:
+			// closed comment area is a permanent condition for this target
+			kind = ErrorTemporary
+		case 12009:
+			kind = ErrorSchema
+		}
+		return ReplyPage{}, &APIError{Kind: kind, Code: env.Code, Message: env.Message}
+	}
+	var data struct {
+		Page *struct {
+			Num    int   `json:"num"`
+			Size   int   `json:"size"`
+			Count  int64 `json:"count"`
+			ACount int64 `json:"acount"`
+		} `json:"page"`
+		Replies []rawReply `json:"replies"`
+	}
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return ReplyPage{}, &APIError{Kind: ErrorSchema, Message: "invalid reply data: " + err.Error()}
+	}
+	page := ReplyPage{Replies: make([]Reply, 0, len(data.Replies))}
+	if data.Page != nil {
+		page.RootCount = data.Page.Count
+		page.AllCount = data.Page.ACount
+		if data.Page.Num > 0 && data.Page.Size > 0 {
+			page.HasMore = int64(data.Page.Num*data.Page.Size) < data.Page.Count
+		}
+	}
+	if !page.HasMore && len(data.Replies) >= pageSize {
+		page.HasMore = true
+	}
+	for _, raw := range data.Replies {
+		reply, err := parseReply(raw)
+		if err != nil {
+			return ReplyPage{}, err
+		}
+		page.Replies = append(page.Replies, reply)
+	}
+	return page, nil
+}
+
+type rawReply struct {
+	RPID      json.RawMessage `json:"rpid"`
+	RPIDStr   string          `json:"rpid_str"`
+	Root      json.RawMessage `json:"root"`
+	RootStr   string          `json:"root_str"`
+	Parent    json.RawMessage `json:"parent"`
+	ParentStr string          `json:"parent_str"`
+	Dialog    json.RawMessage `json:"dialog"`
+	Mid       json.RawMessage `json:"mid"`
+	CTime     unixTimestamp   `json:"ctime"`
+	RCount    int64           `json:"rcount"`
+	Member    *struct {
+		Mid   string `json:"mid"`
+		UName string `json:"uname"`
+	} `json:"member"`
+	Content *struct {
+		Message string `json:"message"`
+	} `json:"content"`
+}
+
+func parseReply(raw rawReply) (Reply, error) {
+	rpid := strings.TrimSpace(raw.RPIDStr)
+	if rpid == "" {
+		rpid = rawString(raw.RPID)
+	}
+	if rpid == "" || rpid == "0" {
+		return Reply{}, &APIError{Kind: ErrorSchema, Message: "reply is missing rpid"}
+	}
+	root := strings.TrimSpace(raw.RootStr)
+	if root == "" {
+		root = rawString(raw.Root)
+	}
+	if root == "0" {
+		root = ""
+	}
+	parent := strings.TrimSpace(raw.ParentStr)
+	if parent == "" {
+		parent = rawString(raw.Parent)
+	}
+	if parent == "0" {
+		parent = ""
+	}
+	mid := ""
+	name := ""
+	if raw.Member != nil {
+		mid = strings.TrimSpace(raw.Member.Mid)
+		name = strings.TrimSpace(raw.Member.UName)
+	}
+	if mid == "" {
+		mid = rawString(raw.Mid)
+	}
+	message := ""
+	if raw.Content != nil {
+		message = strings.TrimSpace(raw.Content.Message)
+	}
+	return Reply{
+		RPID:    rpid,
+		Root:    root,
+		Parent:  parent,
+		Dialog:  rawString(raw.Dialog),
+		Mid:     mid,
+		Name:    name,
+		Message: message,
+		CTime:   time.Unix(int64(raw.CTime), 0).UTC(),
+		RCount:  raw.RCount,
+	}, nil
 }
 
 func ParseRetryAfter(resp *http.Response) time.Duration {

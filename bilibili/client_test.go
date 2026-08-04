@@ -274,3 +274,140 @@ func FuzzParseDynamic(f *testing.F) {
 		_, _, _ = parseDynamic("42", json.RawMessage(raw))
 	})
 }
+
+func TestCommentCoordinates(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		raw      string
+		wantable bool
+		wantType int
+		wantOID  string
+	}{
+		{
+			name: "basic preferred over aid",
+			raw: `{
+				"id_str":"100","type":"DYNAMIC_TYPE_AV",
+				"basic":{"comment_type":1,"comment_id_str":"999"},
+				"modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"archive":{"aid":111,"title":"t","jump_url":"//www.bilibili.com/video/BV1"}}}}
+			}`,
+			wantable: true, wantType: 1, wantOID: "999",
+		},
+		{
+			name: "av falls back to aid",
+			raw: `{
+				"id_str":"101","type":"DYNAMIC_TYPE_AV",
+				"modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"archive":{"aid":"222","title":"t","jump_url":"//www.bilibili.com/video/BV1"}}}}
+			}`,
+			wantable: true, wantType: 1, wantOID: "222",
+		},
+		{
+			name:     "word uses dynamic id",
+			raw:      `{"id_str":"333","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":"hi"},"major":null}}}`,
+			wantable: true, wantType: 17, wantOID: "333",
+		},
+		{
+			name: "forward uses forward id",
+			raw: `{
+				"id_str":"10","type":"DYNAMIC_TYPE_FORWARD",
+				"modules":{"module_author":{"name":"forwarder","pub_ts":2},"module_dynamic":{"desc":{"text":"x"},"major":null}},
+				"orig":{"id_str":"9","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"mid":"7","name":"author","pub_ts":1},"module_dynamic":{"desc":{"text":"o"},"major":null}}}
+			}`,
+			wantable: true, wantType: 17, wantOID: "10",
+		},
+		{
+			name: "article from jump url",
+			raw: `{
+				"id_str":"3","type":"DYNAMIC_TYPE_ARTICLE",
+				"modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"article":{"title":"article","jump_url":"https://www.bilibili.com/read/cv98765"}}}}
+			}`,
+			wantable: true, wantType: 12, wantOID: "98765",
+		},
+		{
+			name: "draw without basic is not commentable",
+			raw: `{
+				"id_str":"2","type":"DYNAMIC_TYPE_DRAW",
+				"modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":"draw"},"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/1.jpg"}]}}}}
+			}`,
+			wantable: false,
+		},
+		{
+			name: "draw with basic album id",
+			raw: `{
+				"id_str":"2","type":"DYNAMIC_TYPE_DRAW",
+				"basic":{"comment_type":11,"comment_id_str":"349795473"},
+				"modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":"draw"},"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/1.jpg"}]}}}}
+			}`,
+			wantable: true, wantType: 11, wantOID: "349795473",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, _, err := parseDynamic("42", json.RawMessage(tt.raw))
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantable, got.Commentable)
+			if tt.wantable {
+				assert.Equal(t, tt.wantType, got.CommentType)
+				assert.Equal(t, tt.wantOID, got.CommentOID)
+			}
+		})
+	}
+}
+
+func TestParseReplyList(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+		check   func(t *testing.T, page ReplyPage)
+	}{
+		{
+			name: "roots",
+			body: `{
+				"code":0,"message":"0","ttl":1,
+				"data":{"page":{"num":1,"size":20,"count":2,"acount":5},"replies":[
+					{"rpid_str":"11","root_str":"0","parent_str":"0","mid":1,"ctime":1700000000,"rcount":1,
+					 "member":{"mid":"1","uname":"alice"},"content":{"message":"root"}},
+					{"rpid":22,"root":0,"parent":0,"mid":2,"ctime":1700000001,"rcount":0,
+					 "member":{"mid":"2","uname":"bob"},"content":{"message":"another"}}
+				]}
+			}`,
+			check: func(t *testing.T, page ReplyPage) {
+				require.Len(t, page.Replies, 2)
+				assert.Equal(t, "11", page.Replies[0].RPID)
+				assert.Equal(t, "alice", page.Replies[0].Name)
+				assert.Equal(t, "root", page.Replies[0].Message)
+				assert.Equal(t, "22", page.Replies[1].RPID)
+				assert.Equal(t, int64(2), page.RootCount)
+			},
+		},
+		{
+			name:    "closed",
+			body:    `{"code":12002,"message":"Comment area is closed","ttl":1,"data":null}`,
+			wantErr: "12002",
+		},
+		{
+			name:    "bad type",
+			body:    `{"code":12009,"message":"invalid type","ttl":1,"data":null}`,
+			wantErr: "schema",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			page, err := parseReplyList([]byte(tt.body), 20)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, strings.ToLower(err.Error()), strings.ToLower(tt.wantErr))
+				if tt.name == "closed" {
+					assert.True(t, IsCommentClosed(err))
+				}
+				return
+			}
+			require.NoError(t, err)
+			tt.check(t, page)
+		})
+	}
+}

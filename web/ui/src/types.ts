@@ -37,7 +37,8 @@ export interface Channel {
 
 export interface Delivery {
   id: string
-  dynamic: {
+  kind?: 'dynamic' | 'comment'
+  dynamic?: {
     id: string
     uid: string
     up_name: string
@@ -45,6 +46,16 @@ export interface Delivery {
     published_at: string
     summary: string
     url: string
+  }
+  comment?: {
+    rpid: string
+    up_uid: string
+    up_name: string
+    content_type: string
+    content_id: string
+    content_title?: string
+    content_url: string
+    published_at: string
   }
   channel_id: string
   state: 'pending' | 'blocked'
@@ -75,6 +86,11 @@ export interface RuntimeSettings {
   poll_interval_sec: number
   request_rate: number
   request_concurrency: number
+  comment_enabled: boolean
+  comment_track_n: number
+  comment_root_pages: number
+  comment_reply_pages: number
+  comment_batch_interval_sec: number
 }
 
 export interface DashboardSnapshot {
