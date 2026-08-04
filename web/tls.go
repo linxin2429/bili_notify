@@ -69,7 +69,7 @@ func generateSelfSignedBundle() ([]byte, error) {
 	if hostname != "" && hostname != "localhost" {
 		dnsNames = append(dnsNames, hostname)
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "Bili Notify"},

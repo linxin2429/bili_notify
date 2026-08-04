@@ -268,7 +268,7 @@ func (e *Engine) collectOnce(ctx context.Context) error {
 		return nil
 	}
 	if until := e.riskUntil.Load(); until > time.Now().Unix() {
-		e.logger.Debug("collection cycle skipped", "reason", "Bilibili risk-control pause", "resume_at", time.Unix(until, 0).UTC())
+		e.logger.Debug("collection cycle skipped", "reason", "Bilibili risk-control pause", "resume_at", time.Unix(until, 0))
 		return nil
 	}
 	ups, err := e.store.ListUPs()
@@ -362,7 +362,7 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 	if err := e.refreshCommentTargets(up, name, items); err != nil {
 		return err
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	if err := e.store.SetUPResult(up.UID, name, now, nil); err != nil {
 		return err
 	}
@@ -772,7 +772,7 @@ func (e *Engine) failPoll(up model.UP, name string, started time.Time, pollErr e
 		name = up.Name
 	}
 	e.metrics.PollTotal.WithLabelValues("error").Inc()
-	if err := e.store.SetUPResult(up.UID, name, time.Now().UTC(), pollErr); err != nil {
+	if err := e.store.SetUPResult(up.UID, name, time.Now(), pollErr); err != nil {
 		return fmt.Errorf("recording failed poll for UP %s: %w", up.UID, err)
 	}
 	kind := "other"
@@ -804,7 +804,7 @@ func (e *Engine) deliveryLoop(ctx context.Context) error {
 
 func (e *Engine) dispatchOnce(ctx context.Context) error {
 	defer e.publish(TopicStatus | TopicChannels | TopicDeliveries)
-	deliveries, err := e.store.DueDeliveries(time.Now().UTC(), 50)
+	deliveries, err := e.store.DueDeliveries(time.Now(), 50)
 	if err != nil {
 		return err
 	}
@@ -838,7 +838,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 	channel, err := e.store.Channel(delivery.ChannelID)
 	if err != nil {
 		deliveryErr := errors.New("channel no longer exists")
-		if err := e.store.FailDelivery(delivery.ID, true, time.Now().UTC(), deliveryErr); err != nil {
+		if err := e.store.FailDelivery(delivery.ID, true, time.Now(), deliveryErr); err != nil {
 			return err
 		}
 		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "err", deliveryErr)
@@ -853,7 +853,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 		channel, err = e.store.Channel(delivery.ChannelID)
 		if err != nil {
 			deliveryErr := errors.New("channel no longer exists")
-			if err := e.store.FailDelivery(delivery.ID, true, time.Now().UTC(), deliveryErr); err != nil {
+			if err := e.store.FailDelivery(delivery.ID, true, time.Now(), deliveryErr); err != nil {
 				return err
 			}
 			e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "err", deliveryErr)
@@ -862,7 +862,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 	}
 	sender, err := e.newSender(channel)
 	if err != nil {
-		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now().UTC(), err); storeErr != nil {
+		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now(), err); storeErr != nil {
 			return storeErr
 		}
 		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "err", err)
@@ -870,7 +870,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 	}
 	message, contentID, err := deliveryMessage(delivery)
 	if err != nil {
-		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now().UTC(), err); storeErr != nil {
+		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now(), err); storeErr != nil {
 			return storeErr
 		}
 		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "content_id", contentID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "err", err)
@@ -899,7 +899,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) error {
 	if storeErr := e.store.FailDelivery(delivery.ID, blocked, next, err); storeErr != nil {
 		return storeErr
 	}
-	e.logger.Warn("notification delivery failed", "delivery_id", delivery.ID, "content_id", contentID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "result", result, "next_attempt_at", next.UTC(), "duration", elapsed(started), "err", err)
+	e.logger.Warn("notification delivery failed", "delivery_id", delivery.ID, "content_id", contentID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "result", result, "next_attempt_at", next, "duration", elapsed(started), "err", err)
 	return nil
 }
 
@@ -980,7 +980,7 @@ func (e *Engine) enqueueSystem(summary string) {
 	if len(ids) == 0 {
 		return
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	dynamic := model.Dynamic{
 		ID: fmt.Sprintf("system:%d", now.UnixNano()), UID: "system", UPName: "Bili Notify", Type: "SYSTEM",
 		PublishedAt: now, Summary: summary, URL: "",
@@ -997,7 +997,7 @@ func (e *Engine) StartLogin(ctx context.Context) (LoginSession, error) {
 	if err != nil {
 		return LoginSession{}, err
 	}
-	session := LoginSession{Key: login.Key, URL: login.URL, Status: bilibili.QRWaiting, ExpiresAt: time.Now().Add(3 * time.Minute).UTC()}
+	session := LoginSession{Key: login.Key, URL: login.URL, Status: bilibili.QRWaiting, ExpiresAt: time.Now().Add(3 * time.Minute)}
 	e.loginMu.Lock()
 	if e.runCtx == nil {
 		e.loginMu.Unlock()
@@ -1299,14 +1299,14 @@ func (e *Engine) Status() (Status, error) {
 	}
 	status := Status{AuthValid: e.authValid.Load(), UPCount: len(ups), ChannelCount: len(channels), OutboxDepth: len(deliveries)}
 	if unix := e.lastSuccess.Load(); unix > 0 {
-		status.LastSuccessAt = time.Unix(unix, 0).UTC()
+		status.LastSuccessAt = time.Unix(unix, 0)
 	}
 	if len(deliveries) > 0 {
 		status.OldestDelivery = oldestDelivery(deliveries)
 	}
 	status.Ready = status.AuthValid && enabledUPCount(ups) > 0 && len(enabledChannelIDs(channels)) > 0
 	if until := e.riskUntil.Load(); until > time.Now().Unix() {
-		status.RiskPausedUntil = time.Unix(until, 0).UTC()
+		status.RiskPausedUntil = time.Unix(until, 0)
 		status.Ready = false
 	}
 	staleAfter := max(2*time.Minute, 2*e.currentPollInterval())

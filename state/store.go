@@ -299,7 +299,7 @@ func (s *Store) PutChannel(ch model.Channel) (model.Channel, error) {
 	if err := ch.Validate(); err != nil {
 		return model.Channel{}, err
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	if ch.ID == "" {
 		id, err := randomID()
 		if err != nil {
@@ -328,7 +328,7 @@ func (s *Store) UpdateChannelSettings(id string, settings map[string]string) (mo
 		for key, value := range settings {
 			channel.Settings[key] = value
 		}
-		channel.UpdatedAt = time.Now().UTC()
+		channel.UpdatedAt = time.Now()
 		if err := channel.Validate(); err != nil {
 			return err
 		}
@@ -398,7 +398,7 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 			if seen.Get([]byte(dynamic.ID)) != nil {
 				continue
 			}
-			if err := seen.Put([]byte(dynamic.ID), []byte(dynamic.PublishedAt.UTC().Format(time.RFC3339Nano))); err != nil {
+			if err := seen.Put([]byte(dynamic.ID), []byte(dynamic.PublishedAt.Format(time.RFC3339Nano))); err != nil {
 				return err
 			}
 			if baseline {
@@ -411,8 +411,8 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 					Dynamic:   dynamic,
 					ChannelID: channelID,
 					State:     model.DeliveryPending,
-					NextAt:    time.Now().UTC(),
-					CreatedAt: time.Now().UTC(),
+					NextAt:    time.Now(),
+					CreatedAt: time.Now(),
 				}
 				if err := putJSON(deliveries, []byte(d.ID), d); err != nil {
 					return err
@@ -574,7 +574,7 @@ func (s *Store) RecordCommentNotifications(target model.CommentTarget, notes []m
 			if seen.Get([]byte(note.RPID)) != nil {
 				continue
 			}
-			if err := seen.Put([]byte(note.RPID), []byte(note.PublishedAt.UTC().Format(time.RFC3339Nano))); err != nil {
+			if err := seen.Put([]byte(note.RPID), []byte(note.PublishedAt.Format(time.RFC3339Nano))); err != nil {
 				return err
 			}
 			if baseline {
@@ -588,8 +588,8 @@ func (s *Store) RecordCommentNotifications(target model.CommentTarget, notes []m
 					Comment:   &n,
 					ChannelID: channelID,
 					State:     model.DeliveryPending,
-					NextAt:    time.Now().UTC(),
-					CreatedAt: time.Now().UTC(),
+					NextAt:    time.Now(),
+					CreatedAt: time.Now(),
 				}
 				if err := putJSON(deliveries, []byte(d.ID), d); err != nil {
 					return err
@@ -608,7 +608,7 @@ func (s *Store) RecordCommentNotifications(target model.CommentTarget, notes []m
 		for i, item := range list {
 			if item.Key() == target.Key() {
 				item.BaselineReady = true
-				item.LastPollAt = time.Now().UTC()
+				item.LastPollAt = time.Now()
 				item.LastError = target.LastError
 				item.Closed = target.Closed
 				item.CommentCount = target.CommentCount
@@ -670,7 +670,7 @@ func (s *Store) FailDelivery(id string, blocked bool, next time.Time, deliveryEr
 			return err
 		}
 		d.Attempts++
-		d.NextAt = next.UTC()
+		d.NextAt = next
 		d.LastError = deliveryErr.Error()
 		if blocked {
 			d.State = model.DeliveryBlocked
@@ -690,7 +690,7 @@ func (s *Store) UnblockChannel(channelID string) error {
 			}
 			if d.ChannelID == channelID && d.State == model.DeliveryBlocked {
 				d.State = model.DeliveryPending
-				d.NextAt = time.Now().UTC()
+				d.NextAt = time.Now()
 				updates = append(updates, d)
 			}
 			return nil

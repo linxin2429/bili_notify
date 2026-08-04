@@ -8,6 +8,7 @@ services:
     ports:
       - "8443:8443"
     environment:
+      TZ: Asia/Shanghai
       BILI_NOTIFY_LOG_LEVEL: info
       BILI_NOTIFY_POLL_INTERVAL: 30s
       BILI_NOTIFY_REQUEST_RATE: "2"

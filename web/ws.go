@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -56,6 +57,7 @@ type dashboardSnapshot struct {
 	Deliveries      []deliveryView                  `json:"deliveries"`
 	BiliLogin       *biliLoginView                  `json:"bili_login,omitempty"`
 	MicrosoftLogins []service.MicrosoftLoginSession `json:"microsoft_logins"`
+	Timezone        string                          `json:"timezone"`
 	UpdatedAt       time.Time                       `json:"updated_at"`
 }
 
@@ -431,7 +433,7 @@ func (s *Server) snapshot() (dashboardSnapshot, error) {
 	}
 	return dashboardSnapshot{
 		Status: status, Settings: s.engine.Settings(), UPs: ups, Channels: channels, Deliveries: deliveryViews(deliveries), BiliLogin: login,
-		MicrosoftLogins: s.engine.MicrosoftLogins(), UpdatedAt: time.Now().UTC(),
+		MicrosoftLogins: s.engine.MicrosoftLogins(), Timezone: localTimezoneName(), UpdatedAt: time.Now(),
 	}, nil
 }
 
@@ -638,4 +640,22 @@ func apiError(err error) *wsAPIError {
 		return &wsAPIError{Code: "conflict", Message: message}
 	}
 	return &wsAPIError{Code: "validation_failed", Message: message}
+}
+
+func localTimezoneName() string {
+	if tz := strings.TrimSpace(os.Getenv("TZ")); tz != "" {
+		return tz
+	}
+	name := time.Local.String()
+	if name != "" && name != "Local" {
+		return name
+	}
+	// Fall back to a fixed-offset label when the process only knows "Local".
+	_, offset := time.Now().Zone()
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+	return fmt.Sprintf("UTC%s%02d:%02d", sign, offset/3600, (offset%3600)/60)
 }

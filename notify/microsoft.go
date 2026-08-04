@@ -199,7 +199,7 @@ func microsoftTokenFromSettings(settings map[string]string) (*oauth2.Token, erro
 func microsoftTokenSettings(token *oauth2.Token) map[string]string {
 	return map[string]string{
 		"access_token": token.AccessToken, "refresh_token": token.RefreshToken,
-		"token_type": token.TokenType, "token_expiry": token.Expiry.UTC().Format(time.RFC3339Nano),
+		"token_type": token.TokenType, "token_expiry": token.Expiry.In(time.Local).Format(time.RFC3339Nano),
 		"authorized": "true",
 	}
 }

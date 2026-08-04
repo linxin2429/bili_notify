@@ -59,8 +59,6 @@ type Image struct {
 	URL   string
 }
 
-var chinaStandardTime = time.FixedZone("CST", 8*60*60)
-
 type PermanentError struct{ Err error }
 
 func (e *PermanentError) Error() string { return e.Err.Error() }
@@ -125,7 +123,7 @@ func CommentThreadMessage(n model.CommentNotification) Message {
 		Facts: []Fact{
 			{Label: "UP主", Value: n.UPName},
 			{Label: "内容类型", Value: contentLabel},
-			{Label: "回复时间", Value: n.PublishedAt.In(chinaStandardTime).Format("2006-01-02 15:04:05 MST")},
+			{Label: "回复时间", Value: n.PublishedAt.In(time.Local).Format("2006-01-02 15:04:05 MST")},
 		},
 	}
 	if n.ContentURL != "" {
@@ -191,7 +189,7 @@ func dynamicTypeName(dynamicType string) string {
 }
 
 func dynamicSection(d model.Dynamic, forwarded bool) Section {
-	published := d.PublishedAt.In(chinaStandardTime).Format("2006-01-02 15:04:05 MST")
+	published := d.PublishedAt.In(time.Local).Format("2006-01-02 15:04:05 MST")
 	heading := d.Title
 	if forwarded {
 		heading = "转发自 " + d.UPName

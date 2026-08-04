@@ -58,6 +58,7 @@ const snapshotSchema = z.object({
   deliveries: z.array(deliverySchema),
   bili_login: biliLoginSchema.optional(),
   microsoft_logins: z.array(microsoftLoginSchema),
+  timezone: z.string(),
   updated_at: z.string(),
 })
 

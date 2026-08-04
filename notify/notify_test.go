@@ -157,7 +157,7 @@ func TestMicrosoftSenderRefreshesTokenAndSendsGraphMail(t *testing.T) {
 		"client_id": "11111111-2222-3333-4444-555555555555", "tenant": "common",
 		"to": "one@example.com,Two <two@example.com>", "access_token": "old-access",
 		"refresh_token": "old-refresh", "token_type": "Bearer",
-		"token_expiry": time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano),
+		"token_expiry": time.Now().Add(-time.Hour).Format(time.RFC3339Nano),
 	}
 	var updated map[string]string
 	sender := newMicrosoftSender(settings, server.Client(), func(values map[string]string) error {

@@ -25,7 +25,7 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	channel, err = store.PutChannel(channel)
 	require.NoError(t, err)
 
-	first := model.Dynamic{ID: "1", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now().UTC(), URL: "https://t.bilibili.com/1"}
+	first := model.Dynamic{ID: "1", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now(), URL: "https://t.bilibili.com/1"}
 	created, err := store.RecordDynamics("42", []model.Dynamic{first}, []string{channel.ID}, true)
 	require.NoError(t, err)
 	assert.Equal(t, 0, created)
@@ -203,7 +203,7 @@ func TestCommentTargetsAndOutbox(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	now := time.Now().UTC()
+	now := time.Now()
 	discovered := []model.CommentTarget{
 		{UID: "42", DynamicID: "d1", ContentType: "DYNAMIC_TYPE_AV", Title: "v1", URL: "https://t.bilibili.com/d1", CommentType: 1, CommentOID: "100", PublishedAt: now.Add(-time.Hour)},
 		{UID: "42", DynamicID: "d2", ContentType: "DYNAMIC_TYPE_WORD", Title: "w2", URL: "https://t.bilibili.com/d2", CommentType: 17, CommentOID: "200", PublishedAt: now},

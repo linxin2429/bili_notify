@@ -9,7 +9,7 @@ const snapshot: DashboardSnapshot = {
     comment_enabled: true, comment_track_n: 10, comment_root_pages: 2,
     comment_reply_pages: 5, comment_batch_interval_sec: 120,
   },
-  ups: [], channels: [], deliveries: [], microsoft_logins: [], updated_at: '2026-01-01T00:00:00Z',
+  ups: [], channels: [], deliveries: [], microsoft_logins: [], timezone: 'Asia/Shanghai', updated_at: '2026-01-01T00:00:00+08:00',
 }
 
 describe('dashboard state', () => {

@@ -127,7 +127,7 @@ func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
 			ID: "delivery",
 			Dynamic: model.Dynamic{
 				ID: "dynamic", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_DRAW",
-				PublishedAt: time.Now().UTC(), Summary: strings.Repeat("正文", 5000), URL: "https://t.bilibili.com/1",
+				PublishedAt: time.Now(), Summary: strings.Repeat("正文", 5000), URL: "https://t.bilibili.com/1",
 				Description: strings.Repeat("不应进入管理台", 5000),
 				Media:       []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://i0.hdslb.com/image.jpg"}},
 				Original:    &model.Dynamic{ID: "original", Summary: strings.Repeat("原文", 5000)},

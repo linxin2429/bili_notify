@@ -21,6 +21,7 @@ docker pull dengxinlin/bili-notify:latest
 docker pull dengxinlin/bili-notify:1.2.3
 
 docker run -d --name bili-notify \
+  -e TZ=Asia/Shanghai \
   -p 8443:8443 \
   -v bili-notify-data:/data \
   --read-only --tmpfs /tmp:size=16m,mode=1777 \
@@ -28,6 +29,8 @@ docker run -d --name bili-notify \
   --cap-drop ALL \
   dengxinlin/bili-notify:latest
 ```
+
+镜像内嵌 IANA 时区数据（`time/tzdata`）。通过环境变量 `TZ` 选择服务器本地时区（Compose 默认 `Asia/Shanghai`）；未设置时回退为 UTC。通知文案、管理台时间展示与结构化日志中的时间字段均使用该时区。
 
 镜像标签由 git tag `vMAJOR.MINOR.PATCH` 发布时写入：`MAJOR.MINOR.PATCH`、`MAJOR.MINOR`、`MAJOR` 与 `latest`。push 到 `main` 只跑 CI 校验，不推送镜像。
 

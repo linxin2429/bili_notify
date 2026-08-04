@@ -244,7 +244,7 @@ func (c *Client) PollQR(ctx context.Context, key string) (QRStatus, model.BiliSe
 		if cookies["SESSDATA"] == "" {
 			return "", model.BiliSession{}, &APIError{Kind: ErrorSchema, Message: "successful login did not return SESSDATA"}
 		}
-		return QRSuccess, model.BiliSession{Cookies: cookies, UpdatedAt: time.Now().UTC()}, nil
+		return QRSuccess, model.BiliSession{Cookies: cookies, UpdatedAt: time.Now()}, nil
 	default:
 		return "", model.BiliSession{}, &APIError{Kind: ErrorSchema, Code: data.Code, Message: "unknown QR login state"}
 	}
@@ -553,7 +553,7 @@ func parseDynamicItem(uid string, raw json.RawMessage) (model.Dynamic, error) {
 		UID:         uid,
 		UPName:      item.Modules.Author.Name,
 		Type:        item.Type,
-		PublishedAt: time.Unix(int64(item.Modules.Author.PubTS), 0).UTC(),
+		PublishedAt: time.Unix(int64(item.Modules.Author.PubTS), 0),
 		URL:         "https://t.bilibili.com/" + item.ID,
 	}
 	if mid := rawString(item.Modules.Author.MID); mid != "" {
@@ -971,7 +971,7 @@ func parseReply(raw rawReply) (Reply, error) {
 		Mid:     mid,
 		Name:    name,
 		Message: message,
-		CTime:   time.Unix(int64(raw.CTime), 0).UTC(),
+		CTime:   time.Unix(int64(raw.CTime), 0),
 		RCount:  raw.RCount,
 	}, nil
 }

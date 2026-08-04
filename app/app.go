@@ -69,9 +69,19 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	default:
 		level.Set(slog.LevelInfo)
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+		// slog's JSON handler rewrites time.Time to UTC; emit local wall-clock times instead.
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			if a.Value.Kind() == slog.KindTime {
+				return slog.String(a.Key, a.Value.Time().In(time.Local).Format(time.RFC3339Nano))
+			}
+			return a
+		},
+	}))
 	logger.Info("Bili Notify starting",
 		"version", version,
+		"timezone", time.Local.String(),
 		"poll_interval_sec", settings.PollIntervalSec,
 		"request_rate", settings.RequestRate,
 		"request_concurrency", settings.RequestConcurrency,

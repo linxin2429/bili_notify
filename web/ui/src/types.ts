@@ -101,6 +101,7 @@ export interface DashboardSnapshot {
   deliveries: Delivery[]
   bili_login?: BiliLogin | null
   microsoft_logins: MicrosoftLogin[]
+  timezone: string
   updated_at: string
 }
 

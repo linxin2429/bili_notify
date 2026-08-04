@@ -130,7 +130,7 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
 
   useEffect(() => {
     const client = new RealtimeClient({
-      onSnapshot: setSnapshot,
+      onSnapshot: value => { displayTimeZone = usableTimeZone(value.timezone); setSnapshot(value) },
       onEvent: (event, data) => setSnapshot(current => applyUpdate(current, event, data)),
       onState: setConnection,
       onAuthLost,
@@ -450,6 +450,7 @@ function EmptyState({ icon, title, action }: { icon: React.ReactNode; title: str
 function applyUpdate(current: DashboardSnapshot | null, event: string, data: unknown): DashboardSnapshot | null {
   if (!current) return current
   const updated = { ...current, updated_at: new Date().toISOString() }
+  displayTimeZone = usableTimeZone(current.timezone)
   if (event === 'status.updated') updated.status = data as DashboardSnapshot['status']
   if (event === 'settings.updated') updated.settings = data as DashboardSnapshot['settings']
   if (event === 'ups.updated') updated.ups = data as UP[]
@@ -509,7 +510,25 @@ function deliverySummary(delivery: Delivery) {
   return delivery.dynamic?.summary || ''
 }
 
-function formatDate(value: string) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? '—' : new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(date) }
+let displayTimeZone = ''
+function usableTimeZone(value?: string) {
+  if (!value || value === 'Local' || value.startsWith('UTC')) return ''
+  try {
+    new Intl.DateTimeFormat('zh-CN', { timeZone: value }).format(new Date())
+    return value
+  } catch {
+    return ''
+  }
+}
+function formatDate(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.valueOf())) return '—'
+  return new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'short',
+    timeStyle: 'medium',
+    ...(displayTimeZone ? { timeZone: displayTimeZone } : {}),
+  }).format(date)
+}
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : '发生未知错误' }
 
 export { applyUpdate, readinessMessage }
