@@ -563,6 +563,7 @@ export function composePreviewBody(summary?: string, description?: string) {
 export function historyMediaURL(url: string, width: number) {
   const value = url.trim()
   if (!value || width <= 0) return value
+  if (value.startsWith('/api/v1/dynamics/')) return value
   try {
     const parsed = new URL(value, 'https://www.bilibili.com')
     if (!/(^|\.)hdslb\.com$/i.test(parsed.hostname) || !parsed.pathname.includes('/bfs/')) return value
@@ -803,8 +804,13 @@ function channelFields(type: ChannelType) {
       { key: 'password', label: '密码', secret: true }, { key: 'from', label: '发件人', required: true }, { key: 'to', label: '收件人', required: true, help: '多个地址使用英文逗号分隔' },
     ],
     microsoft: [{ key: 'client_id', label: '应用程序（客户端）ID', required: true }, { key: 'tenant', label: '租户', defaultValue: 'common' }, { key: 'to', label: '收件人', required: true, help: '多个地址使用英文逗号分隔' }],
-    dingtalk: [{ key: 'webhook', label: 'Webhook URL', required: true, secret: true }, { key: 'secret', label: '签名密钥', required: true, secret: true }],
-    feishu: [{ key: 'webhook', label: 'Webhook URL', required: true, secret: true }, { key: 'secret', label: '签名密钥', required: true, secret: true }],
+    dingtalk: [{ key: 'webhook', label: 'Webhook URL', required: true, secret: true }, { key: 'secret', label: '签名密钥', required: true, secret: true, help: '钉钉自定义机器人仅支持公开图链，图片使用 B 站 CDN 外链。' }],
+    feishu: [
+      { key: 'webhook', label: 'Webhook URL', required: true, secret: true },
+      { key: 'secret', label: '签名密钥', required: true, secret: true },
+      { key: 'app_id', label: '应用 App ID', help: '可选。配置后图片以上传 image_key 发送；不配置则图片显示为链接。' },
+      { key: 'app_secret', label: '应用 App Secret', secret: true, help: '与 App ID 成对配置。' },
+    ],
     wecom: [{ key: 'webhook', label: 'Webhook URL', required: true, secret: true }],
   }
   return fields[type]
@@ -818,7 +824,7 @@ function connectionPresentation(state: ConnectionState): { label: string; color:
 function nextTheme(value: ThemePreference): ThemePreference { return value === 'system' ? 'light' : value === 'light' ? 'dark' : 'system' }
 function themeLabel(value: ThemePreference) { return value === 'system' ? '跟随系统' : value === 'light' ? '浅色' : '深色' }
 function channelTypeLabel(value: ChannelType) { return ({ email: 'SMTP 邮件', microsoft: 'Microsoft Graph', dingtalk: '钉钉机器人', feishu: '飞书机器人', wecom: '企业微信机器人' })[value] }
-function settingLabel(value: string) { return ({ host: '主机', port: '端口', tls: 'TLS', from: '发件人', to: '收件人', username: '用户名', password: '密码', webhook: 'Webhook', secret: '签名密钥', client_id: '客户端 ID', tenant: '租户', access_token: '访问令牌', refresh_token: '刷新令牌' } as Record<string, string>)[value] || value }
+function settingLabel(value: string) { return ({ host: '主机', port: '端口', tls: 'TLS', from: '发件人', to: '收件人', username: '用户名', password: '密码', webhook: 'Webhook', secret: '签名密钥', client_id: '客户端 ID', tenant: '租户', access_token: '访问令牌', refresh_token: '刷新令牌', app_id: '应用 App ID', app_secret: '应用 App Secret' } as Record<string, string>)[value] || value }
 function loginLabel(value: string) { return ({ waiting: '等待扫码', scanned: '已扫码，请确认', success: '登录成功', expired: '二维码已过期' } as Record<string, string>)[value] || value }
 
 function deliveryTitle(delivery: Delivery) {

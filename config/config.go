@@ -19,6 +19,7 @@ const (
 	LegacyContentFile = "content.db"
 	MasterKeyFileName = "master.key"
 	TLSFileName       = "tls.pem"
+	MediaDirName      = "media"
 )
 
 // Config contains process startup settings.
@@ -79,6 +80,11 @@ func Paths(dataDir string) (dataPath, keyPath, tlsPath string) {
 // DataPath returns the SQLite database path under dataDir.
 func DataPath(dataDir string) string {
 	return filepath.Join(dataDir, DataFileName)
+}
+
+// MediaDir returns the on-disk media archive directory under dataDir.
+func MediaDir(dataDir string) string {
+	return filepath.Join(dataDir, MediaDirName)
 }
 
 // RefuseLegacyDataDir fails closed when an older bbolt/content dual-store volume is present.

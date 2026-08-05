@@ -44,6 +44,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 				CommentReplyPages: 5, CommentBatchIntervalSec: 120,
 			},
 			events,
+			nil,
 		),
 		store:       store,
 		events:      events,
@@ -225,4 +226,19 @@ func responseStatus(response *http.Response) any {
 		return nil
 	}
 	return response.StatusCode
+}
+
+func TestDynamicHistoryViewRewritesLocalMediaURL(t *testing.T) {
+	t.Parallel()
+	view := toDynamicHistoryView(state.DynamicRecord{
+		ID: "10", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_DRAW",
+		PublishedAt: time.Now(), DiscoveredAt: time.Now(),
+		Media: []model.DynamicMedia{{
+			Kind: model.DynamicMediaImage, URL: "https://i0.hdslb.com/bfs/album/a.jpg",
+			LocalPath: "media/42/10/0.jpg", Width: 100, Height: 80,
+		}},
+	})
+	require.Len(t, view.Media, 1)
+	assert.Equal(t, "/api/v1/dynamics/10/media/0", view.Media[0].URL)
+	assert.Empty(t, view.Media[0].LocalPath)
 }

@@ -3,6 +3,7 @@ package notify
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,9 +11,11 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/linxin2429/bili_notify/media"
 	"golang.org/x/oauth2"
 )
 
@@ -96,11 +99,12 @@ type microsoftSender struct {
 	settings       map[string]string
 	recipients     []string
 	client         *http.Client
+	dataDir        string
 	updateSettings SettingsUpdater
 	endpoints      microsoftEndpoints
 }
 
-func newMicrosoftSender(settings map[string]string, client *http.Client, updateSettings SettingsUpdater, endpoints microsoftEndpoints) *microsoftSender {
+func newMicrosoftSender(settings map[string]string, client *http.Client, dataDir string, updateSettings SettingsUpdater, endpoints microsoftEndpoints) *microsoftSender {
 	recipients := make([]string, 0)
 	for recipient := range strings.SplitSeq(settings["to"], ",") {
 		address, err := mail.ParseAddress(strings.TrimSpace(recipient))
@@ -110,7 +114,7 @@ func newMicrosoftSender(settings map[string]string, client *http.Client, updateS
 	}
 	return &microsoftSender{
 		settings: settings, recipients: recipients, client: oauthClient(client),
-		updateSettings: updateSettings, endpoints: endpoints,
+		dataDir: dataDir, updateSettings: updateSettings, endpoints: endpoints,
 	}
 }
 
@@ -137,12 +141,46 @@ func (s *microsoftSender) Send(ctx context.Context, message Message) error {
 	for _, recipient := range s.recipients {
 		recipients = append(recipients, map[string]any{"emailAddress": map[string]string{"address": recipient}})
 	}
+	attachments := make([]map[string]any, 0)
+	htmlBody := renderHTMLWithCID(message, func(image Image, index int) string {
+		if image.LocalPath == "" || s.dataDir == "" {
+			return ""
+		}
+		data, contentType, err := media.ReadFile(s.dataDir, image.LocalPath)
+		if err != nil || len(data) == 0 {
+			return ""
+		}
+		cid := fmt.Sprintf("image-%d", index)
+		name := filepath.Base(image.LocalPath)
+		if name == "." || name == "/" || name == "" {
+			name = cid
+		}
+		if contentType == "" {
+			contentType = image.ContentType
+		}
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		attachments = append(attachments, map[string]any{
+			"@odata.type":  "#microsoft.graph.fileAttachment",
+			"name":         name,
+			"contentType":  contentType,
+			"contentBytes": base64.StdEncoding.EncodeToString(data),
+			"contentId":    cid,
+			"isInline":     true,
+		})
+		return cid
+	})
+	graphMessage := map[string]any{
+		"subject":      message.Subject,
+		"body":         map[string]string{"contentType": "HTML", "content": htmlBody},
+		"toRecipients": recipients,
+	}
+	if len(attachments) > 0 {
+		graphMessage["attachments"] = attachments
+	}
 	payload := map[string]any{
-		"message": map[string]any{
-			"subject":      message.Subject,
-			"body":         map[string]string{"contentType": "HTML", "content": renderHTML(message)},
-			"toRecipients": recipients,
-		},
+		"message":         graphMessage,
 		"saveToSentItems": true,
 	}
 	body, err := json.Marshal(payload)

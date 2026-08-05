@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +28,7 @@ func TestWeComSender(t *testing.T) {
 	sender, err := NewSender(model.Channel{
 		Name: "wecom", Type: model.ChannelWeCom,
 		Settings: map[string]string{"webhook": server.URL},
-	}, server.Client(), nil)
+	}, server.Client(), "", nil)
 	require.NoError(t, err)
 	require.NoError(t, sender.Send(t.Context(), TextMessage("s", "hello")))
 	assert.Equal(t, "markdown", got["msgtype"])
@@ -116,7 +118,7 @@ func TestFeishuPostIsRichTextAndWithinLimit(t *testing.T) {
 		Sections: []Section{{Paragraphs: []string{strings.Repeat("正文🙂", 7000)}, Images: []Image{{Label: "图片", URL: "https://i0.hdslb.com/image.jpg"}}}},
 		Action:   Link{Label: "查看原动态", URL: "https://t.bilibili.com/1"},
 	}
-	payload := renderFeishuPayload(message, "1", "sign")
+	payload := renderFeishuPayload(message, "1", "sign", nil)
 	assert.Equal(t, "post", payload["msg_type"])
 	assert.LessOrEqual(t, payloadSize(payload), 20*1024)
 	raw, err := json.Marshal(payload)
@@ -140,7 +142,7 @@ func TestRobotSenderUsesChannelSpecificFormats(t *testing.T) {
 			sender, err := NewSender(model.Channel{
 				Name: string(channelType), Type: channelType,
 				Settings: map[string]string{"webhook": server.URL, "secret": "secret"},
-			}, server.Client(), nil)
+			}, server.Client(), "", nil)
 			require.NoError(t, err)
 			message := Message{
 				Subject: "subject", Sections: []Section{{Paragraphs: []string{"body"}, Images: []Image{{Label: "image", URL: "https://example.com/image.jpg"}}}},
@@ -184,7 +186,7 @@ func TestMicrosoftSenderRefreshesTokenAndSendsGraphMail(t *testing.T) {
 		"token_expiry": time.Now().Add(-time.Hour).Format(time.RFC3339Nano),
 	}
 	var updated map[string]string
-	sender := newMicrosoftSender(settings, server.Client(), func(values map[string]string) error {
+	sender := newMicrosoftSender(settings, server.Client(), "", func(values map[string]string) error {
 		updated = values
 		return nil
 	}, microsoftEndpoints{tokenURL: server.URL + "/token", graphSendURL: server.URL + "/send"})
@@ -243,4 +245,57 @@ func TestCommentThreadMessage(t *testing.T) {
 	markdown := renderMarkdown(message, 4096, true, false)
 	assert.Contains(t, markdown, "tester（UP）")
 	assert.True(t, utf8.ValidString(markdown))
+}
+
+func TestWeComProgressiveSendResumes(t *testing.T) {
+	t.Parallel()
+	var payloads []map[string]any
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		payloads = append(payloads, got)
+		if len(payloads) == 2 {
+			_, _ = w.Write([]byte(`{"errcode":1,"errmsg":"temp"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	rel := filepath.Join("media", "1", "2", "0.png")
+	abs := filepath.Join(dir, rel)
+	require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o700))
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	require.NoError(t, os.WriteFile(abs, png, 0o600))
+
+	sender, err := NewSender(model.Channel{
+		Name: "wecom", Type: model.ChannelWeCom,
+		Settings: map[string]string{"webhook": server.URL},
+	}, server.Client(), dir, nil)
+	require.NoError(t, err)
+	progressive, ok := sender.(ProgressiveSender)
+	require.True(t, ok)
+
+	message := Message{
+		Subject: "s",
+		Sections: []Section{{
+			Paragraphs: []string{"body"},
+			Images:     []Image{{Label: "图片", URL: "https://example.com/a.png", LocalPath: filepath.ToSlash(rel)}},
+		}},
+	}
+	progress, err := progressive.SendProgressive(t.Context(), message, nil)
+	require.Error(t, err)
+	require.NotNil(t, progress)
+	assert.True(t, progress.TextSent)
+	assert.Equal(t, 0, progress.ImagesSent)
+	assert.Equal(t, "markdown", payloads[0]["msgtype"])
+
+	progress, err = progressive.SendProgressive(t.Context(), message, progress)
+	require.NoError(t, err)
+	require.NotNil(t, progress)
+	assert.True(t, progress.TextSent)
+	assert.Equal(t, 1, progress.ImagesSent)
+	require.GreaterOrEqual(t, len(payloads), 2)
+	assert.Equal(t, "image", payloads[len(payloads)-1]["msgtype"])
 }

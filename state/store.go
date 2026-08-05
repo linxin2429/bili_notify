@@ -679,7 +679,7 @@ func (s *Store) CompleteDelivery(id string) error {
 	return s.db.Where("id = ?", id).Delete(&deliveryRow{}).Error
 }
 
-func (s *Store) FailDelivery(id string, blocked bool, next time.Time, deliveryErr error) error {
+func (s *Store) FailDelivery(id string, blocked bool, next time.Time, deliveryErr error, progress *model.DeliveryProgress) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var row deliveryRow
 		if err := tx.Where("id = ?", id).Take(&row).Error; err != nil {
@@ -695,6 +695,9 @@ func (s *Store) FailDelivery(id string, blocked bool, next time.Time, deliveryEr
 		d.Attempts++
 		d.NextAt = next
 		d.LastError = deliveryErr.Error()
+		if progress != nil {
+			d.Progress = progress
+		}
 		if blocked {
 			d.State = model.DeliveryBlocked
 		}

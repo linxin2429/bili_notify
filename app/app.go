@@ -13,6 +13,7 @@ import (
 
 	"github.com/linxin2429/bili_notify/bilibili"
 	"github.com/linxin2429/bili_notify/config"
+	"github.com/linxin2429/bili_notify/media"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
 	"github.com/linxin2429/bili_notify/vault"
@@ -101,11 +102,19 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	}
 	httpClient := &http.Client{Transport: transport, Timeout: 10 * time.Second}
 	client := bilibili.New(httpClient, "bili-notify/"+version)
+	if err := os.MkdirAll(config.MediaDir(cfg.DataDir), 0o700); err != nil {
+		return fmt.Errorf("creating media directory: %w", err)
+	}
+	downloader := &media.Downloader{
+		DataDir:   cfg.DataDir,
+		Client:    httpClient,
+		UserAgent: "bili-notify/" + version,
+	}
 	registry := prometheus.NewRegistry()
 	metrics := service.NewMetrics(registry)
 	events := service.NewEventBus()
-	engine := service.NewEngine(store, client, logger, metrics, settings, events)
-	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, store, events, logger, registry)
+	engine := service.NewEngine(store, client, logger, metrics, settings, events, downloader)
+	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, store, events, logger, registry, cfg.DataDir)
 	if err != nil {
 		return err
 	}

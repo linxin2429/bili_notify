@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/linxin2429/bili_notify/media"
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
@@ -29,6 +31,7 @@ func (s *Server) registerAdminAPI(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/settings", s.requireSession(true, s.updateSettingsAPI))
 	mux.HandleFunc("GET /api/v1/dynamics", s.requireSession(false, s.queryDynamicsAPI))
 	mux.HandleFunc("GET /api/v1/dynamics/{id}", s.requireSession(false, s.getDynamicAPI))
+	mux.HandleFunc("GET /api/v1/dynamics/{id}/media/{index}", s.requireSession(false, s.getDynamicMediaAPI))
 	mux.HandleFunc("GET /api/v1/comments", s.requireSession(false, s.queryCommentsAPI))
 	mux.HandleFunc("GET /api/v1/comments/{rpid}", s.requireSession(false, s.getCommentAPI))
 }
@@ -94,9 +97,15 @@ func (s *Server) updateUPAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteUPAPI(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteUP(r.PathValue("uid")); err != nil {
+	uid := r.PathValue("uid")
+	if err := s.store.DeleteUP(uid); err != nil {
 		s.writeAPIResult(w, http.StatusNoContent, nil, err)
 		return
+	}
+	if s.dataDir != "" {
+		if err := media.RemoveUP(s.dataDir, uid); err != nil {
+			s.logger.Warn("removing media for deleted UP failed", "uid", uid, "err", err)
+		}
 	}
 	s.events.Publish(service.TopicStatus | service.TopicUPs)
 	w.WriteHeader(http.StatusNoContent)
@@ -247,6 +256,55 @@ func (s *Server) getDynamicAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	dynamic, err := s.store.GetDynamic(id)
 	s.writeAPIResult(w, http.StatusOK, dynamic, err)
+}
+
+func (s *Server) getDynamicMediaAPI(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeAPIError(w, http.StatusBadRequest, "validation_error", "id is required")
+		return
+	}
+	index, err := strconv.Atoi(r.PathValue("index"))
+	if err != nil || index < 0 {
+		writeAPIError(w, http.StatusBadRequest, "validation_error", "media index must be a non-negative integer")
+		return
+	}
+	dynamic, err := s.store.GetDynamic(id)
+	if err != nil {
+		s.writeAPIResult(w, http.StatusOK, nil, err)
+		return
+	}
+	if index >= len(dynamic.Media) {
+		writeAPIError(w, http.StatusNotFound, "not_found", "media index not found")
+		return
+	}
+	item := dynamic.Media[index]
+	if item.LocalPath == "" || s.dataDir == "" {
+		writeAPIError(w, http.StatusNotFound, "not_found", "local media is not available")
+		return
+	}
+	abs, err := media.Resolve(s.dataDir, item.LocalPath)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "not_found", "local media path is invalid")
+		return
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeAPIError(w, http.StatusNotFound, "not_found", "local media file is missing")
+			return
+		}
+		s.writeAPIResult(w, http.StatusOK, nil, err)
+		return
+	}
+	contentType := item.ContentType
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) getCommentAPI(w http.ResponseWriter, r *http.Request) {

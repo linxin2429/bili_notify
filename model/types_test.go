@@ -166,3 +166,38 @@ func TestMicrosoftChannelValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestFeishuAppCredentialsValidation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		settings map[string]string
+		wantErr  string
+	}{
+		{
+			name:     "webhook only",
+			settings: map[string]string{"webhook": "https://open.feishu.cn/hook", "secret": "s"},
+		},
+		{
+			name:     "paired app credentials",
+			settings: map[string]string{"webhook": "https://open.feishu.cn/hook", "secret": "s", "app_id": "cli_a", "app_secret": "sec"},
+		},
+		{
+			name:     "app_id alone",
+			settings: map[string]string{"webhook": "https://open.feishu.cn/hook", "secret": "s", "app_id": "cli_a"},
+			wantErr:  "app_id and app_secret",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := Channel{Name: "feishu", Type: ChannelFeishu, Settings: tt.settings}.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}

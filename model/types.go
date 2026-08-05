@@ -108,6 +108,13 @@ func (c Channel) Validate() error {
 		if (c.Type == ChannelDingTalk || c.Type == ChannelFeishu) && s["secret"] == "" {
 			return errors.New("signed robot secret is required")
 		}
+		if c.Type == ChannelFeishu {
+			appID := strings.TrimSpace(s["app_id"])
+			appSecret := strings.TrimSpace(s["app_secret"])
+			if (appID == "") != (appSecret == "") {
+				return errors.New("feishu app_id and app_secret must both be set or both empty")
+			}
+		}
 	default:
 		return fmt.Errorf("unsupported channel type %q", c.Type)
 	}
@@ -186,10 +193,13 @@ const (
 )
 
 type DynamicMedia struct {
-	Kind   DynamicMediaKind `json:"kind"`
-	URL    string           `json:"url"`
-	Width  int              `json:"width,omitempty"`
-	Height int              `json:"height,omitempty"`
+	Kind        DynamicMediaKind `json:"kind"`
+	URL         string           `json:"url"`
+	Width       int              `json:"width,omitempty"`
+	Height      int              `json:"height,omitempty"`
+	LocalPath   string           `json:"local_path,omitempty"` // relative to data_dir
+	ContentType string           `json:"content_type,omitempty"`
+	Size        int64            `json:"size,omitempty"`
 }
 
 type DynamicStats struct {
@@ -229,6 +239,14 @@ type Delivery struct {
 	NextAt    time.Time            `json:"next_at"`
 	LastError string               `json:"last_error,omitempty"`
 	CreatedAt time.Time            `json:"created_at"`
+	// Progress tracks multi-part channel sends (e.g. WeCom text + images).
+	Progress *DeliveryProgress `json:"progress,omitempty"`
+}
+
+// DeliveryProgress records which parts of a multi-message delivery already succeeded.
+type DeliveryProgress struct {
+	TextSent   bool `json:"text_sent,omitempty"`
+	ImagesSent int  `json:"images_sent,omitempty"`
 }
 
 func (d Delivery) EffectiveKind() DeliveryKind {

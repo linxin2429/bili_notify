@@ -107,6 +107,7 @@ describe('dynamic history previews', () => {
     expect(historyMediaURL('https://i0.hdslb.com/bfs/album/demo.jpg', 240)).toBe('https://i0.hdslb.com/bfs/album/demo.jpg@240w')
     expect(historyMediaURL('https://i0.hdslb.com/bfs/album/demo.jpg@1000w_1000h', 240)).toBe('https://i0.hdslb.com/bfs/album/demo.jpg@240w')
     expect(historyMediaURL('https://example.com/photo.jpg', 240)).toBe('https://example.com/photo.jpg')
+    expect(historyMediaURL('/api/v1/dynamics/10/media/0', 240)).toBe('/api/v1/dynamics/10/media/0')
   })
 })
 

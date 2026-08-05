@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -420,21 +422,27 @@ func toDynamicHistoryView(item state.DynamicRecord) dynamicHistoryView {
 		Title: item.Title, Summary: previewText(item.Summary, historyPreviewTextLimit),
 		Description: previewText(item.Description, historyPreviewTextLimit),
 		URL:         item.URL, TargetURL: item.TargetURL, Badge: item.Badge,
-		Media:    boundHistoryMedia(item.Media, historyPreviewMediaLimit),
+		Media:    boundHistoryMedia(item.ID, item.Media, historyPreviewMediaLimit),
 		Original: boundHistoryOriginal(item.Original),
 	}
 }
 
-func boundHistoryMedia(media []model.DynamicMedia, limit int) []model.DynamicMedia {
-	if limit <= 0 || len(media) == 0 {
+func boundHistoryMedia(dynamicID string, mediaItems []model.DynamicMedia, limit int) []model.DynamicMedia {
+	if limit <= 0 || len(mediaItems) == 0 {
 		return nil
 	}
-	if len(media) > limit {
-		media = media[:limit]
+	if len(mediaItems) > limit {
+		mediaItems = mediaItems[:limit]
 	}
-	out := make([]model.DynamicMedia, 0, len(media))
-	for _, item := range media {
+	out := make([]model.DynamicMedia, 0, len(mediaItems))
+	for index, item := range mediaItems {
 		item.URL = strings.TrimSpace(item.URL)
+		if item.LocalPath != "" && dynamicID != "" {
+			item.URL = "/api/v1/dynamics/" + url.PathEscape(dynamicID) + "/media/" + strconv.Itoa(index)
+			item.LocalPath = ""
+			item.ContentType = ""
+			item.Size = 0
+		}
 		if item.URL == "" {
 			continue
 		}
@@ -456,7 +464,7 @@ func boundHistoryOriginal(original *state.DynamicPreview) *state.DynamicPreview 
 		Summary:     previewText(original.Summary, historyPreviewTextLimit),
 		Description: previewText(original.Description, historyPreviewTextLimit),
 		URL:         original.URL, TargetURL: original.TargetURL, Badge: original.Badge,
-		Media: boundHistoryMedia(original.Media, historyPreviewMediaLimit),
+		Media: boundHistoryMedia(original.ID, original.Media, historyPreviewMediaLimit),
 	}
 }
 
@@ -491,7 +499,7 @@ func (s *Server) channelViews() ([]channelView, error) {
 }
 
 var secretSettings = map[string]bool{
-	"password": true, "secret": true, "webhook": true, "access_token": true, "refresh_token": true,
+	"password": true, "secret": true, "webhook": true, "access_token": true, "refresh_token": true, "app_secret": true,
 }
 
 func toChannelView(channel model.Channel) channelView {

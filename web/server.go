@@ -36,12 +36,13 @@ type Server struct {
 	events        *service.EventBus
 	logger        *slog.Logger
 	registry      *prometheus.Registry
+	dataDir       string
 	static        fs.FS
 	connectionsMu sync.Mutex
 	connections   map[string]map[*websocket.Conn]struct{}
 }
 
-func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, store *state.Store, events *service.EventBus, logger *slog.Logger, registry *prometheus.Registry) (*Server, error) {
+func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, store *state.Store, events *service.EventBus, logger *slog.Logger, registry *prometheus.Registry, dataDir string) (*Server, error) {
 	tlsConfig, err := loadOrCreateTLSConfig(tlsPath)
 	if err != nil {
 		return nil, err
@@ -59,7 +60,7 @@ func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, s
 	}
 	return &Server{
 		adminAddr: adminAddr, observeAddr: observeAddr, tlsConfig: tlsConfig, auth: auth,
-		engine: engine, store: store, events: events, logger: logger, registry: registry, static: static,
+		engine: engine, store: store, events: events, logger: logger, registry: registry, dataDir: dataDir, static: static,
 		connections: make(map[string]map[*websocket.Conn]struct{}),
 	}, nil
 }

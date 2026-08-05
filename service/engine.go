@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/linxin2429/bili_notify/bilibili"
+	"github.com/linxin2429/bili_notify/media"
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/notify"
 	"github.com/linxin2429/bili_notify/state"
@@ -23,6 +24,7 @@ import (
 type Engine struct {
 	store                *state.Store
 	client               *bilibili.Client
+	media                *media.Downloader
 	logger               *slog.Logger
 	metrics              *Metrics
 	settingsMu           sync.RWMutex
@@ -58,13 +60,13 @@ type Engine struct {
 	events               *EventBus
 }
 
-func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, settings model.RuntimeSettings, events *EventBus) *Engine {
+func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, settings model.RuntimeSettings, events *EventBus, mediaDownloader *media.Downloader) *Engine {
 	if events == nil {
 		events = NewEventBus()
 	}
 	settings = settings.WithCommentDefaults()
 	return &Engine{
-		store: store, client: client, logger: logger, metrics: metrics,
+		store: store, client: client, media: mediaDownloader, logger: logger, metrics: metrics,
 		pollInterval:         settings.PollInterval(),
 		requestRate:          settings.RequestRate,
 		concurrency:          settings.RequestConcurrency,
@@ -369,6 +371,7 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 		offset = page.Offset
 	}
 	slices.SortFunc(items, func(a, b model.Dynamic) int { return a.PublishedAt.Compare(b.PublishedAt) })
+	e.enrichMedia(ctx, items)
 	baselineMode := state.DynamicBaselineNone
 	if !up.BaselineReady {
 		baselineMode = state.DynamicBaselineAll
@@ -887,7 +890,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (bool, er
 	channel, err := e.store.Channel(delivery.ChannelID)
 	if err != nil {
 		deliveryErr := errors.New("channel no longer exists")
-		if err := e.store.FailDelivery(delivery.ID, true, time.Now(), deliveryErr); err != nil {
+		if err := e.store.FailDelivery(delivery.ID, true, time.Now(), deliveryErr, delivery.Progress); err != nil {
 			return false, err
 		}
 		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "err", deliveryErr)
@@ -902,7 +905,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (bool, er
 		channel, err = e.store.Channel(delivery.ChannelID)
 		if err != nil {
 			deliveryErr := errors.New("channel no longer exists")
-			if err := e.store.FailDelivery(delivery.ID, true, time.Now(), deliveryErr); err != nil {
+			if err := e.store.FailDelivery(delivery.ID, true, time.Now(), deliveryErr, delivery.Progress); err != nil {
 				return false, err
 			}
 			e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "err", deliveryErr)
@@ -911,7 +914,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (bool, er
 	}
 	sender, err := e.newSender(channel)
 	if err != nil {
-		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now(), err); storeErr != nil {
+		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now(), err, delivery.Progress); storeErr != nil {
 			return false, storeErr
 		}
 		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "err", err)
@@ -919,15 +922,24 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (bool, er
 	}
 	message, contentID, err := deliveryMessage(delivery)
 	if err != nil {
-		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now(), err); storeErr != nil {
+		if storeErr := e.store.FailDelivery(delivery.ID, true, time.Now(), err, delivery.Progress); storeErr != nil {
 			return false, storeErr
 		}
 		e.logger.Warn("notification delivery blocked", "delivery_id", delivery.ID, "content_id", contentID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "err", err)
 		return true, nil
 	}
-	sendCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	timeout := 12 * time.Second
+	if messageHasLocalImages(message) {
+		timeout = 60 * time.Second
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, timeout)
 	started := time.Now()
-	err = sender.Send(sendCtx, message)
+	progress := delivery.Progress
+	if progressive, ok := sender.(notify.ProgressiveSender); ok {
+		progress, err = progressive.SendProgressive(sendCtx, message, delivery.Progress)
+	} else {
+		err = sender.Send(sendCtx, message)
+	}
 	cancel()
 	e.metrics.DeliveryDuration.Observe(time.Since(started).Seconds())
 	if err == nil {
@@ -945,7 +957,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (bool, er
 	}
 	e.metrics.DeliveryTotal.WithLabelValues(string(channel.Type), result).Inc()
 	next := time.Now().Add(retryDelay(delivery.Attempts))
-	if storeErr := e.store.FailDelivery(delivery.ID, blocked, next, err); storeErr != nil {
+	if storeErr := e.store.FailDelivery(delivery.ID, blocked, next, err, progress); storeErr != nil {
 		return false, storeErr
 	}
 	e.logger.Warn("notification delivery failed", "delivery_id", delivery.ID, "content_id", contentID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "result", result, "next_attempt_at", next, "duration", elapsed(started), "err", err)
@@ -1205,7 +1217,11 @@ func (e *Engine) TestChannel(ctx context.Context, id string) error {
 }
 
 func (e *Engine) newSender(channel model.Channel) (notify.Sender, error) {
-	return notify.NewSender(channel, nil, func(settings map[string]string) error {
+	dataDir := ""
+	if e.media != nil {
+		dataDir = e.media.DataDir
+	}
+	return notify.NewSender(channel, nil, dataDir, func(settings map[string]string) error {
 		_, err := e.store.UpdateChannelSettings(channel.ID, settings)
 		if err == nil {
 			e.publish(TopicChannels)
@@ -1427,4 +1443,35 @@ func enabledUPCount(ups []model.UP) int {
 		}
 	}
 	return count
+}
+
+func (e *Engine) enrichMedia(ctx context.Context, items []model.Dynamic) {
+	if e.media == nil || len(items) == 0 {
+		return
+	}
+	for i := range items {
+		ok, bad := e.media.Ensure(ctx, &items[i])
+		if e.metrics != nil {
+			if ok > 0 {
+				e.metrics.MediaDownloadTotal.WithLabelValues("success").Add(float64(ok))
+			}
+			if bad > 0 {
+				e.metrics.MediaDownloadTotal.WithLabelValues("error").Add(float64(bad))
+			}
+		}
+		if bad > 0 {
+			e.logger.Warn("media download incomplete", "dynamic_id", items[i].ID, "uid", items[i].UID, "downloaded", ok, "failed", bad)
+		}
+	}
+}
+
+func messageHasLocalImages(message notify.Message) bool {
+	for _, section := range message.Sections {
+		for _, image := range section.Images {
+			if image.LocalPath != "" {
+				return true
+			}
+		}
+	}
+	return false
 }

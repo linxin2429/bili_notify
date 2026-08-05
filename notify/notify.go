@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,18 +16,27 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/linxin2429/bili_notify/media"
 	"github.com/linxin2429/bili_notify/model"
 	mail "github.com/wneessen/go-mail"
 )
 
 type Sender interface {
 	Send(context.Context, Message) error
+}
+
+// ProgressiveSender optionally supports multi-part delivery with resumable progress.
+type ProgressiveSender interface {
+	Sender
+	SendProgressive(context.Context, Message, *model.DeliveryProgress) (*model.DeliveryProgress, error)
 }
 
 type SettingsUpdater func(map[string]string) error
@@ -55,8 +66,10 @@ type Link struct {
 }
 
 type Image struct {
-	Label string
-	URL   string
+	Label       string
+	URL         string
+	LocalPath   string
+	ContentType string
 }
 
 type PermanentError struct{ Err error }
@@ -69,7 +82,7 @@ func IsPermanent(err error) bool {
 	return errors.As(err, &permanent)
 }
 
-func NewSender(ch model.Channel, client *http.Client, updateSettings SettingsUpdater) (Sender, error) {
+func NewSender(ch model.Channel, client *http.Client, dataDir string, updateSettings SettingsUpdater) (Sender, error) {
 	if err := ch.Validate(); err != nil {
 		return nil, err
 	}
@@ -78,15 +91,18 @@ func NewSender(ch model.Channel, client *http.Client, updateSettings SettingsUpd
 	}
 	switch ch.Type {
 	case model.ChannelEmail:
-		return newEmailSender(ch.Settings)
+		return newEmailSender(ch.Settings, dataDir)
 	case model.ChannelMicrosoft:
-		return newMicrosoftSender(ch.Settings, client, updateSettings, microsoftEndpointsFor(ch.Settings)), nil
+		return newMicrosoftSender(ch.Settings, client, dataDir, updateSettings, microsoftEndpointsFor(ch.Settings)), nil
 	case model.ChannelDingTalk:
-		return &robotSender{kind: ch.Type, webhook: ch.Settings["webhook"], secret: ch.Settings["secret"], client: client}, nil
+		return &robotSender{kind: ch.Type, webhook: ch.Settings["webhook"], secret: ch.Settings["secret"], client: client, dataDir: dataDir}, nil
 	case model.ChannelFeishu:
-		return &robotSender{kind: ch.Type, webhook: ch.Settings["webhook"], secret: ch.Settings["secret"], client: client}, nil
+		return &robotSender{
+			kind: ch.Type, webhook: ch.Settings["webhook"], secret: ch.Settings["secret"], client: client, dataDir: dataDir,
+			appID: ch.Settings["app_id"], appSecret: ch.Settings["app_secret"],
+		}, nil
 	case model.ChannelWeCom:
-		return &robotSender{kind: ch.Type, webhook: ch.Settings["webhook"], client: client}, nil
+		return &robotSender{kind: ch.Type, webhook: ch.Settings["webhook"], client: client, dataDir: dataDir}, nil
 	default:
 		return nil, fmt.Errorf("unsupported channel type %q", ch.Type)
 	}
@@ -250,18 +266,21 @@ func dynamicSection(d model.Dynamic, forwarded bool) Section {
 		if media.Kind == model.DynamicMediaCover {
 			label = "封面"
 		}
-		section.Images = append(section.Images, Image{Label: label, URL: media.URL})
+		section.Images = append(section.Images, Image{
+			Label: label, URL: media.URL, LocalPath: media.LocalPath, ContentType: media.ContentType,
+		})
 	}
 	return section
 }
 
 type emailSender struct {
-	client *mail.Client
-	from   string
-	to     []string
+	client  *mail.Client
+	from    string
+	to      []string
+	dataDir string
 }
 
-func newEmailSender(settings map[string]string) (*emailSender, error) {
+func newEmailSender(settings map[string]string, dataDir string) (*emailSender, error) {
 	port, err := strconv.Atoi(settings["port"])
 	if err != nil {
 		return nil, fmt.Errorf("parsing SMTP port: %w", err)
@@ -286,7 +305,7 @@ func newEmailSender(settings map[string]string) (*emailSender, error) {
 	for recipient := range strings.SplitSeq(settings["to"], ",") {
 		to = append(to, strings.TrimSpace(recipient))
 	}
-	return &emailSender{client: client, from: settings["from"], to: to}, nil
+	return &emailSender{client: client, from: settings["from"], to: to, dataDir: dataDir}, nil
 }
 
 func (s *emailSender) Send(ctx context.Context, message Message) error {
@@ -298,8 +317,35 @@ func (s *emailSender) Send(ctx context.Context, message Message) error {
 		return &PermanentError{Err: fmt.Errorf("setting recipients: %w", err)}
 	}
 	msg.Subject(message.Subject)
+	cidByPath := map[string]string{}
+	htmlBody := renderHTMLWithCID(message, func(image Image, index int) string {
+		if image.LocalPath == "" || s.dataDir == "" {
+			return ""
+		}
+		if cid, ok := cidByPath[image.LocalPath]; ok {
+			return cid
+		}
+		data, contentType, err := media.ReadFile(s.dataDir, image.LocalPath)
+		if err != nil {
+			return ""
+		}
+		cid := fmt.Sprintf("image-%d", index)
+		name := filepath.Base(image.LocalPath)
+		if name == "." || name == "/" || name == "" {
+			name = cid
+		}
+		opts := []mail.FileOption{mail.WithFileContentID(cid), mail.WithFileName(name)}
+		if contentType != "" {
+			opts = append(opts, mail.WithFileContentType(mail.ContentType(contentType)))
+		}
+		if err := msg.EmbedReader(name, bytes.NewReader(data), opts...); err != nil {
+			return ""
+		}
+		cidByPath[image.LocalPath] = cid
+		return cid
+	})
 	msg.SetBodyString(mail.TypeTextPlain, renderPlainText(message))
-	msg.AddAlternativeString(mail.TypeTextHTML, renderHTML(message))
+	msg.AddAlternativeString(mail.TypeTextHTML, htmlBody)
 	if err := s.client.DialAndSendWithContext(ctx, msg); err != nil {
 		return fmt.Errorf("sending email: %w", err)
 	}
@@ -307,22 +353,105 @@ func (s *emailSender) Send(ctx context.Context, message Message) error {
 }
 
 type robotSender struct {
-	kind    model.ChannelType
-	webhook string
-	secret  string
-	client  *http.Client
+	kind      model.ChannelType
+	webhook   string
+	secret    string
+	client    *http.Client
+	dataDir   string
+	appID     string
+	appSecret string
 }
 
 func (s *robotSender) Send(ctx context.Context, message Message) error {
-	endpoint := s.webhook
-	var payload any
+	if s.kind == model.ChannelWeCom {
+		_, err := s.SendProgressive(ctx, message, nil)
+		return err
+	}
+	endpoint, payload, err := s.buildPayload(ctx, message)
+	if err != nil {
+		return err
+	}
+	return s.postJSON(ctx, endpoint, payload)
+}
+
+func (s *robotSender) SendProgressive(ctx context.Context, message Message, progress *model.DeliveryProgress) (*model.DeliveryProgress, error) {
+	if s.kind != model.ChannelWeCom {
+		if err := s.Send(ctx, message); err != nil {
+			return progress, err
+		}
+		return progress, nil
+	}
+	current := model.DeliveryProgress{}
+	if progress != nil {
+		current = *progress
+	}
+	images := collectLocalImages(message, s.dataDir, media.WeComMaxImageSize)
+	if !current.TextSent {
+		payload := map[string]any{"msgtype": "markdown", "markdown": map[string]string{"content": renderMarkdown(message, 4096, true, false)}}
+		if err := s.postJSON(ctx, s.webhook, payload); err != nil {
+			return &current, err
+		}
+		current.TextSent = true
+	}
+	for i := current.ImagesSent; i < len(images); i++ {
+		img := images[i]
+		sum := md5.Sum(img.data)
+		payload := map[string]any{
+			"msgtype": "image",
+			"image": map[string]string{
+				"base64": base64.StdEncoding.EncodeToString(img.data),
+				"md5":    hex.EncodeToString(sum[:]),
+			},
+		}
+		if err := s.postJSON(ctx, s.webhook, payload); err != nil {
+			return &current, err
+		}
+		current.ImagesSent = i + 1
+	}
+	return &current, nil
+}
+
+type localImage struct {
+	data        []byte
+	contentType string
+	name        string
+}
+
+func collectLocalImages(message Message, dataDir string, maxSize int64) []localImage {
+	if dataDir == "" {
+		return nil
+	}
+	out := make([]localImage, 0)
+	for _, section := range message.Sections {
+		for _, image := range section.Images {
+			if image.LocalPath == "" {
+				continue
+			}
+			data, contentType, err := media.ReadFile(dataDir, image.LocalPath)
+			if err != nil || len(data) == 0 {
+				continue
+			}
+			if maxSize > 0 && int64(len(data)) > maxSize {
+				continue
+			}
+			if image.ContentType != "" {
+				contentType = image.ContentType
+			}
+			out = append(out, localImage{data: data, contentType: contentType, name: filepath.Base(image.LocalPath)})
+		}
+	}
+	return out
+}
+
+func (s *robotSender) buildPayload(ctx context.Context, message Message) (endpoint string, payload any, err error) {
+	endpoint = s.webhook
 	switch s.kind {
 	case model.ChannelDingTalk:
 		timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 		sign := hmacBase64([]byte(s.secret), []byte(timestamp+"\n"+s.secret))
-		u, err := url.Parse(endpoint)
-		if err != nil {
-			return &PermanentError{Err: err}
+		u, parseErr := url.Parse(endpoint)
+		if parseErr != nil {
+			return "", nil, &PermanentError{Err: parseErr}
 		}
 		q := u.Query()
 		q.Set("timestamp", timestamp)
@@ -334,12 +463,18 @@ func (s *robotSender) Send(ctx context.Context, message Message) error {
 		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 		key := []byte(timestamp + "\n" + s.secret)
 		sign := hmacBase64(key, nil)
-		payload = renderFeishuPayload(message, timestamp, sign)
-	case model.ChannelWeCom:
-		payload = map[string]any{"msgtype": "markdown", "markdown": map[string]string{"content": renderMarkdown(message, 4096, true, false)}}
+		keys, uploadErr := s.uploadFeishuImages(ctx, message)
+		if uploadErr != nil {
+			return "", nil, uploadErr
+		}
+		payload = renderFeishuPayload(message, timestamp, sign, keys)
 	default:
-		return &PermanentError{Err: fmt.Errorf("unsupported robot type %q", s.kind)}
+		return "", nil, &PermanentError{Err: fmt.Errorf("unsupported robot type %q", s.kind)}
 	}
+	return endpoint, payload, nil
+}
+
+func (s *robotSender) postJSON(ctx context.Context, endpoint string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return &PermanentError{Err: err}
@@ -372,6 +507,145 @@ func (s *robotSender) Send(ctx context.Context, message Message) error {
 		return &PermanentError{Err: fmt.Errorf("%s returned business code %d: %s", s.kind, code, responseBody)}
 	}
 	return nil
+}
+
+type feishuTokenCache struct {
+	mu      sync.Mutex
+	token   string
+	expires time.Time
+}
+
+var feishuTokens sync.Map // appID -> *feishuTokenCache
+
+func (s *robotSender) uploadFeishuImages(ctx context.Context, message Message) (map[string]string, error) {
+	if strings.TrimSpace(s.appID) == "" || strings.TrimSpace(s.appSecret) == "" || s.dataDir == "" {
+		return nil, nil
+	}
+	token, err := s.feishuTenantToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	keys := make(map[string]string)
+	for _, section := range message.Sections {
+		for _, image := range section.Images {
+			if image.LocalPath == "" {
+				continue
+			}
+			if _, ok := keys[image.LocalPath]; ok {
+				continue
+			}
+			data, contentType, err := media.ReadFile(s.dataDir, image.LocalPath)
+			if err != nil || len(data) == 0 {
+				continue
+			}
+			if image.ContentType != "" {
+				contentType = image.ContentType
+			}
+			key, err := s.uploadFeishuImage(ctx, token, localImage{
+				data: data, contentType: contentType, name: filepath.Base(image.LocalPath),
+			})
+			if err != nil {
+				return nil, err
+			}
+			keys[image.LocalPath] = key
+		}
+	}
+	return keys, nil
+}
+
+func (s *robotSender) feishuTenantToken(ctx context.Context) (string, error) {
+	raw, _ := feishuTokens.LoadOrStore(s.appID, &feishuTokenCache{})
+	cache := raw.(*feishuTokenCache)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.token != "" && time.Now().Before(cache.expires) {
+		return cache.token, nil
+	}
+	body, err := json.Marshal(map[string]string{"app_id": s.appID, "app_secret": s.appSecret})
+	if err != nil {
+		return "", &PermanentError{Err: err}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
+	if err != nil {
+		return "", &PermanentError{Err: err}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("requesting feishu tenant token: %w", err)
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("reading feishu tenant token: %w", err)
+	}
+	var result struct {
+		Code              int    `json:"code"`
+		Msg               string `json:"msg"`
+		TenantAccessToken string `json:"tenant_access_token"`
+		Expire            int    `json:"expire"`
+	}
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return "", &PermanentError{Err: fmt.Errorf("decoding feishu tenant token: %w", err)}
+	}
+	if result.Code != 0 || result.TenantAccessToken == "" {
+		return "", &PermanentError{Err: fmt.Errorf("feishu tenant token failed: code=%d msg=%s", result.Code, result.Msg)}
+	}
+	expire := result.Expire
+	if expire <= 0 {
+		expire = 7200
+	}
+	cache.token = result.TenantAccessToken
+	cache.expires = time.Now().Add(time.Duration(expire-60) * time.Second)
+	return cache.token, nil
+}
+
+func (s *robotSender) uploadFeishuImage(ctx context.Context, token string, img localImage) (string, error) {
+	var body bytes.Buffer
+	boundary := "bili-notify-feishu"
+	_, _ = fmt.Fprintf(&body, "--%s\r\nContent-Disposition: form-data; name=\"image_type\"\r\n\r\nmessage\r\n", boundary)
+	name := img.name
+	if name == "" {
+		name = "image.bin"
+	}
+	_, _ = fmt.Fprintf(&body, "--%s\r\nContent-Disposition: form-data; name=\"image\"; filename=%q\r\nContent-Type: %s\r\n\r\n", boundary, name, firstNonEmpty(img.contentType, "application/octet-stream"))
+	_, _ = body.Write(img.data)
+	_, _ = fmt.Fprintf(&body, "\r\n--%s--\r\n", boundary)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://open.feishu.cn/open-apis/im/v1/images", &body)
+	if err != nil {
+		return "", &PermanentError{Err: err}
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("uploading feishu image: %w", err)
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("reading feishu image upload: %w", err)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return "", fmt.Errorf("feishu image upload returned HTTP %d", resp.StatusCode)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", &PermanentError{Err: fmt.Errorf("feishu image upload returned HTTP %d", resp.StatusCode)}
+	}
+	var result struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			ImageKey string `json:"image_key"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return "", &PermanentError{Err: fmt.Errorf("decoding feishu image upload: %w", err)}
+	}
+	if result.Code != 0 || result.Data.ImageKey == "" {
+		return "", &PermanentError{Err: fmt.Errorf("feishu image upload failed: code=%d msg=%s", result.Code, result.Msg)}
+	}
+	return result.Data.ImageKey, nil
 }
 
 type renderPart struct {
@@ -410,8 +684,14 @@ func renderPlainText(message Message) string {
 }
 
 func renderHTML(message Message) string {
+	return renderHTMLWithCID(message, nil)
+}
+
+// cidFor returns a content-id for an image, or empty to keep the remote URL.
+func renderHTMLWithCID(message Message, cidFor func(image Image, index int) string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<h2>%s</h2>", html.EscapeString(message.Subject))
+	imageIndex := 0
 	for _, section := range message.Sections {
 		b.WriteString("<section>")
 		if section.Heading != "" {
@@ -431,7 +711,14 @@ func renderHTML(message Message) string {
 			fmt.Fprintf(&b, "<p><a href=\"%s\">%s</a></p>", html.EscapeString(link.URL), html.EscapeString(link.Label))
 		}
 		for _, image := range section.Images {
-			fmt.Fprintf(&b, "<p><img src=\"%s\" alt=\"%s\" style=\"max-width:100%%;height:auto\"></p>", html.EscapeString(image.URL), html.EscapeString(image.Label))
+			src := image.URL
+			if cidFor != nil {
+				if cid := cidFor(image, imageIndex); cid != "" {
+					src = "cid:" + cid
+				}
+			}
+			imageIndex++
+			fmt.Fprintf(&b, "<p><img src=\"%s\" alt=\"%s\" style=\"max-width:100%%;height:auto\"></p>", html.EscapeString(src), html.EscapeString(image.Label))
 		}
 		b.WriteString("</section>")
 	}
@@ -572,9 +859,10 @@ func truncateMeasured(value string, limit int, countBytes bool) string {
 }
 
 type feishuElement struct {
-	Tag  string `json:"tag"`
-	Text string `json:"text"`
-	Href string `json:"href,omitempty"`
+	Tag      string `json:"tag"`
+	Text     string `json:"text,omitempty"`
+	Href     string `json:"href,omitempty"`
+	ImageKey string `json:"image_key,omitempty"`
 }
 
 type feishuPost struct {
@@ -582,7 +870,7 @@ type feishuPost struct {
 	Content [][]feishuElement `json:"content"`
 }
 
-func renderFeishuPayload(message Message, timestamp, sign string) map[string]any {
+func renderFeishuPayload(message Message, timestamp, sign string, imageKeys map[string]string) map[string]any {
 	rows := make([][]feishuElement, 0)
 	for _, section := range message.Sections {
 		if section.Heading != "" {
@@ -592,7 +880,7 @@ func renderFeishuPayload(message Message, timestamp, sign string) map[string]any
 			rows = append(rows, []feishuElement{{Tag: "text", Text: fact.Label + "：" + fact.Value}})
 		}
 		if len(section.Images) > 0 {
-			rows = append(rows, []feishuElement{{Tag: "a", Text: section.Images[0].Label, Href: section.Images[0].URL}})
+			rows = append(rows, []feishuElement{feishuImageElement(section.Images[0], imageKeys)})
 		}
 		for _, paragraph := range section.Paragraphs {
 			rows = append(rows, []feishuElement{{Tag: "text", Text: paragraph}})
@@ -602,7 +890,7 @@ func renderFeishuPayload(message Message, timestamp, sign string) map[string]any
 		}
 		if len(section.Images) > 1 {
 			for _, image := range section.Images[1:] {
-				rows = append(rows, []feishuElement{{Tag: "a", Text: image.Label, Href: image.URL}})
+				rows = append(rows, []feishuElement{feishuImageElement(image, imageKeys)})
 			}
 		}
 	}
@@ -612,6 +900,13 @@ func renderFeishuPayload(message Message, timestamp, sign string) map[string]any
 	}
 	accepted := fitFeishuRows(message.Subject, rows, footer, timestamp, sign)
 	return feishuPayload(message.Subject, accepted, timestamp, sign)
+}
+
+func feishuImageElement(image Image, imageKeys map[string]string) feishuElement {
+	if key := imageKeys[image.LocalPath]; key != "" {
+		return feishuElement{Tag: "img", ImageKey: key}
+	}
+	return feishuElement{Tag: "a", Text: image.Label, Href: image.URL}
 }
 
 func fitFeishuRows(title string, rows [][]feishuElement, footer []feishuElement, timestamp, sign string) [][]feishuElement {
