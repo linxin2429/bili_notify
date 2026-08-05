@@ -46,6 +46,7 @@ jobs:
 
   docker:
     needs: test
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -58,18 +59,13 @@ jobs:
       - name: Compute build metadata
         id: meta_env
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="0.0.0-dev.${GITHUB_SHA::7}"
-          fi
+          VERSION="${GITHUB_REF_NAME#v}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "commit=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
           echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Docker meta
         id: meta
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: docker/metadata-action@v5
         with:
           images: dengxinlin/bili-notify
@@ -80,14 +76,12 @@ jobs:
             type=raw,value=latest
 
       - name: Login to Docker Hub
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -102,24 +96,3 @@ jobs:
             BUILD_DATE=${{ steps.meta_env.outputs.build_date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Build and load
-        if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          load: true
-          platforms: linux/amd64
-          tags: bili-notify:ci
-          build-args: |
-            GOPROXY=https://proxy.golang.org,direct
-            VERSION=${{ steps.meta_env.outputs.version }}
-            COMMIT=${{ steps.meta_env.outputs.commit }}
-            BUILD_DATE=${{ steps.meta_env.outputs.build_date }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Smoke test image
-        if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
-        run: docker run --rm bili-notify:ci --help
