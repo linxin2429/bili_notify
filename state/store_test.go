@@ -2,12 +2,15 @@ package state
 
 import (
 	"bytes"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/linxin2429/bili_notify/model"
+	"github.com/linxin2429/bili_notify/state/migrations"
 	"github.com/linxin2429/bili_notify/vault"
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,9 +29,13 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	require.NoError(t, err)
 
 	first := model.Dynamic{ID: "1", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now(), URL: "https://t.bilibili.com/1"}
-	created, err := store.RecordDynamics("42", []model.Dynamic{first}, []string{channel.ID}, true)
+	created, err := store.RecordDynamics("42", []model.Dynamic{first}, []string{channel.ID}, DynamicBaselineAll)
 	require.NoError(t, err)
 	assert.Equal(t, 0, created)
+	baselinedUP, err := store.UP("42")
+	require.NoError(t, err)
+	assert.True(t, baselinedUP.BaselineReady)
+	assert.True(t, baselinedUP.ExclusiveBaselineReady)
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	assert.Empty(t, deliveries)
@@ -40,7 +47,7 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	second.Media = []model.DynamicMedia{{Kind: model.DynamicMediaCover, URL: "https://i0.hdslb.com/cover.jpg"}}
 	second.Stats = &model.DynamicStats{Forwards: 1, Comments: 2, Likes: 3}
 	second.Original = &model.Dynamic{ID: "original", UPName: "author", Type: "DYNAMIC_TYPE_WORD", Summary: "original body"}
-	created, err = store.RecordDynamics("42", []model.Dynamic{first, second}, []string{channel.ID}, false)
+	created, err = store.RecordDynamics("42", []model.Dynamic{first, second}, []string{channel.ID}, DynamicBaselineNone)
 	require.NoError(t, err)
 	assert.Equal(t, 1, created)
 	require.NoError(t, store.Close())
@@ -61,6 +68,77 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	require.NotNil(t, persisted.Original)
 	assert.Equal(t, "original body", persisted.Original.Summary)
 	require.NoError(t, store.CompleteDelivery(deliveries[0].ID))
+}
+
+func TestExclusiveDynamicBaselineKeepsNormalDeliveries(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 10))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true, BaselineReady: true}))
+	channel, err := store.PutChannel(model.Channel{
+		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
+		Settings: map[string]string{"webhook": "https://example.com/hook"},
+	})
+	require.NoError(t, err)
+
+	published := time.Now().UTC().Truncate(time.Second)
+	exclusive := model.Dynamic{
+		ID: "exclusive", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD",
+		PublishedAt: published, Exclusive: true,
+	}
+	normal := model.Dynamic{
+		ID: "normal", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD",
+		PublishedAt: published.Add(time.Second),
+	}
+	created, err := store.RecordDynamics(
+		"42", []model.Dynamic{exclusive, normal}, []string{channel.ID}, DynamicBaselineExclusive,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 1, created)
+
+	up, err := store.UP("42")
+	require.NoError(t, err)
+	assert.True(t, up.BaselineReady)
+	assert.True(t, up.ExclusiveBaselineReady)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, "normal", deliveries[0].Dynamic.ID)
+
+	records, total, err := store.QueryDynamics(ContentQuery{UID: "42"})
+	require.NoError(t, err)
+	assert.Equal(t, 2, total)
+	require.Len(t, records, 2)
+	byID := make(map[string]DynamicRecord, len(records))
+	for _, record := range records {
+		byID[record.ID] = record
+	}
+	assert.True(t, byID["exclusive"].Baseline)
+	assert.False(t, byID["normal"].Baseline)
+}
+
+func TestMigrationRequiresExclusiveBaselineForExistingUPs(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "data.db")
+	legacyDB, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = legacyDB.Close() })
+	provider, err := goose.NewProvider(goose.DialectSQLite3, legacyDB, migrations.FS)
+	require.NoError(t, err)
+	_, err = provider.UpTo(t.Context(), 1)
+	require.NoError(t, err)
+	_, err = legacyDB.Exec(`INSERT INTO ups (uid, enabled, baseline_ready) VALUES ('42', 1, 1)`)
+	require.NoError(t, err)
+	require.NoError(t, legacyDB.Close())
+
+	store, err := Open(path, mustVault(t, 11))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	up, err := store.UP("42")
+	require.NoError(t, err)
+	assert.True(t, up.BaselineReady)
+	assert.False(t, up.ExclusiveBaselineReady)
 }
 
 func TestEncryptedRecords(t *testing.T) {

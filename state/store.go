@@ -393,11 +393,24 @@ func (s *Store) Seen(uid, dynamicID string) (bool, error) {
 	return count > 0, err
 }
 
+// DynamicBaselineMode controls which newly seen dynamics are archived without delivery.
+type DynamicBaselineMode uint8
+
+const (
+	DynamicBaselineNone DynamicBaselineMode = iota
+	DynamicBaselineAll
+	DynamicBaselineExclusive
+)
+
+func (m DynamicBaselineMode) includes(dynamic model.Dynamic) bool {
+	return m == DynamicBaselineAll || (m == DynamicBaselineExclusive && dynamic.Exclusive)
+}
+
 // RecordDynamics archives full content and atomically marks unseen dynamics and creates deliveries.
-func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs []string, baseline bool) (int, error) {
+func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs []string, baselineMode DynamicBaselineMode) (int, error) {
 	created := 0
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := archiveDynamicsTx(tx, dynamics, baseline); err != nil {
+		if err := archiveDynamicsTx(tx, dynamics, baselineMode); err != nil {
 			return err
 		}
 		now := time.Now()
@@ -416,7 +429,7 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 			if res.RowsAffected == 0 {
 				continue
 			}
-			if baseline {
+			if baselineMode.includes(dynamic) {
 				continue
 			}
 			for _, channelID := range channelIDs {
@@ -435,7 +448,7 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 			}
 			created++
 		}
-		if baseline {
+		if baselineMode != DynamicBaselineNone {
 			var row upRow
 			if err := tx.Where("uid = ?", uid).Take(&row).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -444,7 +457,10 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 				return err
 			}
 			up := row.toModel()
-			up.BaselineReady = true
+			if baselineMode == DynamicBaselineAll {
+				up.BaselineReady = true
+			}
+			up.ExclusiveBaselineReady = true
 			updated := upFromModel(up)
 			return tx.Save(&updated).Error
 		}

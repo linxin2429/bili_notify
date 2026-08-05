@@ -65,8 +65,49 @@ func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
 	assert.Equal(t, beforeIdlePoll, events.Revision(), "an idle successful poll should not publish unchanged status or UP data")
 }
 
+func TestPollUPBaselinesExistingExclusiveDynamicsOnce(t *testing.T) {
+	t.Parallel()
+	var request atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		items := exclusiveDynamicFixture("exclusive-old", 1700000000) + "," + dynamicFixture("normal-new", 1700000001)
+		if request.Add(1) > 1 {
+			items = exclusiveDynamicFixture("exclusive-new", 1700000002) + "," + items
+		}
+		_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","items":[%s]}}`, items)
+	}))
+	t.Cleanup(server.Close)
+
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	up := model.UP{UID: "42", Enabled: true, BaselineReady: true}
+	require.NoError(t, store.PutUP(up))
+	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil)
+
+	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, "normal-new", deliveries[0].Dynamic.ID)
+	up, err = store.UP("42")
+	require.NoError(t, err)
+	assert.True(t, up.ExclusiveBaselineReady)
+
+	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
+	deliveries, err = store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 2)
+	ids := []string{deliveries[0].Dynamic.ID, deliveries[1].Dynamic.ID}
+	assert.ElementsMatch(t, []string{"normal-new", "exclusive-new"}, ids)
+}
+
 func dynamicFixture(id string, timestamp int64) string {
 	return fmt.Sprintf(`{"id_str":%q,"type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"name":"tester","pub_ts":%d},"module_dynamic":{"desc":{"text":"hello"},"major":null}}}`, id, timestamp)
+}
+
+func exclusiveDynamicFixture(id string, timestamp int64) string {
+	return fmt.Sprintf(`{"id_str":%q,"type":"DYNAMIC_TYPE_DRAW","basic":{"is_only_fans":true},"modules":{"module_author":{"name":"tester","pub_ts":%d},"module_dynamic":{"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/exclusive.jpg"}]}}}}}`, id, timestamp)
 }
 
 func TestRetryDelayBounds(t *testing.T) {
@@ -222,7 +263,10 @@ func TestPollUPPublishesCommittedOutboxBeforeLaterBookkeepingFailure(t *testing.
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), events)
 
-	err = engine.pollUP(t.Context(), model.UP{UID: "42", Name: "tester", Enabled: true, BaselineReady: true}, []string{"channel"})
+	err = engine.pollUP(t.Context(), model.UP{
+		UID: "42", Name: "tester", Enabled: true,
+		BaselineReady: true, ExclusiveBaselineReady: true,
+	}, []string{"channel"})
 	require.ErrorIs(t, err, state.ErrNotFound)
 	deliveries, listErr := store.ListDeliveries(0)
 	require.NoError(t, listErr)
@@ -257,7 +301,7 @@ func TestDispatchOncePublishesMinimalTopicsAfterDeliveryChanges(t *testing.T) {
 	created, err := store.RecordDynamics("42", []model.Dynamic{{
 		ID: "dynamic", UID: "42", UPName: "tester", Type: "DYNAMIC_TYPE_WORD",
 		PublishedAt: time.Now(), Summary: "hello", URL: "https://t.bilibili.com/1",
-	}}, []string{"missing-channel"}, false)
+	}}, []string{"missing-channel"}, state.DynamicBaselineNone)
 	require.NoError(t, err)
 	require.Equal(t, 1, created)
 

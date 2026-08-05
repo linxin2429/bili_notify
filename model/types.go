@@ -13,14 +13,16 @@ import (
 )
 
 type UP struct {
-	UID             string    `json:"uid"`
-	Name            string    `json:"name"`
-	Enabled         bool      `json:"enabled"`
-	BaselineReady   bool      `json:"baseline_ready"`
-	LastPollAt      time.Time `json:"last_poll_at,omitzero"`
-	LastSuccessAt   time.Time `json:"last_success_at,omitzero"`
-	LastError       string    `json:"last_error,omitempty"`
-	ConsecutiveFail int       `json:"consecutive_fail"`
+	UID           string `json:"uid"`
+	Name          string `json:"name"`
+	Enabled       bool   `json:"enabled"`
+	BaselineReady bool   `json:"baseline_ready"`
+	// ExclusiveBaselineReady prevents pre-upgrade paid dynamics from being delivered.
+	ExclusiveBaselineReady bool      `json:"-"`
+	LastPollAt             time.Time `json:"last_poll_at,omitzero"`
+	LastSuccessAt          time.Time `json:"last_success_at,omitzero"`
+	LastError              string    `json:"last_error,omitempty"`
+	ConsecutiveFail        int       `json:"consecutive_fail"`
 }
 
 func (u UP) Validate() error {
@@ -161,6 +163,8 @@ type Dynamic struct {
 	Stats       *DynamicStats  `json:"stats,omitempty"`
 	Video       *DynamicVideo  `json:"video,omitempty"`
 	Original    *Dynamic       `json:"original,omitempty"`
+	// Exclusive is internal collection metadata used to baseline paid dynamics.
+	Exclusive bool `json:"-"`
 	// Comment coordinates for UP-reply monitoring. Commentable is true only when
 	// CommentType and CommentOID are known without guessing.
 	Commentable  bool   `json:"commentable,omitempty"`

@@ -22,26 +22,28 @@ type metaRow struct {
 func (metaRow) TableName() string { return "meta" }
 
 type upRow struct {
-	UID             string `gorm:"column:uid;primaryKey"`
-	Name            string `gorm:"column:name;not null;default:''"`
-	Enabled         int    `gorm:"column:enabled;not null;default:0"`
-	BaselineReady   int    `gorm:"column:baseline_ready;not null;default:0"`
-	LastPollAt      *int64 `gorm:"column:last_poll_at"`
-	LastSuccessAt   *int64 `gorm:"column:last_success_at"`
-	LastError       string `gorm:"column:last_error;not null;default:''"`
-	ConsecutiveFail int    `gorm:"column:consecutive_fail;not null;default:0"`
+	UID                    string `gorm:"column:uid;primaryKey"`
+	Name                   string `gorm:"column:name;not null;default:''"`
+	Enabled                int    `gorm:"column:enabled;not null;default:0"`
+	BaselineReady          int    `gorm:"column:baseline_ready;not null;default:0"`
+	ExclusiveBaselineReady int    `gorm:"column:exclusive_baseline_ready;not null;default:0"`
+	LastPollAt             *int64 `gorm:"column:last_poll_at"`
+	LastSuccessAt          *int64 `gorm:"column:last_success_at"`
+	LastError              string `gorm:"column:last_error;not null;default:''"`
+	ConsecutiveFail        int    `gorm:"column:consecutive_fail;not null;default:0"`
 }
 
 func (upRow) TableName() string { return "ups" }
 
 func upFromModel(up model.UP) upRow {
 	row := upRow{
-		UID:             up.UID,
-		Name:            up.Name,
-		Enabled:         boolToInt(up.Enabled),
-		BaselineReady:   boolToInt(up.BaselineReady),
-		LastError:       up.LastError,
-		ConsecutiveFail: up.ConsecutiveFail,
+		UID:                    up.UID,
+		Name:                   up.Name,
+		Enabled:                boolToInt(up.Enabled),
+		BaselineReady:          boolToInt(up.BaselineReady),
+		ExclusiveBaselineReady: boolToInt(up.ExclusiveBaselineReady),
+		LastError:              up.LastError,
+		ConsecutiveFail:        up.ConsecutiveFail,
 	}
 	if !up.LastPollAt.IsZero() {
 		v := up.LastPollAt.Unix()
@@ -56,12 +58,13 @@ func upFromModel(up model.UP) upRow {
 
 func (r upRow) toModel() model.UP {
 	up := model.UP{
-		UID:             r.UID,
-		Name:            r.Name,
-		Enabled:         r.Enabled != 0,
-		BaselineReady:   r.BaselineReady != 0,
-		LastError:       r.LastError,
-		ConsecutiveFail: r.ConsecutiveFail,
+		UID:                    r.UID,
+		Name:                   r.Name,
+		Enabled:                r.Enabled != 0,
+		BaselineReady:          r.BaselineReady != 0,
+		ExclusiveBaselineReady: r.ExclusiveBaselineReady != 0,
+		LastError:              r.LastError,
+		ConsecutiveFail:        r.ConsecutiveFail,
 	}
 	if r.LastPollAt != nil {
 		up.LastPollAt = time.Unix(*r.LastPollAt, 0)

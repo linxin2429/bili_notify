@@ -369,7 +369,13 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 		offset = page.Offset
 	}
 	slices.SortFunc(items, func(a, b model.Dynamic) int { return a.PublishedAt.Compare(b.PublishedAt) })
-	created, err := e.store.RecordDynamics(up.UID, items, channelIDs, !up.BaselineReady)
+	baselineMode := state.DynamicBaselineNone
+	if !up.BaselineReady {
+		baselineMode = state.DynamicBaselineAll
+	} else if !up.ExclusiveBaselineReady {
+		baselineMode = state.DynamicBaselineExclusive
+	}
+	created, err := e.store.RecordDynamics(up.UID, items, channelIDs, baselineMode)
 	if err != nil {
 		return fmt.Errorf("recording dynamics: %w", err)
 	}
@@ -381,6 +387,8 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 	if !up.BaselineReady {
 		// BaselineReady is committed by RecordDynamics as well.
 		e.publish(TopicUPs)
+	} else if !up.ExclusiveBaselineReady {
+		e.logger.Info("Bilibili exclusive dynamic baseline established", "uid", up.UID, "up_name", name)
 	}
 	if err := e.refreshCommentTargets(up, name, items); err != nil {
 		return err
@@ -405,7 +413,7 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 		return fmt.Errorf("checking time-derived status after poll: %w", err)
 	}
 	for _, dynamic := range items {
-		if up.BaselineReady {
+		if up.BaselineReady && !(baselineMode == state.DynamicBaselineExclusive && dynamic.Exclusive) {
 			e.metrics.DiscoveryDelay.Observe(max(0, now.Sub(dynamic.PublishedAt).Seconds()))
 		}
 	}
@@ -1028,7 +1036,7 @@ func (e *Engine) enqueueSystem(summary string) {
 		ID: fmt.Sprintf("system:%d", now.UnixNano()), UID: "system", UPName: "Bili Notify", Type: "SYSTEM",
 		PublishedAt: now, Summary: summary, URL: "",
 	}
-	if _, err := e.store.RecordDynamics("system", []model.Dynamic{dynamic}, ids, false); err != nil {
+	if _, err := e.store.RecordDynamics("system", []model.Dynamic{dynamic}, ids, state.DynamicBaselineNone); err != nil {
 		e.logger.Error("unable to queue system alert", "err", err)
 		return
 	}

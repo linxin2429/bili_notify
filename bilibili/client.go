@@ -19,7 +19,10 @@ import (
 const (
 	defaultAPI      = "https://api.bilibili.com"
 	defaultPassport = "https://passport.bilibili.com"
+	dynamicFeatures = "itemOpusStyle,listOnlyfans,onlyfansAssetsV2"
 )
+
+var errDynamicBlocked = errors.New("exclusive dynamic is not accessible")
 
 type ErrorKind string
 
@@ -276,7 +279,11 @@ type Page struct {
 }
 
 func (c *Client) FetchPage(ctx context.Context, uid, offset string) (Page, error) {
-	query := url.Values{"host_mid": {uid}}
+	query := url.Values{
+		"features": {dynamicFeatures},
+		"host_mid": {uid},
+		"platform": {"web"},
+	}
 	if offset != "" {
 		query.Set("offset", offset)
 	}
@@ -296,6 +303,9 @@ func (c *Client) FetchPage(ctx context.Context, uid, offset string) (Page, error
 	for _, raw := range data.Items {
 		dynamic, upName, err := parseDynamic(uid, raw)
 		if err != nil {
+			if errors.Is(err, errDynamicBlocked) {
+				continue
+			}
 			return Page{}, err
 		}
 		if dynamic.Type == "DYNAMIC_TYPE_LIVE_RCMD" {
@@ -403,6 +413,7 @@ type rawDynamic struct {
 		CommentIDStr string          `json:"comment_id_str"`
 		CommentID    json.RawMessage `json:"comment_id"`
 		RIDStr       string          `json:"rid_str"`
+		IsOnlyFans   bool            `json:"is_only_fans"`
 	} `json:"basic"`
 	Modules struct {
 		Author struct {
@@ -495,6 +506,9 @@ type rawMajor struct {
 			Height flexibleInt `json:"height"`
 		} `json:"pics"`
 	} `json:"opus"`
+	Blocked *struct {
+		HintMessage string `json:"hint_message"`
+	} `json:"blocked"`
 }
 
 // Reply is one comment entry from Bilibili reply APIs.
@@ -556,6 +570,9 @@ func parseDynamicItem(uid string, raw json.RawMessage) (model.Dynamic, error) {
 		PublishedAt: time.Unix(int64(item.Modules.Author.PubTS), 0),
 		URL:         "https://t.bilibili.com/" + item.ID,
 	}
+	if item.Basic != nil {
+		dynamic.Exclusive = item.Basic.IsOnlyFans
+	}
 	if mid := rawString(item.Modules.Author.MID); mid != "" {
 		dynamic.UID = mid
 	}
@@ -579,6 +596,10 @@ func parseDynamicItem(uid string, raw json.RawMessage) (model.Dynamic, error) {
 	if item.Type == "DYNAMIC_TYPE_FORWARD" && len(item.Orig) > 0 && string(item.Orig) != "null" {
 		original, err := parseDynamicItem("", item.Orig)
 		if err != nil {
+			if errors.Is(err, errDynamicBlocked) {
+				applyCommentCoords(&dynamic, item)
+				return dynamic, nil
+			}
 			return model.Dynamic{}, fmt.Errorf("parsing forwarded dynamic: %w", err)
 		}
 		dynamic.Original = &original
@@ -604,7 +625,9 @@ func applyCommentCoords(dynamic *model.Dynamic, item rawDynamic) {
 			return
 		}
 	}
-	switch dynamic.Type {
+	// The semantic type may be normalized, but Bilibili's raw type still owns
+	// the fallback comment coordinate rules. A text-only opus can use album type 11.
+	switch item.Type {
 	case "DYNAMIC_TYPE_AV":
 		// aid is set by parseMajor into CommentOID temporarily via setAVComment
 		if dynamic.CommentOID != "" {
@@ -639,6 +662,12 @@ func parseMajor(dynamic *model.Dynamic, raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &major); err != nil {
 		return &APIError{Kind: ErrorSchema, Message: "invalid dynamic major: " + err.Error()}
 	}
+	if major.Blocked != nil {
+		if dynamic.Exclusive {
+			return errDynamicBlocked
+		}
+		return unexpectedMajor(dynamic.Type, "blocked")
+	}
 	recognized := 0
 	if major.Archive != nil {
 		recognized++
@@ -666,6 +695,9 @@ func parseMajor(dynamic *model.Dynamic, raw json.RawMessage) error {
 		}
 		for _, picture := range major.Draw.Items {
 			appendMedia(dynamic, model.DynamicMediaImage, picture.Src, int(picture.Width), int(picture.Height))
+		}
+		if len(major.Draw.Items) == 0 {
+			dynamic.Type = "DYNAMIC_TYPE_WORD"
 		}
 	}
 	if major.Article != nil {
@@ -709,8 +741,11 @@ func parseMajor(dynamic *model.Dynamic, raw json.RawMessage) error {
 	}
 	if major.Opus != nil {
 		recognized++
-		if dynamic.Type != "DYNAMIC_TYPE_DRAW" && dynamic.Type != "DYNAMIC_TYPE_ARTICLE" {
+		if dynamic.Type != "DYNAMIC_TYPE_DRAW" && dynamic.Type != "DYNAMIC_TYPE_ARTICLE" && dynamic.Type != "DYNAMIC_TYPE_WORD" {
 			return unexpectedMajor(dynamic.Type, "opus")
+		}
+		if dynamic.Type == "DYNAMIC_TYPE_WORD" && len(major.Opus.Pics) > 0 {
+			return unexpectedMajor(dynamic.Type, "opus with pictures")
 		}
 		dynamic.Title = strings.TrimSpace(major.Opus.Title)
 		dynamic.Description = strings.TrimSpace(major.Opus.Summary.Text)
@@ -722,6 +757,9 @@ func parseMajor(dynamic *model.Dynamic, raw json.RawMessage) error {
 				pictureURL = picture.Src
 			}
 			appendMedia(dynamic, model.DynamicMediaImage, pictureURL, int(picture.Width), int(picture.Height))
+		}
+		if dynamic.Type == "DYNAMIC_TYPE_DRAW" && len(major.Opus.Pics) == 0 {
+			dynamic.Type = "DYNAMIC_TYPE_WORD"
 		}
 	}
 	if recognized == 0 {

@@ -27,11 +27,11 @@ func TestArchiveDynamicsInsertIgnoreAndSkipSystem(t *testing.T) {
 		{ID: "sys", UID: "system", UPName: "system", Type: "DYNAMIC_TYPE_WORD", PublishedAt: pub, Summary: "alert"},
 	}
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
-	created, err := store.RecordDynamics("42", items, nil, true)
+	created, err := store.RecordDynamics("42", items, nil, DynamicBaselineAll)
 	require.NoError(t, err)
 	assert.Equal(t, 0, created)
 	items[0].Summary = "changed"
-	_, err = store.RecordDynamics("42", items, nil, false)
+	_, err = store.RecordDynamics("42", items, nil, DynamicBaselineNone)
 	require.NoError(t, err)
 
 	got, err := store.GetDynamic("d1")
@@ -77,9 +77,9 @@ func TestQueryDynamicsFilters(t *testing.T) {
 			local := openTestStore(t, 21)
 			require.NoError(t, local.PutUP(model.UP{UID: "1", Enabled: true}))
 			require.NoError(t, local.PutUP(model.UP{UID: "2", Enabled: true}))
-			_, err := local.RecordDynamics("1", dynamics[:2], nil, false)
+			_, err := local.RecordDynamics("1", dynamics[:2], nil, DynamicBaselineNone)
 			require.NoError(t, err)
-			_, err = local.RecordDynamics("2", dynamics[2:], nil, false)
+			_, err = local.RecordDynamics("2", dynamics[2:], nil, DynamicBaselineNone)
 			require.NoError(t, err)
 			list, total, err := local.QueryDynamics(tt.query)
 			require.NoError(t, err)
@@ -119,7 +119,7 @@ func TestQueryDynamicsBuildsPreviewFromArchivedPayload(t *testing.T) {
 			tt.dynamic.UPName = "UP"
 			tt.dynamic.PublishedAt = base
 			require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
-			_, err := store.RecordDynamics("42", []model.Dynamic{tt.dynamic}, nil, false)
+			_, err := store.RecordDynamics("42", []model.Dynamic{tt.dynamic}, nil, DynamicBaselineNone)
 			require.NoError(t, err)
 
 			items, total, err := store.QueryDynamics(ContentQuery{})
@@ -151,7 +151,7 @@ func TestQueryDynamicsDegradesCorruptArchivedPayload(t *testing.T) {
 			ID: "ok", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_DRAW", PublishedAt: pub.Add(time.Hour), Summary: "好档",
 			Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.com/ok.jpg"}},
 		},
-	}, nil, false)
+	}, nil, DynamicBaselineNone)
 	require.NoError(t, err)
 	require.NoError(t, store.db.Model(&dynamicRow{}).Where("id = ?", "broken").Update("payload_json", "{").Error)
 
@@ -217,11 +217,11 @@ func TestDeleteUPContent(t *testing.T) {
 	require.NoError(t, store.PutUP(model.UP{UID: "2", Enabled: true}))
 	_, err := store.RecordDynamics("1", []model.Dynamic{
 		{ID: "d1", UID: "1", UPName: "a", Type: "DYNAMIC_TYPE_WORD", PublishedAt: pub, Summary: "x"},
-	}, nil, false)
+	}, nil, DynamicBaselineNone)
 	require.NoError(t, err)
 	_, err = store.RecordDynamics("2", []model.Dynamic{
 		{ID: "d2", UID: "2", UPName: "b", Type: "DYNAMIC_TYPE_WORD", PublishedAt: pub, Summary: "y"},
-	}, nil, false)
+	}, nil, DynamicBaselineNone)
 	require.NoError(t, err)
 	target := model.CommentTarget{UID: "1", CommentType: 1, CommentOID: "o", PublishedAt: pub}
 	require.NoError(t, store.PutCommentTargets("1", []model.CommentTarget{target}))
@@ -249,7 +249,7 @@ func TestRecordDynamicsArchivesAndDeleteUP(t *testing.T) {
 	pub := time.Now().UTC().Truncate(time.Second)
 	created, err := store.RecordDynamics("7", []model.Dynamic{
 		{ID: "dyn7", UID: "7", UPName: "n", Type: "DYNAMIC_TYPE_WORD", PublishedAt: pub, Summary: "body"},
-	}, nil, true)
+	}, nil, DynamicBaselineAll)
 	require.NoError(t, err)
 	assert.Equal(t, 0, created)
 

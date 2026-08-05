@@ -65,6 +65,30 @@ func TestDynamicMessageRendersRichContent(t *testing.T) {
 	assert.Contains(t, markdown, "转发自 author")
 }
 
+func TestDynamicTypeName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		dynamicType string
+		want        string
+	}{
+		{name: "word", dynamicType: "DYNAMIC_TYPE_WORD", want: "文字动态"},
+		{name: "draw", dynamicType: "DYNAMIC_TYPE_DRAW", want: "图片动态"},
+		{name: "video", dynamicType: "DYNAMIC_TYPE_AV", want: "视频投稿"},
+		{name: "article", dynamicType: "DYNAMIC_TYPE_ARTICLE", want: "专栏"},
+		{name: "forward", dynamicType: "DYNAMIC_TYPE_FORWARD", want: "转发动态"},
+		{name: "pgc", dynamicType: "DYNAMIC_TYPE_PGC", want: "番剧内容"},
+		{name: "common", dynamicType: "DYNAMIC_TYPE_COMMON_SQUARE", want: "动态"},
+		{name: "unknown", dynamicType: "DYNAMIC_TYPE_UNKNOWN", want: "DYNAMIC_TYPE_UNKNOWN"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, dynamicTypeName(tt.dynamicType))
+		})
+	}
+}
+
 func TestMarkdownLengthLimitsPreserveUTF8AndSourceLink(t *testing.T) {
 	t.Parallel()
 	message := Message{

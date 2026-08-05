@@ -78,7 +78,7 @@ type CommentRecord struct {
 	Incomplete   bool      `json:"incomplete,omitempty"`
 }
 
-func archiveDynamicsTx(tx *gorm.DB, dynamics []model.Dynamic, baseline bool) error {
+func archiveDynamicsTx(tx *gorm.DB, dynamics []model.Dynamic, baselineMode DynamicBaselineMode) error {
 	if len(dynamics) == 0 {
 		return nil
 	}
@@ -98,7 +98,7 @@ func archiveDynamicsTx(tx *gorm.DB, dynamics []model.Dynamic, baseline bool) err
 			Type:         d.Type,
 			PublishedAt:  d.PublishedAt.Unix(),
 			DiscoveredAt: now,
-			Baseline:     boolToInt(baseline),
+			Baseline:     boolToInt(baselineMode.includes(d)),
 			Title:        d.Title,
 			Summary:      d.Summary,
 			Description:  d.Description,

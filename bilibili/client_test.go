@@ -2,9 +2,13 @@ package bilibili
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/linxin2429/bili_notify/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,39 +52,64 @@ func TestParseDynamic(t *testing.T) {
 func TestParseDynamicContentTypes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name      string
-		raw       string
-		wantTitle string
-		wantMedia int
+		name          string
+		raw           string
+		wantType      string
+		wantTitle     string
+		wantMedia     int
+		wantExclusive bool
 	}{
 		{
-			name: "word",
-			raw:  `{"id_str":"1","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":"word"},"major":null}}}`,
+			name:     "word",
+			raw:      `{"id_str":"1","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":"word"},"major":null}}}`,
+			wantType: "DYNAMIC_TYPE_WORD",
 		},
 		{
 			name:      "draw",
+			wantType:  "DYNAMIC_TYPE_DRAW",
 			raw:       `{"id_str":"2","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"desc":{"text":"draw"},"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/1.jpg","width":10,"height":20},{"src":"https://i0.hdslb.com/2.jpg"}]}}}}}`,
 			wantMedia: 2,
 		},
 		{
 			name:      "article",
+			wantType:  "DYNAMIC_TYPE_ARTICLE",
 			raw:       `{"id_str":"3","type":"DYNAMIC_TYPE_ARTICLE","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"article":{"title":"article","desc":"desc","covers":["https://i0.hdslb.com/a.jpg"],"jump_url":"https://www.bilibili.com/read/cv1"}}}}}`,
 			wantTitle: "article", wantMedia: 1,
 		},
 		{
 			name:      "pgc",
+			wantType:  "DYNAMIC_TYPE_PGC",
 			raw:       `{"id_str":"4","type":"DYNAMIC_TYPE_PGC","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"pgc":{"title":"episode","cover":"https://i0.hdslb.com/p.jpg","jump_url":"https://www.bilibili.com/bangumi/play/ep1","badge":{"text":"会员"}}}}}}`,
 			wantTitle: "episode", wantMedia: 1,
 		},
 		{
 			name:      "common",
+			wantType:  "DYNAMIC_TYPE_COMMON_SQUARE",
 			raw:       `{"id_str":"5","type":"DYNAMIC_TYPE_COMMON_SQUARE","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"common":{"title":"common","desc":"desc","cover":"https://i0.hdslb.com/c.jpg","jump_url":"https://www.bilibili.com/blackboard/x"}}}}}`,
 			wantTitle: "common", wantMedia: 1,
 		},
 		{
 			name:      "opus",
+			wantType:  "DYNAMIC_TYPE_DRAW",
 			raw:       `{"id_str":"6","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"opus":{"title":"opus","summary":{"text":"desc"},"pics":[{"url":"https://i0.hdslb.com/o.jpg"}],"jump_url":"https://www.bilibili.com/opus/6"}}}}}`,
 			wantTitle: "opus", wantMedia: 1,
+		},
+		{
+			name:     "text-only draw opus is normalized",
+			raw:      `{"id_str":"7","type":"DYNAMIC_TYPE_DRAW","basic":{"comment_type":11,"comment_id_str":"404357189"},"modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"opus":{"summary":{"text":"text only"},"pics":[],"jump_url":"https://www.bilibili.com/opus/7"}}}}}`,
+			wantType: "DYNAMIC_TYPE_WORD",
+		},
+		{
+			name:     "word opus without pictures",
+			raw:      `{"id_str":"8","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"opus":{"summary":{"text":"text only"},"pics":[],"jump_url":"https://www.bilibili.com/opus/8"}}}}}`,
+			wantType: "DYNAMIC_TYPE_WORD",
+		},
+		{
+			name:          "unlocked exclusive draw",
+			raw:           `{"id_str":"9","type":"DYNAMIC_TYPE_DRAW","basic":{"is_only_fans":true,"comment_type":11,"comment_id_str":"9"},"modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/9.jpg"}]}}}}}`,
+			wantType:      "DYNAMIC_TYPE_DRAW",
+			wantMedia:     1,
+			wantExclusive: true,
 		},
 	}
 	for _, tt := range tests {
@@ -88,10 +117,82 @@ func TestParseDynamicContentTypes(t *testing.T) {
 			t.Parallel()
 			got, _, err := parseDynamic("42", json.RawMessage(tt.raw))
 			require.NoError(t, err)
+			assert.Equal(t, tt.wantType, got.Type)
 			assert.Equal(t, tt.wantTitle, got.Title)
 			assert.Len(t, got.Media, tt.wantMedia)
+			assert.Equal(t, tt.wantExclusive, got.Exclusive)
 		})
 	}
+}
+
+func TestFetchPageSendsAuthenticatedDynamicFeatures(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		offset string
+	}{
+		{name: "first page"},
+		{name: "next page", offset: "next-offset"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			type observedRequest struct {
+				path     string
+				hostMID  string
+				platform string
+				features string
+				offset   string
+				session  string
+			}
+			requests := make(chan observedRequest, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				cookie, _ := r.Cookie("SESSDATA")
+				session := ""
+				if cookie != nil {
+					session = cookie.Value
+				}
+				requests <- observedRequest{
+					path: r.URL.Path, hostMID: r.URL.Query().Get("host_mid"),
+					platform: r.URL.Query().Get("platform"), features: r.URL.Query().Get("features"),
+					offset: r.URL.Query().Get("offset"), session: session,
+				}
+				_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","items":[]}}`)
+			}))
+			t.Cleanup(server.Close)
+
+			client := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL))
+			client.SetSession(model.BiliSession{Cookies: map[string]string{"SESSDATA": "session-value"}})
+			_, err := client.FetchPage(t.Context(), "42", tt.offset)
+			require.NoError(t, err)
+			got := <-requests
+			assert.Equal(t, "/x/polymer/web-dynamic/v1/feed/space", got.path)
+			assert.Equal(t, "42", got.hostMID)
+			assert.Equal(t, "web", got.platform)
+			assert.Equal(t, dynamicFeatures, got.features)
+			assert.Equal(t, tt.offset, got.offset)
+			assert.Equal(t, "session-value", got.session)
+		})
+	}
+}
+
+func TestFetchPageSkipsBlockedExclusiveDynamic(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{
+			"code":0,"message":"0","data":{"has_more":false,"offset":"","items":[
+				{"id_str":"blocked","type":"DYNAMIC_TYPE_DRAW","basic":{"is_only_fans":true},"modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"type":"MAJOR_TYPE_BLOCKED","blocked":{"hint_message":"充电后观看"}}}}},
+				{"id_str":"normal","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"name":"up","pub_ts":2},"module_dynamic":{"desc":{"text":"visible"},"major":null}}}
+			]}
+		}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL))
+	page, err := client.FetchPage(t.Context(), "42", "")
+	require.NoError(t, err)
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "normal", page.Items[0].ID)
 }
 
 func TestParseForwardedDynamic(t *testing.T) {
@@ -248,6 +349,14 @@ func TestParseDynamicRejectsInvalidPayloads(t *testing.T) {
 			name: "float draw width",
 			raw:  `{"id_str":"2","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"draw":{"items":[{"src":"https://i0.hdslb.com/1.jpg","width":1.5,"height":20}]}}}}}`,
 		},
+		{
+			name: "word opus with pictures",
+			raw:  `{"id_str":"3","type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"opus":{"pics":[{"url":"https://i0.hdslb.com/3.jpg"}]}}}}}`,
+		},
+		{
+			name: "blocked non-exclusive card",
+			raw:  `{"id_str":"4","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"type":"MAJOR_TYPE_BLOCKED","blocked":{"hint_message":"blocked"}}}}}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -278,11 +387,12 @@ func FuzzParseDynamic(f *testing.F) {
 func TestCommentCoordinates(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		raw      string
-		wantable bool
-		wantType int
-		wantOID  string
+		name            string
+		raw             string
+		wantable        bool
+		wantType        int
+		wantOID         string
+		wantDynamicType string
 	}{
 		{
 			name: "basic preferred over aid",
@@ -340,6 +450,15 @@ func TestCommentCoordinates(t *testing.T) {
 			}`,
 			wantable: true, wantType: 11, wantOID: "349795473",
 		},
+		{
+			name: "text-only draw keeps album coordinates",
+			raw: `{
+				"id_str":"1232961308306964534","type":"DYNAMIC_TYPE_DRAW",
+				"basic":{"comment_type":11,"comment_id_str":"404357189"},
+				"modules":{"module_author":{"name":"up","pub_ts":1},"module_dynamic":{"major":{"opus":{"summary":{"text":"text only"},"pics":[]}}}}
+			}`,
+			wantable: true, wantType: 11, wantOID: "404357189", wantDynamicType: "DYNAMIC_TYPE_WORD",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -347,6 +466,9 @@ func TestCommentCoordinates(t *testing.T) {
 			got, _, err := parseDynamic("42", json.RawMessage(tt.raw))
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantable, got.Commentable)
+			if tt.wantDynamicType != "" {
+				assert.Equal(t, tt.wantDynamicType, got.Type)
+			}
 			if tt.wantable {
 				assert.Equal(t, tt.wantType, got.CommentType)
 				assert.Equal(t, tt.wantOID, got.CommentOID)
