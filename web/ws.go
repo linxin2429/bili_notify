@@ -129,6 +129,8 @@ type dynamicHistoryView struct {
 	Badge        string                `json:"badge,omitempty"`
 	Description  string                `json:"description,omitempty"`
 	Media        []model.DynamicMedia  `json:"media,omitempty"`
+	Stats        *model.DynamicStats   `json:"stats,omitempty"`
+	Video        *model.DynamicVideo   `json:"video,omitempty"`
 	Original     *state.DynamicPreview `json:"original,omitempty"`
 }
 
@@ -423,6 +425,8 @@ func toDynamicHistoryView(item state.DynamicRecord) dynamicHistoryView {
 		Description: previewText(item.Description, historyPreviewTextLimit),
 		URL:         item.URL, TargetURL: item.TargetURL, Badge: item.Badge,
 		Media:    boundHistoryMedia(item.ID, item.Media, historyPreviewMediaLimit),
+		Stats:    item.Stats,
+		Video:    item.Video,
 		Original: boundHistoryOriginal(item.Original),
 	}
 }
@@ -465,6 +469,7 @@ func boundHistoryOriginal(original *state.DynamicPreview) *state.DynamicPreview 
 		Description: previewText(original.Description, historyPreviewTextLimit),
 		URL:         original.URL, TargetURL: original.TargetURL, Badge: original.Badge,
 		Media: boundHistoryMedia(original.ID, original.Media, historyPreviewMediaLimit),
+		Video: original.Video,
 	}
 }
 

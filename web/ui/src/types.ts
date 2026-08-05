@@ -138,6 +138,8 @@ export interface DynamicHistoryItem {
   target_url?: string
   badge?: string
   media?: DynamicMedia[]
+  stats?: DynamicStats
+  video?: DynamicVideo
   original?: DynamicPreview
 }
 
@@ -160,6 +162,19 @@ export interface DynamicPreview {
   target_url?: string
   badge?: string
   media?: DynamicMedia[]
+  video?: DynamicVideo
+}
+
+export interface DynamicStats {
+  forwards: number
+  comments: number
+  likes: number
+}
+
+export interface DynamicVideo {
+  duration?: string
+  views?: string
+  danmaku?: string
 }
 
 export interface CommentHistoryItem {
@@ -181,23 +196,6 @@ export interface ContentPage<T> {
   total: number
   limit: number
   offset: number
-}
-
-export interface DynamicDetail {
-  id: string
-  uid: string
-  up_name: string
-  type: string
-  published_at: string
-  summary?: string
-  url?: string
-  title?: string
-  description?: string
-  target_url?: string
-  badge?: string
-  links?: { text: string; url: string }[]
-  media?: DynamicMedia[]
-  original?: DynamicDetail
 }
 
 export interface CommentDetail {

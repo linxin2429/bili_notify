@@ -97,17 +97,36 @@ func TestQueryDynamicsBuildsPreviewFromArchivedPayload(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name         string
-		dynamic      model.Dynamic
-		wantMedia    int
-		wantOriginal bool
+		name              string
+		dynamic           model.Dynamic
+		wantMedia         int
+		wantStats         bool
+		wantVideo         bool
+		wantOriginal      bool
+		wantOriginalVideo bool
 	}{
 		{name: "plain text", dynamic: model.Dynamic{ID: "word", Type: "DYNAMIC_TYPE_WORD", Summary: "正文"}},
 		{name: "single image", dynamic: model.Dynamic{ID: "single", Type: "DYNAMIC_TYPE_DRAW", Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.com/1.jpg"}}}, wantMedia: 1},
 		{name: "multiple images", dynamic: model.Dynamic{ID: "multi", Type: "DYNAMIC_TYPE_DRAW", Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.com/1.jpg"}, {Kind: model.DynamicMediaImage, URL: "https://example.com/2.jpg"}}}, wantMedia: 2},
-		{name: "video cover", dynamic: model.Dynamic{ID: "video", Type: "DYNAMIC_TYPE_AV", Media: []model.DynamicMedia{{Kind: model.DynamicMediaCover, URL: "https://example.com/cover.jpg"}}}, wantMedia: 1},
+		{
+			name: "video cover with archived metadata",
+			dynamic: model.Dynamic{
+				ID: "video", Type: "DYNAMIC_TYPE_AV",
+				Media: []model.DynamicMedia{{Kind: model.DynamicMediaCover, URL: "https://example.com/cover.jpg"}},
+				Stats: &model.DynamicStats{Forwards: 1, Comments: 2, Likes: 3},
+				Video: &model.DynamicVideo{Duration: "01:09", Views: "8468", Danmaku: "8"},
+			},
+			wantMedia: 1, wantStats: true, wantVideo: true,
+		},
 		{name: "mixed text and image", dynamic: model.Dynamic{ID: "mixed", Type: "DYNAMIC_TYPE_DRAW", Description: "正文", Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.com/3.jpg"}}}, wantMedia: 1},
-		{name: "forward preview", dynamic: model.Dynamic{ID: "forward", Type: "DYNAMIC_TYPE_FORWARD", Summary: "转发语", Original: &model.Dynamic{ID: "original", UPName: "原作者", Summary: "原文"}}, wantOriginal: true},
+		{
+			name: "forward preview with video metadata",
+			dynamic: model.Dynamic{
+				ID: "forward", Type: "DYNAMIC_TYPE_FORWARD", Summary: "转发语",
+				Original: &model.Dynamic{ID: "original", UPName: "原作者", Summary: "原文", Video: &model.DynamicVideo{Duration: "02:00"}},
+			},
+			wantOriginal: true, wantOriginalVideo: true,
+		},
 		{name: "no media", dynamic: model.Dynamic{ID: "empty", Type: "DYNAMIC_TYPE_COMMON_SQUARE"}},
 	}
 
@@ -127,9 +146,25 @@ func TestQueryDynamicsBuildsPreviewFromArchivedPayload(t *testing.T) {
 			assert.Equal(t, 1, total)
 			require.Len(t, items, 1)
 			assert.Len(t, items[0].Media, tt.wantMedia)
+			if tt.wantStats {
+				require.NotNil(t, items[0].Stats)
+				assert.Equal(t, int64(3), items[0].Stats.Likes)
+			} else {
+				assert.Nil(t, items[0].Stats)
+			}
+			if tt.wantVideo {
+				require.NotNil(t, items[0].Video)
+				assert.Equal(t, "01:09", items[0].Video.Duration)
+			} else {
+				assert.Nil(t, items[0].Video)
+			}
 			if tt.wantOriginal {
 				require.NotNil(t, items[0].Original)
 				assert.Equal(t, "原文", items[0].Original.Summary)
+				if tt.wantOriginalVideo {
+					require.NotNil(t, items[0].Original.Video)
+					assert.Equal(t, "02:00", items[0].Original.Video.Duration)
+				}
 			} else {
 				assert.Nil(t, items[0].Original)
 			}

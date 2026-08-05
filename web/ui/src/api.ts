@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type {
-  BiliLogin, Channel, ChannelDraft, CommentDetail, ContentPage, DashboardSnapshot, DynamicDetail,
+  BiliLogin, Channel, ChannelDraft, CommentDetail, ContentPage, DashboardSnapshot,
   DynamicHistoryItem, MicrosoftLogin, RuntimeSettings, UP,
 } from './types'
 
@@ -10,18 +10,27 @@ const dynamicMediaSchema = z.object({
   kind: z.string(), url: z.string(), width: z.number().int().optional(), height: z.number().int().optional(),
 })
 
+const dynamicStatsSchema = z.object({
+  forwards: z.number().int(), comments: z.number().int(), likes: z.number().int(),
+})
+
+const dynamicVideoSchema = z.object({
+  duration: z.string().optional(), views: z.string().optional(), danmaku: z.string().optional(),
+})
+
 const dynamicPreviewSchema = z.object({
   id: z.string().optional(), uid: z.string().optional(), up_name: z.string().optional(), type: z.string().optional(),
   title: z.string().optional(), summary: z.string().optional(), description: z.string().optional(),
   url: z.string().optional(), target_url: z.string().optional(), badge: z.string().optional(),
-  media: z.array(dynamicMediaSchema).optional(),
+  media: z.array(dynamicMediaSchema).optional(), video: dynamicVideoSchema.optional(),
 })
 
 const dynamicHistorySchema = z.object({
   id: z.string(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(), discovered_at: z.string(),
   baseline: z.boolean(), title: z.string().optional(), summary: z.string().optional(), description: z.string().optional(),
   url: z.string().optional(), target_url: z.string().optional(), badge: z.string().optional(),
-  media: z.array(dynamicMediaSchema).optional(), original: dynamicPreviewSchema.optional(),
+  media: z.array(dynamicMediaSchema).optional(), stats: dynamicStatsSchema.optional(), video: dynamicVideoSchema.optional(),
+  original: dynamicPreviewSchema.optional(),
 })
 
 const dynamicHistoryPageSchema = z.object({
@@ -121,8 +130,6 @@ export class AdminAPI {
   }
 
   queryComments<T>(query: ContentQuery) { return httpJSON<ContentPage<T>>(`/api/v1/comments?${queryString(query)}`) }
-
-  getDynamic(id: string) { return httpJSON<DynamicDetail>(`/api/v1/dynamics/${encodeURIComponent(id)}`) }
 
   getComment(rpid: string) { return httpJSON<CommentDetail>(`/api/v1/comments/${encodeURIComponent(rpid)}`) }
 

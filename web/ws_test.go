@@ -166,9 +166,11 @@ func TestDynamicHistoryViewsBoundTextAndMedia(t *testing.T) {
 		PublishedAt: time.Now(), DiscoveredAt: time.Now(),
 		Summary: strings.Repeat("正文", 5000), Description: strings.Repeat("简介", 5000),
 		Media: media,
+		Stats: &model.DynamicStats{Forwards: 1, Comments: 2, Likes: 3},
+		Video: &model.DynamicVideo{Duration: "01:09", Views: "8468", Danmaku: "8"},
 		Original: &state.DynamicPreview{
 			ID: "orig", Summary: strings.Repeat("原文", 5000), Description: strings.Repeat("原简介", 5000),
-			Media: media,
+			Media: media, Video: &model.DynamicVideo{Duration: "02:00"},
 		},
 	})
 	assert.LessOrEqual(t, len([]rune(view.Summary)), historyPreviewTextLimit+1)
@@ -177,6 +179,12 @@ func TestDynamicHistoryViewsBoundTextAndMedia(t *testing.T) {
 	require.NotNil(t, view.Original)
 	assert.LessOrEqual(t, len([]rune(view.Original.Summary)), historyPreviewTextLimit+1)
 	assert.LessOrEqual(t, len(view.Original.Media), historyPreviewMediaLimit)
+	require.NotNil(t, view.Stats)
+	assert.Equal(t, int64(3), view.Stats.Likes)
+	require.NotNil(t, view.Video)
+	assert.Equal(t, "01:09", view.Video.Duration)
+	require.NotNil(t, view.Original.Video)
+	assert.Equal(t, "02:00", view.Original.Video.Duration)
 	raw, err := json.Marshal(view)
 	require.NoError(t, err)
 	assert.Less(t, len(raw), 64<<10)

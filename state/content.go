@@ -45,6 +45,8 @@ type DynamicRecord struct {
 	TargetURL    string               `json:"target_url,omitempty"`
 	Badge        string               `json:"badge,omitempty"`
 	Media        []model.DynamicMedia `json:"media,omitempty"`
+	Stats        *model.DynamicStats  `json:"stats,omitempty"`
+	Video        *model.DynamicVideo  `json:"video,omitempty"`
 	Original     *DynamicPreview      `json:"original,omitempty"`
 }
 
@@ -61,6 +63,7 @@ type DynamicPreview struct {
 	TargetURL   string               `json:"target_url,omitempty"`
 	Badge       string               `json:"badge,omitempty"`
 	Media       []model.DynamicMedia `json:"media,omitempty"`
+	Video       *model.DynamicVideo  `json:"video,omitempty"`
 }
 
 // CommentRecord is a list-row projection of an archived UP reply.
@@ -192,6 +195,8 @@ func (s *Store) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, error) {
 			var payload model.Dynamic
 			if err := json.Unmarshal([]byte(r.PayloadJSON), &payload); err == nil {
 				record.Media = payload.Media
+				record.Stats = payload.Stats
+				record.Video = payload.Video
 				record.Original = dynamicPreview(payload.Original)
 			}
 		}
@@ -208,6 +213,7 @@ func dynamicPreview(dynamic *model.Dynamic) *DynamicPreview {
 		ID: dynamic.ID, UID: dynamic.UID, UPName: dynamic.UPName, Type: dynamic.Type,
 		Title: dynamic.Title, Summary: dynamic.Summary, Description: dynamic.Description,
 		URL: dynamic.URL, TargetURL: dynamic.TargetURL, Badge: dynamic.Badge, Media: dynamic.Media,
+		Video: dynamic.Video,
 	}
 }
 

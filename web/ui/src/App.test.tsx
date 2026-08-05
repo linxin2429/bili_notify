@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { vi } from 'vitest'
-import { activateNavigation, canApplyDashboardRefresh, composePreviewBody, DeliveriesPage, DynamicHistoryCard, historyMediaURL } from './App'
+import {
+  activateNavigation, canApplyDashboardRefresh, composePreviewBody, DeliveriesPage, DynamicHistoryCard,
+  formatInteractionCount, formatRelativeDate, historyMediaURL,
+} from './App'
 import { AdminAPI, parseDynamicHistoryPage } from './api'
 import { applyBiliLoginMutation, applyUPMutation, applyUpdate, readinessMessage } from './dashboard'
 import { nextRevision } from './realtime'
@@ -124,25 +127,57 @@ describe('dynamic history previews', () => {
     id: '1', uid: '42', up_name: '测试 UP', type: 'DYNAMIC_TYPE_WORD',
     published_at: '2026-01-01T00:00:00Z', discovered_at: '2026-01-01T00:00:01Z', baseline: false,
   }
-  const cases: { name: string; item: DynamicHistoryItem; text: string | RegExp; images: number }[] = [
-    { name: '纯文本', item: { ...base, summary: '完整的纯文本正文' }, text: '完整的纯文本正文', images: 0 },
-    { name: '单图', item: { ...base, type: 'DYNAMIC_TYPE_DRAW', media: [{ kind: 'image', url: 'https://example.com/1.jpg', width: 800, height: 600 }] }, text: '1', images: 1 },
-    { name: '多图', item: { ...base, type: 'DYNAMIC_TYPE_DRAW', media: [{ kind: 'image', url: 'https://example.com/1.jpg' }, { kind: 'image', url: 'https://example.com/2.jpg' }] }, text: '1', images: 2 },
-    { name: '视频', item: { ...base, type: 'DYNAMIC_TYPE_AV', title: '视频标题', summary: '今天的vlog', description: '官方视频简介', media: [{ kind: 'cover', url: 'https://example.com/cover.jpg' }] }, text: /今天的vlog[\s\S]*官方视频简介/, images: 1 },
-    { name: '图文混合', item: { ...base, type: 'DYNAMIC_TYPE_DRAW', description: '图片前的正文', media: [{ kind: 'image', url: 'https://example.com/3.jpg' }] }, text: '图片前的正文', images: 1 },
-    { name: '无媒体降级', item: { ...base, summary: '', media: [] }, text: '（该归档没有可预览的正文或媒体）', images: 0 },
+  const cases: { name: string; item: DynamicHistoryItem; texts: Array<string | RegExp>; images: number }[] = [
+    { name: '纯文本', item: { ...base, summary: '完整的纯文本正文' }, texts: ['完整的纯文本正文'], images: 0 },
+    { name: '单图', item: { ...base, type: 'DYNAMIC_TYPE_DRAW', media: [{ kind: 'image', url: 'https://example.com/1.jpg', width: 800, height: 600 }] }, texts: [], images: 1 },
+    { name: '多图', item: { ...base, type: 'DYNAMIC_TYPE_DRAW', media: [{ kind: 'image', url: 'https://example.com/1.jpg' }, { kind: 'image', url: 'https://example.com/2.jpg' }] }, texts: [], images: 2 },
+    { name: '视频', item: { ...base, type: 'DYNAMIC_TYPE_AV', title: '视频标题', summary: '今天的vlog', description: '官方视频简介', media: [{ kind: 'cover', url: 'https://example.com/cover.jpg' }] }, texts: ['今天的vlog', '视频标题', '官方视频简介'], images: 1 },
+    { name: '图文混合', item: { ...base, type: 'DYNAMIC_TYPE_DRAW', description: '图片前的正文', media: [{ kind: 'image', url: 'https://example.com/3.jpg' }] }, texts: ['图片前的正文'], images: 1 },
+    { name: '无媒体降级', item: { ...base, summary: '', media: [] }, texts: ['（该归档没有可预览的正文或媒体）'], images: 0 },
   ]
 
-  it.each(cases)('$name', ({ item, text, images }) => {
-    const { container, unmount } = render(<DynamicHistoryCard item={item} onOpen={() => undefined} />)
-    expect(screen.getAllByText(text).length).toBeGreaterThan(0)
+  it.each(cases)('$name', ({ item, texts, images }) => {
+    const { container, getAllByText } = render(<DynamicHistoryCard item={item} />)
+    for (const text of texts) expect(getAllByText(text).length).toBeGreaterThan(0)
     expect(container.querySelectorAll('img')).toHaveLength(images)
-    unmount()
   })
 
-  it('keeps summary-only posts identifiable in the heading', () => {
-    render(<DynamicHistoryCard item={{ ...base, summary: '只有摘要的动态' }} onOpen={() => undefined} />)
-    expect(screen.getAllByText('只有摘要的动态').length).toBeGreaterThanOrEqual(1)
+  it('shows summary-only posts as copyable body text without a clickable card', () => {
+    const { container, getAllByText } = render(<DynamicHistoryCard item={{ ...base, summary: '只有摘要的动态' }} />)
+    expect(getAllByText('只有摘要的动态')).toHaveLength(1)
+    expect(container.querySelector('.history-copyable')).toBeInTheDocument()
+    expect(container.querySelector('.history-card')).not.toHaveAttribute('role', 'button')
+  })
+
+  it('uses the content landing URL and renders archived interaction data', () => {
+    render(<DynamicHistoryCard item={{
+      ...base, url: 'https://t.bilibili.com/1', target_url: 'https://www.bilibili.com/video/BV1',
+      stats: { forwards: 0, comments: 572, likes: 12_500 },
+    }} />)
+    expect(screen.getByRole('link', { name: /查看原内容/ })).toHaveAttribute('href', 'https://www.bilibili.com/video/BV1')
+    expect(screen.getByText('转发')).toBeVisible()
+    expect(screen.getByText('572')).toBeVisible()
+    expect(screen.getByText('1.3万')).toBeVisible()
+  })
+
+  it('opens a group lightbox and supports keyboard navigation and Escape close', async () => {
+    render(<DynamicHistoryCard item={{
+      ...base, type: 'DYNAMIC_TYPE_DRAW', media: [
+        { kind: 'image', url: 'https://example.com/1.jpg' },
+        { kind: 'image', url: 'https://example.com/2.jpg' },
+      ],
+    }} />)
+    fireEvent.click(screen.getByRole('button', { name: '放大第 1 张动态图片' }))
+    const dialog = screen.getByRole('dialog', { name: '图片预览' })
+    expect(screen.getByAltText('预览第 1 张图片')).toHaveAttribute('src', 'https://example.com/1.jpg')
+    fireEvent.keyDown(dialog, { key: 'ArrowRight' })
+    const secondImage = screen.getByAltText('预览第 2 张图片')
+    expect(secondImage).toHaveAttribute('src', 'https://example.com/2.jpg')
+    fireEvent.error(secondImage)
+    expect(screen.getByText('图片加载失败')).toBeVisible()
+    expect(screen.getByRole('button', { name: '上一张图片' })).toBeEnabled()
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '图片预览' })).not.toBeInTheDocument())
   })
 
   it('composes summary and description without dropping either field', () => {
@@ -157,12 +192,29 @@ describe('dynamic history previews', () => {
     expect(historyMediaURL('https://example.com/photo.jpg', 240)).toBe('https://example.com/photo.jpg')
     expect(historyMediaURL('/api/v1/dynamics/10/media/0', 240)).toBe('/api/v1/dynamics/10/media/0')
   })
+
+  it.each([
+    { name: 'zero uses the action label', value: 0, label: '点赞', want: '点赞' },
+    { name: 'small values stay exact', value: 3980, label: '点赞', want: '3,980' },
+    { name: 'large values use wan units', value: 12_500, label: '点赞', want: '1.3万' },
+  ])('$name', ({ value, label, want }) => {
+    expect(formatInteractionCount(value, label)).toBe(want)
+  })
+
+  it.each([
+    { name: 'just now', value: '2026-08-05T12:00:00Z', now: '2026-08-05T12:00:30Z', want: '刚刚' },
+    { name: 'minutes ago', value: '2026-08-05T11:23:00Z', now: '2026-08-05T12:00:00Z', want: '37分钟前' },
+    { name: 'hours ago', value: '2026-08-05T08:00:00Z', now: '2026-08-05T12:00:00Z', want: '4小时前' },
+  ])('$name', ({ value, now, want }) => {
+    expect(formatRelativeDate(value, new Date(now).valueOf())).toBe(want)
+  })
 })
 
 describe('dynamic history response validation', () => {
   it.each([
     { name: 'accepts media preview', item: { id: '1', uid: '42', up_name: 'UP', type: 'DYNAMIC_TYPE_DRAW', published_at: '2026-01-01T00:00:00Z', discovered_at: '2026-01-01T00:00:01Z', baseline: false, media: [{ kind: 'image', url: 'https://example.com/1.jpg' }] }, keep: true },
     { name: 'accepts original preview', item: { id: '2', uid: '42', up_name: 'UP', type: 'DYNAMIC_TYPE_FORWARD', published_at: '2026-01-01T00:00:00Z', discovered_at: '2026-01-01T00:00:01Z', baseline: false, original: { summary: '原文' } }, keep: true },
+    { name: 'accepts stats and video metadata', item: { id: '4', uid: '42', up_name: 'UP', type: 'DYNAMIC_TYPE_AV', published_at: '2026-01-01T00:00:00Z', discovered_at: '2026-01-01T00:00:01Z', baseline: false, stats: { forwards: 1, comments: 2, likes: 3 }, video: { duration: '01:09', views: '8468' } }, keep: true },
     { name: 'drops malformed media dimensions', item: { id: '3', uid: '42', up_name: 'UP', type: 'DYNAMIC_TYPE_DRAW', published_at: '2026-01-01T00:00:00Z', discovered_at: '2026-01-01T00:00:01Z', baseline: false, media: [{ kind: 'image', url: 'https://example.com/1.jpg', width: 'wide' }] }, keep: false },
   ])('$name', ({ item, keep }) => {
     const page = parseDynamicHistoryPage({
