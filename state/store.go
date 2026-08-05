@@ -26,6 +26,8 @@ import (
 var (
 	ErrNotFound    = errors.New("record not found")
 	ErrInitialized = errors.New("administrator is already initialized")
+	// ErrDeliveryNotBlocked reports that a delivery cannot be manually retried.
+	ErrDeliveryNotBlocked = errors.New("delivery is not blocked")
 )
 
 // Store is the single SQLite persistence layer for config, secrets, outbox, and content archive.
@@ -677,6 +679,29 @@ func (s *Store) DueDeliveries(now time.Time, limit int) ([]model.Delivery, error
 
 func (s *Store) CompleteDelivery(id string) error {
 	return s.db.Where("id = ?", id).Delete(&deliveryRow{}).Error
+}
+
+// RetryDelivery makes one blocked delivery immediately eligible for the
+// background dispatcher without discarding its attempt history or progress.
+func (s *Store) RetryDelivery(id string, now time.Time) error {
+	result := s.db.Model(&deliveryRow{}).Where("id = ? AND state = ?", id, string(model.DeliveryBlocked)).Updates(map[string]any{
+		"state":   string(model.DeliveryPending),
+		"next_at": now.Unix(),
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		return nil
+	}
+	var count int64
+	if err := s.db.Model(&deliveryRow{}).Where("id = ?", id).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	return ErrDeliveryNotBlocked
 }
 
 func (s *Store) FailDelivery(id string, blocked bool, next time.Time, deliveryErr error, progress *model.DeliveryProgress) error {

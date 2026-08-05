@@ -100,6 +100,8 @@ export class AdminAPI {
 
   testChannel(id: string) { return this.write<{ status: string }>(`/api/v1/channels/${encodeURIComponent(id)}/test`, 'POST') }
 
+  retryDelivery(id: string) { return this.write<{ status: 'queued' }>(`/api/v1/deliveries/${encodeURIComponent(id)}/retry`, 'POST') }
+
   startBiliLogin() { return this.write<BiliLogin>('/api/v1/bilibili-login', 'POST') }
 
   cancelBiliLogin(id: string) { return this.write<void>(`/api/v1/bilibili-login/${encodeURIComponent(id)}`, 'DELETE') }

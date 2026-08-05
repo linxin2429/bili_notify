@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
-import { composePreviewBody, DynamicHistoryCard, historyMediaURL } from './App'
-import { parseDynamicHistoryPage } from './api'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { vi } from 'vitest'
+import { activateNavigation, canApplyDashboardRefresh, composePreviewBody, DeliveriesPage, DynamicHistoryCard, historyMediaURL } from './App'
+import { AdminAPI, parseDynamicHistoryPage } from './api'
 import { applyBiliLoginMutation, applyUPMutation, applyUpdate, readinessMessage } from './dashboard'
 import { nextRevision } from './realtime'
-import type { DashboardSnapshot, DynamicHistoryItem } from './types'
+import type { DashboardSnapshot, Delivery, DynamicHistoryItem } from './types'
 
 const snapshot: DashboardSnapshot = {
   status: { auth_valid: false, up_count: 0, channel_count: 0, outbox_depth: 0, ready: false },
@@ -68,6 +70,52 @@ describe('dashboard state', () => {
   it('accepts a lower snapshot revision after the server restarts', () => {
     expect(nextRevision(100, 'snapshot', 0)).toBe(0)
     expect(nextRevision(100, 'status.updated', 1)).toBeNull()
+  })
+})
+
+describe('navigation refresh', () => {
+  it.each([
+    { name: 'refreshes the selected page without replacing its URL', active: '/history', target: '/history', navigates: false },
+    { name: 'navigates and refreshes a different page', active: '/overview', target: '/history', navigates: true },
+  ])('$name', ({ active, target, navigates }) => {
+    const navigate = vi.fn()
+    const refresh = vi.fn()
+
+    activateNavigation(active, target, navigate, refresh)
+
+    expect(refresh).toHaveBeenCalledOnce()
+    expect(navigate).toHaveBeenCalledTimes(navigates ? 1 : 0)
+    if (navigates) expect(navigate).toHaveBeenCalledWith(target)
+  })
+
+  it.each([
+    { name: 'accepts the latest unchanged request', request: 2, latestRequest: 2, version: 5, latestVersion: 5, want: true },
+    { name: 'rejects an older request', request: 1, latestRequest: 2, version: 5, latestVersion: 5, want: false },
+    { name: 'rejects a response older than realtime state', request: 2, latestRequest: 2, version: 4, latestVersion: 5, want: false },
+  ])('$name', ({ request, latestRequest, version, latestVersion, want }) => {
+    expect(canApplyDashboardRefresh(request, latestRequest, version, latestVersion)).toBe(want)
+  })
+})
+
+describe('delivery retry', () => {
+  const deliveries: Delivery[] = [
+    { id: 'blocked', channel_id: 'channel', state: 'blocked', attempts: 1, next_at: '2026-08-05T15:00:00Z', last_error: 'upload failed', created_at: '2026-08-05T14:00:00Z' },
+    { id: 'pending', channel_id: 'channel', state: 'pending', attempts: 2, next_at: '2026-08-05T15:01:00Z', created_at: '2026-08-05T14:00:00Z' },
+  ]
+
+  it('shows retry only for blocked deliveries and refreshes after acceptance', async () => {
+    const api = new AdminAPI('csrf')
+    const retry = vi.spyOn(api, 'retryDelivery').mockResolvedValue({ status: 'queued' })
+    const refreshDashboard = vi.fn().mockResolvedValue(undefined)
+    const runMutation = async <T,>(request: () => Promise<T>) => request()
+
+    render(<MemoryRouter><DeliveriesPage deliveries={deliveries} channels={[]} total={2} api={api} runMutation={runMutation} refreshDashboard={refreshDashboard} /></MemoryRouter>)
+    expect(screen.getAllByRole('button', { name: /立即重试/ })).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: /立即重试/ }))
+
+    await waitFor(() => expect(retry).toHaveBeenCalledWith('blocked'))
+    await waitFor(() => expect(refreshDashboard).toHaveBeenCalledOnce())
   })
 })
 

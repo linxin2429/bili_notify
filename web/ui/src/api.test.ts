@@ -37,6 +37,21 @@ describe('AdminAPI', () => {
     expect(fetchMock.mock.calls[0][1]?.method).toBeUndefined()
   })
 
+  it('queues one encoded delivery id for retry with CSRF', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ status: 'queued' }), {
+      status: 202,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await new AdminAPI('csrf-token').retryDelivery('delivery/测试')
+
+    const [path, options] = fetchMock.mock.calls[0]
+    expect(path).toBe('/api/v1/deliveries/delivery%2F%E6%B5%8B%E8%AF%95/retry')
+    expect(options?.method).toBe('POST')
+    expect(new Headers(options?.headers).get('X-CSRF-Token')).toBe('csrf-token')
+    expect(options?.body).toBeUndefined()
+  })
+
   it('surfaces the API error message', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: { code: 'conflict', message: 'UP already exists' } }), {
       status: 409,

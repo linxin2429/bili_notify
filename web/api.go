@@ -24,6 +24,7 @@ func (s *Server) registerAdminAPI(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/channels/{id}", s.requireSession(true, s.updateChannelAPI))
 	mux.HandleFunc("DELETE /api/v1/channels/{id}", s.requireSession(true, s.deleteChannelAPI))
 	mux.HandleFunc("POST /api/v1/channels/{id}/test", s.requireSession(true, s.testChannelAPI))
+	mux.HandleFunc("POST /api/v1/deliveries/{id}/retry", s.requireSession(true, s.retryDeliveryAPI))
 	mux.HandleFunc("POST /api/v1/bilibili-login", s.requireSession(true, s.startBiliLoginAPI))
 	mux.HandleFunc("DELETE /api/v1/bilibili-login/{id}", s.requireSession(true, s.cancelBiliLoginAPI))
 	mux.HandleFunc("POST /api/v1/channels/{id}/microsoft-login", s.requireSession(true, s.startMicrosoftLoginAPI))
@@ -155,6 +156,23 @@ func (s *Server) testChannelAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
+}
+
+func (s *Server) retryDeliveryAPI(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeAPIResult(w, http.StatusAccepted, nil, validationFailure(errors.New("delivery id is required")))
+		return
+	}
+	if err := s.store.RetryDelivery(id, time.Now()); err != nil {
+		if errors.Is(err, state.ErrDeliveryNotBlocked) {
+			err = conflictFailure(err)
+		}
+		s.writeAPIResult(w, http.StatusAccepted, nil, err)
+		return
+	}
+	s.events.Publish(service.TopicDeliveries)
+	s.writeAPIResult(w, http.StatusAccepted, map[string]string{"status": "queued"}, nil)
 }
 
 func (s *Server) startBiliLoginAPI(w http.ResponseWriter, r *http.Request) {

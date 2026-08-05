@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +15,83 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRetryDelivery(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		missing    bool
+		blocked    bool
+		wantErr    error
+		wantState  model.DeliveryState
+		wantNextAt time.Time
+	}{
+		{name: "blocked delivery becomes immediately due", blocked: true, wantState: model.DeliveryPending, wantNextAt: time.Date(2026, time.August, 5, 15, 0, 0, 0, time.UTC)},
+		{name: "pending delivery is rejected", wantErr: ErrDeliveryNotBlocked, wantState: model.DeliveryPending},
+		{name: "missing delivery is rejected", missing: true, wantErr: ErrNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 91))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = store.Close() })
+
+			id := "missing"
+			var before model.Delivery
+			if !tt.missing {
+				require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}))
+				channel, putErr := store.PutChannel(model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com/hook"}})
+				require.NoError(t, putErr)
+				_, recordErr := store.RecordDynamics("42", []model.Dynamic{{ID: "dynamic", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now()}}, []string{channel.ID}, DynamicBaselineNone)
+				require.NoError(t, recordErr)
+				deliveries, listErr := store.ListDeliveries(0)
+				require.NoError(t, listErr)
+				require.Len(t, deliveries, 1)
+				before = deliveries[0]
+				id = before.ID
+				if tt.blocked {
+					progress := &model.DeliveryProgress{TextSent: true, ImagesSent: 2}
+					require.NoError(t, store.FailDelivery(id, true, time.Now().Add(time.Hour), errors.New("permanent failure"), progress))
+					deliveries, listErr = store.ListDeliveries(0)
+					require.NoError(t, listErr)
+					require.Len(t, deliveries, 1)
+					before = deliveries[0]
+				}
+			}
+
+			retryAt := tt.wantNextAt
+			if retryAt.IsZero() {
+				retryAt = time.Date(2026, time.August, 5, 16, 0, 0, 0, time.UTC)
+			}
+			err = store.RetryDelivery(id, retryAt)
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			if tt.missing {
+				return
+			}
+
+			deliveries, listErr := store.ListDeliveries(0)
+			require.NoError(t, listErr)
+			require.Len(t, deliveries, 1)
+			got := deliveries[0]
+			assert.Equal(t, tt.wantState, got.State)
+			if tt.blocked {
+				assert.True(t, retryAt.Equal(got.NextAt), "next_at: want %s, got %s", retryAt, got.NextAt)
+				assert.Equal(t, before.Attempts, got.Attempts)
+				assert.Equal(t, before.LastError, got.LastError)
+				assert.Equal(t, before.Progress, got.Progress)
+				assert.Equal(t, before.Dynamic, got.Dynamic)
+			} else {
+				assert.Equal(t, before.NextAt, got.NextAt)
+			}
+		})
+	}
+}
 
 func TestBaselineAndDurableOutbox(t *testing.T) {
 	t.Parallel()

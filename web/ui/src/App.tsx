@@ -146,6 +146,9 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
   const [connection, setConnection] = useState<ConnectionState>('connecting')
   const [message, setMessage] = useState('')
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [pageRefresh, setPageRefresh] = useState(0)
+  const snapshotVersion = useRef(0)
+  const refreshRequest = useRef(0)
   const api = useMemo(() => new AdminAPI(csrf), [csrf])
   const mobile = useMediaQuery(theme => theme.breakpoints.down('md'))
   const location = useLocation()
@@ -153,8 +156,15 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
 
   useEffect(() => {
     const client = new RealtimeClient({
-      onSnapshot: value => { displayTimeZone = usableTimeZone(value.timezone); setSnapshot(value) },
-      onEvent: (event, data) => setSnapshot(current => applyUpdate(current, event, data)),
+      onSnapshot: value => {
+        snapshotVersion.current += 1
+        displayTimeZone = usableTimeZone(value.timezone)
+        setSnapshot(value)
+      },
+      onEvent: (event, data) => {
+        snapshotVersion.current += 1
+        setSnapshot(current => applyUpdate(current, event, data))
+      },
       onState: setConnection,
       onAuthLost,
       onError: setMessage,
@@ -172,11 +182,30 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
       throw error
     }
   }, [])
+  const refreshDashboard = useCallback(async () => {
+    const request = ++refreshRequest.current
+    const version = snapshotVersion.current
+    try {
+      const value = await api.dashboard()
+      if (!canApplyDashboardRefresh(request, refreshRequest.current, version, snapshotVersion.current)) return
+      snapshotVersion.current += 1
+      displayTimeZone = usableTimeZone(value.timezone)
+      setSnapshot(value)
+    } catch (error) {
+      if (request === refreshRequest.current) setMessage(errorMessage(error))
+    }
+  }, [api])
   const logout = async () => {
     try { await httpJSON('/api/v1/session', { method: 'DELETE' }, csrf) } finally { await onAuthLost() }
   }
   const activePath = navigation.find(item => location.pathname.startsWith(item.path))?.path || '/overview'
-  const navigateTo = (path: string) => { navigate(path); setMobileOpen(false) }
+  const navigateTo = (path: string) => {
+    activateNavigation(activePath, path, navigate, () => {
+      setPageRefresh(current => current + 1)
+      void refreshDashboard()
+    })
+    setMobileOpen(false)
+  }
   const connectionMeta = connectionPresentation(connection)
 
   return <Box minHeight="100vh" bgcolor="background.default">
@@ -201,8 +230,8 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
             <Route path="/overview" element={<Overview snapshot={snapshot} api={api} runMutation={runMutation} />} />
             <Route path="/ups" element={<UPsPage ups={snapshot.ups} api={api} runMutation={runMutation} />} />
             <Route path="/channels" element={<ChannelsPage channels={snapshot.channels} logins={snapshot.microsoft_logins} api={api} runMutation={runMutation} />} />
-            <Route path="/deliveries" element={<DeliveriesPage deliveries={snapshot.deliveries} channels={snapshot.channels} total={snapshot.status.outbox_depth} />} />
-            <Route path="/history" element={<HistoryPage ups={snapshot.ups} api={api} />} />
+            <Route path="/deliveries" element={<DeliveriesPage deliveries={snapshot.deliveries} channels={snapshot.channels} total={snapshot.status.outbox_depth} api={api} runMutation={runMutation} refreshDashboard={refreshDashboard} />} />
+            <Route path="/history" element={<HistoryPage ups={snapshot.ups} api={api} refresh={pageRefresh} />} />
             <Route path="/settings" element={<SettingsPage csrf={csrf} preference={themePreference} setPreference={setThemePreference} settings={snapshot.settings} api={api} runMutation={runMutation} onChanged={onAuthLost} />} />
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>}
@@ -211,6 +240,15 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
     {mobile && <Paper elevation={6} sx={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: theme => theme.zIndex.appBar }}><BottomNavigation value={activePath} onChange={(_, value) => navigateTo(value)} showLabels>{navigation.slice(0, 5).map(item => <BottomNavigationAction key={item.path} value={item.path} label={item.label} icon={item.icon} />)}</BottomNavigation></Paper>}
     <Snackbar open={Boolean(message)} autoHideDuration={6000} onClose={() => setMessage('')} message={message} />
   </Box>
+}
+
+export function activateNavigation(activePath: string, targetPath: string, navigate: (path: string) => void, refresh: () => void) {
+  if (activePath !== targetPath) navigate(targetPath)
+  refresh()
+}
+
+export function canApplyDashboardRefresh(request: number, latestRequest: number, version: number, latestVersion: number) {
+  return request === latestRequest && version === latestVersion
 }
 
 function Overview({ snapshot, api, runMutation }: { snapshot: DashboardSnapshot; api: AdminAPI; runMutation: RunMutation }) {
@@ -355,16 +393,31 @@ function ChannelDialog({ open, channel, fullScreen, onClose, onSave }: { open: b
   return <Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm"><DialogTitle>{channel ? '编辑通知渠道' : '添加通知渠道'}</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}>{error && <Alert severity="error">{error}</Alert>}<TextField label="渠道名称" value={name} onChange={e => setName(e.target.value)} required /><FormControl><InputLabel id="channel-type-label">渠道类型</InputLabel><Select labelId="channel-type-label" label="渠道类型" value={type} onChange={e => { setType(e.target.value as ChannelType); setFields({}); setSecrets({}) }}>{(['email', 'microsoft', 'dingtalk', 'feishu', 'wecom'] as ChannelType[]).map(value => <MenuItem key={value} value={value}>{channelTypeLabel(value)}</MenuItem>)}</Select></FormControl>{channelFields(type).map(field => <TextField key={field.key} label={field.label} type={field.secret ? 'password' : 'text'} value={field.secret ? secrets[field.key] || '' : fields[field.key] || field.defaultValue || ''} onChange={e => field.secret ? setSecret(field.key, e.target.value) : setField(field.key, e.target.value)} required={field.required && !(channel?.configured_secrets.includes(field.key))} helperText={field.secret && channel?.configured_secrets.includes(field.key) ? '已安全保存；留空表示保留原值' : field.help} />)}<FormControlLabel control={<Switch checked={enabled} onChange={e => setEnabled(e.target.checked)} />} label="启用渠道" />{type === 'microsoft' && <Alert severity="info">保存后需要完成 Microsoft 设备码授权，再启用渠道。</Alert>}</Stack></DialogContent><DialogActions><Button onClick={onClose}>取消</Button><Button variant="contained" disabled={busy || !name} onClick={() => void submit()}>保存</Button></DialogActions></Dialog>
 }
 
-function DeliveriesPage({ deliveries, channels, total }: { deliveries: Delivery[]; channels: Channel[]; total: number }) {
+export function DeliveriesPage({ deliveries, channels, total, api, runMutation, refreshDashboard }: { deliveries: Delivery[]; channels: Channel[]; total: number; api: AdminAPI; runMutation: RunMutation; refreshDashboard: () => Promise<void> }) {
   const [params, setParams] = useSearchParams()
+  const [retrying, setRetrying] = useState<Set<string>>(() => new Set())
   const requested = params.get('state')
   const filter = requested === 'pending' || requested === 'blocked' ? requested : 'all'
   const setFilter = (value: string) => setParams(value === 'all' ? {} : { state: value })
   const visible = deliveries.filter(delivery => filter === 'all' || delivery.state === filter)
-  return <Stack spacing={3}><PageHeader title="投递队列" subtitle={`共 ${total} 个任务，页面展示前 ${deliveries.length} 个。`} /><Paper><Tabs value={filter} onChange={(_, value) => setFilter(value)} variant="scrollable"><Tab value="all" label="全部" /><Tab value="pending" label="等待重试" /><Tab value="blocked" label="已阻塞" /></Tabs></Paper>{visible.length === 0 ? <EmptyState icon={<CheckCircle />} title="当前筛选下没有待投递任务" /> : <Stack spacing={1.5}>{visible.map(delivery => <Card key={delivery.id}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box minWidth={0}><Stack direction="row" spacing={1} alignItems="center"><Chip size="small" color={delivery.state === 'blocked' ? 'error' : 'warning'} label={delivery.state === 'blocked' ? '已阻塞' : '等待重试'} /><Typography fontWeight={750}>{deliveryTitle(delivery)}</Typography></Stack><Typography className="summary-clamp" sx={{ mt: 1 }}>{deliverySummary(delivery)}</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>渠道：{channels.find(channel => channel.id === delivery.channel_id)?.name || delivery.channel_id} · 已尝试 {delivery.attempts} 次</Typography>{delivery.last_error && <Typography variant="body2" color="error" sx={{ mt: .5 }}>{delivery.last_error}</Typography>}</Box><Box flexShrink={0}><Typography variant="body2" color="text.secondary">下次处理</Typography><Typography>{formatDate(delivery.next_at)}</Typography></Box></Stack></CardContent></Card>)}</Stack>}</Stack>
+  const retry = async (id: string) => {
+    setRetrying(current => new Set(current).add(id))
+    try {
+      await runMutation(() => api.retryDelivery(id))
+      await refreshDashboard()
+    } catch { /* The shared mutation handler reports the failure. */ }
+    finally {
+      setRetrying(current => {
+        const next = new Set(current)
+        next.delete(id)
+        return next
+      })
+    }
+  }
+  return <Stack spacing={3}><PageHeader title="投递队列" subtitle={`共 ${total} 个任务，页面展示前 ${deliveries.length} 个。`} /><Paper><Tabs value={filter} onChange={(_, value) => setFilter(value)} variant="scrollable"><Tab value="all" label="全部" /><Tab value="pending" label="等待重试" /><Tab value="blocked" label="已阻塞" /></Tabs></Paper>{visible.length === 0 ? <EmptyState icon={<CheckCircle />} title="当前筛选下没有待投递任务" /> : <Stack spacing={1.5}>{visible.map(delivery => <Card key={delivery.id}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box minWidth={0}><Stack direction="row" spacing={1} alignItems="center"><Chip size="small" color={delivery.state === 'blocked' ? 'error' : 'warning'} label={delivery.state === 'blocked' ? '已阻塞' : '等待重试'} /><Typography fontWeight={750}>{deliveryTitle(delivery)}</Typography></Stack><Typography className="summary-clamp" sx={{ mt: 1 }}>{deliverySummary(delivery)}</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>渠道：{channels.find(channel => channel.id === delivery.channel_id)?.name || delivery.channel_id} · 已尝试 {delivery.attempts} 次</Typography>{delivery.last_error && <Typography variant="body2" color="error" sx={{ mt: .5 }}>上次错误：{delivery.last_error}</Typography>}</Box><Stack flexShrink={0} alignItems={{ xs: 'stretch', sm: 'flex-start' }} spacing={1}><Box><Typography variant="body2" color="text.secondary">下次处理</Typography><Typography>{formatDate(delivery.next_at)}</Typography></Box>{delivery.state === 'blocked' && <Button variant="outlined" startIcon={retrying.has(delivery.id) ? <CircularProgress size={18} /> : <Refresh />} disabled={retrying.has(delivery.id)} onClick={() => void retry(delivery.id)}>{retrying.has(delivery.id) ? '正在提交' : '立即重试'}</Button>}</Stack></Stack></CardContent></Card>)}</Stack>}</Stack>
 }
 
-function HistoryPage({ ups, api }: { ups: UP[]; api: AdminAPI }) {
+function HistoryPage({ ups, api, refresh }: { ups: UP[]; api: AdminAPI; refresh: number }) {
   const [params, setParams] = useSearchParams()
   const tab = params.get('tab') === 'comments' ? 'comments' : 'dynamics'
   const uid = params.get('uid') || ''
@@ -430,7 +483,7 @@ function HistoryPage({ ups, api }: { ups: UP[]; api: AdminAPI }) {
     }
     void run()
     return () => { cancelled = true }
-  }, [tab, uid, q, from, to, offset, api])
+  }, [tab, uid, q, from, to, offset, api, refresh])
 
   const openDetail = async (kind: 'dynamics' | 'comments', id: string) => {
     try {
