@@ -1,0 +1,48 @@
+{
+  "status": {
+    "auth_valid": false,
+    "up_count": 1,
+    "channel_count": 1,
+    "outbox_depth": 0,
+    "ready": false
+  },
+  "settings": {
+    "poll_interval_sec": 30,
+    "request_rate": 10,
+    "request_concurrency": 4,
+    "comment_enabled": true,
+    "comment_track_n": 10,
+    "comment_root_pages": 2,
+    "comment_reply_pages": 5,
+    "comment_batch_interval_sec": 120
+  },
+  "ups": [
+    {
+      "uid": "42",
+      "name": "Contract UP",
+      "enabled": true,
+      "baseline_ready": true,
+      "follow_state": "unknown",
+      "collection_route": "space",
+      "last_poll_at": "2026-08-06T01:02:03Z",
+      "last_success_at": "2026-08-06T01:02:03Z",
+      "consecutive_fail": 0
+    }
+  ],
+  "channels": [
+    {
+      "id": "contract-channel",
+      "name": "Contract robot",
+      "type": "wecom",
+      "enabled": true,
+      "settings": {},
+      "configured_secrets": ["webhook"],
+      "created_at": "2026-08-06T01:02:03Z",
+      "updated_at": "2026-08-06T01:02:03Z"
+    }
+  ],
+  "deliveries": [],
+  "microsoft_logins": [],
+  "timezone": "UTC",
+  "updated_at": "2026-08-06T01:02:03Z"
+}

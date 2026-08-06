@@ -1,44 +1,21 @@
 import { z } from 'zod'
 import type {
-  AuditLog, BiliLogin, Channel, ChannelDraft, CommentDetail, ContentPage, DashboardSnapshot,
-  DynamicHistoryItem, MicrosoftLogin, RuntimeSettings, UP,
+  AuditQuery, ChannelDraft, ContentPage, ContentQuery, DynamicHistoryItem, UP,
 } from './types'
+import {
+  auditLogPageSchema, biliLoginSchema, channelSchema, commentDetailSchema, commentHistoryPageSchema,
+  dashboardSnapshotSchema, dynamicHistorySchema, emptyResponseSchema, microsoftLoginSchema,
+  queuedStatusSchema, runtimeSettingsSchema, sentStatusSchema, upSchema,
+} from './contracts'
 
 const requestTimeoutMS = 25_000
 
-const dynamicMediaSchema = z.object({
-  kind: z.string(), url: z.string(), width: z.number().int().optional(), height: z.number().int().optional(),
-})
-
-const dynamicStatsSchema = z.object({
-  forwards: z.number().int(), comments: z.number().int(), likes: z.number().int(),
-})
-
-const dynamicVideoSchema = z.object({
-  duration: z.string().optional(), views: z.string().optional(), danmaku: z.string().optional(),
-})
-
-const dynamicPreviewSchema = z.object({
-  id: z.string().optional(), uid: z.string().optional(), up_name: z.string().optional(), type: z.string().optional(),
-  title: z.string().optional(), summary: z.string().optional(), description: z.string().optional(),
-  url: z.string().optional(), target_url: z.string().optional(), badge: z.string().optional(),
-  media: z.array(dynamicMediaSchema).optional(), video: dynamicVideoSchema.optional(),
-})
-
-const dynamicHistorySchema = z.object({
-  id: z.string(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(), discovered_at: z.string(),
-  baseline: z.boolean(), title: z.string().optional(), summary: z.string().optional(), description: z.string().optional(),
-  url: z.string().optional(), target_url: z.string().optional(), badge: z.string().optional(),
-  media: z.array(dynamicMediaSchema).optional(), stats: dynamicStatsSchema.optional(), video: dynamicVideoSchema.optional(),
-  original: dynamicPreviewSchema.optional(),
-})
-
-const dynamicHistoryPageSchema = z.object({
+const dynamicHistoryEnvelopeSchema = z.object({
   items: z.array(z.unknown()), total: z.number().int(), limit: z.number().int(), offset: z.number().int(),
 })
 
 export function parseDynamicHistoryPage(data: unknown): ContentPage<DynamicHistoryItem> {
-  const page = dynamicHistoryPageSchema.parse(data)
+  const page = dynamicHistoryEnvelopeSchema.parse(data)
   const items: DynamicHistoryItem[] = []
   for (const item of page.items) {
     const parsed = dynamicHistorySchema.safeParse(item)
@@ -47,7 +24,7 @@ export function parseDynamicHistoryPage(data: unknown): ContentPage<DynamicHisto
   return { items, total: page.total, limit: page.limit, offset: page.offset }
 }
 
-export async function httpJSON<T>(path: string, options: RequestInit = {}, csrf = ''): Promise<T> {
+export async function httpJSON<T>(path: string, schema: z.ZodType<T>, options: RequestInit = {}, csrf = ''): Promise<T> {
   const headers = new Headers(options.headers)
   if (options.body) headers.set('Content-Type', 'application/json')
   if (csrf) headers.set('X-CSRF-Token', csrf)
@@ -62,10 +39,10 @@ export async function httpJSON<T>(path: string, options: RequestInit = {}, csrf 
   }, requestTimeoutMS)
   try {
     const response = await fetch(path, { ...options, headers, credentials: 'same-origin', signal: controller.signal })
-    if (response.status === 204) return undefined as T
+    if (response.status === 204) return schema.parse(undefined)
     const body = await response.json()
     if (!response.ok) throw new Error(body.error?.message || response.statusText)
-    return body as T
+    return schema.parse(body)
   } catch (error) {
     if (timedOut) throw new Error('操作超时，结果未知，请刷新状态后重试')
     throw error
@@ -75,79 +52,59 @@ export async function httpJSON<T>(path: string, options: RequestInit = {}, csrf 
   }
 }
 
-export interface ContentQuery {
-  uid?: string
-  q?: string
-  from?: string
-  to?: string
-  limit?: number
-  offset?: number
-}
-
-export interface AuditQuery {
-  action?: string
-  outcome?: string
-  resource_type?: string
-  q?: string
-  from?: string
-  to?: string
-  limit?: number
-  offset?: number
-}
-
 export class AdminAPI {
   constructor(private readonly csrf: string) {}
 
-  dashboard() { return httpJSON<DashboardSnapshot>('/api/v1/dashboard') }
+  dashboard() { return httpJSON('/api/v1/dashboard', dashboardSnapshotSchema) }
 
   createUP(input: Pick<UP, 'uid' | 'name' | 'enabled'>) {
-    return this.write<UP>('/api/v1/ups', 'POST', input)
+    return this.write('/api/v1/ups', upSchema, 'POST', input)
   }
 
   updateUP(input: Pick<UP, 'uid' | 'name' | 'enabled'>) {
-    return this.write<UP>(`/api/v1/ups/${encodeURIComponent(input.uid)}`, 'PUT', { name: input.name, enabled: input.enabled })
+    return this.write(`/api/v1/ups/${encodeURIComponent(input.uid)}`, upSchema, 'PUT', { name: input.name, enabled: input.enabled })
   }
 
-  deleteUP(uid: string) { return this.write<void>(`/api/v1/ups/${encodeURIComponent(uid)}`, 'DELETE') }
+  deleteUP(uid: string) { return this.write(`/api/v1/ups/${encodeURIComponent(uid)}`, emptyResponseSchema, 'DELETE') }
 
-  createChannel(input: ChannelDraft) { return this.write<Channel>('/api/v1/channels', 'POST', input) }
+  createChannel(input: ChannelDraft) { return this.write('/api/v1/channels', channelSchema, 'POST', input) }
 
   updateChannel(input: ChannelDraft & { id: string }) {
-    return this.write<Channel>(`/api/v1/channels/${encodeURIComponent(input.id)}`, 'PUT', input)
+    return this.write(`/api/v1/channels/${encodeURIComponent(input.id)}`, channelSchema, 'PUT', input)
   }
 
-  deleteChannel(id: string) { return this.write<void>(`/api/v1/channels/${encodeURIComponent(id)}`, 'DELETE') }
+  deleteChannel(id: string) { return this.write(`/api/v1/channels/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE') }
 
-  testChannel(id: string) { return this.write<{ status: string }>(`/api/v1/channels/${encodeURIComponent(id)}/test`, 'POST') }
+  testChannel(id: string) { return this.write(`/api/v1/channels/${encodeURIComponent(id)}/test`, sentStatusSchema, 'POST') }
 
-  retryDelivery(id: string) { return this.write<{ status: 'queued' }>(`/api/v1/deliveries/${encodeURIComponent(id)}/retry`, 'POST') }
+  retryDelivery(id: string) { return this.write(`/api/v1/deliveries/${encodeURIComponent(id)}/retry`, queuedStatusSchema, 'POST') }
 
-  startBiliLogin() { return this.write<BiliLogin>('/api/v1/bilibili-login', 'POST') }
+  startBiliLogin() { return this.write('/api/v1/bilibili-login', biliLoginSchema.unwrap(), 'POST') }
 
-  cancelBiliLogin(id: string) { return this.write<void>(`/api/v1/bilibili-login/${encodeURIComponent(id)}`, 'DELETE') }
+  cancelBiliLogin(id: string) { return this.write(`/api/v1/bilibili-login/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE') }
 
   startMicrosoftLogin(channelID: string) {
-    return this.write<MicrosoftLogin>(`/api/v1/channels/${encodeURIComponent(channelID)}/microsoft-login`, 'POST')
+    return this.write(`/api/v1/channels/${encodeURIComponent(channelID)}/microsoft-login`, microsoftLoginSchema, 'POST')
   }
 
   cancelMicrosoftLogin(channelID: string) {
-    return this.write<void>(`/api/v1/channels/${encodeURIComponent(channelID)}/microsoft-login`, 'DELETE')
+    return this.write(`/api/v1/channels/${encodeURIComponent(channelID)}/microsoft-login`, emptyResponseSchema, 'DELETE')
   }
 
-  updateSettings(settings: RuntimeSettings) { return this.write<RuntimeSettings>('/api/v1/settings', 'PUT', settings) }
+  updateSettings(settings: z.infer<typeof runtimeSettingsSchema>) { return this.write('/api/v1/settings', runtimeSettingsSchema, 'PUT', settings) }
 
   async queryDynamics(query: ContentQuery) {
-    return parseDynamicHistoryPage(await httpJSON<unknown>(`/api/v1/dynamics?${queryString(query)}`))
+    return parseDynamicHistoryPage(await httpJSON(`/api/v1/dynamics?${queryString(query)}`, z.unknown()))
   }
 
-  queryComments<T>(query: ContentQuery) { return httpJSON<ContentPage<T>>(`/api/v1/comments?${queryString(query)}`) }
+  queryComments(query: ContentQuery) { return httpJSON(`/api/v1/comments?${queryString(query)}`, commentHistoryPageSchema) }
 
-  getComment(rpid: string) { return httpJSON<CommentDetail>(`/api/v1/comments/${encodeURIComponent(rpid)}`) }
+  getComment(rpid: string) { return httpJSON(`/api/v1/comments/${encodeURIComponent(rpid)}`, commentDetailSchema) }
 
-  queryAuditLogs(query: AuditQuery) { return httpJSON<ContentPage<AuditLog>>(`/api/v1/audit-logs?${queryString(query)}`) }
+  queryAuditLogs(query: AuditQuery) { return httpJSON(`/api/v1/audit-logs?${queryString(query)}`, auditLogPageSchema) }
 
-  private write<T>(path: string, method: string, body?: unknown) {
-    return httpJSON<T>(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, this.csrf)
+  private write<T>(path: string, schema: z.ZodType<T>, method: string, body?: unknown) {
+    return httpJSON(path, schema, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, this.csrf)
   }
 }
 

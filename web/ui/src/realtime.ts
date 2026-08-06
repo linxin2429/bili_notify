@@ -1,81 +1,7 @@
-import { z } from 'zod'
 import type { DashboardSnapshot } from './types'
-
-const statusSchema = z.object({
-  auth_valid: z.boolean(),
-  bili_account: z.object({ uid: z.string(), name: z.string() }).optional(),
-  last_success_at: z.string().optional(),
-  up_count: z.number(),
-  channel_count: z.number(),
-  outbox_depth: z.number(),
-  oldest_delivery: z.string().optional(),
-  ready: z.boolean(),
-  risk_paused_until: z.string().optional(),
-})
-
-const upSchema = z.object({
-  uid: z.string(), name: z.string(), enabled: z.boolean(), baseline_ready: z.boolean(),
-  follow_state: z.enum(['unknown', 'followed', 'unfollowed']),
-  follow_checked_at: z.string().optional(), collection_route: z.enum(['feed_all', 'space']),
-  last_poll_at: z.string().optional(), last_success_at: z.string().optional(),
-  last_error: z.string().optional(), consecutive_fail: z.number(),
-})
-
-const channelSchema = z.object({
-  id: z.string(), name: z.string(), type: z.enum(['email', 'microsoft', 'dingtalk', 'feishu', 'wecom']),
-  enabled: z.boolean(), settings: z.record(z.string(), z.string()), configured_secrets: z.array(z.string()),
-  created_at: z.string(), updated_at: z.string(),
-})
-
-const deliverySchema = z.object({
-  id: z.string(),
-  kind: z.enum(['dynamic', 'comment']).optional(),
-  dynamic: z.object({
-    id: z.string(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(),
-    summary: z.string(), url: z.string(),
-  }).optional().default({ id: '', uid: '', up_name: '', type: '', published_at: '', summary: '', url: '' }),
-  comment: z.object({
-    rpid: z.string(), up_uid: z.string(), up_name: z.string(), content_type: z.string(), content_id: z.string(),
-    content_title: z.string().optional(), content_url: z.string(), published_at: z.string(),
-  }).optional(),
-  channel_id: z.string(), state: z.enum(['pending', 'blocked']), attempts: z.number(), next_at: z.string(),
-  last_error: z.string().optional(), created_at: z.string(),
-})
-
-const biliLoginSchema = z.object({
-  id: z.string(), status: z.string(), expires_at: z.string(), qr_data_url: z.string().optional(),
-}).nullable()
-
-const microsoftLoginSchema = z.object({
-  channel_id: z.string(), status: z.string(), user_code: z.string().optional(),
-  verification_uri: z.string().optional(), verification_uri_complete: z.string().optional(),
-  expires_at: z.string().optional(), error: z.string().optional(),
-})
-
-const settingsSchema = z.object({
-  poll_interval_sec: z.number().int(),
-  request_rate: z.number(),
-  request_concurrency: z.number().int(),
-  comment_enabled: z.boolean().optional(),
-  comment_track_n: z.number().int().optional(),
-  comment_root_pages: z.number().int().optional(),
-  comment_reply_pages: z.number().int().optional(),
-  comment_batch_interval_sec: z.number().int().optional(),
-})
-
-const snapshotSchema = z.object({
-  status: statusSchema,
-  settings: settingsSchema,
-  ups: z.array(upSchema),
-  channels: z.array(channelSchema),
-  deliveries: z.array(deliverySchema),
-  bili_login: biliLoginSchema.optional(),
-  microsoft_logins: z.array(microsoftLoginSchema),
-  timezone: z.string(),
-  updated_at: z.string(),
-})
-
-const envelopeSchema = z.object({ event: z.string(), revision: z.number(), data: z.unknown() })
+import {
+  dashboardSnapshotSchema, parseWebsocketEvent, serviceStatusSchema, sessionStateSchema, websocketEnvelopeSchema,
+} from './contracts'
 
 export function nextRevision(current: number, event: string, incoming: number): number | null {
   return event === 'snapshot' || incoming >= current ? incoming : null
@@ -90,17 +16,7 @@ export interface RealtimeCallbacks {
 }
 
 export function parseEvent(event: string, data: unknown): unknown {
-  switch (event) {
-    case 'snapshot': return snapshotSchema.parse(data)
-    case 'status.updated': return statusSchema.parse(data)
-    case 'settings.updated': return settingsSchema.parse(data)
-    case 'ups.updated': return z.array(upSchema).parse(data)
-    case 'channels.updated': return z.array(channelSchema).parse(data)
-    case 'deliveries.updated': return z.array(deliverySchema).parse(data)
-    case 'bilibili.login.updated': return biliLoginSchema.parse(data)
-    case 'microsoft.login.updated': return z.array(microsoftLoginSchema).parse(data)
-    default: throw new Error(`未知服务器事件：${event}`)
-  }
+  return parseWebsocketEvent(event, data)
 }
 
 export class RealtimeClient {
@@ -143,13 +59,12 @@ export class RealtimeClient {
 
   private receive(raw: string) {
     try {
-      const envelope = envelopeSchema.parse(JSON.parse(raw))
+      const envelope = websocketEnvelopeSchema.parse(JSON.parse(raw))
       const revision = nextRevision(this.revision, envelope.event, envelope.revision)
       if (revision === null) return
       this.revision = revision
-      const data = parseEvent(envelope.event, envelope.data)
-      if (envelope.event === 'snapshot') this.callbacks.onSnapshot(data as DashboardSnapshot)
-      else this.callbacks.onEvent(envelope.event, data, envelope.revision)
+      if (envelope.event === 'snapshot') this.callbacks.onSnapshot(dashboardSnapshotSchema.parse(envelope.data))
+      else this.callbacks.onEvent(envelope.event, parseEvent(envelope.event, envelope.data), envelope.revision)
     } catch (error) {
       this.callbacks.onError(error instanceof Error ? error.message : '无法解析服务器消息')
     }
@@ -158,7 +73,7 @@ export class RealtimeClient {
   private async verifySessionAndReconnect() {
     try {
       const response = await fetch('/api/v1/session', { credentials: 'same-origin' })
-      const state = await response.json() as { authenticated?: boolean }
+      const state = sessionStateSchema.parse(await response.json())
       if (!state.authenticated) {
         this.callbacks.onAuthLost()
         return
@@ -171,4 +86,4 @@ export class RealtimeClient {
   }
 }
 
-export const schemasForTest = { snapshotSchema, statusSchema }
+export const schemasForTest = { snapshotSchema: dashboardSnapshotSchema, statusSchema: serviceStatusSchema }

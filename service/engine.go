@@ -1464,6 +1464,7 @@ func (e *Engine) StartLogin(ctx context.Context) (LoginSession, error) {
 		e.loginCancel()
 	}
 	loginCtx, cancel := context.WithCancel(e.runCtx)
+	loginKey := session.Key
 	e.login = &session
 	e.loginCancel = cancel
 	e.loginWG.Add(1)
@@ -1472,7 +1473,7 @@ func (e *Engine) StartLogin(ctx context.Context) (LoginSession, error) {
 	e.publish(TopicBiliLogin)
 	go func() {
 		defer e.loginWG.Done()
-		e.pollLoginLoop(loginCtx, session.Key)
+		e.pollLoginLoop(loginCtx, loginKey)
 	}()
 	return session, nil
 }
@@ -1665,7 +1666,7 @@ func (e *Engine) StartMicrosoftLogin(ctx context.Context, channelID string) (Mic
 	if runCtx == nil {
 		return MicrosoftLoginSession{}, errors.New("notification engine is not running")
 	}
-	auth, err := notify.StartMicrosoftDeviceAuth(ctx, channel.Settings, nil)
+	auth, err := notify.StartMicrosoftDeviceAuth(ctx, channel.Settings, e.notificationClient)
 	if err != nil {
 		return MicrosoftLoginSession{}, err
 	}
@@ -1699,7 +1700,7 @@ func (e *Engine) StartMicrosoftLogin(ctx context.Context, channelID string) (Mic
 
 func (e *Engine) completeMicrosoftLogin(ctx context.Context, session *MicrosoftLoginSession) {
 	defer e.publish(TopicMicrosoftLogin | TopicChannels | TopicStatus | TopicDeliveries)
-	settings, err := session.auth.Exchange(ctx, nil)
+	settings, err := session.auth.Exchange(ctx, e.notificationClient)
 	if err == nil {
 		e.microsoftSendMu.Lock()
 		_, err = e.store.UpdateChannelSettings(session.ChannelID, settings)

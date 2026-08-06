@@ -147,11 +147,18 @@ go test ./...
 go test -race ./...
 go vet ./...
 
+# 与 CI 相同的核心 Go 覆盖率（bilibili、notify、service、state、web）
+core_packages="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"
+go test -covermode=atomic -coverpkg="${core_packages}" -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out
+
 # 可选：验证最终 scratch 镜像的初始化、健康检查和同卷重启
 docker build -t bili-notify:e2e .
 ./e2e/docker-smoke.sh bili-notify:e2e
 ```
 
 端到端测试使用本地 TLS 伪 B站和企业微信端点，不读取真实账号或通知凭据。失败时 Playwright 会在 `web/ui/test-results/` 保存截图、视频和 trace。
+
+CI 对上述五个核心包执行跨包原子覆盖率统计，低于 80% 时失败，并通过 GitHub OIDC 将 `coverage.out` 上传到 Codecov（不使用仓库 Token）。REST 与 WebSocket 契约样例位于 `web/testdata/contracts/`：Go 测试用真实处理器和生产序列化类型校验样例，Vitest 读取同一批文件并通过集中定义的 Zod schema 解析。任何 API 字段变更必须在同一提交中更新生产代码、共享样例及两端契约测试。
 
 正式镜像使用 Node 24 和 Go 1.26 多阶段构建，仅将前端产物、静态 Go 二进制与系统 CA 放入 nonroot scratch 镜像。

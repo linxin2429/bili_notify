@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AdminAPI, httpJSON } from './api'
+import { dashboardSnapshotSchema } from './contracts'
 
 const fetchMock = vi.fn<typeof fetch>()
 
@@ -10,7 +11,10 @@ beforeEach(() => {
 
 describe('AdminAPI', () => {
   it('sends mutations through resource HTTP endpoints with CSRF', async () => {
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ uid: '42', name: 'test', enabled: true }), {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      uid: '42', name: 'test', enabled: true, baseline_ready: false, consecutive_fail: 0,
+      follow_state: 'unknown', collection_route: 'space',
+    }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }))
@@ -79,7 +83,7 @@ describe('AdminAPI', () => {
       options?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
     }))
 
-    const request = httpJSON('/api/v1/dashboard')
+    const request = httpJSON('/api/v1/dashboard', dashboardSnapshotSchema)
     const rejection = expect(request).rejects.toThrow('操作超时，结果未知')
     await vi.advanceTimersByTimeAsync(25_000)
     await rejection

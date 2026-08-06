@@ -49,6 +49,7 @@ import type {
 } from './types'
 import { RealtimeClient } from './realtime'
 import { AdminAPI, httpJSON } from './api'
+import { csrfStateSchema, emptyResponseSchema, sessionStateSchema } from './contracts'
 import {
   applyBiliLoginMutation, applyChannelDeletion, applyChannelMutation, applyMicrosoftLoginDeletion,
   applyMicrosoftLoginMutation, applySettingsMutation, applyUpdate, applyUPDeletion, applyUPMutation, readinessMessage,
@@ -66,7 +67,7 @@ const navigation = [
 ]
 const pageSize = 20
 
-interface SessionState { setup_required: boolean; authenticated: boolean; csrf_token?: string }
+type SessionState = import('zod').z.infer<typeof sessionStateSchema>
 type SnapshotMutation<T> = (snapshot: DashboardSnapshot, value: T) => DashboardSnapshot
 type RunMutation = <T>(request: () => Promise<T>, update?: SnapshotMutation<T>) => Promise<T>
 
@@ -99,7 +100,7 @@ export default function App() {
   const [message, setMessage] = useState('')
 
   const refreshSession = useCallback(async () => {
-    try { setSession(await httpJSON<SessionState>('/api/v1/session')) }
+    try { setSession(await httpJSON('/api/v1/session', sessionStateSchema)) }
     catch (error) { setMessage(errorMessage(error)) }
   }, [])
   useEffect(() => { void refreshSession() }, [])
@@ -127,7 +128,7 @@ function AuthScreen({ setup, onAuthenticated }: { setup: boolean; onAuthenticate
     if (setup && password !== confirm) { setError('两次输入的密码不一致'); return }
     setBusy(true); setError('')
     try {
-      const state = await httpJSON<{ csrf_token: string }>(setup ? '/api/v1/setup' : '/api/v1/session', {
+      const state = await httpJSON(setup ? '/api/v1/setup' : '/api/v1/session', csrfStateSchema, {
         method: 'POST', body: JSON.stringify(setup ? { setup_code: code, password } : { password }),
       })
       onAuthenticated(state)
@@ -203,7 +204,7 @@ function Console({ csrf, themePreference, setThemePreference, onAuthLost }: { cs
     }
   }, [api])
   const logout = async () => {
-    try { await httpJSON('/api/v1/session', { method: 'DELETE' }, csrf) } finally { await onAuthLost() }
+    try { await httpJSON('/api/v1/session', emptyResponseSchema, { method: 'DELETE' }, csrf) } finally { await onAuthLost() }
   }
   const activePath = navigation.find(item => location.pathname.startsWith(item.path))?.path || '/overview'
   const navigateTo = (path: string) => {
@@ -479,7 +480,7 @@ function HistoryPage({ ups, api, refresh }: { ups: UP[]; api: AdminAPI; refresh:
           offset,
         }
         const page = tab === 'comments'
-          ? await api.queryComments<CommentHistoryItem>(payload)
+          ? await api.queryComments(payload)
           : await api.queryDynamics(payload)
         if (!cancelled) {
           setItems(page.items || [])
@@ -1003,7 +1004,7 @@ function SettingsPage({ csrf, preference, setPreference, settings, api, runMutat
     if (replacement !== confirm) { setMessage('两次输入的新密码不一致'); return }
     setBusy(true)
     try {
-      await httpJSON('/api/v1/session/password', { method: 'PUT', body: JSON.stringify({ current_password: current, new_password: replacement }) }, csrf)
+      await httpJSON('/api/v1/session/password', emptyResponseSchema, { method: 'PUT', body: JSON.stringify({ current_password: current, new_password: replacement }) }, csrf)
       await onChanged()
     } catch (error) {
       setMessage(errorMessage(error))

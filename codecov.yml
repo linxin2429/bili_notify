@@ -1,0 +1,17 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 0%
+    patch: off
+
+flags:
+  core-go:
+    paths:
+      - bilibili/
+      - notify/
+      - service/
+      - state/
+      - web/
+    carryforward: false
