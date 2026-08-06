@@ -72,7 +72,9 @@ Enable the repository hook once per clone with `git config core.hooksPath .githo
 <type>[(scope)][!]: <description>
 ```
 
-Allowed types are `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, and `revert`. The optional scope must start with a lowercase ASCII letter or digit and may contain lowercase letters, digits, `.`, `_`, `/`, or `-`. Use `!` for a breaking change. The description must be non-empty, concise, and imperative. Examples: `feat: add dynamic filtering`, `fix(notify): retry timed-out webhooks`, and `refactor(state)!: replace the storage schema`. Git-generated `Merge ...` and `Revert "..."` subjects are exempt.
+Allowed types are `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, and `revert`. The optional scope must start with a lowercase ASCII letter or digit and may contain lowercase letters, digits, `.`, `_`, `/`, or `-`. Use `!` for a breaking change. The description must be non-empty, concise, and imperative. Examples: `feat: add dynamic filtering`, `fix(notify): retry timed-out webhooks`, and `refactor(state)!: replace the storage schema`.
+
+Every authored commit must also include a detailed body with at least two non-empty lines and at least 30 non-whitespace characters in total. Git-generated `Merge ...` and `Revert "..."` messages are exempt from both checks.
 
 ## Architecture
 

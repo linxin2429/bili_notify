@@ -19,12 +19,9 @@ esac
 types='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
 pattern="^(${types})(\\([a-z0-9][a-z0-9._/-]*\\))?(!)?: [^[:space:]].*$"
 
-if printf '%s\n' "$subject" | grep -Eq "$pattern"; then
-	exit 0
-fi
-
-cat >&2 <<'EOF'
-Invalid commit message.
+if ! printf '%s\n' "$subject" | grep -Eq "$pattern"; then
+	cat >&2 <<'EOF'
+Invalid commit message subject.
 
 Use Conventional Commits:
   <type>[(scope)][!]: <description>
@@ -36,5 +33,30 @@ Examples:
   feat: add dynamic filtering
   fix(notify): retry timed-out webhooks
   refactor(state)!: replace the storage schema
+EOF
+	exit 1
+fi
+
+body=$(sed -n '2,$p' "$message_file" | sed '/^[[:space:]]*#/d')
+body_line_count=$(printf '%s\n' "$body" | awk 'NF { count++ } END { print count + 0 }')
+body_character_count=$(printf '%s' "$body" | tr -d '[:space:]' | wc -m | tr -d '[:space:]')
+
+if [ "$body_line_count" -ge 2 ] && [ "$body_character_count" -ge 30 ]; then
+	exit 0
+fi
+
+cat >&2 <<EOF
+Invalid commit message body.
+
+Add a detailed body after the subject.
+The body must contain:
+  - at least 2 non-empty lines (found $body_line_count)
+  - at least 30 non-whitespace characters (found $body_character_count)
+
+Example:
+  feat: add dynamic filtering
+
+  Add configurable rules for selecting monitored events.
+  Persist the rules so they remain active after a restart.
 EOF
 exit 1
