@@ -119,6 +119,8 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 
 ## 7. 可观测性、运行与验证
 
+Makefile 是本地与 CI 的统一任务入口：`make check` 执行全部前端与 Go 检查，`make build` 生成本地二进制，`make docker-build` 生成生产镜像，细分目标通过 `make help` 查看。
+
 私有观测服务默认监听 `:9090`：`/healthz` 表示进程存活，`/readyz` 要求有效 B站会话、启用的 UP 和渠道以及近期成功采集，`/metrics` 暴露轮询、发现延迟、投递结果、Outbox 和审计写入失败指标。指标不使用 UID、渠道 ID 或正文作为标签。
 
 运行日志使用 `log/slog` 输出统一 JSON，同时写 stdout 与 `/data/logs/bili-notify.jsonl`；字段包含 schema、服务版本、进程 `run_id`、`category=system|audit`、组件、稳定事件名、结果、耗时及必要领域标识。文件按 20 MiB 轮转、最多保留 32 个备份，默认按 30 天清理；日志级别立即热更新，系统日志与审计日志保留期分别在下一次轮转维护和每日清理时应用。日志不输出请求体、Cookie、Webhook、令牌、第三方响应正文或秘密值；唯一例外是首次初始化所需、成功设置管理员后立即失效的 `setup_code`。

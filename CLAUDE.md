@@ -60,9 +60,9 @@ make compose-run \
 ```
 
 CI (`.github/workflows/ci.yml`):
-- `test`: `go test` / race / vet / govulncheck + `web/ui` `npm ci && npm run lint && npm test`
-- `docker`: multi-stage image with `GOPROXY=proxy.golang.org` and `VERSION`/`COMMIT`/`BUILD_DATE` build-args; PR/main smoke `--help`; only `v*` tags push `dengxinlin/bili-notify` (`X.Y.Z`, `X.Y`, `X`, `latest`)
-- Playwright e2e is local-only. Secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
+- `test`: `make check` runs the local build, frontend checks, Playwright, Go coverage/race/vet, and govulncheck.
+- `docker-smoke`: `make docker-smoke` builds the multi-stage image with CI metadata and validates startup, health, and restart.
+- `docker`: only `v*` tags push `dengxinlin/bili-notify` (`X.Y.Z`, `X.Y`, `X`, `latest`). Secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
 
 Never commit material under `secrets/`, SQLite DBs (`data.db`), cookies, OAuth tokens, webhooks, or TLS private keys.
 

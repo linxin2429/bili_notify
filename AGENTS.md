@@ -21,7 +21,7 @@ Follow idiomatic Go and let `gofmt` define tabs and layout. Use short, lower-cas
 
 ## Testing Guidelines
 
-Use the standard `testing` package and `github.com/stretchr/testify`. Name tests `TestBehavior` and mark reusable helpers with `t.Helper()`. Prefer `httptest` for HTTP boundaries and `t.TempDir()` for stateful tests. There is no numeric coverage threshold; every behavioral change should include focused success and failure cases, followed by `go test -race ./...`.
+Use the standard `testing` package and `github.com/stretchr/testify`. Name tests `TestBehavior` and mark reusable helpers with `t.Helper()`. Prefer `httptest` for HTTP boundaries and `t.TempDir()` for stateful tests. There is no numeric coverage threshold; every behavioral change should include focused success and failure cases, followed by `make test-race`.
 
 ### Table-driven tests
 
