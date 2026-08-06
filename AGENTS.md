@@ -6,12 +6,11 @@
 
 ## Build, Test, and Development Commands
 
-- `cd web/ui && npm ci && npm run build` generates the ignored frontend assets required by the Go embed directive.
-- `go build ./...` compiles every package with the Go 1.26 toolchain after the frontend assets exist.
-- `go test ./...` runs the complete unit and integration-style test suite.
-- `go test -race ./...` checks concurrent paths for data races.
-- `go vet ./...` performs standard static analysis.
-- `go run . --help` lists CLI commands; `go run . serve` starts the service when the required secret files and paths are configured.
+- `make build` installs locked frontend dependencies, builds the embedded UI, and writes the local `bili-notify` binary.
+- `make docker-build` builds the local `bili-notify:local` production image; override `DOCKER_IMAGE` when another tag is required.
+- `make test`, `make test-race`, and `make vet` run the corresponding Go checks after ensuring embedded frontend assets exist.
+- `make check` runs the complete frontend and Go CI check suite; `make help` lists narrower targets and override variables.
+- `make run ARGS=--help` lists CLI commands; `make run` starts the service when the required secret files and paths are configured.
 - `docker compose up -d --build` builds and runs the production-like scratch image locally.
 
 Run `gofmt -w <files>` and the test commands before submitting changes.

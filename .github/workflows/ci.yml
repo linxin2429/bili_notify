@@ -34,23 +34,8 @@ jobs:
           cache: npm
           cache-dependency-path: web/ui/package-lock.json
 
-      - name: Frontend checks and build
-        working-directory: web/ui
-        run: |
-          npm ci
-          npm run lint
-          npm run test:coverage
-          npx playwright install --with-deps chromium
-          npm run test:e2e
-
-      - run: go build ./...
-      - name: Go tests and core coverage gate
-        run: |
-          core_packages="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"
-          go test -covermode=atomic -coverpkg="${core_packages}" -coverprofile=coverage.out ./...
-          total="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')"
-          echo "Core Go coverage: ${total}%"
-          awk -v coverage="${total}" 'BEGIN { if (coverage + 0 < 80.0) exit 1 }'
+      - name: Build and test
+        run: make check PLAYWRIGHT_INSTALL_FLAGS=--with-deps
 
       - name: Upload core Go coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -59,11 +44,6 @@ jobs:
           flags: core-go
           use_oidc: true
           fail_ci_if_error: true
-
-      - run: go test -race ./...
-      - run: go vet ./...
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: govulncheck ./...
 
       - name: Upload browser failure artifacts
         if: failure()
@@ -88,18 +68,15 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Build smoke-test image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: bili-notify:e2e
-          build-args: |
-            GOPROXY=https://proxy.golang.org,direct
-            VERSION=e2e
-            COMMIT=${{ github.sha }}
-            BUILD_DATE=unknown
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        env:
+          DOCKER_BUILD: docker buildx build
+          DOCKER_BUILD_FLAGS: --load --cache-from=type=gha --cache-to=type=gha,mode=max
+          DOCKER_IMAGE: bili-notify:e2e
+          GOPROXY: https://proxy.golang.org,direct
+          VERSION: e2e
+          COMMIT: ${{ github.sha }}
+          BUILD_DATE: unknown
+        run: make docker-build
 
       - name: Smoke test production image
         run: ./e2e/docker-smoke.sh bili-notify:e2e

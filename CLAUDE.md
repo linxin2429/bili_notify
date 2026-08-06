@@ -15,15 +15,15 @@ Detailed product/design constraints: `docs/requirements-and-design.md`. Repo con
 Requires Go 1.26+.
 
 ```bash
-cd web/ui && npm ci && npm run build && cd ../..
-go build ./...
-go test ./...
-go test -race ./...
-go vet ./...
-go test ./service -run TestName -count=1   # single package / test
-go run . --help
-go run . serve                             # needs secret files + paths configured
-gofmt -w <files>
+make build
+make docker-build
+make test
+make test-race
+make vet
+make test GO_PACKAGES=./service GO_TEST_FLAGS='-run TestName -count=1'
+make run ARGS=--help
+make run                                    # needs secret files + paths configured
+make fmt
 ```
 
 ## Testing principles

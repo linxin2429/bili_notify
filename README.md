@@ -133,32 +133,35 @@ git config core.hooksPath .githooks
 
 提交信息必须遵循 Conventional Commits，格式为 `<type>[(scope)][!]: <description>`。允许的类型为 `feat`、`fix`、`docs`、`style`、`refactor`、`perf`、`test`、`build`、`ci`、`chore` 和 `revert`；例如 `feat: add dynamic filtering` 或 `fix(notify): retry timed-out webhooks`。Git 自动生成的 merge 和 revert 提交不受此格式限制。
 
-`web/dist` 是 Vite 生成的构建产物，不提交到 Git。干净克隆后或修改前端后，必须先构建前端，再执行会编译 `web` 包的 Go 命令：
+`web/dist` 是 Vite 生成的构建产物，不提交到 Git。Makefile 是统一构建入口：`make build` 从 lockfile 安装前端依赖、构建前端，并在仓库根目录生成 `bili-notify`；`make docker-build` 生成 `bili-notify:local` 镜像。可通过 `BINARY`、`DOCKER_IMAGE`、`VERSION`、`COMMIT` 和 `BUILD_DATE` 覆盖产物名称与构建元数据。
+
+常用构建命令：
 
 ```bash
-cd web/ui
-npm ci
-npm run build
-npx playwright install chromium # 首次运行端到端测试时安装
-npm run lint
-npm test
-npm run test:coverage # 与 CI 相同，四项前端覆盖率均不得低于 80%
-npm run test:e2e # 先构建前端，再运行 Chromium 关键链路
+make help
+make build
+make docker-build
+make check
+```
 
-cd ../..
-go build ./...
-go test ./...
-go test -race ./...
-go vet ./...
+提交前执行完整检查：
+
+```bash
+make playwright-install # 首次运行端到端测试时安装 Chromium
+make frontend-lint
+make frontend-test
+make frontend-coverage # 与 CI 相同，四项前端覆盖率均不得低于 80%
+make frontend-e2e
+make test
+make test-race
+make vet
 
 # 与 CI 相同的核心 Go 覆盖率（bilibili、notify、service、state、web）
-core_packages="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"
-go test -covermode=atomic -coverpkg="${core_packages}" -coverprofile=coverage.out ./...
+make coverage
 go tool cover -func=coverage.out
 
 # 可选：验证最终 scratch 镜像的初始化、健康检查和同卷重启
-docker build -t bili-notify:e2e .
-./e2e/docker-smoke.sh bili-notify:e2e
+make docker-smoke DOCKER_IMAGE=bili-notify:e2e
 ```
 
 端到端测试使用本地 TLS 伪 B站和企业微信端点，不读取真实账号或通知凭据。失败时 Playwright 会在 `web/ui/test-results/` 保存截图、视频和 trace。
