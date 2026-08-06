@@ -37,13 +37,13 @@ describe('Console', () => {
     renderRoute(<Console csrf="csrf" themePreference="system" setThemePreference={setTheme} onAuthLost={onAuthLost} />, '/overview')
     expect(realtime.start).toHaveBeenCalledOnce(); expect(screen.getByText('正在加载实时状态')).toBeVisible()
     act(() => realtime.callbacks?.onSnapshot(makeSnapshot()))
-    expect(screen.getByRole('heading', { name: '运行概览' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: '运行概览' })).toBeVisible()
     act(() => realtime.callbacks?.onState('live')); expect(screen.getByText('实时', { exact: true })).toBeVisible()
     act(() => realtime.callbacks?.onEvent('ups.updated', [makeUP({ name: '事件 UP' })], 2))
     expect(makeUP({ name: '事件 UP' }).name).toBe('事件 UP')
     await user.click(screen.getByLabelText('切换主题')); expect(setTheme).toHaveBeenCalledWith('light')
     act(() => realtime.callbacks?.onState('stale')); expect(screen.getByText(/实时连接已中断/)).toBeVisible()
-    await user.click(screen.getByRole('button', { name: /^UP 主$/ })); await waitFor(() => expect(dashboard).toHaveBeenCalledOnce()); expect(screen.getByText('测试 UP')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: /^UP 主$/ })); await waitFor(() => expect(dashboard).toHaveBeenCalledOnce()); expect(await screen.findByText('测试 UP')).toBeVisible()
   })
 
   it('reports realtime errors, forwards auth loss, logs out, and stops on unmount', async () => {

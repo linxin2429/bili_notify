@@ -39,5 +39,5 @@ export function makeAudit(overrides: Partial<AuditLog> = {}): AuditLog {
 }
 
 export function renderRoute(ui: React.ReactElement, initialEntry = '/') {
-  return render(<ThemeProvider theme={createTheme()}><MemoryRouter initialEntries={[initialEntry]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>{ui}</MemoryRouter></ThemeProvider>)
+  return render(<ThemeProvider theme={createTheme()}><MemoryRouter initialEntries={[initialEntry]}>{ui}</MemoryRouter></ThemeProvider>)
 }

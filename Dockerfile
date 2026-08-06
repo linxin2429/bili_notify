@@ -5,6 +5,7 @@ WORKDIR /src/web/ui
 COPY web/ui/package.json web/ui/package-lock.json ./
 RUN npm ci
 COPY web/ui/ ./
+COPY web/testdata/ /src/web/testdata/
 RUN npm run build
 
 FROM golang:1.26.5-alpine AS build

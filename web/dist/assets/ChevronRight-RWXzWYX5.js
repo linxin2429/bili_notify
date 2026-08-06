@@ -1,0 +1,1 @@
+import{St as e,zt as t}from"./index-BVrAePKk.js";var n=t(),r=e((0,n.jsx)(`path`,{d:`M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z`}),`ChevronLeft`),i=e((0,n.jsx)(`path`,{d:`M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z`}),`ChevronRight`);export{r as n,i as t};
