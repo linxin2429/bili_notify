@@ -327,7 +327,7 @@ func (c *Client) CheckFeedUpdate(ctx context.Context, baseline string) (FeedUpda
 		return FeedUpdate{}, err
 	}
 	var data struct {
-		UpdateNum int `json:"update_num"`
+		UpdateNum flexibleInt `json:"update_num"`
 	}
 	if err := decodeEnvelope(body, &data); err != nil {
 		return FeedUpdate{}, err
@@ -335,7 +335,7 @@ func (c *Client) CheckFeedUpdate(ctx context.Context, baseline string) (FeedUpda
 	if data.UpdateNum < 0 {
 		return FeedUpdate{}, &APIError{Kind: ErrorSchema, Message: "feed update count is negative"}
 	}
-	return FeedUpdate{UpdateNum: data.UpdateNum}, nil
+	return FeedUpdate{UpdateNum: int(data.UpdateNum)}, nil
 }
 
 type FeedPage struct {
@@ -367,7 +367,7 @@ func (c *Client) FetchAllPage(ctx context.Context, baseline, offset string) (Fee
 		Offset         string            `json:"offset"`
 		Items          []json.RawMessage `json:"items"`
 		UpdateBaseline string            `json:"update_baseline"`
-		UpdateNum      int               `json:"update_num"`
+		UpdateNum      flexibleInt       `json:"update_num"`
 	}
 	if err := decodeEnvelope(body, &data); err != nil {
 		return FeedPage{}, err
@@ -377,7 +377,7 @@ func (c *Client) FetchAllPage(ctx context.Context, baseline, offset string) (Fee
 	}
 	return FeedPage{
 		Items: data.Items, Offset: data.Offset, HasMore: data.HasMore,
-		UpdateBaseline: data.UpdateBaseline, UpdateNum: data.UpdateNum,
+		UpdateBaseline: data.UpdateBaseline, UpdateNum: int(data.UpdateNum),
 	}, nil
 }
 
@@ -480,7 +480,7 @@ func (t *unixTimestamp) UnmarshalJSON(data []byte) error {
 }
 
 // flexibleInt accepts bare or quoted JSON integers. Bilibili sometimes serializes
-// media dimensions as strings (e.g. "1080") instead of numbers.
+// integer fields as strings (e.g. "1080") instead of numbers.
 type flexibleInt int
 
 func (v *flexibleInt) UnmarshalJSON(data []byte) error {

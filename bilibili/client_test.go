@@ -50,11 +50,13 @@ func TestFetchRelationsClassifiesAttributes(t *testing.T) {
 func TestAggregateFeedEndpoints(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		call func(t *testing.T, client *Client)
+		name          string
+		updateNumJSON string
+		call          func(t *testing.T, client *Client)
 	}{
 		{
-			name: "update check",
+			name:          "update check with numeric count",
+			updateNumJSON: `2`,
 			call: func(t *testing.T, client *Client) {
 				update, err := client.CheckFeedUpdate(t.Context(), "old")
 				require.NoError(t, err)
@@ -62,7 +64,30 @@ func TestAggregateFeedEndpoints(t *testing.T) {
 			},
 		},
 		{
-			name: "feed page",
+			name:          "update check with quoted count",
+			updateNumJSON: `"2"`,
+			call: func(t *testing.T, client *Client) {
+				update, err := client.CheckFeedUpdate(t.Context(), "old")
+				require.NoError(t, err)
+				assert.Equal(t, 2, update.UpdateNum)
+			},
+		},
+		{
+			name:          "feed page with numeric count",
+			updateNumJSON: `2`,
+			call: func(t *testing.T, client *Client) {
+				page, err := client.FetchAllPage(t.Context(), "old", "next")
+				require.NoError(t, err)
+				assert.Equal(t, "new", page.UpdateBaseline)
+				assert.Equal(t, 2, page.UpdateNum)
+				assert.Equal(t, "after", page.Offset)
+				assert.True(t, page.HasMore)
+				assert.Len(t, page.Items, 1)
+			},
+		},
+		{
+			name:          "feed page with quoted count",
+			updateNumJSON: `"2"`,
 			call: func(t *testing.T, client *Client) {
 				page, err := client.FetchAllPage(t.Context(), "old", "next")
 				require.NoError(t, err)
@@ -82,11 +107,11 @@ func TestAggregateFeedEndpoints(t *testing.T) {
 				switch r.URL.Path {
 				case "/x/polymer/web-dynamic/v1/feed/all/update":
 					assert.Equal(t, "all", r.URL.Query().Get("type"))
-					_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"update_num":2}}`)
+					_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"update_num":%s}}`, tt.updateNumJSON)
 				case "/x/polymer/web-dynamic/v1/feed/all":
 					assert.Equal(t, "next", r.URL.Query().Get("offset"))
 					assert.Equal(t, dynamicFeatures, r.URL.Query().Get("features"))
-					_, _ = fmt.Fprint(w, `{"code":0,"message":"0","data":{"has_more":true,"offset":"after","update_baseline":"new","update_num":2,"items":[{"id_str":"1"}]}}`)
+					_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":true,"offset":"after","update_baseline":"new","update_num":%s,"items":[{"id_str":"1"}]}}`, tt.updateNumJSON)
 				default:
 					http.NotFound(w, r)
 				}

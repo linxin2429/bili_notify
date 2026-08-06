@@ -354,18 +354,20 @@ func TestCollectOnceRoutesEnabledUP(t *testing.T) {
 func TestInitializeFeed(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		baseline string
-		wantErr  string
+		name          string
+		baseline      string
+		updateNumJSON string
+		wantErr       string
 	}{
-		{name: "stores baseline", baseline: "cursor"},
-		{name: "rejects missing baseline", wantErr: "missing"},
+		{name: "stores baseline with numeric count", baseline: "cursor", updateNumJSON: `0`},
+		{name: "stores baseline with quoted count", baseline: "cursor", updateNumJSON: `"0"`},
+		{name: "rejects missing baseline", updateNumJSON: `0`, wantErr: "missing"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","update_baseline":%q,"update_num":0,"items":[]}}`, tt.baseline)
+				_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","update_baseline":%q,"update_num":%s,"items":[]}}`, tt.baseline, tt.updateNumJSON)
 			}))
 			t.Cleanup(server.Close)
 			store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
