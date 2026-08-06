@@ -1,8 +1,12 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DynamicHistoryCard } from './DynamicHistoryCard'
 import { makeDynamic } from '../test/fixtures'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe('DynamicHistoryCard', () => {
   it.each([
@@ -36,6 +40,54 @@ describe('DynamicHistoryCard', () => {
     expect(screen.getByText('图片加载失败')).toBeVisible()
     await user.keyboard('{Escape}')
     await waitFor(() => expect(dialog).not.toBeInTheDocument())
+  })
+
+  it('opens an embedded player for video covers with a BV target', async () => {
+    const user = userEvent.setup()
+    render(<DynamicHistoryCard timeZone="" item={makeDynamic({
+      type: 'DYNAMIC_TYPE_AV',
+      title: '可播放视频',
+      target_url: 'https://www.bilibili.com/video/BV1xx411c7mD',
+      media: [{ kind: 'cover', url: 'https://example.com/cover.jpg' }],
+      video: { duration: '01:09' },
+    })} />)
+    await user.click(screen.getByRole('button', { name: '预览视频' }))
+    const dialog = screen.getByRole('dialog', { name: '视频预览' })
+    const frame = dialog.querySelector('iframe')
+    expect(frame).toHaveAttribute('src', expect.stringContaining('bvid=BV1xx411c7mD'))
+    expect(screen.getByRole('link', { name: '在 B 站打开' })).toHaveAttribute('href', 'https://www.bilibili.com/video/BV1xx411c7mD')
+    await user.click(screen.getByRole('button', { name: '关闭视频预览' }))
+    await waitFor(() => expect(dialog).not.toBeInTheDocument())
+  })
+
+  it('opens the original URL when a content card cannot embed', async () => {
+    const user = userEvent.setup()
+    const open = vi.fn()
+    vi.stubGlobal('open', open)
+    render(<DynamicHistoryCard timeZone="" item={makeDynamic({
+      type: 'DYNAMIC_TYPE_ARTICLE',
+      title: '专栏标题',
+      target_url: 'https://www.bilibili.com/read/cv1',
+      media: [{ kind: 'cover', url: 'https://example.com/cover.jpg' }],
+    })} />)
+    await user.click(screen.getByRole('button', { name: '打开原内容' }))
+    expect(open).toHaveBeenCalledWith('https://www.bilibili.com/read/cv1', '_blank', 'noopener,noreferrer')
+    expect(screen.queryByRole('dialog', { name: '图片预览' })).not.toBeInTheDocument()
+  })
+
+  it('ignores unsafe original URLs and falls back to cover preview', async () => {
+    const user = userEvent.setup()
+    const open = vi.fn()
+    vi.stubGlobal('open', open)
+    render(<DynamicHistoryCard timeZone="" item={makeDynamic({
+      type: 'DYNAMIC_TYPE_ARTICLE',
+      title: '危险链接',
+      target_url: 'javascript:alert(1)',
+      media: [{ kind: 'cover', url: 'https://example.com/cover.jpg' }],
+    })} />)
+    await user.click(screen.getByRole('button', { name: '放大内容封面' }))
+    expect(open).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: '图片预览' })).toBeVisible()
   })
 
   it.each([

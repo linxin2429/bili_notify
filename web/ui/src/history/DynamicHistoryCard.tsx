@@ -6,10 +6,11 @@ import ChevronRight from '@mui/icons-material/ChevronRight'
 import Close from '@mui/icons-material/Close'
 import FavoriteBorder from '@mui/icons-material/FavoriteBorder'
 import OpenInNew from '@mui/icons-material/OpenInNew'
+import PlayCircleOutline from '@mui/icons-material/PlayCircleOutline'
 import Repeat from '@mui/icons-material/Repeat'
 import Visibility from '@mui/icons-material/Visibility'
 import { Avatar, Box, Button, Card, CardContent, Chip, Dialog, Divider, IconButton, Paper, Stack, Typography } from '@mui/material'
-import { composePreviewBody, dynamicTypeLabel, formatDate, formatInteractionCount, formatRelativeDate, historyMediaURL, normalizePreviewText } from '../presentation'
+import { bilibiliPlayerEmbedURL, composePreviewBody, dynamicTypeLabel, formatDate, formatInteractionCount, formatRelativeDate, historyMediaURL, normalizePreviewText, safeBilibiliURL } from '../presentation'
 import type { DynamicHistoryItem, DynamicMedia, DynamicPreview } from '../types'
 
 type HistoryContent = DynamicHistoryItem | DynamicPreview
@@ -21,7 +22,7 @@ export function DynamicHistoryCard({ item, timeZone }: { item: DynamicHistoryIte
   const contentCard = isContentCardType(item.type)
   const body = contentCard ? (item.summary || '').trim() : composePreviewBody(item.summary, item.description)
   const title = contentCard ? '' : (item.title || '').trim()
-  const targetURL = (item.target_url || item.url || '').trim()
+  const targetURL = safeBilibiliURL(item.target_url || item.url)
   useLayoutEffect(() => {
     if (expanded) { setClamped(false); return }
     const node = bodyRef.current
@@ -84,10 +85,66 @@ function DynamicContentPreview({ item }: { item: HistoryContent }) {
 }
 
 function ContentLandingCard({ item, cover }: { item: HistoryContent; cover: DynamicMedia }) {
-  const [selected, setSelected] = useState<number | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
   const [failed, setFailed] = useState(false)
-  const media = (item.media || []).filter(entry => entry.url)
-  return <><Paper variant="outlined" className="history-content-card"><Box className="history-content-cover">{failed ? <Stack className="history-media-fallback" alignItems="center" justifyContent="center"><BrokenImage /><Typography variant="caption">封面加载失败</Typography></Stack> : <button type="button" className="history-media-button" aria-label="放大内容封面" onClick={() => setSelected(Math.max(0, media.indexOf(cover)))}><img src={historyMediaURL(cover.url, 720)} alt="内容封面" loading="lazy" onError={() => setFailed(true)} />{item.video?.duration && <span className="history-video-duration">{item.video.duration}</span>}</button>}</Box><Stack className="history-content-meta" spacing={1}><Typography fontWeight={750}>{item.title || dynamicTypeLabel(item.type || '')}</Typography>{item.description && <Typography variant="body2" color="text.secondary" className="history-content-description">{item.description}</Typography>}{item.video && <Stack direction="row" spacing={2} color="text.secondary" mt="auto">{item.video.views && <Stack direction="row" spacing={.5} alignItems="center"><Visibility fontSize="small" /><Typography variant="caption">{item.video.views}</Typography></Stack>}{item.video.danmaku && <Typography variant="caption">弹幕 {item.video.danmaku}</Typography>}</Stack>}</Stack></Paper><MediaLightbox media={media} selected={selected} onSelect={setSelected} onClose={() => setSelected(null)} /></>
+  const targetURL = safeBilibiliURL(item.target_url || item.url)
+  const embedURL = isPlayableVideoType(item.type) ? bilibiliPlayerEmbedURL(item.target_url || item.url) : ''
+  const canPreview = Boolean(embedURL)
+  const openLabel = canPreview ? '预览视频' : targetURL ? '打开原内容' : '放大内容封面'
+
+  const onOpen = () => {
+    if (canPreview) {
+      setPreviewOpen(true)
+      return
+    }
+    if (targetURL) {
+      window.open(targetURL, '_blank', 'noopener,noreferrer')
+      return
+    }
+    setPreviewOpen(true) // cover-only fallback (no original URL)
+  }
+
+  return <>
+    <Paper variant="outlined" className="history-content-card">
+      <Box className="history-content-cover">
+        {failed
+          ? <Stack className="history-media-fallback" alignItems="center" justifyContent="center"><BrokenImage /><Typography variant="caption">封面加载失败</Typography></Stack>
+          : <button type="button" className={`history-media-button${canPreview || targetURL ? ' history-media-playable' : ''}`} aria-label={openLabel} onClick={onOpen}>
+            <img src={historyMediaURL(cover.url, 720)} alt="内容封面" loading="lazy" onError={() => setFailed(true)} />
+            {(canPreview || targetURL) && <span className="history-video-play" aria-hidden="true"><PlayCircleOutline /></span>}
+            {item.video?.duration && <span className="history-video-duration">{item.video.duration}</span>}
+          </button>}
+      </Box>
+      <Stack className="history-content-meta" spacing={1}>
+        <Typography fontWeight={750}>{item.title || dynamicTypeLabel(item.type || '')}</Typography>
+        {item.description && <Typography variant="body2" color="text.secondary" className="history-content-description">{item.description}</Typography>}
+        {item.video && <Stack direction="row" spacing={2} color="text.secondary" mt="auto">
+          {item.video.views && <Stack direction="row" spacing={.5} alignItems="center"><Visibility fontSize="small" /><Typography variant="caption">{item.video.views}</Typography></Stack>}
+          {item.video.danmaku && <Typography variant="caption">弹幕 {item.video.danmaku}</Typography>}
+        </Stack>}
+      </Stack>
+    </Paper>
+    {canPreview
+      ? <VideoPreviewDialog open={previewOpen} title={item.title || dynamicTypeLabel(item.type || '')} embedURL={embedURL} targetURL={targetURL} onClose={() => setPreviewOpen(false)} />
+      : !targetURL
+        ? <MediaLightbox media={[cover]} selected={previewOpen ? 0 : null} onSelect={() => undefined} onClose={() => setPreviewOpen(false)} />
+        : null}
+  </>
+}
+
+function VideoPreviewDialog({ open, title, embedURL, targetURL, onClose }: { open: boolean; title: string; embedURL: string; targetURL: string; onClose: () => void }) {
+  return <Dialog open={open} onClose={onClose} maxWidth={false} className="history-lightbox history-video-dialog" PaperProps={{ 'aria-label': '视频预览', sx: { bgcolor: 'transparent', boxShadow: 'none', overflow: 'visible', maxWidth: 'calc(100vw - 32px)', width: 'min(960px, calc(100vw - 32px))' } }}>
+    <Box className="history-video-stage">
+      <IconButton className="history-lightbox-close" aria-label="关闭视频预览" onClick={onClose}><Close /></IconButton>
+      <Box className="history-video-frame">
+        {open && <iframe title={title || '视频预览'} src={embedURL} allow="fullscreen; picture-in-picture" allowFullScreen loading="lazy" referrerPolicy="no-referrer" />}
+      </Box>
+      <Stack className="history-video-actions" direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
+        <Typography color="common.white" noWrap title={title}>{title}</Typography>
+        {targetURL && <Button size="small" variant="contained" color="primary" startIcon={<OpenInNew />} href={targetURL} target="_blank" rel="noopener noreferrer">在 B 站打开</Button>}
+      </Stack>
+    </Box>
+  </Dialog>
 }
 
 function MediaLightbox({ media, selected, onSelect, onClose }: { media: DynamicMedia[]; selected: number | null; onSelect: (index: number) => void; onClose: () => void }) {
@@ -111,6 +168,10 @@ function HistoryStat({ icon, value, emptyLabel, label }: { icon: React.ReactNode
 
 function isContentCardType(type?: string) {
   return type === 'DYNAMIC_TYPE_AV' || type === 'DYNAMIC_TYPE_ARTICLE' || type === 'DYNAMIC_TYPE_PGC' || type === 'DYNAMIC_TYPE_COMMON_SQUARE'
+}
+
+function isPlayableVideoType(type?: string) {
+  return type === 'DYNAMIC_TYPE_AV'
 }
 
 function historyAvatarText(value: string) {
