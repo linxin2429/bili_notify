@@ -77,6 +77,7 @@ HTTP 承担认证生命周期和全部管理资源 API：
 | `PUT /api/v1/settings` | 完整更新运行时采集设置 |
 | `GET /api/v1/dynamics[/{id}]`、`GET /api/v1/comments[/{rpid}]` | 查询历史列表或内容详情 |
 | `GET /api/v1/dynamics/{id}/media/{index}` | 读取已落盘的动态媒体（需会话） |
+| `GET /api/v1/audit-logs` | 按操作、结果、资源、时间和关键字分页查询管理员操作日志 |
 | `GET /api/v1/ws` | 校验会话并升级 WebSocket |
 
 HTTP 负责全部浏览器主动请求：资源写操作使用 JSON body，写请求必须携带会话中的 CSRF Token；历史查询使用 `uid?`、`q?`、`from?`、`to?`（RFC3339）、`limit?`（默认 20，最大 100）和 `offset?`，时间范围为半开区间 `[from, to)`。动态历史列表的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)`、互动统计 `stats(forwards/comments/likes)`、视频元数据 `video(duration/views/danmaku)` 和一层 `original` 引用预览（含原内容的视频元数据），前端无需逐条请求内容详情；若条目已有本地文件，列表中的 `media.url` 改写为同源 `/api/v1/dynamics/{id}/media/{index}`，否则保留 CDN URL。旧归档没有统计或视频字段时省略对应字段；列表不返回评论坐标与磁盘路径。WebSocket 仅承载服务端事件 `event/revision/data`，不接受业务命令；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、采集参数、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。重连后使用新快照修复断线期间遗漏的状态。
@@ -84,6 +85,8 @@ HTTP 负责全部浏览器主动请求：资源写操作使用 JSON body，写�
 领域事件主要由实际状态写入驱动：空闲投递周期不发布事件，空闲采集不广播整份 UP 列表；关注关系刷新、采集路由改变、就绪状态或风控暂停等时间派生状态跨越边界时发布对应轻量事件。投递成功、失败、重试或阻塞只标记状态和投递主题；渠道授权信息只有在实际变化时才标记渠道主题。事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。WebSocket 消息限制为 1 MiB，并以独立的 30 秒 Ping 保活。
 
 管理员会话 Cookie 为 Secure、HttpOnly、SameSite=Strict，空闲 8 小时或创建 24 小时后失效。登录和初始化按来源地址与全局失败次数限流。WebSocket 必须通过会话 Cookie 和同源 Origin 校验；密码修改会清空所有会话并关闭全部连接。
+
+所有管理 API 响应携带服务端生成的 `X-Request-ID`。认证和状态变更请求（含失败、未认证和 CSRF 拒绝）同步追加到 SQLite `audit_logs`，记录管理员/匿名来源、独立会话标识、远端地址、路由、目标、结果、耗时和白名单变更摘要；不记录普通读取、静态资源和 WebSocket 消息。操作日志默认保留 180 天，由管理台分页查询。审计写入失败不会篡改已经完成的业务结果，但会输出系统错误并增加指标。
 
 渠道读模型只返回非秘密设置与 `configured_secrets`，不返回掩码占位值。渠道更新中省略秘密表示保留，显式提供表示替换；OAuth 令牌不接受浏览器写入。
 
@@ -116,7 +119,11 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 
 ## 7. 可观测性、运行与验证
 
-私有观测服务默认监听 `:9090`：`/healthz` 表示进程存活，`/readyz` 要求有效 B站会话、启用的 UP 和渠道以及近期成功采集，`/metrics` 暴露轮询、发现延迟、投递结果和 Outbox 指标。指标不使用 UID、渠道 ID 或正文作为标签，日志不输出任何秘密。
+私有观测服务默认监听 `:9090`：`/healthz` 表示进程存活，`/readyz` 要求有效 B站会话、启用的 UP 和渠道以及近期成功采集，`/metrics` 暴露轮询、发现延迟、投递结果、Outbox 和审计写入失败指标。指标不使用 UID、渠道 ID 或正文作为标签。
+
+运行日志使用 `log/slog` 输出统一 JSON，同时写 stdout 与 `/data/logs/bili-notify.jsonl`；字段包含 schema、服务版本、进程 `run_id`、`category=system|audit`、组件、稳定事件名、结果、耗时及必要领域标识。文件按 20 MiB 轮转、最多保留 32 个备份，默认按 30 天清理。日志不输出请求体、Cookie、Webhook、令牌、第三方响应正文或秘密值；唯一例外是首次初始化所需、成功设置管理员后立即失效的 `setup_code`。
+
+可选观测栈由 Alloy 只读采集共享数据卷中的 JSONL，写入单实例 Loki，并通过只绑定宿主机回环地址且必须鉴权的 Grafana 查询。Loki 只将服务、类别、级别和组件作为标签，避免把请求 ID、UID、渠道 ID等高基数字段提升为标签；系统日志默认保留 30 天。Alloy 不挂载 Docker Socket，采集和查询组件故障不阻塞 Bili Notify 与内置操作日志查询。
 
 生产镜像使用 Node 24 构建前端、Go 1.26.5 静态构建后端，最终 scratch 镜像以 UID 65532 运行，只挂载独立 `/data` 卷并保持只读根文件系统。
 
@@ -126,6 +133,7 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 - 自动主密钥/TLS 生成、权限、损坏文件和旧 schema 拒绝；
 - Argon2id、一次性初始化、会话、限流、密码变更与连接失效；
 - HTTP 管理 API、WebSocket 单向事件、空闲周期不推送、领域事件合并、重连快照和秘密读模型；
+- 操作日志追加、筛选、保留清理、拒绝/失败路径、请求 ID和秘密值回归；
 - React 状态归约、结构化表单、桌面/移动端以及明暗主题；
 - Chromium 确定性端到端链路：管理员初始化、二维码登录、关注关系与空间基线、综合流采集、历史归档、失败 Outbox、同目录重启和人工重试；测试只连接本地 TLS 伪上游；
 - 生产 scratch 镜像的 nonroot/只读运行、健康检查、HTTPS 初始化、优雅停止和同卷重启。

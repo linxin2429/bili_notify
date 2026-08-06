@@ -20,6 +20,7 @@ import (
 const sessionCookie = "bili_notify_session"
 
 type authSession struct {
+	ID         string
 	CSRF       string
 	CreatedAt  time.Time
 	LastSeenAt time.Time
@@ -188,20 +189,24 @@ func remoteHost(remoteAddr string) string {
 	return remoteAddr
 }
 
-func (a *authenticator) createSession() (token, csrf string, err error) {
+func (a *authenticator) createSession() (token, csrf, sessionID string, err error) {
 	token, err = randomHex(32)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	csrf, err = randomHex(24)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
+	}
+	sessionID, err = randomHex(16)
+	if err != nil {
+		return "", "", "", err
 	}
 	now := time.Now()
 	a.mu.Lock()
-	a.sessions[token] = authSession{CSRF: csrf, CreatedAt: now, LastSeenAt: now}
+	a.sessions[token] = authSession{ID: sessionID, CSRF: csrf, CreatedAt: now, LastSeenAt: now}
 	a.mu.Unlock()
-	return token, csrf, nil
+	return token, csrf, sessionID, nil
 }
 
 func (a *authenticator) validate(r *http.Request) (string, authSession, bool) {

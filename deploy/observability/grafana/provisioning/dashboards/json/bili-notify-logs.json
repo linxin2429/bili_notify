@@ -1,0 +1,36 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "panels": [
+    {
+      "datasource": { "type": "loki", "uid": "bili-notify-loki" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "legend": { "showLegend": true } },
+      "targets": [
+        { "expr": "sum by (level) (count_over_time({service=\"bili-notify\",category=\"system\"}[$__auto]))", "refId": "A" }
+      ],
+      "title": "System log volume by level",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "bili-notify-loki" },
+      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 8 },
+      "id": 2,
+      "options": { "dedupStrategy": "none", "enableLogDetails": true, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
+      "targets": [
+        { "expr": "{service=\"bili-notify\",category=\"system\",level=~\"WARN|ERROR\"} | json", "refId": "A" }
+      ],
+      "title": "Recent warnings and errors",
+      "type": "logs"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 41,
+  "tags": ["bili-notify", "logs"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Bili Notify System Logs",
+  "uid": "bili-notify-system-logs",
+  "version": 1
+}

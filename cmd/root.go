@@ -47,6 +47,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("request_rate", 2.0)
 	v.SetDefault("request_concurrency", 4)
 	v.SetDefault("log_level", "info")
+	v.SetDefault("audit_log_retention", 180*24*time.Hour)
+	v.SetDefault("system_log_retention", 30*24*time.Hour)
 }
 
 func newServeCmd(v *viper.Viper) *cobra.Command {
@@ -61,6 +63,7 @@ func newServeCmd(v *viper.Viper) *cobra.Command {
 			cfg := config.Config{
 				DataDir: v.GetString("data_dir"), AdminAddr: v.GetString("admin_addr"), ObserveAddr: v.GetString("observe_addr"),
 				PollInterval: v.GetDuration("poll_interval"), RequestRate: v.GetFloat64("request_rate"), RequestConcurrency: v.GetInt("request_concurrency"), LogLevel: v.GetString("log_level"),
+				AuditLogRetention: v.GetDuration("audit_log_retention"), SystemLogRetention: v.GetDuration("system_log_retention"),
 			}
 			return app.Run(cmd.Context(), cfg, version)
 		},
@@ -72,6 +75,8 @@ func newServeCmd(v *viper.Viper) *cobra.Command {
 	cmd.Flags().Float64("request-rate", v.GetFloat64("request_rate"), "default Bilibili requests per second for a new data directory")
 	cmd.Flags().Int("request-concurrency", v.GetInt("request_concurrency"), "default maximum concurrent Bilibili requests for a new data directory")
 	cmd.Flags().String("log-level", v.GetString("log_level"), "debug, info, warn, or error")
+	cmd.Flags().Duration("audit-log-retention", v.GetDuration("audit_log_retention"), "retention for administrator operation logs")
+	cmd.Flags().Duration("system-log-retention", v.GetDuration("system_log_retention"), "retention for local structured system logs")
 	return cmd
 }
 
@@ -79,6 +84,7 @@ func bindServeFlags(v *viper.Viper, cmd *cobra.Command) error {
 	bindings := map[string]string{
 		"data_dir": "data-dir", "admin_addr": "admin-addr", "observe_addr": "observe-addr",
 		"poll_interval": "poll-interval", "request_rate": "request-rate", "request_concurrency": "request-concurrency", "log_level": "log-level",
+		"audit_log_retention": "audit-log-retention", "system_log_retention": "system-log-retention",
 	}
 	for key, flagName := range bindings {
 		if err := v.BindPFlag(key, cmd.Flags().Lookup(flagName)); err != nil {

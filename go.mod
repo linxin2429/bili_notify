@@ -14,6 +14,7 @@ require (
 	github.com/wneessen/go-mail v0.7.2
 	github.com/yeqown/go-qrcode/v2 v2.2.5
 	github.com/yeqown/go-qrcode/writer/standard v1.3.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	golang.org/x/crypto v0.49.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.21.0

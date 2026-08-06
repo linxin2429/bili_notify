@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,19 +18,20 @@ import (
 
 func (s *Server) registerAdminAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/dashboard", s.requireSession(false, s.dashboardAPI))
-	mux.HandleFunc("POST /api/v1/ups", s.requireSession(true, s.createUPAPI))
-	mux.HandleFunc("PUT /api/v1/ups/{uid}", s.requireSession(true, s.updateUPAPI))
-	mux.HandleFunc("DELETE /api/v1/ups/{uid}", s.requireSession(true, s.deleteUPAPI))
-	mux.HandleFunc("POST /api/v1/channels", s.requireSession(true, s.createChannelAPI))
-	mux.HandleFunc("PUT /api/v1/channels/{id}", s.requireSession(true, s.updateChannelAPI))
-	mux.HandleFunc("DELETE /api/v1/channels/{id}", s.requireSession(true, s.deleteChannelAPI))
-	mux.HandleFunc("POST /api/v1/channels/{id}/test", s.requireSession(true, s.testChannelAPI))
-	mux.HandleFunc("POST /api/v1/deliveries/{id}/retry", s.requireSession(true, s.retryDeliveryAPI))
-	mux.HandleFunc("POST /api/v1/bilibili-login", s.requireSession(true, s.startBiliLoginAPI))
-	mux.HandleFunc("DELETE /api/v1/bilibili-login/{id}", s.requireSession(true, s.cancelBiliLoginAPI))
-	mux.HandleFunc("POST /api/v1/channels/{id}/microsoft-login", s.requireSession(true, s.startMicrosoftLoginAPI))
-	mux.HandleFunc("DELETE /api/v1/channels/{id}/microsoft-login", s.requireSession(true, s.cancelMicrosoftLoginAPI))
-	mux.HandleFunc("PUT /api/v1/settings", s.requireSession(true, s.updateSettingsAPI))
+	mux.HandleFunc("POST /api/v1/ups", s.audit("up.create", "up", "", s.requireSession(true, s.createUPAPI)))
+	mux.HandleFunc("PUT /api/v1/ups/{uid}", s.audit("up.update", "up", "uid", s.requireSession(true, s.updateUPAPI)))
+	mux.HandleFunc("DELETE /api/v1/ups/{uid}", s.audit("up.delete", "up", "uid", s.requireSession(true, s.deleteUPAPI)))
+	mux.HandleFunc("POST /api/v1/channels", s.audit("channel.create", "channel", "", s.requireSession(true, s.createChannelAPI)))
+	mux.HandleFunc("PUT /api/v1/channels/{id}", s.audit("channel.update", "channel", "id", s.requireSession(true, s.updateChannelAPI)))
+	mux.HandleFunc("DELETE /api/v1/channels/{id}", s.audit("channel.delete", "channel", "id", s.requireSession(true, s.deleteChannelAPI)))
+	mux.HandleFunc("POST /api/v1/channels/{id}/test", s.audit("channel.test", "channel", "id", s.requireSession(true, s.testChannelAPI)))
+	mux.HandleFunc("POST /api/v1/deliveries/{id}/retry", s.audit("delivery.retry", "delivery", "id", s.requireSession(true, s.retryDeliveryAPI)))
+	mux.HandleFunc("POST /api/v1/bilibili-login", s.audit("bilibili.login.start", "bilibili_login", "", s.requireSession(true, s.startBiliLoginAPI)))
+	mux.HandleFunc("DELETE /api/v1/bilibili-login/{id}", s.audit("bilibili.login.cancel", "bilibili_login", "id", s.requireSession(true, s.cancelBiliLoginAPI)))
+	mux.HandleFunc("POST /api/v1/channels/{id}/microsoft-login", s.audit("microsoft.login.start", "channel", "id", s.requireSession(true, s.startMicrosoftLoginAPI)))
+	mux.HandleFunc("DELETE /api/v1/channels/{id}/microsoft-login", s.audit("microsoft.login.cancel", "channel", "id", s.requireSession(true, s.cancelMicrosoftLoginAPI)))
+	mux.HandleFunc("PUT /api/v1/settings", s.audit("settings.update", "settings", "", s.requireSession(true, s.updateSettingsAPI)))
+	mux.HandleFunc("GET /api/v1/audit-logs", s.requireSession(false, s.queryAuditLogsAPI))
 	mux.HandleFunc("GET /api/v1/dynamics", s.requireSession(false, s.queryDynamicsAPI))
 	mux.HandleFunc("GET /api/v1/dynamics/{id}", s.requireSession(false, s.getDynamicAPI))
 	mux.HandleFunc("GET /api/v1/dynamics/{id}/media/{index}", s.requireSession(false, s.getDynamicMediaAPI))
@@ -70,6 +72,8 @@ func (s *Server) createUPAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusCreated, nil, err)
 		return
 	}
+	setAuditResourceID(r, up.UID)
+	setAuditDetails(r, map[string]any{"name": up.Name, "enabled": up.Enabled})
 	s.engine.NotifyUPChanged()
 	s.events.Publish(service.TopicStatus | service.TopicUPs)
 	s.writeAPIResult(w, http.StatusCreated, up, nil)
@@ -88,6 +92,7 @@ func (s *Server) updateUPAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusOK, nil, err)
 		return
 	}
+	beforeName, beforeEnabled := up.Name, up.Enabled
 	up.Name, up.Enabled = input.Name, input.Enabled
 	if err := up.Validate(); err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(err))
@@ -97,6 +102,10 @@ func (s *Server) updateUPAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusOK, nil, err)
 		return
 	}
+	setAuditDetails(r, map[string]any{
+		"before": map[string]any{"name": beforeName, "enabled": beforeEnabled},
+		"after":  map[string]any{"name": up.Name, "enabled": up.Enabled},
+	})
 	s.engine.NotifyUPChanged()
 	s.events.Publish(service.TopicStatus | service.TopicUPs)
 	s.writeAPIResult(w, http.StatusOK, up, nil)
@@ -104,13 +113,16 @@ func (s *Server) updateUPAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteUPAPI(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
+	if up, err := s.store.UP(uid); err == nil {
+		setAuditDetails(r, map[string]any{"name": up.Name, "enabled": up.Enabled})
+	}
 	if err := s.store.DeleteUP(uid); err != nil {
 		s.writeAPIResult(w, http.StatusNoContent, nil, err)
 		return
 	}
 	if s.dataDir != "" {
 		if err := media.RemoveUP(s.dataDir, uid); err != nil {
-			s.logger.Warn("removing media for deleted UP failed", "uid", uid, "err", err)
+			s.logger.Warn("removing media for deleted UP failed", "event", "media.remove_up.failed", "up_uid", uid, "error", err)
 		}
 	}
 	s.engine.NotifyUPChanged()
@@ -125,6 +137,8 @@ func (s *Server) createChannelAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	channel, err := s.saveChannel(input, false)
 	if err == nil {
+		setAuditResourceID(r, channel.ID)
+		setAuditDetails(r, channelAuditDetails(nil, channel))
 		s.events.Publish(service.TopicStatus | service.TopicChannels | service.TopicDeliveries | service.TopicMicrosoftLogin)
 	}
 	s.writeAPIResult(w, http.StatusCreated, toChannelView(channel), err)
@@ -136,8 +150,13 @@ func (s *Server) updateChannelAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.ID = r.PathValue("id")
+	var before *model.Channel
+	if current, currentErr := s.store.Channel(input.ID); currentErr == nil {
+		before = &current
+	}
 	channel, err := s.saveChannel(input, true)
 	if err == nil {
+		setAuditDetails(r, channelAuditDetails(before, channel))
 		s.events.Publish(service.TopicStatus | service.TopicChannels | service.TopicDeliveries | service.TopicMicrosoftLogin)
 	}
 	s.writeAPIResult(w, http.StatusOK, toChannelView(channel), err)
@@ -145,6 +164,9 @@ func (s *Server) updateChannelAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteChannelAPI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if channel, err := s.store.Channel(id); err == nil {
+		setAuditDetails(r, channelAuditDetails(&channel, model.Channel{}))
+	}
 	if err := s.store.DeleteChannel(id); err != nil {
 		s.writeAPIResult(w, http.StatusNoContent, nil, err)
 		return
@@ -189,6 +211,7 @@ func (s *Server) startBiliLoginAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusCreated, nil, err)
 		return
 	}
+	setAuditResourceID(r, login.Key)
 	view, err := s.biliLoginViewFor(login)
 	s.writeAPIResult(w, http.StatusCreated, view, err)
 }
@@ -219,8 +242,99 @@ func (s *Server) updateSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(err))
 		return
 	}
+	before := s.engine.Settings()
 	err := s.engine.UpdateSettings(input)
+	if err == nil {
+		setAuditDetails(r, map[string]any{"before": before, "after": s.engine.Settings()})
+	}
 	s.writeAPIResult(w, http.StatusOK, s.engine.Settings(), err)
+}
+
+func (s *Server) queryAuditLogsAPI(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	input := state.AuditQuery{
+		Action: strings.TrimSpace(query.Get("action")), Outcome: strings.TrimSpace(query.Get("outcome")),
+		ResourceType: strings.TrimSpace(query.Get("resource_type")), Q: query.Get("q"),
+	}
+	if input.Outcome != "" && input.Outcome != state.AuditSuccess && input.Outcome != state.AuditFailure && input.Outcome != state.AuditDenied {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "outcome must be success, failure, or denied")
+		return
+	}
+	var err error
+	if value := query.Get("from"); value != "" {
+		input.From, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", "from must be RFC3339")
+			return
+		}
+	}
+	if value := query.Get("to"); value != "" {
+		input.To, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", "to must be RFC3339")
+			return
+		}
+	}
+	if !input.From.IsZero() && !input.To.IsZero() && !input.From.Before(input.To) {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "from must be earlier than to")
+		return
+	}
+	if value := query.Get("limit"); value != "" {
+		input.Limit, err = strconv.Atoi(value)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", "limit must be an integer")
+			return
+		}
+	}
+	if value := query.Get("offset"); value != "" {
+		input.Offset, err = strconv.Atoi(value)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", "offset must be an integer")
+			return
+		}
+	}
+	items, total, err := s.store.QueryAuditLogs(input)
+	limit, offset := normalizeAuditPage(input.Limit, input.Offset)
+	s.writeAPIResult(w, http.StatusOK, contentPage{Items: items, Total: total, Limit: limit, Offset: offset}, err)
+}
+
+func channelAuditDetails(before *model.Channel, after model.Channel) map[string]any {
+	details := make(map[string]any)
+	if before != nil {
+		details["before"] = map[string]any{"name": before.Name, "type": before.Type, "enabled": before.Enabled}
+	}
+	if after.ID != "" {
+		details["after"] = map[string]any{"name": after.Name, "type": after.Type, "enabled": after.Enabled}
+	}
+	changed := make(map[string]struct{})
+	if before != nil {
+		for key, value := range before.Settings {
+			if after.Settings[key] != value {
+				changed[key] = struct{}{}
+			}
+		}
+	}
+	for key, value := range after.Settings {
+		if before == nil || before.Settings[key] != value {
+			changed[key] = struct{}{}
+		}
+	}
+	keys := make([]string, 0, len(changed))
+	for key := range changed {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	if len(keys) > 0 {
+		details["changed_setting_keys"] = keys
+	}
+	return details
+}
+
+func normalizeAuditPage(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = 50
+	}
+	return min(limit, 100), max(offset, 0)
 }
 
 func (s *Server) queryDynamicsAPI(w http.ResponseWriter, r *http.Request) {
@@ -348,7 +462,7 @@ func (s *Server) writeAPIResult(w http.ResponseWriter, successStatus int, value 
 	}
 	apiErr := apiError(err)
 	if apiErr.Code == "internal" && s.logger != nil {
-		s.logger.Error("admin API request failed", "err", err)
+		s.logger.Error("admin API request failed", "event", "http.handler.failed", "error", err)
 	}
 	writeAPIError(w, httpStatusForAPIError(apiErr.Code), apiErr.Code, apiErr.Message)
 }

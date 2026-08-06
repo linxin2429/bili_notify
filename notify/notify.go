@@ -504,7 +504,7 @@ func (s *robotSender) postJSON(ctx context.Context, endpoint string, payload any
 		return &PermanentError{Err: fmt.Errorf("decoding %s response: %w", s.kind, err)}
 	}
 	if code := businessCode(result); code != 0 {
-		return &PermanentError{Err: fmt.Errorf("%s returned business code %d: %s", s.kind, code, responseBody)}
+		return &PermanentError{Err: fmt.Errorf("%s returned business code %d", s.kind, code)}
 	}
 	return nil
 }

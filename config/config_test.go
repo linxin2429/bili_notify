@@ -15,6 +15,7 @@ func TestConfigValidate(t *testing.T) {
 	valid := Config{
 		DataDir: "/data", AdminAddr: ":8443", ObserveAddr: ":9090", PollInterval: 30 * time.Second,
 		RequestRate: 2, RequestConcurrency: 4, LogLevel: "info",
+		AuditLogRetention: 180 * 24 * time.Hour, SystemLogRetention: 30 * 24 * time.Hour,
 	}
 	tests := []struct {
 		name    string
@@ -31,6 +32,16 @@ func TestConfigValidate(t *testing.T) {
 			name:    "missing data dir",
 			mutate:  func(c *Config) { c.DataDir = "" },
 			wantErr: "data directory",
+		},
+		{
+			name:    "sub-day audit retention",
+			mutate:  func(c *Config) { c.AuditLogRetention = 12 * time.Hour },
+			wantErr: "audit log retention",
+		},
+		{
+			name:    "fractional system retention",
+			mutate:  func(c *Config) { c.SystemLogRetention = 25 * time.Hour },
+			wantErr: "system log retention",
 		},
 	}
 	for _, tt := range tests {

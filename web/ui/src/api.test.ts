@@ -37,6 +37,18 @@ describe('AdminAPI', () => {
     expect(fetchMock.mock.calls[0][1]?.method).toBeUndefined()
   })
 
+  it('encodes operation log filters as query parameters', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ items: [], total: 0, limit: 20, offset: 0 }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await new AdminAPI('csrf-token').queryAuditLogs({ action: 'channel.update', outcome: 'failure', q: 'request 42', limit: 20 })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/audit-logs?action=channel.update&outcome=failure&q=request+42&limit=20')
+    expect(fetchMock.mock.calls[0][1]?.method).toBeUndefined()
+  })
+
   it('queues one encoded delivery id for retry with CSRF', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ status: 'queued' }), {
       status: 202,

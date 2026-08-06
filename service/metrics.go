@@ -19,6 +19,7 @@ type Metrics struct {
 	MediaDownloadTotal *prometheus.CounterVec
 	MediaDownloadBytes prometheus.Counter
 	MediaMissingTotal  prometheus.Counter
+	AuditWriteFailures prometheus.Counter
 }
 
 func NewMetrics(reg prometheus.Registerer) *Metrics {
@@ -37,7 +38,8 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		MediaDownloadTotal: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "bili_notify_media_download_total", Help: "Media download attempts."}, []string{"result"}),
 		MediaDownloadBytes: prometheus.NewCounter(prometheus.CounterOpts{Name: "bili_notify_media_download_bytes", Help: "Bytes downloaded for dynamic media."}),
 		MediaMissingTotal:  prometheus.NewCounter(prometheus.CounterOpts{Name: "bili_notify_media_missing_total", Help: "Expected local media files that were missing at use time."}),
+		AuditWriteFailures: prometheus.NewCounter(prometheus.CounterOpts{Name: "bili_notify_audit_write_failures_total", Help: "Administrator operation records that could not be persisted."}),
 	}
-	reg.MustRegister(m.PollTotal, m.PollDuration, m.DiscoveryDelay, m.LastPollSuccess, m.CommentPollTotal, m.CommentFoundTotal, m.DeliveryTotal, m.DeliveryDuration, m.OutboxDepth, m.OldestOutboxAge, m.AuthState, m.MediaDownloadTotal, m.MediaDownloadBytes, m.MediaMissingTotal)
+	reg.MustRegister(m.PollTotal, m.PollDuration, m.DiscoveryDelay, m.LastPollSuccess, m.CommentPollTotal, m.CommentFoundTotal, m.DeliveryTotal, m.DeliveryDuration, m.OutboxDepth, m.OldestOutboxAge, m.AuthState, m.MediaDownloadTotal, m.MediaDownloadBytes, m.MediaMissingTotal, m.AuditWriteFailures)
 	return m
 }

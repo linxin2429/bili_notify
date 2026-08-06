@@ -198,14 +198,13 @@ func (s *microsoftSender) Send(ctx context.Context, message Message) error {
 		return fmt.Errorf("sending Microsoft Graph mail: %w", err)
 	}
 	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20)); err != nil {
 		return fmt.Errorf("reading Microsoft Graph response: %w", err)
 	}
 	if resp.StatusCode == http.StatusAccepted {
 		return nil
 	}
-	graphErr := fmt.Errorf("Microsoft Graph returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	graphErr := fmt.Errorf("Microsoft Graph returned HTTP %d", resp.StatusCode)
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 		return graphErr
 	}

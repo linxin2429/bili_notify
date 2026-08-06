@@ -8,11 +8,11 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/linxin2429/bili_notify/bilibili"
 	"github.com/linxin2429/bili_notify/config"
+	"github.com/linxin2429/bili_notify/logging"
 	"github.com/linxin2429/bili_notify/media"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
@@ -30,6 +30,7 @@ type Dependencies struct {
 	BilibiliAPIURL         string
 	BilibiliPassportURL    string
 	Logger                 *slog.Logger
+	AuditLogger            *slog.Logger
 	AdminListener          net.Listener
 	ObserveListener        net.Listener
 }
@@ -49,6 +50,26 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if err := config.RefuseLegacyDataDir(cfg.DataDir); err != nil {
 		return err
 	}
+	logger := dependencies.Logger
+	auditLogger := dependencies.AuditLogger
+	var loggers *logging.Set
+	if logger == nil {
+		var err error
+		loggers, err = logging.Open(logging.Config{
+			Level: cfg.LogLevel, Version: version, FilePath: config.LogPath(cfg.DataDir),
+			Retention: cfg.SystemLogRetention, Stdout: os.Stdout,
+		})
+		if err != nil {
+			return fmt.Errorf("initializing structured logging: %w", err)
+		}
+		defer loggers.Close()
+		logger = loggers.System
+		auditLogger = loggers.Audit
+	}
+	if auditLogger == nil {
+		auditLogger = logger.With("category", "audit")
+	}
+	appLogger := logger.With("component", "app")
 	key, err := config.LoadOrCreateMasterKey(cfg.DataDir)
 	if err != nil {
 		return err
@@ -82,11 +103,8 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 		return fmt.Errorf("stored runtime settings are invalid: %w", err)
 	}
 
-	logger := dependencies.Logger
-	if logger == nil {
-		logger = newLogger(cfg.LogLevel)
-	}
-	logger.Info("Bili Notify starting",
+	appLogger.Info("Bili Notify starting",
+		"event", "process.start",
 		"version", version,
 		"timezone", time.Local.String(),
 		"poll_interval_sec", settings.PollIntervalSec,
@@ -119,20 +137,27 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if dependencies.NotificationHTTPClient != nil {
 		engineOptions = append(engineOptions, service.WithNotificationHTTPClient(dependencies.NotificationHTTPClient))
 	}
-	engine := service.NewEngine(store, client, logger, metrics, settings, events, downloader, engineOptions...)
-	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, store, events, logger, registry, cfg.DataDir)
+	engine := service.NewEngine(store, client, logger.With("component", "engine"), metrics, settings, events, downloader, engineOptions...)
+	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), registry, cfg.DataDir)
 	if err != nil {
 		return err
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return engine.Run(gctx) })
+	g.Go(func() error { return runAuditRetention(gctx, store, cfg.AuditLogRetention, appLogger) })
 	if dependencies.AdminListener != nil {
 		g.Go(func() error { return server.Serve(gctx, dependencies.AdminListener, dependencies.ObserveListener) })
 	} else {
 		g.Go(func() error { return server.Run(gctx) })
 	}
-	return g.Wait()
+	err = g.Wait()
+	if err != nil {
+		appLogger.Error("Bili Notify stopped with an error", "event", "process.stop", "result", "failure", "error", err)
+		return err
+	}
+	appLogger.Info("Bili Notify stopped", "event", "process.stop", "result", "success")
+	return nil
 }
 
 func (d Dependencies) validate() error {
@@ -145,30 +170,6 @@ func (d Dependencies) validate() error {
 	return nil
 }
 
-func newLogger(logLevel string) *slog.Logger {
-	level := new(slog.LevelVar)
-	switch strings.ToLower(logLevel) {
-	case "debug":
-		level.Set(slog.LevelDebug)
-	case "warn":
-		level.Set(slog.LevelWarn)
-	case "error":
-		level.Set(slog.LevelError)
-	default:
-		level.Set(slog.LevelInfo)
-	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level,
-		// slog's JSON handler rewrites time.Time to UTC; emit local wall-clock times instead.
-		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
-			if a.Value.Kind() == slog.KindTime {
-				return slog.String(a.Key, a.Value.Time().In(time.Local).Format(time.RFC3339Nano))
-			}
-			return a
-		},
-	}))
-}
-
 func newHTTPClient() *http.Client {
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
@@ -179,4 +180,35 @@ func newHTTPClient() *http.Client {
 		MaxIdleConns:          20,
 	}
 	return &http.Client{Transport: transport, Timeout: 10 * time.Second}
+}
+
+func runAuditRetention(ctx context.Context, store *state.Store, retention time.Duration, logger *slog.Logger) error {
+	prune := func() {
+		var deleted int64
+		for {
+			count, err := store.PruneAuditLogs(time.Now().Add(-retention), 1000)
+			if err != nil {
+				logger.Error("audit log retention failed", "event", "audit.retention.failed", "error", err)
+				return
+			}
+			deleted += count
+			if count < 1000 {
+				break
+			}
+		}
+		if deleted > 0 {
+			logger.Info("expired audit logs removed", "event", "audit.retention.completed", "deleted", deleted)
+		}
+	}
+	prune()
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			prune()
+		}
+	}
 }

@@ -259,7 +259,7 @@ func TestPollUPLogsSchemaFailure(t *testing.T) {
 	updated, err := store.UP(up.UID)
 	require.NoError(t, err)
 	assert.Equal(t, 1, updated.ConsecutiveFail)
-	for _, expected := range []string{`"msg":"Bilibili UP poll failed"`, `"uid":"42"`, `"up_name":"configured name"`, `"error_kind":"schema"`} {
+	for _, expected := range []string{`"msg":"Bilibili UP poll failed"`, `"event":"bilibili.up.poll_completed"`, `"up_uid":"42"`, `"up_name":"configured name"`, `"error_kind":"schema"`} {
 		assert.Contains(t, logs.String(), expected)
 	}
 }

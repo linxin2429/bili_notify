@@ -90,6 +90,33 @@ docker compose run --rm bili-notify --help
 docker compose exec bili-notify /bili-notify healthcheck
 ```
 
+服务把结构化 JSON 同时写到 stdout 和数据卷的 `/data/logs/bili-notify.jsonl`。`category=system` 是系统运行日志，`category=audit` 是已成功写入 SQLite 的管理员操作日志；管理台“操作日志”页面可按操作、结果、时间、来源和请求 ID查询。默认审计保留 180 天，运行日志保留 30 天，可分别通过 `BILI_NOTIFY_AUDIT_LOG_RETENTION` 和 `BILI_NOTIFY_SYSTEM_LOG_RETENTION` 调整（必须是 24 小时的整数倍）。
+
+需要集中收集和查询系统日志时，设置 Grafana 密码并启动可选观测配置：
+
+```bash
+export GRAFANA_ADMIN_PASSWORD='使用独立的强密码'
+# 单个完整 Compose 文件，同时启动 Bili Notify、Alloy、Loki 和 Grafana
+docker compose -f compose.full.yaml up -d
+
+# 或者在基础 Compose 上叠加可观测配置
+docker compose -f compose.yaml -f compose.observability.yaml --profile observability up -d
+
+# Grafana 仅监听本机回环地址
+ssh -L 3000:127.0.0.1:3000 your-server
+# 浏览器打开 http://127.0.0.1:3000
+```
+
+该配置使用 Alloy 读取共享日志文件并写入 Loki，不挂载 Docker Socket。Grafana 已预置 Loki 数据源和系统日志面板；在 Explore 中可使用：
+
+```logql
+{service="bili-notify",category="system"} | json
+{service="bili-notify",category="system",level=~"WARN|ERROR"} | json
+{service="bili-notify",category="system"} | json | request_id="请求 ID"
+```
+
+停止观测组件不会影响采集、投递和管理台操作日志；Alloy 重启后会从持久化读取位置继续采集。Loki 和 Grafana 数据分别保存在独立命名卷中。
+
 管理员密码可在“设置”中修改，修改后所有现有会话与 WebSocket 会立即失效。本版本不提供忘记密码恢复；密码丢失后只能使用新的数据卷重新初始化。
 
 本版本不兼容旧的外置主密钥数据库，也不会自动删除或迁移旧卷。升级前请备份；切换新版时必须显式创建全新数据卷。

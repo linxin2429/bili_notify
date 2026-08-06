@@ -37,6 +37,8 @@ type Server struct {
 	store         *state.Store
 	events        *service.EventBus
 	logger        *slog.Logger
+	auditLogger   *slog.Logger
+	metrics       *service.Metrics
 	registry      *prometheus.Registry
 	dataDir       string
 	static        fs.FS
@@ -44,7 +46,7 @@ type Server struct {
 	connections   map[string]map[*websocket.Conn]struct{}
 }
 
-func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, store *state.Store, events *service.EventBus, logger *slog.Logger, registry *prometheus.Registry, dataDir string) (*Server, error) {
+func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, store *state.Store, events *service.EventBus, logger, auditLogger *slog.Logger, registry *prometheus.Registry, dataDir string) (*Server, error) {
 	tlsConfig, err := loadOrCreateTLSConfig(tlsPath)
 	if err != nil {
 		return nil, err
@@ -58,11 +60,11 @@ func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, s
 		return nil, err
 	}
 	if setupCode != "" {
-		logger.Error("administrator setup required", "setup_code", setupCode)
+		logger.Error("administrator setup required", "event", "auth.setup_required", "setup_code", setupCode)
 	}
 	return &Server{
 		adminAddr: adminAddr, observeAddr: observeAddr, tlsConfig: tlsConfig, auth: auth,
-		engine: engine, store: store, events: events, logger: logger, registry: registry, dataDir: dataDir, static: static,
+		engine: engine, store: store, events: events, logger: logger, auditLogger: auditLogger, metrics: engine.Metrics(), registry: registry, dataDir: dataDir, static: static,
 		connections: make(map[string]map[*websocket.Conn]struct{}),
 	}, nil
 }
@@ -92,14 +94,14 @@ func (s *Server) Serve(ctx context.Context, adminListener, observeListener net.L
 	}
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		s.logger.Info("admin server started", "addr", adminListener.Addr().String())
+		s.logger.Info("admin server started", "event", "server.admin.started", "addr", adminListener.Addr().String())
 		if err := admin.Serve(tls.NewListener(adminListener, s.tlsConfig)); !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil
 	})
 	g.Go(func() error {
-		s.logger.Info("observability server started", "addr", observeListener.Addr().String())
+		s.logger.Info("observability server started", "event", "server.observability.started", "addr", observeListener.Addr().String())
 		if err := observe.Serve(observeListener); !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
@@ -135,16 +137,16 @@ func (s *Server) observeHandler() http.Handler {
 func (s *Server) adminHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/session", s.sessionState)
-	mux.HandleFunc("POST /api/v1/setup", s.setup)
-	mux.HandleFunc("POST /api/v1/session", s.login)
-	mux.HandleFunc("DELETE /api/v1/session", s.requireSession(true, s.logout))
-	mux.HandleFunc("PUT /api/v1/session/password", s.requireSession(true, s.changePassword))
+	mux.HandleFunc("POST /api/v1/setup", s.audit("auth.setup", "session", "", s.setup))
+	mux.HandleFunc("POST /api/v1/session", s.audit("auth.login", "session", "", s.login))
+	mux.HandleFunc("DELETE /api/v1/session", s.audit("auth.logout", "session", "", s.requireSession(true, s.logout)))
+	mux.HandleFunc("PUT /api/v1/session/password", s.audit("auth.password.change", "session", "", s.requireSession(true, s.changePassword)))
 	s.registerAdminAPI(mux)
 	mux.HandleFunc("GET /api/v1/ws", s.webSocket)
 	mux.Handle("GET /assets/", http.FileServer(http.FS(s.static)))
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /{path...}", s.index)
-	return securityHeaders(mux)
+	return securityHeaders(s.withRequestLog(mux))
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -228,8 +230,12 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, status, code, err.Error())
 		return
 	}
-	s.createHTTPSession(w)
-	s.logger.Info("administrator initialized", "remote_addr", r.RemoteAddr)
+	sessionID, err := s.createHTTPSession(w)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "internal", "creating session")
+		return
+	}
+	setAuditAuthenticatedSession(r, sessionID)
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -246,22 +252,25 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.auth.authenticate(request.Password) {
 		s.auth.recordFailure(r.RemoteAddr)
-		s.logger.Warn("administrator login failed", "remote_addr", r.RemoteAddr)
 		writeAPIError(w, http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
 		return
 	}
-	s.createHTTPSession(w)
-	s.logger.Info("administrator login succeeded", "remote_addr", r.RemoteAddr)
-}
-
-func (s *Server) createHTTPSession(w http.ResponseWriter) {
-	token, csrf, err := s.auth.createSession()
+	sessionID, err := s.createHTTPSession(w)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "internal", "creating session")
 		return
 	}
+	setAuditAuthenticatedSession(r, sessionID)
+}
+
+func (s *Server) createHTTPSession(w http.ResponseWriter) (string, error) {
+	token, csrf, sessionID, err := s.auth.createSession()
+	if err != nil {
+		return "", err
+	}
 	http.SetCookie(w, secureCookie(sessionCookie, token, 24*60*60))
 	writeJSON(w, http.StatusOK, map[string]string{"csrf_token": csrf})
+	return sessionID, nil
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -286,8 +295,9 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auth.invalidateAll()
 	s.closeAllConnections(websocket.StatusPolicyViolation, "password changed")
-	s.createHTTPSession(w)
-	s.logger.Info("administrator password changed", "remote_addr", r.RemoteAddr)
+	if _, err := s.createHTTPSession(w); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "internal", "creating session")
+	}
 }
 
 func decodeJSON(r *http.Request, dst any) error {

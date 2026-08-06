@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { vi } from 'vitest'
 import {
-  activateNavigation, canApplyDashboardRefresh, composePreviewBody, DeliveriesPage, DynamicHistoryCard,
+  activateNavigation, AuditLogsPage, canApplyDashboardRefresh, composePreviewBody, DeliveriesPage, DynamicHistoryCard,
   followStateLabel, formatInteractionCount, formatRelativeDate, historyMediaURL,
 } from './App'
 import { AdminAPI, parseDynamicHistoryPage } from './api'
@@ -129,6 +129,30 @@ describe('delivery retry', () => {
 
     await waitFor(() => expect(retry).toHaveBeenCalledWith('blocked'))
     await waitFor(() => expect(refreshDashboard).toHaveBeenCalledOnce())
+  })
+})
+
+describe('operation logs', () => {
+  it('queries filters and reveals safe operation details', async () => {
+    const api = new AdminAPI('csrf')
+    const query = vi.spyOn(api, 'queryAuditLogs').mockResolvedValue({
+      items: [{
+        id: 1, occurred_at: '2026-08-06T10:00:00+08:00', request_id: 'request-42',
+        actor: 'administrator', session_id: 'session-1', remote_ip: '192.0.2.1', user_agent: 'test-browser',
+        action: 'channel.update', resource_type: 'channel', resource_id: 'mail', outcome: 'success',
+        http_method: 'PUT', route: '/api/v1/channels/{id}', status_code: 200, duration_ms: 12,
+        details: { changed_setting_keys: ['password'] },
+      }],
+      total: 1, limit: 20, offset: 0,
+    })
+
+    render(<MemoryRouter initialEntries={['/audit-logs?outcome=success']}><AuditLogsPage api={api} refresh={0} /></MemoryRouter>)
+
+    await waitFor(() => expect(query).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'success', limit: 20, offset: 0 })))
+    expect(await screen.findByText('修改通知渠道')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看详情' }))
+    expect(screen.getByText('request-42')).toBeInTheDocument()
+    expect(screen.getByText(/password/)).toBeInTheDocument()
   })
 })
 

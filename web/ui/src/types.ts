@@ -202,6 +202,28 @@ export interface ContentPage<T> {
   offset: number
 }
 
+export type AuditOutcome = 'success' | 'failure' | 'denied'
+
+export interface AuditLog {
+  id: number
+  occurred_at: string
+  request_id: string
+  actor: 'administrator' | 'anonymous'
+  session_id: string
+  remote_ip: string
+  user_agent: string
+  action: string
+  resource_type: string
+  resource_id: string
+  outcome: AuditOutcome
+  http_method: string
+  route: string
+  status_code: number
+  error_code?: string
+  duration_ms: number
+  details: Record<string, unknown>
+}
+
 export interface CommentDetail {
   rpid: string
   up_uid: string

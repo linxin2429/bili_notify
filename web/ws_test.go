@@ -65,7 +65,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, response.StatusCode)
 	_ = response.Body.Close()
 
-	token, csrf, err := auth.createSession()
+	token, csrf, _, err := auth.createSession()
 	require.NoError(t, err)
 	headers := http.Header{}
 	headers.Set("Cookie", (&http.Cookie{Name: sessionCookie, Value: token}).String())

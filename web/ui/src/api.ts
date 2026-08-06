@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type {
-  BiliLogin, Channel, ChannelDraft, CommentDetail, ContentPage, DashboardSnapshot,
+  AuditLog, BiliLogin, Channel, ChannelDraft, CommentDetail, ContentPage, DashboardSnapshot,
   DynamicHistoryItem, MicrosoftLogin, RuntimeSettings, UP,
 } from './types'
 
@@ -84,6 +84,17 @@ export interface ContentQuery {
   offset?: number
 }
 
+export interface AuditQuery {
+  action?: string
+  outcome?: string
+  resource_type?: string
+  q?: string
+  from?: string
+  to?: string
+  limit?: number
+  offset?: number
+}
+
 export class AdminAPI {
   constructor(private readonly csrf: string) {}
 
@@ -133,12 +144,14 @@ export class AdminAPI {
 
   getComment(rpid: string) { return httpJSON<CommentDetail>(`/api/v1/comments/${encodeURIComponent(rpid)}`) }
 
+  queryAuditLogs(query: AuditQuery) { return httpJSON<ContentPage<AuditLog>>(`/api/v1/audit-logs?${queryString(query)}`) }
+
   private write<T>(path: string, method: string, body?: unknown) {
     return httpJSON<T>(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, this.csrf)
   }
 }
 
-function queryString(query: ContentQuery): string {
+function queryString(query: ContentQuery | AuditQuery): string {
   const values = new URLSearchParams()
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== '') values.set(key, String(value))
