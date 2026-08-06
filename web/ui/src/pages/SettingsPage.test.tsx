@@ -5,7 +5,10 @@ import { AdminAPI } from '../api'
 import { renderRoute, settings } from '../test/fixtures'
 import { SettingsPage } from './SettingsPage'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  window.localStorage.clear()
+})
 
 describe('SettingsPage', () => {
   it('validates and submits complete runtime settings', async () => {
@@ -20,6 +23,20 @@ describe('SettingsPage', () => {
     const user = userEvent.setup(); const setPreference = vi.fn(); const api = new AdminAPI('csrf')
     renderRoute(<SettingsPage csrf="csrf" preference="system" setPreference={setPreference} settings={settings} api={api} runMutation={request => request()} onChanged={vi.fn()} />)
     await user.click(screen.getByRole('checkbox', { name: '启用 UP 评论回复监控' })); expect(screen.getByLabelText('每 UP 跟踪内容数 N')).toBeDisabled(); await user.click(screen.getByRole('button', { name: '深色' })); expect(setPreference).toHaveBeenCalledWith('dark')
+  })
+
+  it('collapses sections and restores the expanded state after remount', async () => {
+    const user = userEvent.setup(); const api = new AdminAPI('csrf')
+    const first = renderRoute(<SettingsPage csrf="csrf" preference="system" setPreference={vi.fn()} settings={settings} api={api} runMutation={request => request()} onChanged={vi.fn()} />)
+    expect(screen.getByLabelText('轮询间隔（秒）')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '收起基础采集' }))
+    expect(screen.queryByLabelText('轮询间隔（秒）')).not.toBeInTheDocument()
+    const stored = JSON.parse(window.localStorage.getItem('settings.expanded') || '{}') as Record<string, boolean>
+    expect(stored.basic).toBe(false)
+    first.unmount()
+    renderRoute(<SettingsPage csrf="csrf" preference="system" setPreference={vi.fn()} settings={settings} api={api} runMutation={request => request()} onChanged={vi.fn()} />)
+    expect(screen.queryByLabelText('轮询间隔（秒）')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '展开基础采集' })).toBeVisible()
   })
 
   it('rejects mismatched passwords without a request', async () => {

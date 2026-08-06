@@ -105,6 +105,30 @@ export function historyMediaURL(url: string, width: number) {
   }
 }
 
+/** Extract a Bilibili BV id from a content URL when present. */
+export function bilibiliBVID(url?: string) {
+  const value = (url || '').trim()
+  if (!value) return ''
+  try {
+    const parsed = new URL(value, 'https://www.bilibili.com')
+    const match = parsed.pathname.match(/\/video\/(BV[0-9A-Za-z]+)/i)
+    return match?.[1] || ''
+  } catch {
+    const match = value.match(/BV[0-9A-Za-z]+/)
+    return match?.[0] || ''
+  }
+}
+
+/**
+ * Build an official Bilibili player embed URL when the content has a BV id.
+ * Returns empty string when embedding is not possible (article / PGC / unknown).
+ */
+export function bilibiliPlayerEmbedURL(url?: string) {
+  const bvid = bilibiliBVID(url)
+  if (!bvid) return ''
+  return `https://player.bilibili.com/player.html?bvid=${encodeURIComponent(bvid)}&autoplay=0&high_quality=1&danmaku=0`
+}
+
 export function localInputToRFC3339(value: string) {
   if (!value) return ''
   const date = new Date(value)

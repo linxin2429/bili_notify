@@ -161,7 +161,9 @@ func (s *Server) adminHandler() http.Handler {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		// Allow the admin UI to embed the official Bilibili player for history video previews.
+		// Child frame CSP still applies on player.bilibili.com; this only relaxes our own frame-src.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src https://player.bilibili.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")

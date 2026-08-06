@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  auditActionLabel, auditResult, channelTypeLabel, composePreviewBody, connectionLabel, deliverySummary,
+  auditActionLabel, auditResult, bilibiliBVID, bilibiliPlayerEmbedURL, channelTypeLabel, composePreviewBody, connectionLabel, deliverySummary,
   deliveryTitle, dynamicTypeLabel, errorMessage, followStateLabel, formatDate, formatInteractionCount,
   formatRelativeDate, historyMediaURL, localInputToRFC3339, loginLabel, nextTheme, normalizePreviewText,
   settingLabel, themeLabel, usableTimeZone,
@@ -52,6 +52,16 @@ describe('presentation helpers', () => {
     expect(normalizePreviewText(' a \n b ')).toBe('a b')
     expect(historyMediaURL('https://i0.hdslb.com/bfs/a.jpg@100w', 240)).toBe('https://i0.hdslb.com/bfs/a.jpg@240w')
     expect(historyMediaURL('https://example.com/a.jpg', 240)).toBe('https://example.com/a.jpg'); expect(historyMediaURL('/api/v1/dynamics/1/media/0', 240)).toBe('/api/v1/dynamics/1/media/0'); expect(historyMediaURL(' ', 240)).toBe(''); expect(historyMediaURL('bad url', 0)).toBe('bad url')
+  })
+
+  it.each([
+    { name: 'bv path', url: 'https://www.bilibili.com/video/BV1xx411c7mD', want: 'BV1xx411c7mD' },
+    { name: 'query path', url: 'https://www.bilibili.com/video/BV1xx411c7mD/?spm_id_from=333', want: 'BV1xx411c7mD' },
+    { name: 'article', url: 'https://www.bilibili.com/read/cv1', want: '' },
+    { name: 'empty', url: '', want: '' },
+  ])('extracts bvid from $name', ({ url, want }) => {
+    expect(bilibiliBVID(url)).toBe(want)
+    expect(bilibiliPlayerEmbedURL(url)).toBe(want ? `https://player.bilibili.com/player.html?bvid=${want}&autoplay=0&high_quality=1&danmaku=0` : '')
   })
 
   it('formats delivery and audit variants', () => {
