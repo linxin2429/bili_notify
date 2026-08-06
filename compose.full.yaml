@@ -6,7 +6,8 @@
 
 services:
   bili-notify:
-    image: dengxinlin/bili-notify:${IMAGE_TAG:-0.2.0}
+    image: dengxinlin/bili-notify:${IMAGE_TAG:-latest}
+    pull_policy: always
     container_name: bili-notify
     restart: unless-stopped
     ports:
