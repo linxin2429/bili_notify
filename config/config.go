@@ -25,9 +25,9 @@ const (
 )
 
 // Config contains process startup settings.
-// DataDir, listen addresses, and LogLevel are immutable for the process lifetime.
-// PollInterval, RequestRate, and RequestConcurrency are first-run defaults only:
-// when the store has no runtime settings yet they seed the store; afterwards the admin UI owns them.
+// DataDir and listen addresses are immutable for the process lifetime. Collector,
+// logging, and retention values are first-run defaults only: when the store has no
+// runtime settings yet they seed it; afterwards the admin UI owns them.
 type Config struct {
 	DataDir            string        `mapstructure:"data_dir"`
 	AdminAddr          string        `mapstructure:"admin_addr"`
@@ -68,19 +68,16 @@ func (c Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-// SeedRuntimeSettings converts startup collector defaults into a runtime settings record.
+// SeedRuntimeSettings converts startup defaults into a complete runtime settings record.
 func (c Config) SeedRuntimeSettings() model.RuntimeSettings {
-	trackN, rootPages, replyPages, batchSec, enabled := model.DefaultCommentSettings()
-	return model.RuntimeSettings{
-		PollIntervalSec:         int(c.PollInterval / time.Second),
-		RequestRate:             c.RequestRate,
-		RequestConcurrency:      c.RequestConcurrency,
-		CommentEnabled:          enabled,
-		CommentTrackN:           trackN,
-		CommentRootPages:        rootPages,
-		CommentReplyPages:       replyPages,
-		CommentBatchIntervalSec: batchSec,
-	}
+	settings := model.DefaultRuntimeSettings()
+	settings.PollIntervalSec = int(c.PollInterval / time.Second)
+	settings.RequestRate = c.RequestRate
+	settings.RequestConcurrency = c.RequestConcurrency
+	settings.LogLevel = strings.ToLower(strings.TrimSpace(c.LogLevel))
+	settings.AuditLogRetentionDays = int(c.AuditLogRetention / (24 * time.Hour))
+	settings.SystemLogRetentionDays = int(c.SystemLogRetention / (24 * time.Hour))
+	return settings
 }
 
 // Paths returns data.db, master.key, and tls.pem under dataDir.

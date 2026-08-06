@@ -24,53 +24,44 @@ import (
 )
 
 const (
-	relationRefreshInterval = 10 * time.Minute
-	spaceReconcileInterval  = 30 * time.Minute
-	maxDynamicPages         = 10
+	sessionValidationInterval = 10 * time.Minute
 )
 
 type Engine struct {
-	store                *state.Store
-	client               *bilibili.Client
-	media                *media.Downloader
-	notificationClient   *http.Client
-	logger               *slog.Logger
-	metrics              *Metrics
-	settingsMu           sync.RWMutex
-	pollInterval         time.Duration
-	requestRate          float64
-	concurrency          int
-	commentEnabled       bool
-	commentTrackN        int
-	commentRootPages     int
-	commentReplyPages    int
-	commentBatchInterval time.Duration
-	limiter              *rate.Limiter
-	settingsNotify       chan struct{}
-	relationNotify       chan struct{}
-	httpTimeout          time.Duration
-	sessionMu            sync.RWMutex
-	accountMu            sync.RWMutex
-	account              model.BiliAccount
-	authValid            atomic.Bool
-	authEverValid        atomic.Bool
-	lastSuccess          atomic.Int64
-	riskUntil            atomic.Int64
-	clockStatusMu        sync.Mutex
-	clockStatus          clockStatus
-	clockStatusKnown     bool
-	backlogAlerted       atomic.Bool
-	loginMu              sync.Mutex
-	login                *LoginSession
-	loginCancel          context.CancelFunc
-	loginWG              sync.WaitGroup
-	runCtx               context.Context
-	microsoftSendMu      sync.Mutex
-	microsoftLoginMu     sync.Mutex
-	microsoftLoginWG     sync.WaitGroup
-	microsoftRunCtx      context.Context
-	microsoftLogins      map[string]*MicrosoftLoginSession
-	events               *EventBus
+	store              *state.Store
+	client             *bilibili.Client
+	media              *media.Downloader
+	notificationClient *http.Client
+	logger             *slog.Logger
+	metrics            *Metrics
+	settingsMu         sync.RWMutex
+	settings           model.RuntimeSettings
+	settingsChanged    chan struct{}
+	limiter            *rate.Limiter
+	relationNotify     chan struct{}
+	httpTimeout        time.Duration
+	sessionMu          sync.RWMutex
+	accountMu          sync.RWMutex
+	account            model.BiliAccount
+	authValid          atomic.Bool
+	authEverValid      atomic.Bool
+	lastSuccess        atomic.Int64
+	riskUntil          atomic.Int64
+	clockStatusMu      sync.Mutex
+	clockStatus        clockStatus
+	clockStatusKnown   bool
+	backlogAlerted     atomic.Bool
+	loginMu            sync.Mutex
+	login              *LoginSession
+	loginCancel        context.CancelFunc
+	loginWG            sync.WaitGroup
+	runCtx             context.Context
+	microsoftSendMu    sync.Mutex
+	microsoftLoginMu   sync.Mutex
+	microsoftLoginWG   sync.WaitGroup
+	microsoftRunCtx    context.Context
+	microsoftLogins    map[string]*MicrosoftLoginSession
+	events             *EventBus
 }
 
 type EngineOption func(*Engine)
@@ -86,23 +77,12 @@ func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger,
 	if events == nil {
 		events = NewEventBus()
 	}
-	settings = settings.WithCommentDefaults()
 	engine := &Engine{
 		store: store, client: client, media: mediaDownloader, logger: logger, metrics: metrics,
-		pollInterval:         settings.PollInterval(),
-		requestRate:          settings.RequestRate,
-		concurrency:          settings.RequestConcurrency,
-		commentEnabled:       settings.CommentEnabled,
-		commentTrackN:        settings.CommentTrackN,
-		commentRootPages:     settings.CommentRootPages,
-		commentReplyPages:    settings.CommentReplyPages,
-		commentBatchInterval: settings.CommentBatchInterval(),
-		limiter:              rate.NewLimiter(rate.Limit(settings.RequestRate), max(1, int(settings.RequestRate))),
-		settingsNotify:       make(chan struct{}, 1),
-		relationNotify:       make(chan struct{}, 1),
-		httpTimeout:          10 * time.Second,
-		microsoftLogins:      make(map[string]*MicrosoftLoginSession),
-		events:               events,
+		settings: settings, settingsChanged: make(chan struct{}),
+		limiter:        rate.NewLimiter(rate.Limit(settings.RequestRate), max(1, int(settings.RequestRate))),
+		relationNotify: make(chan struct{}, 1), httpTimeout: 10 * time.Second,
+		microsoftLogins: make(map[string]*MicrosoftLoginSession), events: events,
 	}
 	for _, option := range options {
 		option(engine)
@@ -116,76 +96,33 @@ func (e *Engine) Metrics() *Metrics { return e.metrics }
 func (e *Engine) Settings() model.RuntimeSettings {
 	e.settingsMu.RLock()
 	defer e.settingsMu.RUnlock()
-	return model.RuntimeSettings{
-		PollIntervalSec:         int(e.pollInterval / time.Second),
-		RequestRate:             e.requestRate,
-		RequestConcurrency:      e.concurrency,
-		CommentEnabled:          e.commentEnabled,
-		CommentTrackN:           e.commentTrackN,
-		CommentRootPages:        e.commentRootPages,
-		CommentReplyPages:       e.commentReplyPages,
-		CommentBatchIntervalSec: int(e.commentBatchInterval / time.Second),
-	}
+	return e.settings
 }
 
-func (e *Engine) UpdateSettings(settings model.RuntimeSettings) error {
-	settings = settings.WithCommentDefaults()
-	if err := settings.Validate(); err != nil {
-		return err
-	}
+// ApplySettings updates all future scheduling decisions without canceling work
+// already in flight. Callers must validate and persist settings first.
+func (e *Engine) ApplySettings(settings model.RuntimeSettings) {
 	if e.Settings() == settings {
-		return nil
+		return
 	}
-	if err := e.store.PutRuntimeSettings(settings); err != nil {
-		return err
-	}
-	e.applySettings(settings)
-	e.publish(TopicSettings | TopicStatus)
-	return nil
-}
-
-func (e *Engine) applySettings(settings model.RuntimeSettings) {
-	settings = settings.WithCommentDefaults()
 	e.settingsMu.Lock()
-	e.pollInterval = settings.PollInterval()
-	e.requestRate = settings.RequestRate
-	e.concurrency = settings.RequestConcurrency
-	e.commentEnabled = settings.CommentEnabled
-	e.commentTrackN = settings.CommentTrackN
-	e.commentRootPages = settings.CommentRootPages
-	e.commentReplyPages = settings.CommentReplyPages
-	e.commentBatchInterval = settings.CommentBatchInterval()
+	e.settings = settings
 	e.limiter.SetLimit(rate.Limit(settings.RequestRate))
 	e.limiter.SetBurst(max(1, int(settings.RequestRate)))
+	close(e.settingsChanged)
+	e.settingsChanged = make(chan struct{})
 	e.settingsMu.Unlock()
-	select {
-	case e.settingsNotify <- struct{}{}:
-	default:
-	}
 }
 
-func (e *Engine) currentPollInterval() time.Duration {
+func (e *Engine) settingsSnapshot() (model.RuntimeSettings, <-chan struct{}) {
 	e.settingsMu.RLock()
 	defer e.settingsMu.RUnlock()
-	return e.pollInterval
-}
-
-func (e *Engine) currentCommentBatchInterval() time.Duration {
-	e.settingsMu.RLock()
-	defer e.settingsMu.RUnlock()
-	return e.commentBatchInterval
+	return e.settings, e.settingsChanged
 }
 
 func (e *Engine) currentCommentSettings() (enabled bool, trackN, rootPages, replyPages int) {
-	e.settingsMu.RLock()
-	defer e.settingsMu.RUnlock()
-	return e.commentEnabled, e.commentTrackN, e.commentRootPages, e.commentReplyPages
-}
-
-func (e *Engine) currentConcurrency() int {
-	e.settingsMu.RLock()
-	defer e.settingsMu.RUnlock()
-	return e.concurrency
+	settings := e.Settings()
+	return settings.CommentEnabled, settings.CommentTrackN, settings.CommentRootPages, settings.CommentReplyPages
 }
 
 type LoginSession struct {
@@ -287,7 +224,8 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 func (e *Engine) collectLoop(ctx context.Context) error {
-	interval := e.currentPollInterval()
+	settings, settingsChanged := e.settingsSnapshot()
+	interval := settings.PollInterval()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	if err := e.collectOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -297,8 +235,9 @@ func (e *Engine) collectLoop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-e.settingsNotify:
-			next := e.currentPollInterval()
+		case <-settingsChanged:
+			settings, settingsChanged = e.settingsSnapshot()
+			next := settings.PollInterval()
 			if next != interval {
 				ticker.Reset(next)
 				interval = next
@@ -312,7 +251,9 @@ func (e *Engine) collectLoop(ctx context.Context) error {
 }
 
 func (e *Engine) relationLoop(ctx context.Context) error {
-	ticker := time.NewTicker(relationRefreshInterval)
+	settings, settingsChanged := e.settingsSnapshot()
+	interval := settings.RelationRefreshInterval()
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	run := func() {
 		if err := e.refreshRelations(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -324,6 +265,13 @@ func (e *Engine) relationLoop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-settingsChanged:
+			settings, settingsChanged = e.settingsSnapshot()
+			next := settings.RelationRefreshInterval()
+			if next != interval {
+				ticker.Reset(next)
+				interval = next
+			}
 		case <-ticker.C:
 			run()
 		case <-e.relationNotify:
@@ -394,11 +342,12 @@ func (e *Engine) handleBiliAPIError(err error) {
 		return
 	}
 	now := time.Now()
-	previousUntil := e.riskUntil.Swap(now.Add(5 * time.Minute).Unix())
+	pause := e.Settings().RiskPause()
+	previousUntil := e.riskUntil.Swap(now.Add(pause).Unix())
 	if previousUntil <= now.Unix() {
-		e.logger.Warn("Bilibili risk-control pause started", "event", "bilibili.risk_control.started", "resume_at", now.Add(5*time.Minute), "error", err)
+		e.logger.Warn("Bilibili risk-control pause started", "event", "bilibili.risk_control.started", "resume_at", now.Add(pause), "error", err)
 		e.publish(TopicStatus)
-		e.enqueueSystem("B站接口触发风控，采集已暂停五分钟；服务不会尝试绕过风控。")
+		e.enqueueSystem(fmt.Sprintf("B站接口触发风控，采集已暂停 %s；服务不会尝试绕过风控。", pause.Round(time.Second)))
 	}
 }
 
@@ -419,6 +368,7 @@ func (e *Engine) collectOnce(ctx context.Context) error {
 	if account.UID == "" {
 		return errors.New("authenticated Bilibili session has no account identity")
 	}
+	settings := e.Settings()
 	ups, err := e.store.ListUPs()
 	if err != nil {
 		return fmt.Errorf("listing UPs: %w", err)
@@ -461,7 +411,7 @@ func (e *Engine) collectOnce(ctx context.Context) error {
 		feedInitialized = feed.Initialized
 	}
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(e.currentConcurrency())
+	g.SetLimit(settings.RequestConcurrency)
 	enabledUPs := 0
 	feedUPs := make([]model.UP, 0, len(ups))
 	now := time.Now()
@@ -475,7 +425,7 @@ func (e *Engine) collectOnce(ctx context.Context) error {
 		if feedReady {
 			feedUPs = append(feedUPs, up)
 		}
-		spaceDue := !feedReady || relation.LastSpacePollAt.IsZero() || now.Sub(relation.LastSpacePollAt) >= spaceReconcileInterval
+		spaceDue := !feedReady || relation.LastSpacePollAt.IsZero() || now.Sub(relation.LastSpacePollAt) >= settings.SpaceReconcileInterval()
 		if spaceDue {
 			g.Go(func() error { return e.pollUP(gctx, up, channelIDs) })
 		}
@@ -545,7 +495,8 @@ func (e *Engine) pollFeed(ctx context.Context, account model.BiliAccount, ups []
 		newBaseline string
 		updateNum   = -1
 	)
-	for pageNumber := range maxDynamicPages {
+	maxPages := e.Settings().MaxDynamicPages
+	for pageNumber := range maxPages {
 		if err := e.limiter.Wait(requestCtx); err != nil {
 			return err
 		}
@@ -570,12 +521,12 @@ func (e *Engine) pollFeed(ctx context.Context, account model.BiliAccount, ups []
 		if !page.HasMore || page.Offset == "" || page.Offset == offset {
 			return e.failFeed(ups, started, &bilibili.APIError{Kind: bilibili.ErrorSchema, Message: "aggregate feed ended before update count was reached"})
 		}
-		if pageNumber == maxDynamicPages-1 {
+		if pageNumber == maxPages-1 {
 			if resetErr := e.store.ResetFeed(account.UID, uids, time.Now()); resetErr != nil {
 				return fmt.Errorf("resetting aggregate feed after pagination overflow: %w", resetErr)
 			}
 			e.publish(TopicUPs)
-			return e.failFeed(ups, started, errors.New("more than 10 aggregate feed pages; space resynchronization required"))
+			return e.failFeed(ups, started, fmt.Errorf("more than %d aggregate feed pages; space resynchronization required", maxPages))
 		}
 		offset = page.Offset
 	}
@@ -697,7 +648,8 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 		offset string
 		name   string
 	)
-	for pageNumber := range maxDynamicPages {
+	maxPages := e.Settings().MaxDynamicPages
+	for pageNumber := range maxPages {
 		if err := e.limiter.Wait(requestCtx); err != nil {
 			return err
 		}
@@ -722,8 +674,8 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 		if !up.BaselineReady || foundSeen || !page.HasMore {
 			break
 		}
-		if pageNumber == maxDynamicPages-1 {
-			err := errors.New("more than 10 pages of unseen dynamics; manual review required")
+		if pageNumber == maxPages-1 {
+			err := fmt.Errorf("more than %d pages of unseen dynamics; manual review required", maxPages)
 			return e.failPoll(up, name, started, err)
 		}
 		offset = page.Offset
@@ -855,7 +807,8 @@ func (e *Engine) refreshCommentTargets(up model.UP, name string, items []model.D
 }
 
 func (e *Engine) commentLoop(ctx context.Context) error {
-	interval := e.currentCommentBatchInterval()
+	settings, settingsChanged := e.settingsSnapshot()
+	interval := settings.CommentBatchInterval()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	if err := e.commentOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -865,13 +818,14 @@ func (e *Engine) commentLoop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-ticker.C:
-			// Re-read interval each tick so settings updates apply without racing
-			// collectLoop for the single settingsNotify buffer.
-			if next := e.currentCommentBatchInterval(); next != interval {
+		case <-settingsChanged:
+			settings, settingsChanged = e.settingsSnapshot()
+			next := settings.CommentBatchInterval()
+			if next != interval {
 				ticker.Reset(next)
 				interval = next
 			}
+		case <-ticker.C:
 			if err := e.commentOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				e.logger.Error("comment cycle failed", "event", "comment.cycle.failed", "error", err)
 			}
@@ -880,8 +834,8 @@ func (e *Engine) commentLoop(ctx context.Context) error {
 }
 
 func (e *Engine) commentOnce(ctx context.Context) error {
-	enabled, _, rootPages, replyPages := e.currentCommentSettings()
-	if !enabled {
+	settings := e.Settings()
+	if !settings.CommentEnabled {
 		return nil
 	}
 	if !e.authValid.Load() {
@@ -915,7 +869,7 @@ func (e *Engine) commentOnce(ctx context.Context) error {
 		return err
 	}
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(e.currentConcurrency())
+	g.SetLimit(settings.RequestConcurrency)
 	scanned := 0
 	for _, target := range targets {
 		if _, ok := enabledUIDs[target.UID]; !ok {
@@ -929,7 +883,7 @@ func (e *Engine) commentOnce(ctx context.Context) error {
 			if err := e.limiter.Wait(gctx); err != nil {
 				return err
 			}
-			return e.pollCommentTarget(gctx, target, channelIDs, rootPages, replyPages)
+			return e.pollCommentTarget(gctx, target, channelIDs, settings.CommentRootPages, settings.CommentReplyPages)
 		})
 	}
 	if err := g.Wait(); err != nil {
@@ -1160,10 +1114,11 @@ func (e *Engine) handleCommentPollError(target model.CommentTarget, pollErr erro
 	}
 	if bilibili.IsRiskControl(pollErr) {
 		now := time.Now()
-		previousUntil := e.riskUntil.Swap(now.Add(5 * time.Minute).Unix())
+		pause := e.Settings().RiskPause()
+		previousUntil := e.riskUntil.Swap(now.Add(pause).Unix())
 		if previousUntil <= now.Unix() {
 			e.publish(TopicStatus)
-			e.enqueueSystem("B站接口触发风控，采集已暂停五分钟；服务不会尝试绕过风控。")
+			e.enqueueSystem(fmt.Sprintf("B站接口触发风控，采集已暂停 %s；服务不会尝试绕过风控。", pause.Round(time.Second)))
 		}
 	}
 	if bilibili.IsCommentClosed(pollErr) {
@@ -1232,7 +1187,8 @@ func (e *Engine) dispatchOnce(ctx context.Context) error {
 		} else {
 			e.metrics.OldestOutboxAge.Set(0)
 		}
-		backlogged := len(all) > 100 || age > 5*time.Minute
+		settings := e.Settings()
+		backlogged := len(all) > settings.BacklogAlertCount || age > settings.BacklogAlertAge()
 		if backlogged && e.backlogAlerted.CompareAndSwap(false, true) {
 			e.enqueueSystem(fmt.Sprintf("通知队列发生积压：任务数 %d，最老任务等待 %s。", len(all), age.Round(time.Second)))
 		}
@@ -1241,7 +1197,7 @@ func (e *Engine) dispatchOnce(ctx context.Context) error {
 		}
 	}
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(8)
+	g.SetLimit(e.Settings().DeliveryConcurrency)
 	var changed atomic.Bool
 	for _, delivery := range deliveries {
 		g.Go(func() error {
@@ -1329,7 +1285,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (bool, er
 		result = "blocked"
 	}
 	e.metrics.DeliveryTotal.WithLabelValues(string(channel.Type), result).Inc()
-	next := time.Now().Add(retryDelay(delivery.Attempts))
+	next := time.Now().Add(retryDelay(delivery.Attempts, e.Settings().DeliveryRetryDelaysSec))
 	if storeErr := e.store.FailDelivery(delivery.ID, blocked, next, err, progress); storeErr != nil {
 		return false, storeErr
 	}
@@ -1349,9 +1305,8 @@ func deliveryMessage(delivery model.Delivery) (notify.Message, string, error) {
 	}
 }
 
-func retryDelay(attempt int) time.Duration {
-	delays := []time.Duration{5 * time.Second, 30 * time.Second, 2 * time.Minute, 10 * time.Minute, time.Hour}
-	base := delays[min(attempt, len(delays)-1)]
+func retryDelay(attempt int, delays model.DeliveryRetryDelays) time.Duration {
+	base := time.Duration(delays[min(attempt, len(delays)-1)]) * time.Second
 	return base/2 + rand.N(base/2)
 }
 
@@ -1360,7 +1315,7 @@ func elapsedMS(started time.Time) int64 {
 }
 
 func (e *Engine) authLoop(ctx context.Context) error {
-	ticker := time.NewTicker(relationRefreshInterval)
+	ticker := time.NewTicker(sessionValidationInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -1833,7 +1788,7 @@ func (e *Engine) Status() (Status, error) {
 		status.RiskPausedUntil = time.Unix(until, 0)
 		status.Ready = false
 	}
-	staleAfter := max(2*time.Minute, 2*e.currentPollInterval())
+	staleAfter := max(2*time.Minute, 2*e.Settings().PollInterval())
 	if status.Ready && (status.LastSuccessAt.IsZero() || time.Since(status.LastSuccessAt) > staleAfter) {
 		status.Ready = false
 	}

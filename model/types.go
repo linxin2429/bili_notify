@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/mail"
 	"net/url"
 	"strconv"
@@ -333,32 +334,82 @@ type BiliAccount struct {
 	Name string `json:"name"`
 }
 
-// Collector parameter bounds shared by startup config and runtime settings.
+// Runtime settings bounds and product defaults shared by startup seeding,
+// persistence, the service engine, and the management API.
 const (
 	MinPollIntervalSec         = 10
+	MaxPollIntervalSec         = 24 * 60 * 60
 	MaxRequestRate             = 10.0
 	MinRequestConcurrency      = 1
 	MaxRequestConcurrency      = 16
 	MinCommentBatchIntervalSec = 30
+	MaxCommentBatchIntervalSec = 24 * 60 * 60
 	MaxCommentTrackN           = 50
 	MaxCommentRootPages        = 10
 	MaxCommentReplyPages       = 20
+	MinLogRetentionDays        = 1
+	MaxLogRetentionDays        = 3650
+	MinRelationRefreshSec      = 60
+	MaxRelationRefreshSec      = 24 * 60 * 60
+	MinSpaceReconcileSec       = 5 * 60
+	MaxSpaceReconcileSec       = 7 * 24 * 60 * 60
+	MinDynamicPages            = 1
+	MaxDynamicPages            = 20
+	MinRiskPauseSec            = 60
+	MaxRiskPauseSec            = 60 * 60
+	MinDeliveryConcurrency     = 1
+	MaxDeliveryConcurrency     = 32
+	MinBacklogAlertCount       = 1
+	MaxBacklogAlertCount       = 100000
+	MinBacklogAlertAgeSec      = 60
+	MaxBacklogAlertAgeSec      = 24 * 60 * 60
+	MinDeliveryRetryDelaySec   = 1
+	MaxDeliveryRetryDelaySec   = 24 * 60 * 60
+	DeliveryRetryStages        = 5
+
+	DefaultPollIntervalSec     = 30
+	DefaultRequestRate         = 2.0
+	DefaultRequestConcurrency  = 4
 	DefaultCommentTrackN       = 10
 	DefaultCommentRootPages    = 2
 	DefaultCommentReplyPages   = 5
 	DefaultCommentBatchSec     = 120
+	DefaultLogLevel            = "info"
+	DefaultAuditRetentionDays  = 180
+	DefaultSystemRetentionDays = 30
+	DefaultRelationRefreshSec  = 10 * 60
+	DefaultSpaceReconcileSec   = 30 * 60
+	DefaultMaxDynamicPages     = 10
+	DefaultRiskPauseSec        = 5 * 60
+	DefaultDeliveryConcurrency = 8
+	DefaultBacklogAlertCount   = 100
+	DefaultBacklogAlertAgeSec  = 5 * 60
 )
 
-// RuntimeSettings is the hot-reloadable collector configuration persisted in the store.
+// DeliveryRetryDelays stores the five retry-stage upper bounds in seconds.
+type DeliveryRetryDelays [DeliveryRetryStages]int
+
+// RuntimeSettings is the complete hot-reloadable configuration persisted in the store.
 type RuntimeSettings struct {
-	PollIntervalSec         int     `json:"poll_interval_sec"`
-	RequestRate             float64 `json:"request_rate"`
-	RequestConcurrency      int     `json:"request_concurrency"`
-	CommentEnabled          bool    `json:"comment_enabled"`
-	CommentTrackN           int     `json:"comment_track_n"`
-	CommentRootPages        int     `json:"comment_root_pages"`
-	CommentReplyPages       int     `json:"comment_reply_pages"`
-	CommentBatchIntervalSec int     `json:"comment_batch_interval_sec"`
+	PollIntervalSec         int                 `json:"poll_interval_sec"`
+	RequestRate             float64             `json:"request_rate"`
+	RequestConcurrency      int                 `json:"request_concurrency"`
+	CommentEnabled          bool                `json:"comment_enabled"`
+	CommentTrackN           int                 `json:"comment_track_n"`
+	CommentRootPages        int                 `json:"comment_root_pages"`
+	CommentReplyPages       int                 `json:"comment_reply_pages"`
+	CommentBatchIntervalSec int                 `json:"comment_batch_interval_sec"`
+	LogLevel                string              `json:"log_level"`
+	AuditLogRetentionDays   int                 `json:"audit_log_retention_days"`
+	SystemLogRetentionDays  int                 `json:"system_log_retention_days"`
+	RelationRefreshSec      int                 `json:"relation_refresh_interval_sec"`
+	SpaceReconcileSec       int                 `json:"space_reconcile_interval_sec"`
+	MaxDynamicPages         int                 `json:"max_dynamic_pages"`
+	RiskPauseSec            int                 `json:"risk_pause_sec"`
+	DeliveryConcurrency     int                 `json:"delivery_concurrency"`
+	BacklogAlertCount       int                 `json:"backlog_alert_count"`
+	BacklogAlertAgeSec      int                 `json:"backlog_alert_age_sec"`
+	DeliveryRetryDelaysSec  DeliveryRetryDelays `json:"delivery_retry_delays_sec"`
 }
 
 func (s RuntimeSettings) PollInterval() time.Duration {
@@ -369,33 +420,44 @@ func (s RuntimeSettings) CommentBatchInterval() time.Duration {
 	return time.Duration(s.CommentBatchIntervalSec) * time.Second
 }
 
-// WithCommentDefaults fills zero comment knobs with product defaults so older
-// three-field settings records remain loadable after the comment feature ships.
-func (s RuntimeSettings) WithCommentDefaults() RuntimeSettings {
-	trackN, rootPages, replyPages, batchSec, enabled := DefaultCommentSettings()
-	legacy := s.CommentTrackN == 0 && s.CommentRootPages == 0 && s.CommentReplyPages == 0 && s.CommentBatchIntervalSec == 0
-	if s.CommentTrackN == 0 {
-		s.CommentTrackN = trackN
+func (s RuntimeSettings) RelationRefreshInterval() time.Duration {
+	return time.Duration(s.RelationRefreshSec) * time.Second
+}
+
+func (s RuntimeSettings) SpaceReconcileInterval() time.Duration {
+	return time.Duration(s.SpaceReconcileSec) * time.Second
+}
+
+func (s RuntimeSettings) RiskPause() time.Duration {
+	return time.Duration(s.RiskPauseSec) * time.Second
+}
+
+func (s RuntimeSettings) BacklogAlertAge() time.Duration {
+	return time.Duration(s.BacklogAlertAgeSec) * time.Second
+}
+
+func (s RuntimeSettings) AuditLogRetention() time.Duration {
+	return time.Duration(s.AuditLogRetentionDays) * 24 * time.Hour
+}
+
+func (s RuntimeSettings) SystemLogRetention() time.Duration {
+	return time.Duration(s.SystemLogRetentionDays) * 24 * time.Hour
+}
+
+func DefaultRuntimeSettings() RuntimeSettings {
+	return RuntimeSettings{
+		PollIntervalSec: DefaultPollIntervalSec, RequestRate: DefaultRequestRate, RequestConcurrency: DefaultRequestConcurrency,
+		CommentEnabled: true, CommentTrackN: DefaultCommentTrackN, CommentRootPages: DefaultCommentRootPages,
+		CommentReplyPages: DefaultCommentReplyPages, CommentBatchIntervalSec: DefaultCommentBatchSec,
+		LogLevel: DefaultLogLevel, AuditLogRetentionDays: DefaultAuditRetentionDays, SystemLogRetentionDays: DefaultSystemRetentionDays,
+		RelationRefreshSec: DefaultRelationRefreshSec, SpaceReconcileSec: DefaultSpaceReconcileSec, MaxDynamicPages: DefaultMaxDynamicPages,
+		RiskPauseSec: DefaultRiskPauseSec, DeliveryConcurrency: DefaultDeliveryConcurrency,
+		BacklogAlertCount: DefaultBacklogAlertCount, BacklogAlertAgeSec: DefaultBacklogAlertAgeSec,
+		DeliveryRetryDelaysSec: DeliveryRetryDelays{5, 30, 120, 600, 3600},
 	}
-	if s.CommentRootPages == 0 {
-		s.CommentRootPages = rootPages
-	}
-	if s.CommentReplyPages == 0 {
-		s.CommentReplyPages = replyPages
-	}
-	if s.CommentBatchIntervalSec == 0 {
-		s.CommentBatchIntervalSec = batchSec
-	}
-	if legacy {
-		// Pre-feature records omit comment fields (all zero); enable by default.
-		// Explicit saves always set non-zero track/pages so they are not legacy.
-		s.CommentEnabled = enabled
-	}
-	return s
 }
 
 func (s RuntimeSettings) Validate() error {
-	s = s.WithCommentDefaults()
 	var errs []error
 	if err := ValidateCollectorParams(s.PollInterval(), s.RequestRate, s.RequestConcurrency); err != nil {
 		errs = append(errs, err)
@@ -410,7 +472,50 @@ func (s RuntimeSettings) Validate() error {
 		errs = append(errs, fmt.Errorf("comment_reply_pages must be in [1, %d]", MaxCommentReplyPages))
 	}
 	if s.CommentBatchIntervalSec < MinCommentBatchIntervalSec {
-		errs = append(errs, fmt.Errorf("comment_batch_interval_sec must be at least %d", MinCommentBatchIntervalSec))
+		errs = append(errs, fmt.Errorf("comment_batch_interval_sec must be in [%d, %d]", MinCommentBatchIntervalSec, MaxCommentBatchIntervalSec))
+	} else if s.CommentBatchIntervalSec > MaxCommentBatchIntervalSec {
+		errs = append(errs, fmt.Errorf("comment_batch_interval_sec must be in [%d, %d]", MinCommentBatchIntervalSec, MaxCommentBatchIntervalSec))
+	}
+	if s.LogLevel != "debug" && s.LogLevel != "info" && s.LogLevel != "warn" && s.LogLevel != "error" {
+		errs = append(errs, errors.New("log_level must be debug, info, warn, or error"))
+	}
+	if s.AuditLogRetentionDays < MinLogRetentionDays || s.AuditLogRetentionDays > MaxLogRetentionDays {
+		errs = append(errs, fmt.Errorf("audit_log_retention_days must be in [%d, %d]", MinLogRetentionDays, MaxLogRetentionDays))
+	}
+	if s.SystemLogRetentionDays < MinLogRetentionDays || s.SystemLogRetentionDays > MaxLogRetentionDays {
+		errs = append(errs, fmt.Errorf("system_log_retention_days must be in [%d, %d]", MinLogRetentionDays, MaxLogRetentionDays))
+	}
+	if s.RelationRefreshSec < MinRelationRefreshSec || s.RelationRefreshSec > MaxRelationRefreshSec {
+		errs = append(errs, fmt.Errorf("relation_refresh_interval_sec must be in [%d, %d]", MinRelationRefreshSec, MaxRelationRefreshSec))
+	}
+	if s.SpaceReconcileSec < MinSpaceReconcileSec || s.SpaceReconcileSec > MaxSpaceReconcileSec {
+		errs = append(errs, fmt.Errorf("space_reconcile_interval_sec must be in [%d, %d]", MinSpaceReconcileSec, MaxSpaceReconcileSec))
+	}
+	if s.MaxDynamicPages < MinDynamicPages || s.MaxDynamicPages > MaxDynamicPages {
+		errs = append(errs, fmt.Errorf("max_dynamic_pages must be in [%d, %d]", MinDynamicPages, MaxDynamicPages))
+	}
+	if s.RiskPauseSec < MinRiskPauseSec || s.RiskPauseSec > MaxRiskPauseSec {
+		errs = append(errs, fmt.Errorf("risk_pause_sec must be in [%d, %d]", MinRiskPauseSec, MaxRiskPauseSec))
+	}
+	if s.DeliveryConcurrency < MinDeliveryConcurrency || s.DeliveryConcurrency > MaxDeliveryConcurrency {
+		errs = append(errs, fmt.Errorf("delivery_concurrency must be in [%d, %d]", MinDeliveryConcurrency, MaxDeliveryConcurrency))
+	}
+	if s.BacklogAlertCount < MinBacklogAlertCount || s.BacklogAlertCount > MaxBacklogAlertCount {
+		errs = append(errs, fmt.Errorf("backlog_alert_count must be in [%d, %d]", MinBacklogAlertCount, MaxBacklogAlertCount))
+	}
+	if s.BacklogAlertAgeSec < MinBacklogAlertAgeSec || s.BacklogAlertAgeSec > MaxBacklogAlertAgeSec {
+		errs = append(errs, fmt.Errorf("backlog_alert_age_sec must be in [%d, %d]", MinBacklogAlertAgeSec, MaxBacklogAlertAgeSec))
+	}
+	previous := 0
+	for index, delay := range s.DeliveryRetryDelaysSec {
+		if delay < MinDeliveryRetryDelaySec || delay > MaxDeliveryRetryDelaySec {
+			errs = append(errs, fmt.Errorf("delivery_retry_delays_sec[%d] must be in [%d, %d]", index, MinDeliveryRetryDelaySec, MaxDeliveryRetryDelaySec))
+		}
+		if index > 0 && delay < previous {
+			errs = append(errs, errors.New("delivery_retry_delays_sec must be nondecreasing"))
+			break
+		}
+		previous = delay
 	}
 	return errors.Join(errs...)
 }
@@ -424,10 +529,10 @@ func DefaultCommentSettings() (trackN, rootPages, replyPages, batchSec int, enab
 // ValidateCollectorParams checks poll interval, request rate, and concurrency bounds.
 func ValidateCollectorParams(pollInterval time.Duration, requestRate float64, concurrency int) error {
 	var errs []error
-	if pollInterval < time.Duration(MinPollIntervalSec)*time.Second {
-		errs = append(errs, errors.New("poll interval must be at least 10s"))
+	if pollInterval < time.Duration(MinPollIntervalSec)*time.Second || pollInterval > time.Duration(MaxPollIntervalSec)*time.Second {
+		errs = append(errs, errors.New("poll interval must be between 10s and 24h"))
 	}
-	if requestRate <= 0 || requestRate > MaxRequestRate {
+	if math.IsNaN(requestRate) || math.IsInf(requestRate, 0) || requestRate <= 0 || requestRate > MaxRequestRate {
 		errs = append(errs, errors.New("request rate must be in (0, 10]"))
 	}
 	if concurrency < MinRequestConcurrency || concurrency > MaxRequestConcurrency {

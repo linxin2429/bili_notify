@@ -316,7 +316,7 @@ func (s *Server) writeTopicEvents(ctx context.Context, writer *wsWriter, topics 
 		}
 	}
 	if topics&service.TopicSettings != 0 {
-		if err := writer.write(ctx, wsEvent{Event: "settings.updated", Revision: revision, Data: s.engine.Settings()}); err != nil {
+		if err := writer.write(ctx, wsEvent{Event: "settings.updated", Revision: revision, Data: s.settings.Settings()}); err != nil {
 			return err
 		}
 	}
@@ -345,7 +345,7 @@ func (s *Server) snapshot() (dashboardSnapshot, error) {
 		return dashboardSnapshot{}, err
 	}
 	return dashboardSnapshot{
-		Status: status, Settings: s.engine.Settings(), UPs: ups, Channels: channels, Deliveries: deliveryViews(deliveries), BiliLogin: login,
+		Status: status, Settings: s.settings.Settings(), UPs: ups, Channels: channels, Deliveries: deliveryViews(deliveries), BiliLogin: login,
 		MicrosoftLogins: s.engine.MicrosoftLogins(), Timezone: localTimezoneName(), UpdatedAt: time.Now(),
 	}, nil
 }

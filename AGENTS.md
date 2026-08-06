@@ -2,11 +2,12 @@
 
 ## Project Structure & Module Organization
 
-`main.go` starts the Cobra CLI; command definitions live in `cmd/`, and `app/` wires the service together. Domain packages are organized by responsibility: `bilibili/` calls and parses Bilibili APIs, `service/` runs polling and delivery workflows, `notify/` implements notification channels, `state/` persists data in a single SQLite `data.db` (GORM + goose migrations), `vault/` encrypts secrets, `web/` serves the TLS administration UI, and `model/` holds shared types. Startup configuration belongs in `config/` (paths, listen addresses, log level; collector knobs are seed defaults only and then live in SQLite). Keep architectural decisions synchronized with `docs/requirements-and-design.md`. Tests sit beside their packages as `*_test.go`; browser assets currently live in `web/index.html`.
+`main.go` starts the Cobra CLI; command definitions live in `cmd/`, and `app/` wires the service together. Domain packages are organized by responsibility: `bilibili/` calls and parses Bilibili APIs, `service/` runs polling and delivery workflows, `notify/` implements notification channels, `state/` persists data in a single SQLite `data.db` (GORM + goose migrations), `vault/` encrypts secrets, `web/` serves the TLS administration UI, and `model/` holds shared types. Startup configuration belongs in `config/` (paths, listen addresses, log level; collector knobs are seed defaults only and then live in SQLite). Keep architectural decisions synchronized with `docs/requirements-and-design.md`. Tests sit beside their packages as `*_test.go`; browser source lives in `web/ui/`, while the generated and ignored output lives in `web/dist/`.
 
 ## Build, Test, and Development Commands
 
-- `go build ./...` compiles every package with the Go 1.26 toolchain.
+- `cd web/ui && npm ci && npm run build` generates the ignored frontend assets required by the Go embed directive.
+- `go build ./...` compiles every package with the Go 1.26 toolchain after the frontend assets exist.
 - `go test ./...` runs the complete unit and integration-style test suite.
 - `go test -race ./...` checks concurrent paths for data races.
 - `go vet ./...` performs standard static analysis.

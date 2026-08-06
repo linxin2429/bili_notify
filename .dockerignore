@@ -5,5 +5,6 @@ secrets
 web/ui/node_modules
 web/ui/test-results
 web/ui/playwright-report
+web/dist
 *.db
 *.db.lock

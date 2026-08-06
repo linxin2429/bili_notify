@@ -1,21 +1,35 @@
 import { describe, expect, it } from 'vitest'
-import { parseRuntimeSettingsForm, type RuntimeSettingsForm } from './settings-form'
+import { parseRuntimeSettingsForm, runtimeSettingsToForm, type RuntimeSettingsForm } from './settings-form'
+import { settings } from '../test/fixtures'
 
-const valid: RuntimeSettingsForm = { pollSec: '30', requestRate: '2', concurrency: '4', commentEnabled: true, commentTrackN: '10', commentRootPages: '2', commentReplyPages: '5', commentBatchSec: '120' }
+const valid: RuntimeSettingsForm = runtimeSettingsToForm(settings)
 
 describe('parseRuntimeSettingsForm', () => {
   it.each([
-    { field: 'pollSec', value: '9', want: '轮询间隔' }, { field: 'pollSec', value: '10.5', want: '轮询间隔' },
+    { field: 'pollSec', value: '9', want: '轮询间隔' }, { field: 'pollSec', value: '86401', want: '轮询间隔' },
     { field: 'requestRate', value: '0', want: '请求速率' }, { field: 'requestRate', value: '11', want: '请求速率' },
-    { field: 'concurrency', value: '0', want: '并发数' }, { field: 'concurrency', value: '2.5', want: '并发数' },
+    { field: 'concurrency', value: '0', want: '请求并发数' }, { field: 'concurrency', value: '2.5', want: '请求并发数' },
     { field: 'commentTrackN', value: '51', want: '评论跟踪条数' }, { field: 'commentRootPages', value: '0', want: '根评论页数' },
     { field: 'commentReplyPages', value: '21', want: '子评论页数' }, { field: 'commentBatchSec', value: '29', want: '评论批次间隔' },
-  ])('rejects $field=$value', ({ field, value, want }) => {
+    { field: 'auditRetentionDays', value: '0', want: '审计日志' }, { field: 'systemRetentionDays', value: '3651', want: '系统日志' },
+    { field: 'relationRefreshSec', value: '59', want: '关注关系' }, { field: 'spaceReconcileSec', value: '299', want: '空间校验' },
+    { field: 'maxDynamicPages', value: '21', want: '动态翻页' }, { field: 'riskPauseSec', value: '59', want: '风控暂停' },
+    { field: 'deliveryConcurrency', value: '33', want: '投递并发' }, { field: 'backlogAlertCount', value: '0', want: '积压条数' },
+    { field: 'backlogAlertAgeSec', value: '59', want: '积压时长' },
+  ] as const)('rejects $field=$value', ({ field, value, want }) => {
     const result = parseRuntimeSettingsForm({ ...valid, [field]: value })
     expect(result).toMatchObject({ ok: false, error: expect.stringContaining(want) })
   })
 
-  it('returns the typed runtime settings', () => {
-    expect(parseRuntimeSettingsForm(valid)).toEqual({ ok: true, value: { poll_interval_sec: 30, request_rate: 2, request_concurrency: 4, comment_enabled: true, comment_track_n: 10, comment_root_pages: 2, comment_reply_pages: 5, comment_batch_interval_sec: 120 } })
+  it.each([
+    { name: 'out of range', value: ['0', '30', '120', '600', '3600'], want: '1 到 86400' },
+    { name: 'decreasing', value: ['5', '30', '20', '600', '3600'], want: '单调不减' },
+  ])('rejects retry delays that are $name', ({ value, want }) => {
+    const result = parseRuntimeSettingsForm({ ...valid, retryDelaysSec: value as RuntimeSettingsForm['retryDelaysSec'] })
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining(want) })
+  })
+
+  it('returns the complete typed runtime settings', () => {
+    expect(parseRuntimeSettingsForm(valid)).toEqual({ ok: true, value: settings })
   })
 })

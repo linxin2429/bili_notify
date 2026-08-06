@@ -182,6 +182,21 @@ func TestContentAPIs(t *testing.T) {
 func TestAdminAPIRequestValidation(t *testing.T) {
 	t.Parallel()
 	fixture := newAdminAPIFixture(t, nil)
+	invalidSettings := webTestSettings()
+	invalidSettings.PollIntervalSec = 1
+	invalidSettingsJSON, err := json.Marshal(invalidSettings)
+	require.NoError(t, err)
+	validSettingsJSON, err := json.Marshal(webTestSettings())
+	require.NoError(t, err)
+	settingsObject := make(map[string]any)
+	require.NoError(t, json.Unmarshal(validSettingsJSON, &settingsObject))
+	settingsObject["delivery_retry_delays_sec"] = []int{5}
+	shortRetryJSON, err := json.Marshal(settingsObject)
+	require.NoError(t, err)
+	settingsObject["delivery_retry_delays_sec"] = []int{5, 30, 120, 600, 3600}
+	settingsObject["unknown"] = true
+	unknownSettingsJSON, err := json.Marshal(settingsObject)
+	require.NoError(t, err)
 	tests := []struct {
 		name   string
 		method string
@@ -194,7 +209,10 @@ func TestAdminAPIRequestValidation(t *testing.T) {
 		{name: "unknown field", method: http.MethodPost, path: "/api/v1/ups", body: `{"uid":"42","name":"up","enabled":true,"unknown":1}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "multiple values", method: http.MethodPost, path: "/api/v1/ups", body: `{} {}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "invalid up", method: http.MethodPost, path: "/api/v1/ups", body: `{"uid":"","name":"up","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
-		{name: "invalid settings", method: http.MethodPut, path: "/api/v1/settings", body: `{"poll_interval_sec":1,"request_rate":0,"request_concurrency":0,"comment_track_n":1,"comment_root_pages":1,"comment_reply_pages":1,"comment_batch_interval_sec":30}`, status: http.StatusBadRequest, code: "validation_failed"},
+		{name: "missing settings", method: http.MethodPut, path: "/api/v1/settings", body: `{"poll_interval_sec":30}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "short retry settings", method: http.MethodPut, path: "/api/v1/settings", body: string(shortRetryJSON), status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "unknown setting", method: http.MethodPut, path: "/api/v1/settings", body: string(unknownSettingsJSON), status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid settings", method: http.MethodPut, path: "/api/v1/settings", body: string(invalidSettingsJSON), status: http.StatusBadRequest, code: "validation_failed"},
 		{name: "invalid audit outcome", method: http.MethodGet, path: "/api/v1/audit-logs?outcome=maybe", status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "invalid audit from", method: http.MethodGet, path: "/api/v1/audit-logs?from=bad", status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "invalid audit to", method: http.MethodGet, path: "/api/v1/audit-logs?to=bad", status: http.StatusBadRequest, code: "invalid_request"},
@@ -270,6 +288,26 @@ type adminAPIFixture struct {
 	webhook *httptest.Server
 }
 
+type webTestSettingsManager struct {
+	engine *service.Engine
+	store  *state.Store
+	events *service.EventBus
+}
+
+func (m *webTestSettingsManager) Settings() model.RuntimeSettings { return m.engine.Settings() }
+
+func (m *webTestSettingsManager) UpdateSettings(settings model.RuntimeSettings) error {
+	if err := settings.Validate(); err != nil {
+		return err
+	}
+	if err := m.store.PutRuntimeSettings(settings); err != nil {
+		return err
+	}
+	m.engine.ApplySettings(settings)
+	m.events.Publish(service.TopicSettings | service.TopicStatus)
+	return nil
+}
+
 func newAdminAPIFixture(t *testing.T, client *http.Client) *adminAPIFixture {
 	t.Helper()
 	store := openWebTestStore(t)
@@ -292,9 +330,10 @@ func newAdminAPIFixture(t *testing.T, client *http.Client) *adminAPIFixture {
 		store, bilibili.New(client, "web-api-test"), slog.New(slog.NewTextHandler(io.Discard, nil)),
 		metrics, webTestSettings(), events, nil, service.WithNotificationHTTPClient(client),
 	)
+	settingsManager := &webTestSettingsManager{engine: engine, store: store, events: events}
 	dataDir := t.TempDir()
 	server := &Server{
-		auth: auth, engine: engine, store: store, events: events,
+		auth: auth, engine: engine, settings: settingsManager, store: store, events: events,
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), metrics: metrics, registry: registry,
 		dataDir: dataDir, connections: make(map[string]map[*websocket.Conn]struct{}),
 	}
@@ -339,10 +378,7 @@ func assertAPIError(t *testing.T, response *httptest.ResponseRecorder, status in
 }
 
 func webTestSettings() model.RuntimeSettings {
-	trackN, rootPages, replyPages, batchSec, enabled := model.DefaultCommentSettings()
-	return model.RuntimeSettings{
-		PollIntervalSec: 30, RequestRate: 10, RequestConcurrency: 4,
-		CommentEnabled: enabled, CommentTrackN: trackN, CommentRootPages: rootPages,
-		CommentReplyPages: replyPages, CommentBatchIntervalSec: batchSec,
-	}
+	settings := model.DefaultRuntimeSettings()
+	settings.RequestRate = 10
+	return settings
 }
