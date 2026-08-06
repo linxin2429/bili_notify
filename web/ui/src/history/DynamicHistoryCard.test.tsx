@@ -75,6 +75,21 @@ describe('DynamicHistoryCard', () => {
     expect(screen.queryByRole('dialog', { name: '图片预览' })).not.toBeInTheDocument()
   })
 
+  it('ignores unsafe original URLs and falls back to cover preview', async () => {
+    const user = userEvent.setup()
+    const open = vi.fn()
+    vi.stubGlobal('open', open)
+    render(<DynamicHistoryCard timeZone="" item={makeDynamic({
+      type: 'DYNAMIC_TYPE_ARTICLE',
+      title: '危险链接',
+      target_url: 'javascript:alert(1)',
+      media: [{ kind: 'cover', url: 'https://example.com/cover.jpg' }],
+    })} />)
+    await user.click(screen.getByRole('button', { name: '放大内容封面' }))
+    expect(open).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: '图片预览' })).toBeVisible()
+  })
+
   it.each([
     { name: 'tile', item: makeDynamic({ type: 'DYNAMIC_TYPE_DRAW', media: [{ kind: 'image', url: 'https://example.com/1.jpg' }] }), alt: '动态图片', want: '媒体加载失败' },
     { name: 'cover', item: makeDynamic({ type: 'DYNAMIC_TYPE_AV', media: [{ kind: 'cover', url: 'https://example.com/cover.jpg' }] }), alt: '内容封面', want: '封面加载失败' },

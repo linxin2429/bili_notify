@@ -105,17 +105,51 @@ export function historyMediaURL(url: string, width: number) {
   }
 }
 
-/** Extract a Bilibili BV id from a content URL when present. */
-export function bilibiliBVID(url?: string) {
+/** Return a normalized http(s) URL, or empty when the scheme is missing/unsafe. */
+export function safeHTTPURL(url?: string) {
   const value = (url || '').trim()
   if (!value) return ''
   try {
-    const parsed = new URL(value, 'https://www.bilibili.com')
-    const match = parsed.pathname.match(/\/video\/(BV[0-9A-Za-z]+)/i)
+    const parsed = new URL(value)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return ''
+    return parsed.toString()
+  } catch {
+    return ''
+  }
+}
+
+function isBilibiliHost(hostname: string) {
+  const host = hostname.toLowerCase()
+  return host === 'bilibili.com' || host.endsWith('.bilibili.com')
+    || host === 'bilibili.tv' || host.endsWith('.bilibili.tv')
+    || host === 'b23.tv' || host.endsWith('.b23.tv')
+}
+
+/**
+ * Allow only http(s) navigation to Bilibili properties.
+ * Prefer a canonical video URL when a BV id is present.
+ */
+export function safeBilibiliURL(url?: string) {
+  const bvid = bilibiliBVID(url)
+  if (bvid) return `https://www.bilibili.com/video/${bvid}`
+  const safe = safeHTTPURL(url)
+  if (!safe) return ''
+  try {
+    return isBilibiliHost(new URL(safe).hostname) ? safe : ''
+  } catch {
+    return ''
+  }
+}
+
+/** Extract a Bilibili BV id from a content URL when present. */
+export function bilibiliBVID(url?: string) {
+  const safe = safeHTTPURL(url)
+  if (!safe) return ''
+  try {
+    const match = new URL(safe).pathname.match(/\/video\/(BV[0-9A-Za-z]+)/i)
     return match?.[1] || ''
   } catch {
-    const match = value.match(/BV[0-9A-Za-z]+/)
-    return match?.[0] || ''
+    return ''
   }
 }
 

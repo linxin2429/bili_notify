@@ -3,7 +3,7 @@ import {
   auditActionLabel, auditResult, bilibiliBVID, bilibiliPlayerEmbedURL, channelTypeLabel, composePreviewBody, connectionLabel, deliverySummary,
   deliveryTitle, dynamicTypeLabel, errorMessage, followStateLabel, formatDate, formatInteractionCount,
   formatRelativeDate, historyMediaURL, localInputToRFC3339, loginLabel, nextTheme, normalizePreviewText,
-  settingLabel, themeLabel, usableTimeZone,
+  safeBilibiliURL, safeHTTPURL, settingLabel, themeLabel, usableTimeZone,
 } from './presentation'
 import { makeAudit, makeDelivery } from './test/fixtures'
 
@@ -59,10 +59,26 @@ describe('presentation helpers', () => {
     { name: 'query path', url: 'https://www.bilibili.com/video/BV1xx411c7mD/?spm_id_from=333', want: 'BV1xx411c7mD' },
     { name: 'article', url: 'https://www.bilibili.com/read/cv1', want: '' },
     { name: 'empty', url: '', want: '' },
+    { name: 'javascript', url: 'javascript:alert(1)', want: '' },
   ])('extracts bvid from $name', ({ url, want }) => {
     expect(bilibiliBVID(url)).toBe(want)
     expect(bilibiliPlayerEmbedURL(url)).toBe(want ? `https://player.bilibili.com/player.html?bvid=${want}&autoplay=0&high_quality=1&danmaku=0` : '')
   })
+
+  it.each([
+    { name: 'https', url: 'https://example.com/a', want: 'https://example.com/a' },
+    { name: 'javascript', url: 'javascript:alert(1)', want: '' },
+    { name: 'relative', url: '/video/BV1', want: '' },
+    { name: 'empty', url: '  ', want: '' },
+  ])('safeHTTPURL handles $name', ({ url, want }) => expect(safeHTTPURL(url)).toBe(want))
+
+  it.each([
+    { name: 'bv canonical', url: 'https://www.bilibili.com/video/BV1xx411c7mD?spm=1', want: 'https://www.bilibili.com/video/BV1xx411c7mD' },
+    { name: 'article', url: 'https://www.bilibili.com/read/cv1', want: 'https://www.bilibili.com/read/cv1' },
+    { name: 'foreign host', url: 'https://evil.example/video/BV1xx411c7mD', want: 'https://www.bilibili.com/video/BV1xx411c7mD' },
+    { name: 'non bilibili', url: 'https://example.com/page', want: '' },
+    { name: 'javascript', url: 'javascript:alert(1)', want: '' },
+  ])('safeBilibiliURL handles $name', ({ url, want }) => expect(safeBilibiliURL(url)).toBe(want))
 
   it('formats delivery and audit variants', () => {
     expect(deliveryTitle(makeDelivery())).toBe('delivery'); expect(deliverySummary(makeDelivery())).toBe('')

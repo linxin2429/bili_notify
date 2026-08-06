@@ -10,7 +10,7 @@ import PlayCircleOutline from '@mui/icons-material/PlayCircleOutline'
 import Repeat from '@mui/icons-material/Repeat'
 import Visibility from '@mui/icons-material/Visibility'
 import { Avatar, Box, Button, Card, CardContent, Chip, Dialog, Divider, IconButton, Paper, Stack, Typography } from '@mui/material'
-import { bilibiliPlayerEmbedURL, composePreviewBody, dynamicTypeLabel, formatDate, formatInteractionCount, formatRelativeDate, historyMediaURL, normalizePreviewText } from '../presentation'
+import { bilibiliPlayerEmbedURL, composePreviewBody, dynamicTypeLabel, formatDate, formatInteractionCount, formatRelativeDate, historyMediaURL, normalizePreviewText, safeBilibiliURL } from '../presentation'
 import type { DynamicHistoryItem, DynamicMedia, DynamicPreview } from '../types'
 
 type HistoryContent = DynamicHistoryItem | DynamicPreview
@@ -22,7 +22,7 @@ export function DynamicHistoryCard({ item, timeZone }: { item: DynamicHistoryIte
   const contentCard = isContentCardType(item.type)
   const body = contentCard ? (item.summary || '').trim() : composePreviewBody(item.summary, item.description)
   const title = contentCard ? '' : (item.title || '').trim()
-  const targetURL = (item.target_url || item.url || '').trim()
+  const targetURL = safeBilibiliURL(item.target_url || item.url)
   useLayoutEffect(() => {
     if (expanded) { setClamped(false); return }
     const node = bodyRef.current
@@ -87,8 +87,8 @@ function DynamicContentPreview({ item }: { item: HistoryContent }) {
 function ContentLandingCard({ item, cover }: { item: HistoryContent; cover: DynamicMedia }) {
   const [previewOpen, setPreviewOpen] = useState(false)
   const [failed, setFailed] = useState(false)
-  const targetURL = (item.target_url || item.url || '').trim()
-  const embedURL = isPlayableVideoType(item.type) ? bilibiliPlayerEmbedURL(targetURL) : ''
+  const targetURL = safeBilibiliURL(item.target_url || item.url)
+  const embedURL = isPlayableVideoType(item.type) ? bilibiliPlayerEmbedURL(item.target_url || item.url) : ''
   const canPreview = Boolean(embedURL)
   const openLabel = canPreview ? '预览视频' : targetURL ? '打开原内容' : '放大内容封面'
 

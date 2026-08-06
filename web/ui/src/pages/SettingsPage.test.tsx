@@ -39,6 +39,16 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('button', { name: '展开基础采集' })).toBeVisible()
   })
 
+  it('still toggles sections when localStorage persistence fails', async () => {
+    const user = userEvent.setup(); const api = new AdminAPI('csrf')
+    const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => { throw new Error('quota') })
+    renderRoute(<SettingsPage csrf="csrf" preference="system" setPreference={vi.fn()} settings={settings} api={api} runMutation={request => request()} onChanged={vi.fn()} />)
+    expect(screen.getByLabelText('轮询间隔（秒）')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '收起基础采集' }))
+    expect(screen.queryByLabelText('轮询间隔（秒）')).not.toBeInTheDocument()
+    expect(setItem).toHaveBeenCalled()
+  })
+
   it('rejects mismatched passwords without a request', async () => {
     const user = userEvent.setup(); const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock); const api = new AdminAPI('csrf')
     renderRoute(<SettingsPage csrf="csrf" preference="light" setPreference={vi.fn()} settings={settings} api={api} runMutation={request => request()} onChanged={vi.fn()} />)

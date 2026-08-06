@@ -75,7 +75,11 @@ export function SettingsPage({ csrf, preference, setPreference, settings, api, r
   const toggleSection = (key: string) => {
     setExpanded(previous => {
       const next = { ...previous, [key]: !previous[key] }
-      window.localStorage.setItem(SETTINGS_EXPANDED_KEY, JSON.stringify(next))
+      try {
+        window.localStorage.setItem(SETTINGS_EXPANDED_KEY, JSON.stringify(next))
+      } catch {
+        // Persistence is best-effort (quota / private mode / blocked storage).
+      }
       return next
     })
   }
