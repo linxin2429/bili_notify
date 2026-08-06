@@ -14,58 +14,14 @@ concurrency:
 permissions:
   contents: read
 
+# Prefer self-hosted Linux/X64 by default (no probe job — GitHub cannot check
+# self-hosted availability without first scheduling a job somewhere).
+# Override with repository variable CI_RUNS_ON (JSON string array), e.g.:
+#   ["ubuntu-latest"]
+#   ["self-hosted","Linux","X64"]
 jobs:
-  # Prefer an online, idle self-hosted Linux/X64 runner when one is visible.
-  # Resolution order:
-  #   1. vars.CI_RUNS_ON — JSON array override, e.g. ["self-hosted","Linux","X64"] or ["ubuntu-latest"]
-  #   2. List repository runners via secrets.RUNNER_QUERY_TOKEN (optional admin:read PAT) or GITHUB_TOKEN
-  #   3. Fall back to ubuntu-latest
-  choose-runner:
-    runs-on: ubuntu-latest
-    outputs:
-      runs_on: ${{ steps.pick.outputs.runs_on }}
-    steps:
-      - id: pick
-        env:
-          # Optional PAT with repo Administration: Read can list runners when GITHUB_TOKEN cannot.
-          GH_TOKEN: ${{ secrets.RUNNER_QUERY_TOKEN || github.token }}
-          CI_RUNS_ON: ${{ vars.CI_RUNS_ON }}
-        run: |
-          set -euo pipefail
-
-          if [ -n "${CI_RUNS_ON:-}" ]; then
-            if ! printf '%s' "$CI_RUNS_ON" | jq -e 'type == "array" and length > 0 and all(type == "string")' >/dev/null; then
-              echo "vars.CI_RUNS_ON must be a non-empty JSON string array, got: ${CI_RUNS_ON}" >&2
-              exit 1
-            fi
-            echo "runs_on=${CI_RUNS_ON}" >> "$GITHUB_OUTPUT"
-            echo "Selected runs-on=${CI_RUNS_ON} (vars.CI_RUNS_ON override)"
-            exit 0
-          fi
-
-          runs_on='["ubuntu-latest"]'
-          reason='no online idle self-hosted Linux/X64 runner'
-          if json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runners" 2>/dev/null)"; then
-            count="$(printf '%s' "$json" | jq '[.runners[]?
-              | select(.status == "online" and .busy == false)
-              | select([.labels[].name] | index("self-hosted") != null)
-              | select([.labels[].name] | index("Linux") != null)
-              | select([.labels[].name] | (index("X64") != null or index("x64") != null))
-            ] | length')"
-            if [ "${count:-0}" -gt 0 ]; then
-              runs_on='["self-hosted","Linux","X64"]'
-              reason="online idle self-hosted Linux/X64 runners: ${count}"
-            fi
-          else
-            reason='unable to list repository runners; set vars.CI_RUNS_ON or secrets.RUNNER_QUERY_TOKEN to prefer self-hosted'
-          fi
-
-          echo "runs_on=${runs_on}" >> "$GITHUB_OUTPUT"
-          echo "Selected runs-on=${runs_on} (${reason})"
-
   test:
-    needs: choose-runner
-    runs-on: ${{ fromJSON(needs.choose-runner.outputs.runs_on) }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","Linux","X64"]') }}
     permissions:
       contents: read
       id-token: write
@@ -106,8 +62,8 @@ jobs:
           retention-days: 7
 
   docker-smoke:
-    needs: [choose-runner, test]
-    runs-on: ${{ fromJSON(needs.choose-runner.outputs.runs_on) }}
+    needs: test
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","Linux","X64"]') }}
     permissions:
       contents: read
       actions: write # GHA docker layer cache
@@ -128,9 +84,9 @@ jobs:
         run: make docker-smoke
 
   docker:
-    needs: [choose-runner, test, docker-smoke]
+    needs: [test, docker-smoke]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ${{ fromJSON(needs.choose-runner.outputs.runs_on) }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","Linux","X64"]') }}
     permissions:
       contents: read
       actions: write # GHA docker layer cache
