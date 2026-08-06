@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AdminAPI, httpJSON } from './api'
-import { dashboardSnapshotSchema } from './contracts'
+import { dashboardSnapshotSchema, emptyResponseSchema } from './contracts'
+import { makeChannel, makeSnapshot, makeUP, settings } from './test/fixtures'
 
 const fetchMock = vi.fn<typeof fetch>()
 
@@ -10,6 +11,28 @@ beforeEach(() => {
 })
 
 describe('AdminAPI', () => {
+  it.each([
+    { name: 'dashboard', call: (api: AdminAPI) => api.dashboard(), path: '/api/v1/dashboard', method: undefined, body: makeSnapshot(), status: 200 },
+    { name: 'create UP', call: (api: AdminAPI) => api.createUP({ uid: '42', name: 'UP', enabled: true }), path: '/api/v1/ups', method: 'POST', body: makeUP(), status: 200 },
+    { name: 'delete UP', call: (api: AdminAPI) => api.deleteUP('42'), path: '/api/v1/ups/42', method: 'DELETE', body: undefined, status: 204 },
+    { name: 'create channel', call: (api: AdminAPI) => api.createChannel({ name: 'channel', type: 'wecom', enabled: true, settings: {}, secrets: { webhook: 'secret' } }), path: '/api/v1/channels', method: 'POST', body: makeChannel(), status: 200 },
+    { name: 'update channel', call: (api: AdminAPI) => api.updateChannel({ id: 'channel', name: 'channel', type: 'wecom', enabled: true, settings: {} }), path: '/api/v1/channels/channel', method: 'PUT', body: makeChannel(), status: 200 },
+    { name: 'delete channel', call: (api: AdminAPI) => api.deleteChannel('channel'), path: '/api/v1/channels/channel', method: 'DELETE', body: undefined, status: 204 },
+    { name: 'test channel', call: (api: AdminAPI) => api.testChannel('channel'), path: '/api/v1/channels/channel/test', method: 'POST', body: { status: 'sent' }, status: 200 },
+    { name: 'start Bilibili login', call: (api: AdminAPI) => api.startBiliLogin(), path: '/api/v1/bilibili-login', method: 'POST', body: { id: 'login', status: 'waiting', expires_at: 'later' }, status: 200 },
+    { name: 'cancel Bilibili login', call: (api: AdminAPI) => api.cancelBiliLogin('login'), path: '/api/v1/bilibili-login/login', method: 'DELETE', body: undefined, status: 204 },
+    { name: 'start Microsoft login', call: (api: AdminAPI) => api.startMicrosoftLogin('channel'), path: '/api/v1/channels/channel/microsoft-login', method: 'POST', body: { channel_id: 'channel', status: 'pending' }, status: 200 },
+    { name: 'cancel Microsoft login', call: (api: AdminAPI) => api.cancelMicrosoftLogin('channel'), path: '/api/v1/channels/channel/microsoft-login', method: 'DELETE', body: undefined, status: 204 },
+    { name: 'update settings', call: (api: AdminAPI) => api.updateSettings(settings), path: '/api/v1/settings', method: 'PUT', body: settings, status: 200 },
+    { name: 'query comments', call: (api: AdminAPI) => api.queryComments({ uid: '42' }), path: '/api/v1/comments?uid=42', method: undefined, body: { items: [], total: 0, limit: 20, offset: 0 }, status: 200 },
+    { name: 'get comment', call: (api: AdminAPI) => api.getComment('comment/id'), path: '/api/v1/comments/comment%2Fid', method: undefined, body: { rpid: '1', up_uid: '42', up_name: 'UP', content_type: 'video', content_id: 'BV', content_url: 'url', published_at: 'now', thread: [] }, status: 200 },
+  ])('calls the $name endpoint', async ({ call, path, method, body, status }) => {
+    fetchMock.mockResolvedValue(new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }))
+    await call(new AdminAPI('csrf-token'))
+    expect(fetchMock.mock.calls[0][0]).toBe(path)
+    expect(fetchMock.mock.calls[0][1]?.method).toBe(method)
+  })
+
   it('sends mutations through resource HTTP endpoints with CSRF', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({
       uid: '42', name: 'test', enabled: true, baseline_ready: false, consecutive_fail: 0,
@@ -88,5 +111,26 @@ describe('AdminAPI', () => {
     await vi.advanceTimersByTimeAsync(25_000)
     await rejection
     vi.useRealTimers()
+  })
+
+  it('returns undefined for an empty response and sends JSON headers', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
+    await expect(httpJSON('/empty', emptyResponseSchema, { method: 'DELETE', body: '{}' }, 'csrf')).resolves.toBeUndefined()
+    const options = fetchMock.mock.calls[0][1]
+    expect(new Headers(options?.headers).get('Content-Type')).toBe('application/json')
+    expect(new Headers(options?.headers).get('X-CSRF-Token')).toBe('csrf')
+  })
+
+  it('forwards a caller abort without reporting a timeout', async () => {
+    const caller = new AbortController()
+    fetchMock.mockImplementation((_input, options) => new Promise((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(new DOMException('caller aborted', 'AbortError')), { once: true })))
+    const request = httpJSON('/api/v1/dashboard', dashboardSnapshotSchema, { signal: caller.signal })
+    caller.abort('cancelled')
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('rejects a response that violates its schema', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ status: 'not-a-dashboard' }), { status: 200 }))
+    await expect(new AdminAPI('csrf').dashboard()).rejects.toThrow()
   })
 })

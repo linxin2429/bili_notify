@@ -109,7 +109,7 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 
 ## 6. 管理台设计
 
-前端使用 React、TypeScript、Vite、MUI、React Router 和 Zod，构建产物提交并通过 Go `embed` 打入单一二进制。页面采用实时运维工作台而不是等权卡片墙：概览首先显示整体就绪状态和阻塞原因，再显示当前 B站账号 UID/名称、UP、渠道与队列证据，最后提供操作；UP 列表显示关注状态、检查时间和当前综合流/空间采集路由。设置页可修改采集参数（动态轮询间隔、请求速率、并发，以及评论监控开关、跟踪条数、根/子评论页数、评论批次间隔），以及外观主题和管理员密码。历史页按需查询 `data.db` 中的内容档案，支持动态/UP 回复 Tab、UP 过滤、时间范围、关键字与分页；筛选进入 URL。动态历史使用接近 B 站网页动态流的直接阅读布局：正文可原生选择复制，图文采用单图或九宫格，视频等内容采用封面信息卡，转发内容嵌套展示，底部显示已有互动统计和独立的原内容外链；动态条目本身不打开详情弹窗。
+前端使用 React、TypeScript、Vite、MUI、React Router 和 Zod，构建产物提交并通过 Go `embed` 打入单一二进制。`App` 只负责主题与会话，`Console` 负责实时连接、导航和快照协调，各管理页面及历史富内容组件按领域独立；日期格式化显式接收服务端时区，不使用跨组件可变全局状态。页面采用实时运维工作台而不是等权卡片墙：概览首先显示整体就绪状态和阻塞原因，再显示当前 B站账号 UID/名称、UP、渠道与队列证据，最后提供操作；UP 列表显示关注状态、检查时间和当前综合流/空间采集路由。设置页可修改采集参数（动态轮询间隔、请求速率、并发，以及评论监控开关、跟踪条数、根/子评论页数、评论批次间隔），以及外观主题和管理员密码。历史页按需查询 `data.db` 中的内容档案，支持动态/UP 回复 Tab、UP 过滤、时间范围、关键字与分页；筛选进入 URL。动态历史使用接近 B 站网页动态流的直接阅读布局：正文可原生选择复制，图文采用单图或九宫格，视频等内容采用封面信息卡，转发内容嵌套展示，底部显示已有互动统计和独立的原内容外链；动态条目本身不打开详情弹窗。
 
 后端没有指标历史时间序列，因此界面不制造无依据图表。数据使用 KPI、状态标签、卡片和明细列表；成功、警告、失败状态同时使用颜色、图标和文字。主题支持跟随系统、浅色和深色，偏好只存 localStorage；路由和筛选进入 URL，秘密和会话不进入浏览器持久化存储。
 
@@ -134,9 +134,9 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 - Argon2id、一次性初始化、会话、限流、密码变更与连接失效；
 - HTTP 管理 API、WebSocket 单向事件、空闲周期不推送、领域事件合并、重连快照和秘密读模型；
 - 操作日志追加、筛选、保留清理、拒绝/失败路径、请求 ID和秘密值回归；
-- React 状态归约、结构化表单、桌面/移动端以及明暗主题；
+- React 单元、状态和组件测试覆盖 API、WebSocket、状态归约、结构化表单、桌面/移动端以及明暗主题；四项全局覆盖率均以 80% 为门禁；
 - Chromium 确定性端到端链路：管理员初始化、二维码登录、关注关系与空间基线、综合流采集、历史归档、失败 Outbox、同目录重启和人工重试；测试只连接本地 TLS 伪上游；
 - `web/testdata/contracts/` 中提交 REST 与 WebSocket JSON 契约样例；Go 侧以真实 HTTP 处理器和生产 WebSocket 序列化类型校验，Vitest 读取同一文件并以集中式 Zod schema 解析，TypeScript API 类型由 schema 推导；
 - 生产 scratch 镜像的 nonroot/只读运行、健康检查、HTTPS 初始化、优雅停止和同卷重启。
 
-提交前执行前端类型检查、单元测试和 `npm run test:e2e`，以及 `go build ./...`、`go test ./...`、`go test -race ./...` 和 `go vet ./...`。Go 覆盖率门禁只统计 `bilibili`、`notify`、`service`、`state`、`web` 五个核心包，但以 `go test -covermode=atomic -coverpkg="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)" -coverprofile=coverage.out ./...` 运行仓库全部测试；总覆盖率低于 80% 时 CI 失败。覆盖率报告通过 GitHub OIDC 上传 Codecov，不配置静态 Token，项目目标固定为 80% 且不启用 patch 门禁。CI 还必须校验提交的 `web/dist` 与当前源码构建一致，并对最终 Docker 镜像运行冒烟测试。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像。
+提交前执行前端类型检查、`npm run test:coverage` 和 `npm run test:e2e`，以及 `go build ./...`、`go test ./...`、`go test -race ./...` 和 `go vet ./...`。Vitest 使用 V8 统计除入口、纯类型和测试辅助代码之外的前端生产代码，statements、branches、functions、lines 任一低于 80% 时 CI 失败。Go 覆盖率门禁只统计 `bilibili`、`notify`、`service`、`state`、`web` 五个核心包，但以 `go test -covermode=atomic -coverpkg="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)" -coverprofile=coverage.out ./...` 运行仓库全部测试；总覆盖率低于 80% 时 CI 失败。Go 覆盖率报告通过 GitHub OIDC 上传 Codecov，不配置静态 Token，项目目标固定为 80% 且不启用 patch 门禁。CI 还必须校验提交的 `web/dist` 与当前源码构建一致，并对最终 Docker 镜像运行冒烟测试。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像。

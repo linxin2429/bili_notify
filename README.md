@@ -139,6 +139,7 @@ npm ci
 npx playwright install chromium # 首次运行端到端测试时安装
 npm run lint
 npm test
+npm run test:coverage # 与 CI 相同，四项前端覆盖率均不得低于 80%
 npm run test:e2e # 先构建前端，再运行 Chromium 关键链路
 
 cd ../..
@@ -159,6 +160,6 @@ docker build -t bili-notify:e2e .
 
 端到端测试使用本地 TLS 伪 B站和企业微信端点，不读取真实账号或通知凭据。失败时 Playwright 会在 `web/ui/test-results/` 保存截图、视频和 trace。
 
-CI 对上述五个核心包执行跨包原子覆盖率统计，低于 80% 时失败，并通过 GitHub OIDC 将 `coverage.out` 上传到 Codecov（不使用仓库 Token）。REST 与 WebSocket 契约样例位于 `web/testdata/contracts/`：Go 测试用真实处理器和生产序列化类型校验样例，Vitest 读取同一批文件并通过集中定义的 Zod schema 解析。任何 API 字段变更必须在同一提交中更新生产代码、共享样例及两端契约测试。
+CI 对前端执行 Vitest 单元、状态和组件测试，statements、branches、functions、lines 四项全局覆盖率均不得低于 80%。CI 还对上述五个核心 Go 包执行跨包原子覆盖率统计，低于 80% 时失败，并通过 GitHub OIDC 将 `coverage.out` 上传到 Codecov（不使用仓库 Token）。REST 与 WebSocket 契约样例位于 `web/testdata/contracts/`：Go 测试用真实处理器和生产序列化类型校验样例，Vitest 读取同一批文件并通过集中定义的 Zod schema 解析。任何 API 字段变更必须在同一提交中更新生产代码、共享样例及两端契约测试。
 
 正式镜像使用 Node 24 和 Go 1.26 多阶段构建，仅将前端产物、静态 Go 二进制与系统 CA 放入 nonroot scratch 镜像。

@@ -1,7 +1,5 @@
 import type { DashboardSnapshot } from './types'
-import {
-  dashboardSnapshotSchema, parseWebsocketEvent, serviceStatusSchema, sessionStateSchema, websocketEnvelopeSchema,
-} from './contracts'
+import { dashboardSnapshotSchema, parseWebsocketEvent, sessionStateSchema, websocketEnvelopeSchema } from './contracts'
 
 export function nextRevision(current: number, event: string, incoming: number): number | null {
   return event === 'snapshot' || incoming >= current ? incoming : null
@@ -85,5 +83,3 @@ export class RealtimeClient {
     if (!this.stopped) window.setTimeout(() => this.connect(), delay)
   }
 }
-
-export const schemasForTest = { snapshotSchema: dashboardSnapshotSchema, statusSchema: serviceStatusSchema }
