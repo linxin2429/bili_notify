@@ -126,6 +126,8 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 - 自动主密钥/TLS 生成、权限、损坏文件和旧 schema 拒绝；
 - Argon2id、一次性初始化、会话、限流、密码变更与连接失效；
 - HTTP 管理 API、WebSocket 单向事件、空闲周期不推送、领域事件合并、重连快照和秘密读模型；
-- React 状态归约、结构化表单、桌面/移动端以及明暗主题。
+- React 状态归约、结构化表单、桌面/移动端以及明暗主题；
+- Chromium 确定性端到端链路：管理员初始化、二维码登录、关注关系与空间基线、综合流采集、历史归档、失败 Outbox、同目录重启和人工重试；测试只连接本地 TLS 伪上游；
+- 生产 scratch 镜像的 nonroot/只读运行、健康检查、HTTPS 初始化、优雅停止和同卷重启。
 
-提交前执行前端类型检查、单元测试和构建，以及 `go build ./...`、`go test ./...`、`go test -race ./...` 和 `go vet ./...`。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像。
+提交前执行前端类型检查、单元测试和 `npm run test:e2e`，以及 `go build ./...`、`go test ./...`、`go test -race ./...` 和 `go vet ./...`。CI 必须校验提交的 `web/dist` 与当前源码构建一致，并对最终 Docker 镜像运行冒烟测试。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像。

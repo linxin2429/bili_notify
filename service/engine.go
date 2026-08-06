@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"net/http"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,7 @@ type Engine struct {
 	store                *state.Store
 	client               *bilibili.Client
 	media                *media.Downloader
+	notificationClient   *http.Client
 	logger               *slog.Logger
 	metrics              *Metrics
 	settingsMu           sync.RWMutex
@@ -71,12 +73,21 @@ type Engine struct {
 	events               *EventBus
 }
 
-func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, settings model.RuntimeSettings, events *EventBus, mediaDownloader *media.Downloader) *Engine {
+type EngineOption func(*Engine)
+
+// WithNotificationHTTPClient sets the client used by HTTP-backed notification channels.
+func WithNotificationHTTPClient(client *http.Client) EngineOption {
+	return func(engine *Engine) {
+		engine.notificationClient = client
+	}
+}
+
+func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, settings model.RuntimeSettings, events *EventBus, mediaDownloader *media.Downloader, options ...EngineOption) *Engine {
 	if events == nil {
 		events = NewEventBus()
 	}
 	settings = settings.WithCommentDefaults()
-	return &Engine{
+	engine := &Engine{
 		store: store, client: client, media: mediaDownloader, logger: logger, metrics: metrics,
 		pollInterval:         settings.PollInterval(),
 		requestRate:          settings.RequestRate,
@@ -93,6 +104,10 @@ func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger,
 		microsoftLogins:      make(map[string]*MicrosoftLoginSession),
 		events:               events,
 	}
+	for _, option := range options {
+		option(engine)
+	}
+	return engine
 }
 
 func (e *Engine) Settings() model.RuntimeSettings {
@@ -1623,7 +1638,7 @@ func (e *Engine) newSender(channel model.Channel) (notify.Sender, error) {
 	if e.media != nil {
 		dataDir = e.media.DataDir
 	}
-	return notify.NewSender(channel, nil, dataDir, func(settings map[string]string) error {
+	return notify.NewSender(channel, e.notificationClient, dataDir, func(settings map[string]string) error {
 		_, err := e.store.UpdateChannelSettings(channel.ID, settings)
 		if err == nil {
 			e.publish(TopicChannels)

@@ -22,8 +22,28 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// Dependencies contains process-boundary implementations used by RunWithDependencies.
+// Zero values select the production implementations used by Run.
+type Dependencies struct {
+	BilibiliHTTPClient     *http.Client
+	NotificationHTTPClient *http.Client
+	BilibiliAPIURL         string
+	BilibiliPassportURL    string
+	Logger                 *slog.Logger
+	AdminListener          net.Listener
+	ObserveListener        net.Listener
+}
+
 func Run(ctx context.Context, cfg config.Config, version string) error {
+	return RunWithDependencies(ctx, cfg, version, Dependencies{})
+}
+
+// RunWithDependencies runs the application with explicitly supplied process boundaries.
+func RunWithDependencies(ctx context.Context, cfg config.Config, version string, dependencies Dependencies) error {
 	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if err := dependencies.validate(); err != nil {
 		return err
 	}
 	if err := config.RefuseLegacyDataDir(cfg.DataDir); err != nil {
@@ -62,27 +82,10 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 		return fmt.Errorf("stored runtime settings are invalid: %w", err)
 	}
 
-	level := new(slog.LevelVar)
-	switch strings.ToLower(cfg.LogLevel) {
-	case "debug":
-		level.Set(slog.LevelDebug)
-	case "warn":
-		level.Set(slog.LevelWarn)
-	case "error":
-		level.Set(slog.LevelError)
-	default:
-		level.Set(slog.LevelInfo)
+	logger := dependencies.Logger
+	if logger == nil {
+		logger = newLogger(cfg.LogLevel)
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level,
-		// slog's JSON handler rewrites time.Time to UTC; emit local wall-clock times instead.
-		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
-			if a.Value.Kind() == slog.KindTime {
-				return slog.String(a.Key, a.Value.Time().In(time.Local).Format(time.RFC3339Nano))
-			}
-			return a
-		},
-	}))
 	logger.Info("Bili Notify starting",
 		"version", version,
 		"timezone", time.Local.String(),
@@ -92,16 +95,15 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 		"admin_addr", cfg.AdminAddr,
 		"observe_addr", cfg.ObserveAddr,
 	)
-	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 8 * time.Second,
-		IdleConnTimeout:       90 * time.Second,
-		MaxIdleConns:          20,
+	httpClient := dependencies.BilibiliHTTPClient
+	if httpClient == nil {
+		httpClient = newHTTPClient()
 	}
-	httpClient := &http.Client{Transport: transport, Timeout: 10 * time.Second}
-	client := bilibili.New(httpClient, "bili-notify/"+version)
+	var clientOptions []bilibili.Option
+	if dependencies.BilibiliAPIURL != "" {
+		clientOptions = append(clientOptions, bilibili.WithBaseURLs(dependencies.BilibiliAPIURL, dependencies.BilibiliPassportURL))
+	}
+	client := bilibili.New(httpClient, "bili-notify/"+version, clientOptions...)
 	if err := os.MkdirAll(config.MediaDir(cfg.DataDir), 0o700); err != nil {
 		return fmt.Errorf("creating media directory: %w", err)
 	}
@@ -113,7 +115,11 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	registry := prometheus.NewRegistry()
 	metrics := service.NewMetrics(registry)
 	events := service.NewEventBus()
-	engine := service.NewEngine(store, client, logger, metrics, settings, events, downloader)
+	var engineOptions []service.EngineOption
+	if dependencies.NotificationHTTPClient != nil {
+		engineOptions = append(engineOptions, service.WithNotificationHTTPClient(dependencies.NotificationHTTPClient))
+	}
+	engine := service.NewEngine(store, client, logger, metrics, settings, events, downloader, engineOptions...)
 	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, store, events, logger, registry, cfg.DataDir)
 	if err != nil {
 		return err
@@ -121,6 +127,56 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return engine.Run(gctx) })
-	g.Go(func() error { return server.Run(gctx) })
+	if dependencies.AdminListener != nil {
+		g.Go(func() error { return server.Serve(gctx, dependencies.AdminListener, dependencies.ObserveListener) })
+	} else {
+		g.Go(func() error { return server.Run(gctx) })
+	}
 	return g.Wait()
+}
+
+func (d Dependencies) validate() error {
+	if (d.BilibiliAPIURL == "") != (d.BilibiliPassportURL == "") {
+		return errors.New("Bilibili API and passport base URLs must be provided together")
+	}
+	if (d.AdminListener == nil) != (d.ObserveListener == nil) {
+		return errors.New("admin and observability listeners must be provided together")
+	}
+	return nil
+}
+
+func newLogger(logLevel string) *slog.Logger {
+	level := new(slog.LevelVar)
+	switch strings.ToLower(logLevel) {
+	case "debug":
+		level.Set(slog.LevelDebug)
+	case "warn":
+		level.Set(slog.LevelWarn)
+	case "error":
+		level.Set(slog.LevelError)
+	default:
+		level.Set(slog.LevelInfo)
+	}
+	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+		// slog's JSON handler rewrites time.Time to UTC; emit local wall-clock times instead.
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			if a.Value.Kind() == slog.KindTime {
+				return slog.String(a.Key, a.Value.Time().In(time.Local).Format(time.RFC3339Nano))
+			}
+			return a
+		},
+	}))
+}
+
+func newHTTPClient() *http.Client {
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 8 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          20,
+	}
+	return &http.Client{Transport: transport, Timeout: 10 * time.Second}
 }

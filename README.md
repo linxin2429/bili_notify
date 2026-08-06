@@ -101,15 +101,22 @@ docker compose exec bili-notify /bili-notify healthcheck
 ```bash
 cd web/ui
 npm ci
+npx playwright install chromium # 首次运行端到端测试时安装
 npm run lint
 npm test
-npm run build
+npm run test:e2e # 先构建前端，再运行 Chromium 关键链路
 
 cd ../..
 go build ./...
 go test ./...
 go test -race ./...
 go vet ./...
+
+# 可选：验证最终 scratch 镜像的初始化、健康检查和同卷重启
+docker build -t bili-notify:e2e .
+./e2e/docker-smoke.sh bili-notify:e2e
 ```
+
+端到端测试使用本地 TLS 伪 B站和企业微信端点，不读取真实账号或通知凭据。失败时 Playwright 会在 `web/ui/test-results/` 保存截图、视频和 trace。
 
 正式镜像使用 Node 24 和 Go 1.26 多阶段构建，仅将前端产物、静态 Go 二进制与系统 CA 放入 nonroot scratch 镜像。

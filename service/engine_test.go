@@ -441,3 +441,11 @@ func TestDispatchOncePublishesMinimalTopicsAfterDeliveryChanges(t *testing.T) {
 	require.Len(t, deliveries, 1)
 	assert.Equal(t, model.DeliveryBlocked, deliveries[0].State)
 }
+
+func TestWithNotificationHTTPClient(t *testing.T) {
+	t.Parallel()
+	client := &http.Client{}
+	engine := &Engine{}
+	WithNotificationHTTPClient(client)(engine)
+	assert.Same(t, client, engine.notificationClient)
+}

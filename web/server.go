@@ -7,9 +7,11 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -66,25 +68,39 @@ func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, s
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	adminListener, err := net.Listen("tcp", s.adminAddr)
+	if err != nil {
+		return fmt.Errorf("listening on admin address %s: %w", s.adminAddr, err)
+	}
+	observeListener, err := net.Listen("tcp", s.observeAddr)
+	if err != nil {
+		return errors.Join(fmt.Errorf("listening on observability address %s: %w", s.observeAddr, err), adminListener.Close())
+	}
+	return s.Serve(ctx, adminListener, observeListener)
+}
+
+// Serve runs the admin and observability servers on already-bound listeners.
+// It takes ownership of both listeners until the servers stop.
+func (s *Server) Serve(ctx context.Context, adminListener, observeListener net.Listener) error {
 	admin := &http.Server{
-		Addr: s.adminAddr, Handler: s.adminHandler(), TLSConfig: s.tlsConfig,
+		Addr: adminListener.Addr().String(), Handler: s.adminHandler(), TLSConfig: s.tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 1 << 20,
 	}
 	observe := &http.Server{
-		Addr: s.observeAddr, Handler: s.observeHandler(),
+		Addr: observeListener.Addr().String(), Handler: s.observeHandler(),
 		ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20,
 	}
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		s.logger.Info("admin server started", "addr", s.adminAddr)
-		if err := admin.ListenAndServeTLS("", ""); !errors.Is(err, http.ErrServerClosed) {
+		s.logger.Info("admin server started", "addr", adminListener.Addr().String())
+		if err := admin.Serve(tls.NewListener(adminListener, s.tlsConfig)); !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil
 	})
 	g.Go(func() error {
-		s.logger.Info("observability server started", "addr", s.observeAddr)
-		if err := observe.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		s.logger.Info("observability server started", "addr", observeListener.Addr().String())
+		if err := observe.Serve(observeListener); !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil
