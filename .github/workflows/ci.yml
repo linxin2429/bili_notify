@@ -67,7 +67,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build smoke-test image
+      - name: Build and smoke-test image
         env:
           DOCKER_BUILD: docker buildx build
           DOCKER_BUILD_FLAGS: --load --cache-from=type=gha --cache-to=type=gha,mode=max
@@ -76,10 +76,7 @@ jobs:
           VERSION: e2e
           COMMIT: ${{ github.sha }}
           BUILD_DATE: unknown
-        run: make docker-build
-
-      - name: Smoke test production image
-        run: ./e2e/docker-smoke.sh bili-notify:e2e
+        run: make docker-smoke
 
   docker:
     needs: [test, docker-smoke]

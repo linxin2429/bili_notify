@@ -16,13 +16,16 @@ COVERAGE_MIN ?= 80.0
 ARGS ?= serve
 COMPOSE ?= docker compose
 COMPOSE_FLAGS ?=
+COMPOSE_RUN_FLAGS ?=
 
 LDFLAGS := -s -w \
 	-X $(MODULE)/cmd.version=$(VERSION) \
 	-X $(MODULE)/cmd.commit=$(COMMIT) \
 	-X $(MODULE)/cmd.date=$(BUILD_DATE)
 
-.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e build fmt test test-race coverage vet vulncheck check run docker-build docker-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-healthcheck
+.NOTPARALLEL: check
+
+.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e build fmt test test-race coverage vet vulncheck check run docker-build docker-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
 
 help:
 	@printf '%s\n' \
@@ -55,6 +58,7 @@ help:
 		'  compose-down           remove Compose services' \
 		'  compose-logs           follow bili-notify logs' \
 		'  compose-run ARGS=...   run a one-off CLI command' \
+		'  compose-exec ARGS=...  run a command in the service container' \
 		'  compose-healthcheck    check the running service'
 
 setup:
@@ -94,7 +98,8 @@ test-race: frontend-build
 	go test -race $(GO_TEST_FLAGS) $(GO_PACKAGES)
 
 coverage: frontend-build
-	@core_packages="$$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"; \
+	@set -eu; \
+	core_packages="$$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"; \
 	go test -covermode=atomic -coverpkg="$${core_packages}" -coverprofile="$(COVERAGE_FILE)" ./...; \
 	total="$$(go tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}')"; \
 	echo "Core Go coverage: $${total}%"; \
@@ -138,7 +143,10 @@ compose-logs:
 	$(COMPOSE) $(COMPOSE_FLAGS) logs -f bili-notify
 
 compose-run:
-	$(COMPOSE) $(COMPOSE_FLAGS) run --rm bili-notify $(ARGS)
+	$(COMPOSE) $(COMPOSE_FLAGS) run --rm $(COMPOSE_RUN_FLAGS) bili-notify $(ARGS)
+
+compose-exec:
+	$(COMPOSE) $(COMPOSE_FLAGS) exec bili-notify $(ARGS)
 
 compose-healthcheck:
 	$(COMPOSE) $(COMPOSE_FLAGS) exec bili-notify /bili-notify healthcheck

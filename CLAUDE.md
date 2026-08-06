@@ -43,19 +43,20 @@ When writing or changing Go tests, follow these rules (also in `AGENTS.md`):
 Docker (production-like scratch image, nonroot UID 65532):
 
 ```bash
-docker compose up -d --build
-docker compose logs -f bili-notify
-docker compose exec bili-notify /bili-notify healthcheck
-docker compose run --rm bili-notify --help
-docker compose run --rm bili-notify admin hash-password
+make compose-up
+make compose-logs
+make compose-healthcheck
+make compose-run ARGS=--help
+make compose-run ARGS='admin hash-password'
 ```
 
 Master-key rotation (service must be stopped):
 
 ```bash
-docker compose stop bili-notify
-docker compose run --rm -v ./secrets/new-master-key:/run/secrets/new-master-key:ro \
-  bili-notify rekey --new-key-file /run/secrets/new-master-key
+make compose-stop
+make compose-run \
+  COMPOSE_RUN_FLAGS='-v ./secrets/new-master-key:/run/secrets/new-master-key:ro' \
+  ARGS='rekey --new-key-file /run/secrets/new-master-key'
 ```
 
 CI (`.github/workflows/ci.yml`):

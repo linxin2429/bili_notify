@@ -11,9 +11,9 @@
 - `make test`, `make test-race`, and `make vet` run the corresponding Go checks after ensuring embedded frontend assets exist.
 - `make check` runs the complete frontend and Go CI check suite; `make help` lists narrower targets and override variables.
 - `make run ARGS=--help` lists CLI commands; `make run` starts the service when the required secret files and paths are configured.
-- `docker compose up -d --build` builds and runs the production-like scratch image locally.
+- `make docker-smoke` builds and verifies the production-like scratch image; `make compose-up` starts the Compose services.
 
-Run `gofmt -w <files>` and the test commands before submitting changes.
+Run `make fmt` and the relevant test targets before submitting changes.
 
 ## Coding Style & Naming Conventions
 
