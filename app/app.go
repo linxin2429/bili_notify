@@ -14,6 +14,7 @@ import (
 	"github.com/linxin2429/bili_notify/config"
 	"github.com/linxin2429/bili_notify/logging"
 	"github.com/linxin2429/bili_notify/media"
+	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
 	"github.com/linxin2429/bili_notify/vault"
@@ -97,10 +98,18 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 		if err := store.PutRuntimeSettings(settings); err != nil {
 			return fmt.Errorf("seeding runtime settings: %w", err)
 		}
+	} else if errors.Is(err, state.ErrRuntimeSettingsUpgradeRequired) {
+		settings, err = store.UpgradeRuntimeSettings(cfg.SeedRuntimeSettings())
+		if err != nil {
+			return fmt.Errorf("upgrading runtime settings: %w", err)
+		}
 	} else if err != nil {
 		return fmt.Errorf("loading runtime settings: %w", err)
-	} else if err := settings.Validate(); err != nil {
-		return fmt.Errorf("stored runtime settings are invalid: %w", err)
+	}
+	if loggers != nil {
+		if err := loggers.Apply(settings.LogLevel, settings.SystemLogRetention()); err != nil {
+			return fmt.Errorf("applying stored logging settings: %w", err)
+		}
 	}
 
 	appLogger.Info("Bili Notify starting",
@@ -138,14 +147,15 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 		engineOptions = append(engineOptions, service.WithNotificationHTTPClient(dependencies.NotificationHTTPClient))
 	}
 	engine := service.NewEngine(store, client, logger.With("component", "engine"), metrics, settings, events, downloader, engineOptions...)
-	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), registry, cfg.DataDir)
+	settingsManager := newRuntimeSettingsManager(store, engine, loggers, events)
+	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), registry, cfg.DataDir)
 	if err != nil {
 		return err
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return engine.Run(gctx) })
-	g.Go(func() error { return runAuditRetention(gctx, store, cfg.AuditLogRetention, appLogger) })
+	g.Go(func() error { return runAuditRetention(gctx, store, settingsManager.Settings, appLogger) })
 	if dependencies.AdminListener != nil {
 		g.Go(func() error { return server.Serve(gctx, dependencies.AdminListener, dependencies.ObserveListener) })
 	} else {
@@ -182,8 +192,9 @@ func newHTTPClient() *http.Client {
 	return &http.Client{Transport: transport, Timeout: 10 * time.Second}
 }
 
-func runAuditRetention(ctx context.Context, store *state.Store, retention time.Duration, logger *slog.Logger) error {
+func runAuditRetention(ctx context.Context, store *state.Store, currentSettings func() model.RuntimeSettings, logger *slog.Logger) error {
 	prune := func() {
+		retention := currentSettings().AuditLogRetention()
 		var deleted int64
 		for {
 			count, err := store.PruneAuditLogs(time.Now().Add(-retention), 1000)

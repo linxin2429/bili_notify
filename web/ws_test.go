@@ -31,21 +31,21 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, auth.initialize(setupCode, "correct horse battery staple"))
 	events := service.NewEventBus()
+	settings := model.DefaultRuntimeSettings()
+	engine := service.NewEngine(
+		store,
+		bilibili.New(nil, "test"),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		nil,
+		settings,
+		events,
+		nil,
+	)
+	settingsService := &webTestSettingsManager{engine: engine, store: store, events: events}
 	server := &Server{
-		auth: auth,
-		engine: service.NewEngine(
-			store,
-			bilibili.New(nil, "test"),
-			slog.New(slog.NewTextHandler(io.Discard, nil)),
-			nil,
-			model.RuntimeSettings{
-				PollIntervalSec: 30, RequestRate: 2, RequestConcurrency: 4,
-				CommentEnabled: true, CommentTrackN: 10, CommentRootPages: 2,
-				CommentReplyPages: 5, CommentBatchIntervalSec: 120,
-			},
-			events,
-			nil,
-		),
+		auth:        auth,
+		engine:      engine,
+		settings:    settingsService,
 		store:       store,
 		events:      events,
 		connections: make(map[string]map[*websocket.Conn]struct{}),

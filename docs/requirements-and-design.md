@@ -36,9 +36,9 @@ flowchart LR
 
 代码按功能划分为顶层包：`bilibili` 负责网页接口与二维码登录，`state` 负责事务和持久化（单一 SQLite `data.db`：配置/Outbox/内容档案，GORM + goose 版本化迁移），`notify` 负责投递协议，`service` 负责编排轮询、OAuth、Outbox 和领域事件，`web` 负责认证、管理 REST API、WebSocket 事件流与嵌入式管理台，`cmd` 只处理命令和非秘密启动配置。
 
-轮询器默认以 30 秒为目标周期、全局 2 请求/秒、4 个并发请求；这三项作为空库首次默认值写入 SQLite，之后可在管理台热更新并立即生效。服务每 10 分钟批量查询当前登录账号与监控 UP 的关注关系：已关注且完成空间同步的 UP 使用账号综合动态流，其余 UP 轮询空间动态；关系未知时明确走空间接口。已关注 UP 每 30 分钟额外执行一次空间完整性校验。空间和综合流均最多翻 10 页；超过上限不会静默推进游标，综合流会退回空间同步后重新建立基线。
+轮询器默认以 30 秒为目标周期、全局 2 请求/秒、4 个并发请求。服务默认每 10 分钟批量查询当前登录账号与监控 UP 的关注关系：已关注且完成空间同步的 UP 使用账号综合动态流，其余 UP 轮询空间动态；关系未知时明确走空间接口。已关注 UP 默认每 30 分钟额外执行一次空间完整性校验。空间和综合流默认最多翻 10 页；超过上限不会静默推进游标，综合流会退回空间同步后重新建立基线。
 
-评论监控使用独立较慢的批次周期（默认 120 秒），与动态轮询共用全局速率与并发预算。每个 UP 仅跟踪最近 N 条（默认 10）可映射评论区坐标的内容；每内容最多翻根评论 P 页（默认 2）、子评论 R 页（默认 5）。`comment_enabled`、`comment_track_n`、`comment_root_pages`、`comment_reply_pages`、`comment_batch_interval_sec` 与动态三项一并热更新。
+评论监控使用独立较慢的批次周期（默认 120 秒），与动态轮询共用全局速率与并发预算。每个 UP 仅跟踪最近 N 条（默认 10）可映射评论区坐标的内容；每内容最多翻根评论 P 页（默认 2）、子评论 R 页（默认 5）。基础采集、高级采集、投递与积压告警、五段重试、日志级别及日志保留期组成一份版本化运行设置，空库首次从启动配置和代码默认值播种，之后由 SQLite 持久化并通过管理台完整热更新。更新不取消在途任务，也不改写已存在的风控截止时间或投递 `next_at`。
 
 新动态按发布时间由旧到新处理。完整正文、动态/评论 `seen` 与对应启用渠道的投递任务在**同一 SQLite 事务**内提交（`INSERT OR IGNORE` 档案；含 baseline；系统告警 `uid=system` 不入库）。任务只有在平台 HTTP 状态和业务码均成功后才删除；网络错误、429 和 5xx 分级重试，不可恢复配置或鉴权错误进入阻塞状态。管理员可以将单个阻塞任务手动改回立即到期的待投递状态，实际发送仍由后台 Outbox 调度器异步执行；该操作保留尝试次数、最后错误与分段投递进度，避免部分成功的多段消息重复发送。删除 UP 会同时清除去重状态与该 UP 的内容库记录。v1 内容库无自动淘汰，体积随监控时长增长。
 
@@ -74,13 +74,13 @@ HTTP 承担认证生命周期和全部管理资源 API：
 | `POST /api/v1/deliveries/{id}/retry` | 将单个阻塞投递任务立即重新入队，返回 202，不同步等待发送 |
 | `POST/DELETE /api/v1/bilibili-login[/{id}]` | 启动或取消 B 站扫码登录 |
 | `POST/DELETE /api/v1/channels/{id}/microsoft-login` | 启动或取消 Microsoft 授权 |
-| `PUT /api/v1/settings` | 完整更新运行时采集设置 |
+| `PUT /api/v1/settings` | 严格校验并完整更新 19 项运行设置 |
 | `GET /api/v1/dynamics[/{id}]`、`GET /api/v1/comments[/{rpid}]` | 查询历史列表或内容详情 |
 | `GET /api/v1/dynamics/{id}/media/{index}` | 读取已落盘的动态媒体（需会话） |
 | `GET /api/v1/audit-logs` | 按操作、结果、资源、时间和关键字分页查询管理员操作日志 |
 | `GET /api/v1/ws` | 校验会话并升级 WebSocket |
 
-HTTP 负责全部浏览器主动请求：资源写操作使用 JSON body，写请求必须携带会话中的 CSRF Token；历史查询使用 `uid?`、`q?`、`from?`、`to?`（RFC3339）、`limit?`（默认 20，最大 100）和 `offset?`，时间范围为半开区间 `[from, to)`。动态历史列表的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)`、互动统计 `stats(forwards/comments/likes)`、视频元数据 `video(duration/views/danmaku)` 和一层 `original` 引用预览（含原内容的视频元数据），前端无需逐条请求内容详情；若条目已有本地文件，列表中的 `media.url` 改写为同源 `/api/v1/dynamics/{id}/media/{index}`，否则保留 CDN URL。旧归档没有统计或视频字段时省略对应字段；列表不返回评论坐标与磁盘路径。WebSocket 仅承载服务端事件 `event/revision/data`，不接受业务命令；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、采集参数、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。重连后使用新快照修复断线期间遗漏的状态。
+HTTP 负责全部浏览器主动请求：资源写操作使用 JSON body，写请求必须携带会话中的 CSRF Token；`PUT /api/v1/settings` 必须提交全部字段，缺失和未知字段均拒绝。历史查询使用 `uid?`、`q?`、`from?`、`to?`（RFC3339）、`limit?`（默认 20，最大 100）和 `offset?`，时间范围为半开区间 `[from, to)`。动态历史列表的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)`、互动统计 `stats(forwards/comments/likes)`、视频元数据 `video(duration/views/danmaku)` 和一层 `original` 引用预览（含原内容的视频元数据），前端无需逐条请求内容详情；若条目已有本地文件，列表中的 `media.url` 改写为同源 `/api/v1/dynamics/{id}/media/{index}`，否则保留 CDN URL。旧归档没有统计或视频字段时省略对应字段；列表不返回评论坐标与磁盘路径。WebSocket 仅承载服务端事件 `event/revision/data`，不接受业务命令；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、运行设置、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。重连后使用新快照修复断线期间遗漏的状态。
 
 领域事件主要由实际状态写入驱动：空闲投递周期不发布事件，空闲采集不广播整份 UP 列表；关注关系刷新、采集路由改变、就绪状态或风控暂停等时间派生状态跨越边界时发布对应轻量事件。投递成功、失败、重试或阻塞只标记状态和投递主题；渠道授权信息只有在实际变化时才标记渠道主题。事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。WebSocket 消息限制为 1 MiB，并以独立的 30 秒 Ping 保活。
 
@@ -109,7 +109,7 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 
 ## 6. 管理台设计
 
-前端使用 React、TypeScript、Vite、MUI、React Router 和 Zod，构建产物提交并通过 Go `embed` 打入单一二进制。`App` 只负责主题与会话，`Console` 负责实时连接、导航和快照协调，各管理页面及历史富内容组件按领域独立；日期格式化显式接收服务端时区，不使用跨组件可变全局状态。页面采用实时运维工作台而不是等权卡片墙：概览首先显示整体就绪状态和阻塞原因，再显示当前 B站账号 UID/名称、UP、渠道与队列证据，最后提供操作；UP 列表显示关注状态、检查时间和当前综合流/空间采集路由。设置页可修改采集参数（动态轮询间隔、请求速率、并发，以及评论监控开关、跟踪条数、根/子评论页数、评论批次间隔），以及外观主题和管理员密码。历史页按需查询 `data.db` 中的内容档案，支持动态/UP 回复 Tab、UP 过滤、时间范围、关键字与分页；筛选进入 URL。动态历史使用接近 B 站网页动态流的直接阅读布局：正文可原生选择复制，图文采用单图或九宫格，视频等内容采用封面信息卡，转发内容嵌套展示，底部显示已有互动统计和独立的原内容外链；动态条目本身不打开详情弹窗。
+前端使用 React、TypeScript、Vite、MUI、React Router 和 Zod，构建产物通过 Go `embed` 打入单一二进制。`App` 只负责主题与会话，`Console` 负责实时连接、导航和快照协调，各管理页面及历史富内容组件按领域独立；日期格式化显式接收服务端时区，不使用跨组件可变全局状态。页面采用实时运维工作台而不是等权卡片墙：概览首先显示整体就绪状态和阻塞原因，再显示当前 B站账号 UID/名称、UP、渠道与队列证据，最后提供操作；UP 列表显示关注状态、检查时间和当前综合流/空间采集路由。设置页将 19 项运行参数分为基础采集、高级采集、投递与告警、日志四组，一次提交完整设置；外观主题和管理员密码保持独立。历史页按需查询 `data.db` 中的内容档案，支持动态/UP 回复 Tab、UP 过滤、时间范围、关键字与分页；筛选进入 URL。动态历史使用接近 B 站网页动态流的直接阅读布局：正文可原生选择复制，图文采用单图或九宫格，视频等内容采用封面信息卡，转发内容嵌套展示，底部显示已有互动统计和独立的原内容外链；动态条目本身不打开详情弹窗。
 
 后端没有指标历史时间序列，因此界面不制造无依据图表。数据使用 KPI、状态标签、卡片和明细列表；成功、警告、失败状态同时使用颜色、图标和文字。主题支持跟随系统、浅色和深色，偏好只存 localStorage；路由和筛选进入 URL，秘密和会话不进入浏览器持久化存储。
 
@@ -119,9 +119,11 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 
 ## 7. 可观测性、运行与验证
 
+Makefile 是本地与 CI 的统一任务入口：`make check` 执行全部前端与 Go 检查，`make build` 生成本地二进制，`make docker-build` 生成生产镜像，细分目标通过 `make help` 查看。
+
 私有观测服务默认监听 `:9090`：`/healthz` 表示进程存活，`/readyz` 要求有效 B站会话、启用的 UP 和渠道以及近期成功采集，`/metrics` 暴露轮询、发现延迟、投递结果、Outbox 和审计写入失败指标。指标不使用 UID、渠道 ID 或正文作为标签。
 
-运行日志使用 `log/slog` 输出统一 JSON，同时写 stdout 与 `/data/logs/bili-notify.jsonl`；字段包含 schema、服务版本、进程 `run_id`、`category=system|audit`、组件、稳定事件名、结果、耗时及必要领域标识。文件按 20 MiB 轮转、最多保留 32 个备份，默认按 30 天清理。日志不输出请求体、Cookie、Webhook、令牌、第三方响应正文或秘密值；唯一例外是首次初始化所需、成功设置管理员后立即失效的 `setup_code`。
+运行日志使用 `log/slog` 输出统一 JSON，同时写 stdout 与 `/data/logs/bili-notify.jsonl`；字段包含 schema、服务版本、进程 `run_id`、`category=system|audit`、组件、稳定事件名、结果、耗时及必要领域标识。文件按 20 MiB 轮转、最多保留 32 个备份，默认按 30 天清理；日志级别立即热更新，系统日志与审计日志保留期分别在下一次轮转维护和每日清理时应用。日志不输出请求体、Cookie、Webhook、令牌、第三方响应正文或秘密值；唯一例外是首次初始化所需、成功设置管理员后立即失效的 `setup_code`。
 
 可选观测栈由 Alloy 只读采集共享数据卷中的 JSONL，写入单实例 Loki，并通过只绑定宿主机回环地址且必须鉴权的 Grafana 查询。Loki 只将服务、类别、级别和组件作为标签，避免把请求 ID、UID、渠道 ID等高基数字段提升为标签；系统日志默认保留 30 天。Alloy 不挂载 Docker Socket，采集和查询组件故障不阻塞 Bili Notify 与内置操作日志查询。
 
@@ -139,4 +141,4 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 - `web/testdata/contracts/` 中提交 REST 与 WebSocket JSON 契约样例；Go 侧以真实 HTTP 处理器和生产 WebSocket 序列化类型校验，Vitest 读取同一文件并以集中式 Zod schema 解析，TypeScript API 类型由 schema 推导；
 - 生产 scratch 镜像的 nonroot/只读运行、健康检查、HTTPS 初始化、优雅停止和同卷重启。
 
-提交前执行前端类型检查、`npm run test:coverage` 和 `npm run test:e2e`，以及 `go build ./...`、`go test ./...`、`go test -race ./...` 和 `go vet ./...`。Vitest 使用 V8 统计除入口、纯类型和测试辅助代码之外的前端生产代码，statements、branches、functions、lines 任一低于 80% 时 CI 失败。Go 覆盖率门禁只统计 `bilibili`、`notify`、`service`、`state`、`web` 五个核心包，但以 `go test -covermode=atomic -coverpkg="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)" -coverprofile=coverage.out ./...` 运行仓库全部测试；总覆盖率低于 80% 时 CI 失败。Go 覆盖率报告通过 GitHub OIDC 上传 Codecov，不配置静态 Token，项目目标固定为 80% 且不启用 patch 门禁。CI 还必须校验提交的 `web/dist` 与当前源码构建一致，并对最终 Docker 镜像运行冒烟测试。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像。
+提交前执行前端类型检查、`npm run test:coverage` 和 `npm run test:e2e`，以及 `go build ./...`、`go test ./...`、`go test -race ./...` 和 `go vet ./...`。`web/dist` 是不纳入 Git 的构建产物；执行会编译 `web` 包的 Go 命令前必须先从 lockfile 构建前端。Vitest 使用 V8 统计除入口、纯类型和测试辅助代码之外的前端生产代码，statements、branches、functions、lines 任一低于 80% 时 CI 失败。Go 覆盖率门禁只统计 `bilibili`、`notify`、`service`、`state`、`web` 五个核心包，但以 `go test -covermode=atomic -coverpkg="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)" -coverprofile=coverage.out ./...` 运行仓库全部测试；总覆盖率低于 80% 时 CI 失败。Go 覆盖率报告通过 GitHub OIDC 上传 Codecov，不配置静态 Token，项目目标固定为 80% 且不启用 patch 门禁。CI 必须在 Go 检查前构建前端，并对最终 Docker 镜像运行冒烟测试。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像。

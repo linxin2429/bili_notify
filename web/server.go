@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
 	"github.com/prometheus/client_golang/prometheus"
@@ -28,12 +29,18 @@ import (
 //go:embed all:dist
 var assets embed.FS
 
+type SettingsService interface {
+	Settings() model.RuntimeSettings
+	UpdateSettings(model.RuntimeSettings) error
+}
+
 type Server struct {
 	adminAddr     string
 	observeAddr   string
 	tlsConfig     *tls.Config
 	auth          *authenticator
 	engine        *service.Engine
+	settings      SettingsService
 	store         *state.Store
 	events        *service.EventBus
 	logger        *slog.Logger
@@ -46,7 +53,10 @@ type Server struct {
 	connections   map[string]map[*websocket.Conn]struct{}
 }
 
-func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, store *state.Store, events *service.EventBus, logger, auditLogger *slog.Logger, registry *prometheus.Registry, dataDir string) (*Server, error) {
+func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, settings SettingsService, store *state.Store, events *service.EventBus, logger, auditLogger *slog.Logger, registry *prometheus.Registry, dataDir string) (*Server, error) {
+	if settings == nil {
+		return nil, errors.New("settings service is required")
+	}
 	tlsConfig, err := loadOrCreateTLSConfig(tlsPath)
 	if err != nil {
 		return nil, err
@@ -64,7 +74,7 @@ func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, s
 	}
 	return &Server{
 		adminAddr: adminAddr, observeAddr: observeAddr, tlsConfig: tlsConfig, auth: auth,
-		engine: engine, store: store, events: events, logger: logger, auditLogger: auditLogger, metrics: engine.Metrics(), registry: registry, dataDir: dataDir, static: static,
+		engine: engine, settings: settings, store: store, events: events, logger: logger, auditLogger: auditLogger, metrics: engine.Metrics(), registry: registry, dataDir: dataDir, static: static,
 		connections: make(map[string]map[*websocket.Conn]struct{}),
 	}, nil
 }

@@ -15,14 +15,15 @@ Detailed product/design constraints: `docs/requirements-and-design.md`. Repo con
 Requires Go 1.26+.
 
 ```bash
-go build ./...
-go test ./...
-go test -race ./...
-go vet ./...
-go test ./service -run TestName -count=1   # single package / test
-go run . --help
-go run . serve                             # needs secret files + paths configured
-gofmt -w <files>
+make build
+make docker-build
+make test
+make test-race
+make vet
+make test GO_PACKAGES=./service GO_TEST_FLAGS='-run TestName -count=1'
+make run ARGS=--help
+make run                                    # needs secret files + paths configured
+make fmt
 ```
 
 ## Testing principles
@@ -42,25 +43,26 @@ When writing or changing Go tests, follow these rules (also in `AGENTS.md`):
 Docker (production-like scratch image, nonroot UID 65532):
 
 ```bash
-docker compose up -d --build
-docker compose logs -f bili-notify
-docker compose exec bili-notify /bili-notify healthcheck
-docker compose run --rm bili-notify --help
-docker compose run --rm bili-notify admin hash-password
+make compose-up
+make compose-logs
+make compose-healthcheck
+make compose-run ARGS=--help
+make compose-run ARGS='admin hash-password'
 ```
 
 Master-key rotation (service must be stopped):
 
 ```bash
-docker compose stop bili-notify
-docker compose run --rm -v ./secrets/new-master-key:/run/secrets/new-master-key:ro \
-  bili-notify rekey --new-key-file /run/secrets/new-master-key
+make compose-stop
+make compose-run \
+  COMPOSE_RUN_FLAGS='-v ./secrets/new-master-key:/run/secrets/new-master-key:ro' \
+  ARGS='rekey --new-key-file /run/secrets/new-master-key'
 ```
 
 CI (`.github/workflows/ci.yml`):
-- `test`: `go test` / race / vet / govulncheck + `web/ui` `npm ci && npm run lint && npm test`
-- `docker`: multi-stage image with `GOPROXY=proxy.golang.org` and `VERSION`/`COMMIT`/`BUILD_DATE` build-args; PR/main smoke `--help`; only `v*` tags push `dengxinlin/bili-notify` (`X.Y.Z`, `X.Y`, `X`, `latest`)
-- Playwright e2e is local-only. Secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
+- `test`: `make check` runs the local build, frontend checks, Playwright, Go coverage/race/vet, and govulncheck.
+- `docker-smoke`: `make docker-smoke` builds the multi-stage image with CI metadata and validates startup, health, and restart.
+- `docker`: only `v*` tags push `dengxinlin/bili-notify` (`X.Y.Z`, `X.Y`, `X`, `latest`). Secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
 
 Never commit material under `secrets/`, SQLite DBs (`data.db`), cookies, OAuth tokens, webhooks, or TLS private keys.
 

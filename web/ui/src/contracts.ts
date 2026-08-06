@@ -73,15 +73,29 @@ export const microsoftLoginSchema = z.object({
 })
 
 export const runtimeSettingsSchema = z.object({
-  poll_interval_sec: z.number().int(),
-  request_rate: z.number(),
-  request_concurrency: z.number().int(),
-  comment_enabled: z.boolean(),
-  comment_track_n: z.number().int(),
-  comment_root_pages: z.number().int(),
-  comment_reply_pages: z.number().int(),
-  comment_batch_interval_sec: z.number().int(),
-})
+	poll_interval_sec: z.number().int().min(10).max(86400),
+	request_rate: z.number().positive().max(10),
+	request_concurrency: z.number().int().min(1).max(16),
+	comment_enabled: z.boolean(),
+	comment_track_n: z.number().int().min(1).max(50),
+	comment_root_pages: z.number().int().min(1).max(10),
+	comment_reply_pages: z.number().int().min(1).max(20),
+	comment_batch_interval_sec: z.number().int().min(30).max(86400),
+	log_level: z.enum(['debug', 'info', 'warn', 'error']),
+	audit_log_retention_days: z.number().int().min(1).max(3650),
+	system_log_retention_days: z.number().int().min(1).max(3650),
+	relation_refresh_interval_sec: z.number().int().min(60).max(86400),
+	space_reconcile_interval_sec: z.number().int().min(300).max(604800),
+	max_dynamic_pages: z.number().int().min(1).max(20),
+	risk_pause_sec: z.number().int().min(60).max(3600),
+	delivery_concurrency: z.number().int().min(1).max(32),
+	backlog_alert_count: z.number().int().min(1).max(100000),
+	backlog_alert_age_sec: z.number().int().min(60).max(86400),
+	delivery_retry_delays_sec: z.tuple([
+		z.number().int().min(1).max(86400), z.number().int().min(1).max(86400), z.number().int().min(1).max(86400),
+		z.number().int().min(1).max(86400), z.number().int().min(1).max(86400),
+	]).refine(values => values.every((value, index) => index === 0 || value >= values[index - 1]), '重试阶段必须单调不减'),
+}).strict()
 
 export const dashboardSnapshotSchema = z.object({
   status: serviceStatusSchema,

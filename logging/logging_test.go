@@ -72,3 +72,21 @@ func TestParseLevel(t *testing.T) {
 		})
 	}
 }
+
+func TestSetApplyUpdatesLevelAndRetention(t *testing.T) {
+	t.Parallel()
+	var stdout bytes.Buffer
+	loggers, err := Open(Config{
+		Level: "debug", Version: "test", FilePath: filepath.Join(t.TempDir(), "app.jsonl"),
+		Retention: 30 * 24 * time.Hour, Stdout: &stdout,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = loggers.Close() })
+
+	require.NoError(t, loggers.Apply("warn", 90*24*time.Hour))
+	loggers.System.Info("hidden")
+	loggers.System.Error("visible")
+	assert.NotContains(t, stdout.String(), "hidden")
+	assert.Contains(t, stdout.String(), "visible")
+	assert.Equal(t, 90*24*time.Hour, loggers.sink.retention)
+}

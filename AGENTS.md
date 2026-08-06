@@ -2,18 +2,18 @@
 
 ## Project Structure & Module Organization
 
-`main.go` starts the Cobra CLI; command definitions live in `cmd/`, and `app/` wires the service together. Domain packages are organized by responsibility: `bilibili/` calls and parses Bilibili APIs, `service/` runs polling and delivery workflows, `notify/` implements notification channels, `state/` persists data in a single SQLite `data.db` (GORM + goose migrations), `vault/` encrypts secrets, `web/` serves the TLS administration UI, and `model/` holds shared types. Startup configuration belongs in `config/` (paths, listen addresses, log level; collector knobs are seed defaults only and then live in SQLite). Keep architectural decisions synchronized with `docs/requirements-and-design.md`. Tests sit beside their packages as `*_test.go`; browser assets currently live in `web/index.html`.
+`main.go` starts the Cobra CLI; command definitions live in `cmd/`, and `app/` wires the service together. Domain packages are organized by responsibility: `bilibili/` calls and parses Bilibili APIs, `service/` runs polling and delivery workflows, `notify/` implements notification channels, `state/` persists data in a single SQLite `data.db` (GORM + goose migrations), `vault/` encrypts secrets, `web/` serves the TLS administration UI, and `model/` holds shared types. Startup configuration belongs in `config/` (paths, listen addresses, log level; collector knobs are seed defaults only and then live in SQLite). Keep architectural decisions synchronized with `docs/requirements-and-design.md`. Tests sit beside their packages as `*_test.go`; browser source lives in `web/ui/`, while the generated and ignored output lives in `web/dist/`.
 
 ## Build, Test, and Development Commands
 
-- `go build ./...` compiles every package with the Go 1.26 toolchain.
-- `go test ./...` runs the complete unit and integration-style test suite.
-- `go test -race ./...` checks concurrent paths for data races.
-- `go vet ./...` performs standard static analysis.
-- `go run . --help` lists CLI commands; `go run . serve` starts the service when the required secret files and paths are configured.
-- `docker compose up -d --build` builds and runs the production-like scratch image locally.
+- `make build` installs locked frontend dependencies, builds the embedded UI, and writes the local `bili-notify` binary.
+- `make docker-build` builds the local `bili-notify:local` production image; override `DOCKER_IMAGE` when another tag is required.
+- `make test`, `make test-race`, and `make vet` run the corresponding Go checks after ensuring embedded frontend assets exist.
+- `make check` runs the complete frontend and Go CI check suite; `make help` lists narrower targets and override variables.
+- `make run ARGS=--help` lists CLI commands; `make run` starts the service when the required secret files and paths are configured.
+- `make docker-smoke` builds and verifies the production-like scratch image; `make compose-up` starts the Compose services.
 
-Run `gofmt -w <files>` and the test commands before submitting changes.
+Run `make fmt` and the relevant test targets before submitting changes.
 
 ## Coding Style & Naming Conventions
 
@@ -21,7 +21,7 @@ Follow idiomatic Go and let `gofmt` define tabs and layout. Use short, lower-cas
 
 ## Testing Guidelines
 
-Use the standard `testing` package and `github.com/stretchr/testify`. Name tests `TestBehavior` and mark reusable helpers with `t.Helper()`. Prefer `httptest` for HTTP boundaries and `t.TempDir()` for stateful tests. There is no numeric coverage threshold; every behavioral change should include focused success and failure cases, followed by `go test -race ./...`.
+Use the standard `testing` package and `github.com/stretchr/testify`. Name tests `TestBehavior` and mark reusable helpers with `t.Helper()`. Prefer `httptest` for HTTP boundaries and `t.TempDir()` for stateful tests. There is no numeric coverage threshold; every behavioral change should include focused success and failure cases, followed by `make test-race`.
 
 ### Table-driven tests
 

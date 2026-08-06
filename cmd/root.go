@@ -9,6 +9,7 @@ import (
 
 	"github.com/linxin2429/bili_notify/app"
 	"github.com/linxin2429/bili_notify/config"
+	"github.com/linxin2429/bili_notify/model"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -43,12 +44,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("data_dir", "/data")
 	v.SetDefault("admin_addr", ":8443")
 	v.SetDefault("observe_addr", ":9090")
-	v.SetDefault("poll_interval", 30*time.Second)
-	v.SetDefault("request_rate", 2.0)
-	v.SetDefault("request_concurrency", 4)
-	v.SetDefault("log_level", "info")
-	v.SetDefault("audit_log_retention", 180*24*time.Hour)
-	v.SetDefault("system_log_retention", 30*24*time.Hour)
+	v.SetDefault("poll_interval", time.Duration(model.DefaultPollIntervalSec)*time.Second)
+	v.SetDefault("request_rate", model.DefaultRequestRate)
+	v.SetDefault("request_concurrency", model.DefaultRequestConcurrency)
+	v.SetDefault("log_level", model.DefaultLogLevel)
+	v.SetDefault("audit_log_retention", time.Duration(model.DefaultAuditRetentionDays)*24*time.Hour)
+	v.SetDefault("system_log_retention", time.Duration(model.DefaultSystemRetentionDays)*24*time.Hour)
 }
 
 func newServeCmd(v *viper.Viper) *cobra.Command {
@@ -74,9 +75,9 @@ func newServeCmd(v *viper.Viper) *cobra.Command {
 	cmd.Flags().Duration("poll-interval", v.GetDuration("poll_interval"), "default polling interval for a new data directory")
 	cmd.Flags().Float64("request-rate", v.GetFloat64("request_rate"), "default Bilibili requests per second for a new data directory")
 	cmd.Flags().Int("request-concurrency", v.GetInt("request_concurrency"), "default maximum concurrent Bilibili requests for a new data directory")
-	cmd.Flags().String("log-level", v.GetString("log_level"), "debug, info, warn, or error")
-	cmd.Flags().Duration("audit-log-retention", v.GetDuration("audit_log_retention"), "retention for administrator operation logs")
-	cmd.Flags().Duration("system-log-retention", v.GetDuration("system_log_retention"), "retention for local structured system logs")
+	cmd.Flags().String("log-level", v.GetString("log_level"), "default log level for a new data directory")
+	cmd.Flags().Duration("audit-log-retention", v.GetDuration("audit_log_retention"), "default audit log retention for a new data directory")
+	cmd.Flags().Duration("system-log-retention", v.GetDuration("system_log_retention"), "default system log retention for a new data directory")
 	return cmd
 }
 

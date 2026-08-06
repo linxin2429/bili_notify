@@ -233,8 +233,9 @@ func exclusiveDynamicFixture(id string, timestamp int64) string {
 
 func TestRetryDelayBounds(t *testing.T) {
 	t.Parallel()
+	delays := model.DefaultRuntimeSettings().DeliveryRetryDelaysSec
 	for range 100 {
-		delay := retryDelay(0)
+		delay := retryDelay(0, delays)
 		assert.GreaterOrEqual(t, delay, 2500*time.Millisecond)
 		assert.Less(t, delay, 5*time.Second)
 	}
@@ -272,45 +273,31 @@ func mustTestVault(t *testing.T) *vault.Vault {
 }
 
 func testSettings(pollSec int, rate float64, concurrency int) model.RuntimeSettings {
-	trackN, rootPages, replyPages, batchSec, enabled := model.DefaultCommentSettings()
-	return model.RuntimeSettings{
-		PollIntervalSec:         pollSec,
-		RequestRate:             rate,
-		RequestConcurrency:      concurrency,
-		CommentEnabled:          enabled,
-		CommentTrackN:           trackN,
-		CommentRootPages:        rootPages,
-		CommentReplyPages:       replyPages,
-		CommentBatchIntervalSec: batchSec,
-	}
+	settings := model.DefaultRuntimeSettings()
+	settings.PollIntervalSec = pollSec
+	settings.RequestRate = rate
+	settings.RequestConcurrency = concurrency
+	return settings
 }
 
-func TestUpdateSettingsHotReloadsAndPersists(t *testing.T) {
+func TestApplySettingsHotReloads(t *testing.T) {
 	t.Parallel()
 	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	events := NewEventBus()
-	sub := events.Subscribe()
-	t.Cleanup(sub.Close)
-
-	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), events, nil)
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), NewEventBus(), nil)
+	_, changed := engine.settingsSnapshot()
 	updated := testSettings(120, 1.5, 8)
-	require.NoError(t, engine.UpdateSettings(updated))
+	updated.RelationRefreshSec = 900
+	updated.DeliveryConcurrency = 12
+	engine.ApplySettings(updated)
 	assert.Equal(t, updated, engine.Settings())
-
-	loaded, err := store.RuntimeSettings()
-	require.NoError(t, err)
-	assert.Equal(t, updated, loaded)
-
-	topics, _, err := sub.Next(t.Context())
-	require.NoError(t, err)
-	assert.NotZero(t, topics&TopicSettings)
-	assert.NotZero(t, topics&TopicStatus)
-
-	require.Error(t, engine.UpdateSettings(testSettings(5, 2, 4)))
-	assert.Equal(t, updated, engine.Settings())
+	select {
+	case <-changed:
+	default:
+		require.Fail(t, "settings change was not broadcast")
+	}
 }
 
 func TestStatusReadyUsesPollIntervalWindow(t *testing.T) {

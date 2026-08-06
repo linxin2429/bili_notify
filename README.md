@@ -53,6 +53,8 @@ docker run -d --name bili-notify \
 3. 添加需要监控的 UID。首次拉取只建立基线，不通知历史动态；基线内容仍会写入“历史”页。
 4. 在“历史”中按 UP、时间与关键字浏览已采集内容。
 
+“设置”页可热更新基础与高级采集策略、投递并发与重试、积压告警、日志级别和日志保留期。保存的是一份完整运行设置：后续任务立即读取新策略，正在执行的任务和已经排定的重试不会被取消或改写。`BILI_NOTIFY_POLL_INTERVAL`、`BILI_NOTIFY_REQUEST_RATE`、`BILI_NOTIFY_REQUEST_CONCURRENCY`、`BILI_NOTIFY_LOG_LEVEL` 及两项日志保留环境变量只在新数据目录首次启动时播种默认值，之后以 `data.db` 中的管理台设置为准。
+
 观测接口默认监听容器内 `:9090`，包含 `/healthz`、`/readyz` 和 `/metrics`，Compose 默认不发布到宿主机。
 
 ## 通知渠道
@@ -90,7 +92,7 @@ docker compose run --rm bili-notify --help
 docker compose exec bili-notify /bili-notify healthcheck
 ```
 
-服务把结构化 JSON 同时写到 stdout 和数据卷的 `/data/logs/bili-notify.jsonl`。`category=system` 是系统运行日志，`category=audit` 是已成功写入 SQLite 的管理员操作日志；管理台“操作日志”页面可按操作、结果、时间、来源和请求 ID查询。默认审计保留 180 天，运行日志保留 30 天，可分别通过 `BILI_NOTIFY_AUDIT_LOG_RETENTION` 和 `BILI_NOTIFY_SYSTEM_LOG_RETENTION` 调整（必须是 24 小时的整数倍）。
+服务把结构化 JSON 同时写到 stdout 和数据卷的 `/data/logs/bili-notify.jsonl`。`category=system` 是系统运行日志，`category=audit` 是已成功写入 SQLite 的管理员操作日志；管理台“操作日志”页面可按操作、结果、时间、来源和请求 ID 查询。默认审计保留 180 天，运行日志保留 30 天；首次启动后在“设置”页修改。日志级别立即生效，缩短保留期后分别在下一次每日清理和日志轮转维护时删除超期数据。
 
 需要集中收集和查询系统日志时，设置 Grafana 密码并启动可选观测配置：
 
@@ -131,31 +133,35 @@ git config core.hooksPath .githooks
 
 提交信息必须遵循 Conventional Commits，格式为 `<type>[(scope)][!]: <description>`。允许的类型为 `feat`、`fix`、`docs`、`style`、`refactor`、`perf`、`test`、`build`、`ci`、`chore` 和 `revert`；例如 `feat: add dynamic filtering` 或 `fix(notify): retry timed-out webhooks`。Git 自动生成的 merge 和 revert 提交不受此格式限制。
 
-前端构建产物提交在 `web/dist`，因此干净克隆可以直接执行 Go 构建。修改前端后必须重新生成产物：
+`web/dist` 是 Vite 生成的构建产物，不提交到 Git。Makefile 是统一构建入口：`make build` 从 lockfile 安装前端依赖、构建前端，并在仓库根目录生成 `bili-notify`；`make docker-build` 生成 `bili-notify:local` 镜像。可通过 `BINARY`、`DOCKER_IMAGE`、`VERSION`、`COMMIT` 和 `BUILD_DATE` 覆盖产物名称与构建元数据。
+
+常用构建命令：
 
 ```bash
-cd web/ui
-npm ci
-npx playwright install chromium # 首次运行端到端测试时安装
-npm run lint
-npm test
-npm run test:coverage # 与 CI 相同，四项前端覆盖率均不得低于 80%
-npm run test:e2e # 先构建前端，再运行 Chromium 关键链路
+make help
+make build
+make docker-build
+make check
+```
 
-cd ../..
-go build ./...
-go test ./...
-go test -race ./...
-go vet ./...
+提交前执行完整检查：
+
+```bash
+make playwright-install # 首次运行端到端测试时安装 Chromium
+make frontend-lint
+make frontend-test
+make frontend-coverage # 与 CI 相同，四项前端覆盖率均不得低于 80%
+make frontend-e2e
+make test
+make test-race
+make vet
 
 # 与 CI 相同的核心 Go 覆盖率（bilibili、notify、service、state、web）
-core_packages="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"
-go test -covermode=atomic -coverpkg="${core_packages}" -coverprofile=coverage.out ./...
+make coverage
 go tool cover -func=coverage.out
 
 # 可选：验证最终 scratch 镜像的初始化、健康检查和同卷重启
-docker build -t bili-notify:e2e .
-./e2e/docker-smoke.sh bili-notify:e2e
+make docker-smoke DOCKER_IMAGE=bili-notify:e2e
 ```
 
 端到端测试使用本地 TLS 伪 B站和企业微信端点，不读取真实账号或通知凭据。失败时 Playwright 会在 `web/ui/test-results/` 保存截图、视频和 trace。

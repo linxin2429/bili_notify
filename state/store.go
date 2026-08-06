@@ -24,11 +24,30 @@ import (
 )
 
 var (
-	ErrNotFound    = errors.New("record not found")
-	ErrInitialized = errors.New("administrator is already initialized")
+	ErrNotFound                       = errors.New("record not found")
+	ErrInitialized                    = errors.New("administrator is already initialized")
+	ErrRuntimeSettingsUpgradeRequired = errors.New("runtime settings upgrade required")
 	// ErrDeliveryNotBlocked reports that a delivery cannot be manually retried.
 	ErrDeliveryNotBlocked = errors.New("delivery is not blocked")
 )
+
+const runtimeSettingsVersion = 1
+
+type runtimeSettingsRecord struct {
+	Version int `json:"_version"`
+	model.RuntimeSettings
+}
+
+type legacyRuntimeSettings struct {
+	PollIntervalSec         *int     `json:"poll_interval_sec"`
+	RequestRate             *float64 `json:"request_rate"`
+	RequestConcurrency      *int     `json:"request_concurrency"`
+	CommentEnabled          *bool    `json:"comment_enabled"`
+	CommentTrackN           *int     `json:"comment_track_n"`
+	CommentRootPages        *int     `json:"comment_root_pages"`
+	CommentReplyPages       *int     `json:"comment_reply_pages"`
+	CommentBatchIntervalSec *int     `json:"comment_batch_interval_sec"`
+}
 
 // Store is the single SQLite persistence layer for config, secrets, outbox, and content archive.
 type Store struct {
@@ -122,27 +141,100 @@ func (s *Store) SetAdminPasswordHash(hash string) error {
 }
 
 func (s *Store) RuntimeSettings() (model.RuntimeSettings, error) {
-	var row metaRow
-	err := s.db.Where("key = ?", metaKeyRuntimeSettings).Take(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return model.RuntimeSettings{}, ErrNotFound
-	}
+	record, err := s.runtimeSettingsRecord()
 	if err != nil {
 		return model.RuntimeSettings{}, err
 	}
-	var settings model.RuntimeSettings
-	if err := json.Unmarshal([]byte(row.Value), &settings); err != nil {
-		return model.RuntimeSettings{}, fmt.Errorf("decoding runtime settings: %w", err)
+	if record.Version != runtimeSettingsVersion {
+		return model.RuntimeSettings{}, fmt.Errorf("%w: found version %d, want %d", ErrRuntimeSettingsUpgradeRequired, record.Version, runtimeSettingsVersion)
 	}
-	return settings.WithCommentDefaults(), nil
+	if err := record.RuntimeSettings.Validate(); err != nil {
+		return model.RuntimeSettings{}, fmt.Errorf("validating stored runtime settings: %w", err)
+	}
+	return record.RuntimeSettings, nil
+}
+
+func (s *Store) runtimeSettingsRecord() (runtimeSettingsRecord, error) {
+	var row metaRow
+	err := s.db.Where("key = ?", metaKeyRuntimeSettings).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return runtimeSettingsRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return runtimeSettingsRecord{}, err
+	}
+	var record runtimeSettingsRecord
+	if err := json.Unmarshal([]byte(row.Value), &record); err != nil {
+		return runtimeSettingsRecord{}, fmt.Errorf("decoding runtime settings: %w", err)
+	}
+	return record, nil
+}
+
+// UpgradeRuntimeSettings converts the sole supported legacy flat record into
+// the current version. Defaults supply only fields absent from the old record.
+func (s *Store) UpgradeRuntimeSettings(defaults model.RuntimeSettings) (model.RuntimeSettings, error) {
+	if err := defaults.Validate(); err != nil {
+		return model.RuntimeSettings{}, fmt.Errorf("validating runtime settings migration defaults: %w", err)
+	}
+	var row metaRow
+	if err := s.db.Where("key = ?", metaKeyRuntimeSettings).Take(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.RuntimeSettings{}, ErrNotFound
+		}
+		return model.RuntimeSettings{}, err
+	}
+	var version struct {
+		Version int `json:"_version"`
+	}
+	if err := json.Unmarshal([]byte(row.Value), &version); err != nil {
+		return model.RuntimeSettings{}, fmt.Errorf("decoding runtime settings version: %w", err)
+	}
+	if version.Version != 0 {
+		return model.RuntimeSettings{}, fmt.Errorf("unsupported runtime settings version %d", version.Version)
+	}
+	var legacy legacyRuntimeSettings
+	if err := json.Unmarshal([]byte(row.Value), &legacy); err != nil {
+		return model.RuntimeSettings{}, fmt.Errorf("decoding legacy runtime settings: %w", err)
+	}
+	settings := defaults
+	if legacy.PollIntervalSec != nil {
+		settings.PollIntervalSec = *legacy.PollIntervalSec
+	}
+	if legacy.RequestRate != nil {
+		settings.RequestRate = *legacy.RequestRate
+	}
+	if legacy.RequestConcurrency != nil {
+		settings.RequestConcurrency = *legacy.RequestConcurrency
+	}
+	if legacy.CommentEnabled != nil {
+		settings.CommentEnabled = *legacy.CommentEnabled
+	}
+	if legacy.CommentTrackN != nil {
+		settings.CommentTrackN = *legacy.CommentTrackN
+	}
+	if legacy.CommentRootPages != nil {
+		settings.CommentRootPages = *legacy.CommentRootPages
+	}
+	if legacy.CommentReplyPages != nil {
+		settings.CommentReplyPages = *legacy.CommentReplyPages
+	}
+	if legacy.CommentBatchIntervalSec != nil {
+		settings.CommentBatchIntervalSec = *legacy.CommentBatchIntervalSec
+	}
+	if err := settings.Validate(); err != nil {
+		return model.RuntimeSettings{}, fmt.Errorf("validating upgraded runtime settings: %w", err)
+	}
+	if err := s.PutRuntimeSettings(settings); err != nil {
+		return model.RuntimeSettings{}, fmt.Errorf("persisting upgraded runtime settings: %w", err)
+	}
+	return settings, nil
 }
 
 func (s *Store) PutRuntimeSettings(settings model.RuntimeSettings) error {
-	settings = settings.WithCommentDefaults()
 	if err := settings.Validate(); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(settings)
+	raw, err := json.Marshal(runtimeSettingsRecord{Version: runtimeSettingsVersion, RuntimeSettings: settings})
 	if err != nil {
 		return fmt.Errorf("encoding runtime settings: %w", err)
 	}

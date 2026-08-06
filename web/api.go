@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"slices"
@@ -233,21 +234,86 @@ func (s *Server) cancelMicrosoftLoginAPI(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type runtimeSettingsRequest struct {
+	PollIntervalSec         *int     `json:"poll_interval_sec"`
+	RequestRate             *float64 `json:"request_rate"`
+	RequestConcurrency      *int     `json:"request_concurrency"`
+	CommentEnabled          *bool    `json:"comment_enabled"`
+	CommentTrackN           *int     `json:"comment_track_n"`
+	CommentRootPages        *int     `json:"comment_root_pages"`
+	CommentReplyPages       *int     `json:"comment_reply_pages"`
+	CommentBatchIntervalSec *int     `json:"comment_batch_interval_sec"`
+	LogLevel                *string  `json:"log_level"`
+	AuditLogRetentionDays   *int     `json:"audit_log_retention_days"`
+	SystemLogRetentionDays  *int     `json:"system_log_retention_days"`
+	RelationRefreshSec      *int     `json:"relation_refresh_interval_sec"`
+	SpaceReconcileSec       *int     `json:"space_reconcile_interval_sec"`
+	MaxDynamicPages         *int     `json:"max_dynamic_pages"`
+	RiskPauseSec            *int     `json:"risk_pause_sec"`
+	DeliveryConcurrency     *int     `json:"delivery_concurrency"`
+	BacklogAlertCount       *int     `json:"backlog_alert_count"`
+	BacklogAlertAgeSec      *int     `json:"backlog_alert_age_sec"`
+	DeliveryRetryDelaysSec  *[]int   `json:"delivery_retry_delays_sec"`
+}
+
+func (input runtimeSettingsRequest) settings() (model.RuntimeSettings, error) {
+	missing := make([]string, 0)
+	for name, present := range map[string]bool{
+		"poll_interval_sec": input.PollIntervalSec != nil, "request_rate": input.RequestRate != nil,
+		"request_concurrency": input.RequestConcurrency != nil, "comment_enabled": input.CommentEnabled != nil,
+		"comment_track_n": input.CommentTrackN != nil, "comment_root_pages": input.CommentRootPages != nil,
+		"comment_reply_pages": input.CommentReplyPages != nil, "comment_batch_interval_sec": input.CommentBatchIntervalSec != nil,
+		"log_level": input.LogLevel != nil, "audit_log_retention_days": input.AuditLogRetentionDays != nil,
+		"system_log_retention_days": input.SystemLogRetentionDays != nil, "relation_refresh_interval_sec": input.RelationRefreshSec != nil,
+		"space_reconcile_interval_sec": input.SpaceReconcileSec != nil, "max_dynamic_pages": input.MaxDynamicPages != nil,
+		"risk_pause_sec": input.RiskPauseSec != nil, "delivery_concurrency": input.DeliveryConcurrency != nil,
+		"backlog_alert_count": input.BacklogAlertCount != nil, "backlog_alert_age_sec": input.BacklogAlertAgeSec != nil,
+		"delivery_retry_delays_sec": input.DeliveryRetryDelaysSec != nil,
+	} {
+		if !present {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		slices.Sort(missing)
+		return model.RuntimeSettings{}, fmt.Errorf("missing required settings: %s", strings.Join(missing, ", "))
+	}
+	if len(*input.DeliveryRetryDelaysSec) != model.DeliveryRetryStages {
+		return model.RuntimeSettings{}, fmt.Errorf("delivery_retry_delays_sec must contain exactly %d values", model.DeliveryRetryStages)
+	}
+	settings := model.RuntimeSettings{
+		PollIntervalSec: *input.PollIntervalSec, RequestRate: *input.RequestRate, RequestConcurrency: *input.RequestConcurrency,
+		CommentEnabled: *input.CommentEnabled, CommentTrackN: *input.CommentTrackN, CommentRootPages: *input.CommentRootPages,
+		CommentReplyPages: *input.CommentReplyPages, CommentBatchIntervalSec: *input.CommentBatchIntervalSec,
+		LogLevel: *input.LogLevel, AuditLogRetentionDays: *input.AuditLogRetentionDays, SystemLogRetentionDays: *input.SystemLogRetentionDays,
+		RelationRefreshSec: *input.RelationRefreshSec, SpaceReconcileSec: *input.SpaceReconcileSec, MaxDynamicPages: *input.MaxDynamicPages,
+		RiskPauseSec: *input.RiskPauseSec, DeliveryConcurrency: *input.DeliveryConcurrency,
+		BacklogAlertCount: *input.BacklogAlertCount, BacklogAlertAgeSec: *input.BacklogAlertAgeSec,
+	}
+	copy(settings.DeliveryRetryDelaysSec[:], *input.DeliveryRetryDelaysSec)
+	return settings, nil
+}
+
 func (s *Server) updateSettingsAPI(w http.ResponseWriter, r *http.Request) {
-	var input model.RuntimeSettings
-	if !decodeAPIRequest(w, r, &input) {
+	var request runtimeSettingsRequest
+	if !decodeAPIRequest(w, r, &request) {
+		return
+	}
+	input, err := request.settings()
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	if err := input.Validate(); err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(err))
 		return
 	}
-	before := s.engine.Settings()
-	err := s.engine.UpdateSettings(input)
+	before := s.settings.Settings()
+	err = s.settings.UpdateSettings(input)
 	if err == nil {
-		setAuditDetails(r, map[string]any{"before": before, "after": s.engine.Settings()})
+		setAuditDetails(r, map[string]any{"before": before, "after": s.settings.Settings()})
 	}
-	s.writeAPIResult(w, http.StatusOK, s.engine.Settings(), err)
+	s.writeAPIResult(w, http.StatusOK, s.settings.Settings(), err)
 }
 
 func (s *Server) queryAuditLogsAPI(w http.ResponseWriter, r *http.Request) {

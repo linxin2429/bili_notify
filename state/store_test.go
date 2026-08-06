@@ -303,15 +303,19 @@ func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
 	}{
 		{
 			name: "valid",
-			settings: model.RuntimeSettings{
-				PollIntervalSec: 45, RequestRate: 1.5, RequestConcurrency: 3,
-			},
+			settings: func() model.RuntimeSettings {
+				settings := model.DefaultRuntimeSettings()
+				settings.PollIntervalSec, settings.RequestRate, settings.RequestConcurrency = 45, 1.5, 3
+				return settings
+			}(),
 		},
 		{
 			name: "reject short poll",
-			settings: model.RuntimeSettings{
-				PollIntervalSec: 5, RequestRate: 2, RequestConcurrency: 4,
-			},
+			settings: func() model.RuntimeSettings {
+				settings := model.DefaultRuntimeSettings()
+				settings.PollIntervalSec = 5
+				return settings
+			}(),
 			wantErr: "poll interval",
 		},
 	}
@@ -334,7 +338,110 @@ func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
 			require.NoError(t, err)
 			loaded, err := local.RuntimeSettings()
 			require.NoError(t, err)
-			assert.Equal(t, tt.settings.WithCommentDefaults(), loaded)
+			assert.Equal(t, tt.settings, loaded)
+		})
+	}
+}
+
+func TestUpgradeRuntimeSettings(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		stored      string
+		wantErr     string
+		wantPollSec int
+		wantEnabled bool
+	}{
+		{
+			name:        "legacy collector record",
+			stored:      `{"poll_interval_sec":45,"request_rate":1.5,"request_concurrency":3,"comment_enabled":false,"comment_track_n":7,"comment_root_pages":3,"comment_reply_pages":6,"comment_batch_interval_sec":180}`,
+			wantPollSec: 45,
+		},
+		{name: "unknown version", stored: `{"_version":99}`, wantErr: "unsupported runtime settings version"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 8))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = store.Close() })
+			require.NoError(t, store.db.Create(&metaRow{Key: metaKeyRuntimeSettings, Value: tt.stored}).Error)
+
+			_, err = store.RuntimeSettings()
+			require.ErrorIs(t, err, ErrRuntimeSettingsUpgradeRequired)
+			defaults := model.DefaultRuntimeSettings()
+			defaults.LogLevel = "warn"
+			upgraded, err := store.UpgradeRuntimeSettings(defaults)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantPollSec, upgraded.PollIntervalSec)
+			assert.Equal(t, tt.wantEnabled, upgraded.CommentEnabled)
+			assert.Equal(t, "warn", upgraded.LogLevel)
+			assert.Equal(t, defaults.DeliveryRetryDelaysSec, upgraded.DeliveryRetryDelaysSec)
+			loaded, err := store.RuntimeSettings()
+			require.NoError(t, err)
+			assert.Equal(t, upgraded, loaded)
+		})
+	}
+}
+
+func TestUpgradeRuntimeSettingsFailures(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		stored         string
+		mutateDefaults func(*model.RuntimeSettings)
+		wantErr        string
+	}{
+		{name: "missing record", wantErr: "record not found"},
+		{name: "invalid defaults", mutateDefaults: func(settings *model.RuntimeSettings) { settings.LogLevel = "trace" }, wantErr: "migration defaults"},
+		{name: "malformed record", stored: `{`, wantErr: "decoding runtime settings version"},
+		{name: "invalid legacy values", stored: `{"poll_interval_sec":1}`, wantErr: "validating upgraded runtime settings"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 9))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = store.Close() })
+			if tt.stored != "" {
+				require.NoError(t, store.db.Create(&metaRow{Key: metaKeyRuntimeSettings, Value: tt.stored}).Error)
+			}
+			defaults := model.DefaultRuntimeSettings()
+			if tt.mutateDefaults != nil {
+				tt.mutateDefaults(&defaults)
+			}
+			_, err = store.UpgradeRuntimeSettings(defaults)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestRuntimeSettingsRejectsInvalidRecords(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		stored  string
+		wantErr string
+	}{
+		{name: "malformed JSON", stored: `{`, wantErr: "decoding runtime settings"},
+		{name: "invalid current record", stored: `{"_version":1}`, wantErr: "validating stored runtime settings"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 10))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = store.Close() })
+			require.NoError(t, store.db.Create(&metaRow{Key: metaKeyRuntimeSettings, Value: tt.stored}).Error)
+			_, err = store.RuntimeSettings()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
 }

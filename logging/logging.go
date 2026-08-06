@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -22,7 +23,16 @@ const schemaVersion = 1
 type Set struct {
 	System *slog.Logger
 	Audit  *slog.Logger
-	file   *lumberjack.Logger
+	level  *slog.LevelVar
+	sink   *runtimeSink
+}
+
+type runtimeSink struct {
+	mu        sync.Mutex
+	stdout    io.Writer
+	filePath  string
+	retention time.Duration
+	file      *lumberjack.Logger
 }
 
 // Config configures the process-wide structured log sinks.
@@ -63,13 +73,10 @@ func Open(cfg Config) (*Set, error) {
 		return nil, fmt.Errorf("securing structured log file: %w", err)
 	}
 
-	rotating := &lumberjack.Logger{
-		Filename: cfg.FilePath, MaxSize: 20, MaxBackups: 32,
-		MaxAge: int(cfg.Retention / (24 * time.Hour)), Compress: false,
-	}
+	sink := newRuntimeSink(cfg.Stdout, cfg.FilePath, cfg.Retention)
 	levelVar := new(slog.LevelVar)
 	levelVar.Set(level)
-	handler := slog.NewJSONHandler(io.MultiWriter(cfg.Stdout, rotating), &slog.HandlerOptions{
+	handler := slog.NewJSONHandler(sink, &slog.HandlerOptions{
 		Level: levelVar,
 		ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
 			if attr.Value.Kind() == slog.KindTime {
@@ -80,7 +87,7 @@ func Open(cfg Config) (*Set, error) {
 	})
 	runID, err := randomID()
 	if err != nil {
-		_ = rotating.Close()
+		_ = sink.Close()
 		return nil, fmt.Errorf("generating log run id: %w", err)
 	}
 	base := slog.New(handler).With(
@@ -92,16 +99,69 @@ func Open(cfg Config) (*Set, error) {
 	return &Set{
 		System: base.With("category", "system"),
 		Audit:  base.With("category", "audit"),
-		file:   rotating,
+		level:  levelVar,
+		sink:   sink,
 	}, nil
+}
+
+func newRuntimeSink(stdout io.Writer, filePath string, retention time.Duration) *runtimeSink {
+	return &runtimeSink{
+		stdout: stdout, filePath: filePath, retention: retention,
+		file: &lumberjack.Logger{
+			Filename: filePath, MaxSize: 20, MaxBackups: 32,
+			MaxAge: int(retention / (24 * time.Hour)), Compress: false,
+		},
+	}
+}
+
+func (s *runtimeSink) Write(data []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return io.MultiWriter(s.stdout, s.file).Write(data)
+}
+
+func (s *runtimeSink) SetRetention(retention time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if retention == s.retention {
+		return
+	}
+	old := s.file
+	s.file = &lumberjack.Logger{
+		Filename: s.filePath, MaxSize: 20, MaxBackups: 32,
+		MaxAge: int(retention / (24 * time.Hour)), Compress: false,
+	}
+	s.retention = retention
+	_ = old.Close()
+}
+
+func (s *runtimeSink) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.file.Close()
+}
+
+// Apply changes the process log threshold immediately and the file retention
+// policy used by subsequent rotation maintenance.
+func (s *Set) Apply(level string, retention time.Duration) error {
+	parsed, err := parseLevel(level)
+	if err != nil {
+		return err
+	}
+	if retention < 24*time.Hour || retention%(24*time.Hour) != 0 {
+		return errors.New("log retention must be a positive whole number of days")
+	}
+	s.sink.SetRetention(retention)
+	s.level.Set(parsed)
+	return nil
 }
 
 // Close flushes and closes the rotating file sink.
 func (s *Set) Close() error {
-	if s == nil || s.file == nil {
+	if s == nil || s.sink == nil {
 		return nil
 	}
-	return s.file.Close()
+	return s.sink.Close()
 }
 
 func parseLevel(value string) (slog.Level, error) {
