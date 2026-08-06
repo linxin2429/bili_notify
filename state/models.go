@@ -65,6 +65,8 @@ func (r upRow) toModel() model.UP {
 		ExclusiveBaselineReady: r.ExclusiveBaselineReady != 0,
 		LastError:              r.LastError,
 		ConsecutiveFail:        r.ConsecutiveFail,
+		FollowState:            model.FollowUnknown,
+		CollectionRoute:        model.CollectionRouteSpace,
 	}
 	if r.LastPollAt != nil {
 		up.LastPollAt = time.Unix(*r.LastPollAt, 0)
@@ -88,6 +90,26 @@ type authSessionRow struct {
 }
 
 func (authSessionRow) TableName() string { return tableAuthSession }
+
+type biliFeedStateRow struct {
+	AccountUID     string `gorm:"column:account_uid;primaryKey"`
+	UpdateBaseline string `gorm:"column:update_baseline;not null;default:''"`
+	Initialized    int    `gorm:"column:initialized;not null;default:0"`
+	UpdatedAt      int64  `gorm:"column:updated_at;not null"`
+}
+
+func (biliFeedStateRow) TableName() string { return "bili_feed_state" }
+
+type upFollowRelationRow struct {
+	AccountUID      string `gorm:"column:account_uid;primaryKey"`
+	UPUID           string `gorm:"column:up_uid;primaryKey"`
+	FollowState     string `gorm:"column:follow_state;not null;default:'unknown'"`
+	SpaceSynced     int    `gorm:"column:space_synced;not null;default:0"`
+	CheckedAt       *int64 `gorm:"column:checked_at"`
+	LastSpacePollAt *int64 `gorm:"column:last_space_poll_at"`
+}
+
+func (upFollowRelationRow) TableName() string { return "up_follow_relations" }
 
 type seenDynamicRow struct {
 	UID       string `gorm:"column:uid;primaryKey"`

@@ -24,6 +24,8 @@ const (
 
 var errDynamicBlocked = errors.New("exclusive dynamic is not accessible")
 
+func IsDynamicBlocked(err error) bool { return errors.Is(err, errDynamicBlocked) }
+
 type ErrorKind string
 
 const (
@@ -253,22 +255,152 @@ func (c *Client) PollQR(ctx context.Context, key string) (QRStatus, model.BiliSe
 	}
 }
 
-func (c *Client) ValidateSession(ctx context.Context) (string, error) {
+func (c *Client) ValidateSession(ctx context.Context) (model.BiliAccount, error) {
 	_, body, err := c.get(ctx, c.apiURL+"/x/web-interface/nav", nil, true)
 	if err != nil {
-		return "", err
+		return model.BiliAccount{}, err
 	}
 	var data struct {
-		IsLogin bool   `json:"isLogin"`
-		Name    string `json:"uname"`
+		IsLogin bool            `json:"isLogin"`
+		MID     json.RawMessage `json:"mid"`
+		Name    string          `json:"uname"`
 	}
 	if err := decodeEnvelope(body, &data); err != nil {
-		return "", err
+		return model.BiliAccount{}, err
 	}
 	if !data.IsLogin {
-		return "", &APIError{Kind: ErrorAuthentication, Message: "session is not logged in"}
+		return model.BiliAccount{}, &APIError{Kind: ErrorAuthentication, Message: "session is not logged in"}
 	}
-	return data.Name, nil
+	uid := rawString(data.MID)
+	if uid == "" || uid == "0" {
+		return model.BiliAccount{}, &APIError{Kind: ErrorSchema, Message: "session response is missing account mid"}
+	}
+	return model.BiliAccount{UID: uid, Name: strings.TrimSpace(data.Name)}, nil
+}
+
+// FetchRelations returns the current account's relationship to at most 50 target UIDs.
+func (c *Client) FetchRelations(ctx context.Context, uids []string) (map[string]model.FollowState, error) {
+	if len(uids) == 0 {
+		return map[string]model.FollowState{}, nil
+	}
+	if len(uids) > 50 {
+		return nil, errors.New("at most 50 relationship targets per request")
+	}
+	_, body, err := c.get(ctx, c.apiURL+"/x/relation/relations", url.Values{"fids": {strings.Join(uids, ",")}}, true)
+	if err != nil {
+		return nil, err
+	}
+	var data map[string]struct {
+		Attribute int `json:"attribute"`
+	}
+	if err := decodeEnvelope(body, &data); err != nil {
+		return nil, err
+	}
+	states := make(map[string]model.FollowState, len(uids))
+	for _, uid := range uids {
+		states[uid] = model.FollowUnknown
+	}
+	for uid, relation := range data {
+		switch relation.Attribute {
+		case 2, 6:
+			states[uid] = model.Followed
+		case 0, 128:
+			states[uid] = model.FollowUnfollowed
+		default:
+			states[uid] = model.FollowUnknown
+		}
+	}
+	return states, nil
+}
+
+type FeedUpdate struct {
+	UpdateNum int
+}
+
+func (c *Client) CheckFeedUpdate(ctx context.Context, baseline string) (FeedUpdate, error) {
+	if baseline == "" {
+		return FeedUpdate{}, errors.New("update baseline is required")
+	}
+	query := url.Values{"type": {"all"}, "update_baseline": {baseline}}
+	_, body, err := c.get(ctx, c.apiURL+"/x/polymer/web-dynamic/v1/feed/all/update", query, true)
+	if err != nil {
+		return FeedUpdate{}, err
+	}
+	var data struct {
+		UpdateNum int `json:"update_num"`
+	}
+	if err := decodeEnvelope(body, &data); err != nil {
+		return FeedUpdate{}, err
+	}
+	if data.UpdateNum < 0 {
+		return FeedUpdate{}, &APIError{Kind: ErrorSchema, Message: "feed update count is negative"}
+	}
+	return FeedUpdate{UpdateNum: data.UpdateNum}, nil
+}
+
+type FeedPage struct {
+	Items          []json.RawMessage
+	Offset         string
+	HasMore        bool
+	UpdateBaseline string
+	UpdateNum      int
+}
+
+func (c *Client) FetchAllPage(ctx context.Context, baseline, offset string) (FeedPage, error) {
+	query := url.Values{
+		"features": {dynamicFeatures},
+		"platform": {"web"},
+		"type":     {"all"},
+	}
+	if baseline != "" {
+		query.Set("update_baseline", baseline)
+	}
+	if offset != "" {
+		query.Set("offset", offset)
+	}
+	_, body, err := c.get(ctx, c.apiURL+"/x/polymer/web-dynamic/v1/feed/all", query, true)
+	if err != nil {
+		return FeedPage{}, err
+	}
+	var data struct {
+		HasMore        bool              `json:"has_more"`
+		Offset         string            `json:"offset"`
+		Items          []json.RawMessage `json:"items"`
+		UpdateBaseline string            `json:"update_baseline"`
+		UpdateNum      int               `json:"update_num"`
+	}
+	if err := decodeEnvelope(body, &data); err != nil {
+		return FeedPage{}, err
+	}
+	if data.UpdateNum < 0 {
+		return FeedPage{}, &APIError{Kind: ErrorSchema, Message: "feed update count is negative"}
+	}
+	return FeedPage{
+		Items: data.Items, Offset: data.Offset, HasMore: data.HasMore,
+		UpdateBaseline: data.UpdateBaseline, UpdateNum: data.UpdateNum,
+	}, nil
+}
+
+func DynamicAuthorUID(raw json.RawMessage) (string, error) {
+	var item struct {
+		Modules struct {
+			Author struct {
+				MID json.RawMessage `json:"mid"`
+			} `json:"module_author"`
+		} `json:"modules"`
+	}
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return "", &APIError{Kind: ErrorSchema, Message: "invalid dynamic item: " + err.Error()}
+	}
+	uid := rawString(item.Modules.Author.MID)
+	if uid == "" || uid == "0" {
+		return "", &APIError{Kind: ErrorSchema, Message: "dynamic item is missing author mid"}
+	}
+	return uid, nil
+}
+
+func ParseDynamicItem(raw json.RawMessage) (model.Dynamic, error) {
+	return parseDynamicItem("", raw)
 }
 
 type Page struct {

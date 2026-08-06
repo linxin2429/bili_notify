@@ -1,6 +1,6 @@
 # Bili Notify
 
-Bili Notify 是一个单实例 Go 服务，通过登录后的 B 站网页接口轮询 UP 主动态，并可靠投递到 SMTP 邮件、Microsoft Outlook/Microsoft 365、钉钉、飞书和企业微信群机器人。React 管理台与 Go 后端通过同源 WebSocket 实时通信，状态、待投递通知与内容档案持久化到单一 SQLite 数据库。
+Bili Notify 是一个单实例 Go 服务，通过登录后的 B 站网页接口采集 UP 主动态，并可靠投递到 SMTP 邮件、Microsoft Outlook/Microsoft 365、钉钉、飞书和企业微信群机器人。已关注的监控 UP 使用账号综合动态流及时发现，并定期通过空间动态校验；未关注或关系未知的 UP 直接轮询空间动态。React 管理台与 Go 后端通过同源 WebSocket 实时通信，状态、待投递通知与内容档案持久化到单一 SQLite 数据库。
 
 > B 站未提供面向任意公开 UP 主动态的稳定推送接口。本项目使用非官方网页接口，可能因接口变化、风控或平台规则而不可用；它不会绕过验证码、限流或风控。请仅在你有权使用的场景中部署。
 

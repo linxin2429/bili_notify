@@ -4,6 +4,7 @@ export type ChannelType = 'email' | 'microsoft' | 'dingtalk' | 'feishu' | 'wecom
 
 export interface ServiceStatus {
   auth_valid: boolean
+  bili_account?: { uid: string; name: string }
   last_success_at?: string
   up_count: number
   channel_count: number
@@ -22,6 +23,9 @@ export interface UP {
   last_success_at?: string
   last_error?: string
   consecutive_fail: number
+  follow_state: 'unknown' | 'followed' | 'unfollowed'
+  follow_checked_at?: string
+  collection_route: 'feed_all' | 'space'
 }
 
 export interface Channel {

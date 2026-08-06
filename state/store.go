@@ -161,6 +161,9 @@ func (s *Store) ListUPs() ([]model.UP, error) {
 	for _, row := range rows {
 		ups = append(ups, row.toModel())
 	}
+	if err := s.enrichUPRouting(ups); err != nil {
+		return nil, err
+	}
 	slices.SortFunc(ups, func(a, b model.UP) int { return a.UIDCompare(b) })
 	return ups, nil
 }
@@ -174,7 +177,11 @@ func (s *Store) UP(uid string) (model.UP, error) {
 	if err != nil {
 		return model.UP{}, err
 	}
-	return row.toModel(), nil
+	ups := []model.UP{row.toModel()}
+	if err := s.enrichUPRouting(ups); err != nil {
+		return model.UP{}, err
+	}
+	return ups[0], nil
 }
 
 func (s *Store) PutUP(up model.UP) error {
@@ -195,8 +202,22 @@ func (s *Store) PutUP(up model.UP) error {
 				return errors.New("at most 100 UPs can be configured")
 			}
 		}
+		wasEnabled := false
+		if count > 0 {
+			var existing upRow
+			if err := tx.Where("uid = ?", up.UID).Take(&existing).Error; err != nil {
+				return err
+			}
+			wasEnabled = existing.Enabled != 0
+		}
 		row := upFromModel(up)
-		return tx.Save(&row).Error
+		if err := tx.Save(&row).Error; err != nil {
+			return err
+		}
+		if !wasEnabled && up.Enabled {
+			return tx.Model(&upFollowRelationRow{}).Where("up_uid = ?", up.UID).Update("space_synced", 0).Error
+		}
+		return nil
 	})
 }
 
@@ -218,6 +239,9 @@ func (s *Store) DeleteUP(uid string) error {
 			return err
 		}
 		if err := tx.Where("up_uid = ?", uid).Delete(&commentRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("up_uid = ?", uid).Delete(&upFollowRelationRow{}).Error; err != nil {
 			return err
 		}
 		return nil
@@ -366,7 +390,31 @@ func (s *Store) SaveSession(session model.BiliSession) error {
 	if err != nil {
 		return err
 	}
-	return s.db.Save(&authSessionRow{ID: authSessionID, Sealed: sealed}).Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var previous model.BiliSession
+		var row authSessionRow
+		err := tx.Where("id = ?", authSessionID).Take(&row).Error
+		if err == nil {
+			if err := openJSON(s.vault, tableAuthSession, authSessionID, row.Sealed, &previous); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err := tx.Save(&authSessionRow{ID: authSessionID, Sealed: sealed}).Error; err != nil {
+			return err
+		}
+		if session.AccountUID == "" || session.AccountUID == previous.AccountUID {
+			return nil
+		}
+		if err := tx.Where("1 = 1").Delete(&upFollowRelationRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("1 = 1").Delete(&biliFeedStateRow{}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&biliFeedStateRow{AccountUID: session.AccountUID, UpdatedAt: time.Now().Unix()}).Error
+	})
 }
 
 func (s *Store) Session() (model.BiliSession, error) {

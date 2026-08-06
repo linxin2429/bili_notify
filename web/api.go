@@ -51,7 +51,10 @@ func (s *Server) createUPAPI(w http.ResponseWriter, r *http.Request) {
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	up := model.UP{UID: input.UID, Name: input.Name, Enabled: input.Enabled}
+	up := model.UP{
+		UID: input.UID, Name: input.Name, Enabled: input.Enabled,
+		FollowState: model.FollowUnknown, CollectionRoute: model.CollectionRouteSpace,
+	}
 	if err := up.Validate(); err != nil {
 		s.writeAPIResult(w, http.StatusCreated, nil, validationFailure(err))
 		return
@@ -67,6 +70,7 @@ func (s *Server) createUPAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusCreated, nil, err)
 		return
 	}
+	s.engine.NotifyUPChanged()
 	s.events.Publish(service.TopicStatus | service.TopicUPs)
 	s.writeAPIResult(w, http.StatusCreated, up, nil)
 }
@@ -93,6 +97,7 @@ func (s *Server) updateUPAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusOK, nil, err)
 		return
 	}
+	s.engine.NotifyUPChanged()
 	s.events.Publish(service.TopicStatus | service.TopicUPs)
 	s.writeAPIResult(w, http.StatusOK, up, nil)
 }
@@ -108,6 +113,7 @@ func (s *Server) deleteUPAPI(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("removing media for deleted UP failed", "uid", uid, "err", err)
 		}
 	}
+	s.engine.NotifyUPChanged()
 	s.events.Publish(service.TopicStatus | service.TopicUPs)
 	w.WriteHeader(http.StatusNoContent)
 }

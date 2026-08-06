@@ -419,3 +419,100 @@ func TestCommentTargetsAndOutbox(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, seen)
 }
+
+func TestSessionSwitchResetsAccountScopedCollectionState(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 9))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	first := model.BiliSession{AccountUID: "100", AccountName: "first", Cookies: map[string]string{"SESSDATA": "a"}, UpdatedAt: time.Now()}
+	require.NoError(t, store.SaveSession(first))
+	require.NoError(t, store.PutFollowRelations("100", map[string]model.FollowState{"42": model.Followed}, time.Now()))
+	require.NoError(t, store.MarkSpaceSynced("100", "42", time.Now()))
+	require.NoError(t, store.InitializeFeed("100", "baseline-a", time.Now()))
+
+	first.AccountName = "renamed"
+	require.NoError(t, store.SaveSession(first))
+	feed, err := store.FeedState("100")
+	require.NoError(t, err)
+	assert.Equal(t, "baseline-a", feed.UpdateBaseline)
+	relations, err := store.FollowRelations("100")
+	require.NoError(t, err)
+	assert.True(t, relations["42"].SpaceSynced)
+
+	second := model.BiliSession{AccountUID: "200", AccountName: "second", Cookies: map[string]string{"SESSDATA": "b"}, UpdatedAt: time.Now()}
+	require.NoError(t, store.SaveSession(second))
+	_, err = store.FeedState("100")
+	require.ErrorIs(t, err, ErrNotFound)
+	feed, err = store.FeedState("200")
+	require.NoError(t, err)
+	assert.False(t, feed.Initialized)
+	relations, err = store.FollowRelations("200")
+	require.NoError(t, err)
+	assert.Empty(t, relations)
+}
+
+func TestUPCollectionRouteUsesFollowAndSynchronizationState(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		followState model.FollowState
+		synced      bool
+		initialized bool
+		wantRoute   model.CollectionRoute
+	}{
+		{name: "followed and synchronized", followState: model.Followed, synced: true, initialized: true, wantRoute: model.CollectionRouteFeedAll},
+		{name: "followed but not synchronized", followState: model.Followed, initialized: true, wantRoute: model.CollectionRouteSpace},
+		{name: "unfollowed", followState: model.FollowUnfollowed, synced: true, initialized: true, wantRoute: model.CollectionRouteSpace},
+		{name: "feed not initialized", followState: model.Followed, synced: true, wantRoute: model.CollectionRouteSpace},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 10))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = store.Close() })
+			require.NoError(t, store.SaveSession(model.BiliSession{AccountUID: "100", Cookies: map[string]string{"SESSDATA": "a"}}))
+			require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}))
+			require.NoError(t, store.PutFollowRelations("100", map[string]model.FollowState{"42": tt.followState}, time.Now()))
+			if tt.synced {
+				require.NoError(t, store.MarkSpaceSynced("100", "42", time.Now()))
+			}
+			if tt.initialized {
+				require.NoError(t, store.InitializeFeed("100", "baseline", time.Now()))
+			}
+			up, err := store.UP("42")
+			require.NoError(t, err)
+			assert.Equal(t, tt.followState, up.FollowState)
+			assert.Equal(t, tt.wantRoute, up.CollectionRoute)
+		})
+	}
+}
+
+func TestRecordFeedDynamicsAdvancesCursorWithDurableOutbox(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 11))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.SaveSession(model.BiliSession{AccountUID: "100", Cookies: map[string]string{"SESSDATA": "a"}}))
+	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}))
+	require.NoError(t, store.PutFollowRelations("100", map[string]model.FollowState{"42": model.Followed}, time.Now()))
+	require.NoError(t, store.MarkSpaceSynced("100", "42", time.Now()))
+	require.NoError(t, store.InitializeFeed("100", "old", time.Now()))
+
+	dynamic := model.Dynamic{ID: "dynamic-1", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now(), Summary: "new"}
+	created, err := store.RecordFeedDynamics("100", "new", []model.Dynamic{dynamic}, []string{"channel"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, created)
+	feed, err := store.FeedState("100")
+	require.NoError(t, err)
+	assert.Equal(t, "new", feed.UpdateBaseline)
+	seen, err := store.Seen("42", "dynamic-1")
+	require.NoError(t, err)
+	assert.True(t, seen)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, "dynamic-1", deliveries[0].Dynamic.ID)
+}

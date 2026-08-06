@@ -2,6 +2,7 @@ package bilibili
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,89 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestValidateSessionReturnsAccountIdentity(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/x/web-interface/nav", r.URL.Path)
+		_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"isLogin":true,"mid":123,"uname":" tester "}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL))
+	account, err := client.ValidateSession(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, model.BiliAccount{UID: "123", Name: "tester"}, account)
+}
+
+func TestFetchRelationsClassifiesAttributes(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/x/relation/relations", r.URL.Path)
+		assert.Equal(t, "1,2,3,4,5", r.URL.Query().Get("fids"))
+		_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"1":{"attribute":2},"2":{"attribute":6},"3":{"attribute":0},"4":{"attribute":128}}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL))
+	states, err := client.FetchRelations(t.Context(), []string{"1", "2", "3", "4", "5"})
+	require.NoError(t, err)
+	assert.Equal(t, model.Followed, states["1"])
+	assert.Equal(t, model.Followed, states["2"])
+	assert.Equal(t, model.FollowUnfollowed, states["3"])
+	assert.Equal(t, model.FollowUnfollowed, states["4"])
+	assert.Equal(t, model.FollowUnknown, states["5"])
+}
+
+func TestAggregateFeedEndpoints(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		call func(t *testing.T, client *Client)
+	}{
+		{
+			name: "update check",
+			call: func(t *testing.T, client *Client) {
+				update, err := client.CheckFeedUpdate(t.Context(), "old")
+				require.NoError(t, err)
+				assert.Equal(t, 2, update.UpdateNum)
+			},
+		},
+		{
+			name: "feed page",
+			call: func(t *testing.T, client *Client) {
+				page, err := client.FetchAllPage(t.Context(), "old", "next")
+				require.NoError(t, err)
+				assert.Equal(t, "new", page.UpdateBaseline)
+				assert.Equal(t, 2, page.UpdateNum)
+				assert.Equal(t, "after", page.Offset)
+				assert.True(t, page.HasMore)
+				assert.Len(t, page.Items, 1)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "old", r.URL.Query().Get("update_baseline"))
+				switch r.URL.Path {
+				case "/x/polymer/web-dynamic/v1/feed/all/update":
+					assert.Equal(t, "all", r.URL.Query().Get("type"))
+					_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"update_num":2}}`)
+				case "/x/polymer/web-dynamic/v1/feed/all":
+					assert.Equal(t, "next", r.URL.Query().Get("offset"))
+					assert.Equal(t, dynamicFeatures, r.URL.Query().Get("features"))
+					_, _ = fmt.Fprint(w, `{"code":0,"message":"0","data":{"has_more":true,"offset":"after","update_baseline":"new","update_num":2,"items":[{"id_str":"1"}]}}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+			tt.call(t, New(server.Client(), "test", WithBaseURLs(server.URL, server.URL)))
+		})
+	}
+}
 
 func TestParseDynamic(t *testing.T) {
 	t.Parallel()

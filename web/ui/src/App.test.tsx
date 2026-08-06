@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { vi } from 'vitest'
 import {
   activateNavigation, canApplyDashboardRefresh, composePreviewBody, DeliveriesPage, DynamicHistoryCard,
-  formatInteractionCount, formatRelativeDate, historyMediaURL,
+  followStateLabel, formatInteractionCount, formatRelativeDate, historyMediaURL,
 } from './App'
 import { AdminAPI, parseDynamicHistoryPage } from './api'
 import { applyBiliLoginMutation, applyUPMutation, applyUpdate, readinessMessage } from './dashboard'
@@ -22,6 +22,15 @@ const snapshot: DashboardSnapshot = {
 }
 
 describe('dashboard state', () => {
+
+  it.each([
+    { state: 'followed' as const, label: '当前账号已关注' },
+    { state: 'unfollowed' as const, label: '当前账号未关注' },
+    { state: 'unknown' as const, label: '关注关系未知' },
+  ])('labels $state follow state', ({ state, label }) => {
+    expect(followStateLabel(state)).toBe(label)
+  })
+
   it('explains the first readiness blocker', () => {
     expect(readinessMessage(snapshot)).toContain('扫码登录')
   })
@@ -60,6 +69,7 @@ describe('dashboard state', () => {
   it('applies successful HTTP mutation payloads without waiting for realtime', () => {
     const withUP = applyUPMutation(snapshot, {
       uid: '42', name: 'tester', enabled: true, baseline_ready: false, consecutive_fail: 0,
+      follow_state: 'unknown', collection_route: 'space',
     })
     const withQR = applyBiliLoginMutation(withUP, {
       id: 'login', status: 'waiting', expires_at: '2026-01-01T00:05:00+08:00', qr_data_url: 'data:image/png;base64,qr',

@@ -3,6 +3,7 @@ import type { DashboardSnapshot } from './types'
 
 const statusSchema = z.object({
   auth_valid: z.boolean(),
+  bili_account: z.object({ uid: z.string(), name: z.string() }).optional(),
   last_success_at: z.string().optional(),
   up_count: z.number(),
   channel_count: z.number(),
@@ -14,6 +15,8 @@ const statusSchema = z.object({
 
 const upSchema = z.object({
   uid: z.string(), name: z.string(), enabled: z.boolean(), baseline_ready: z.boolean(),
+  follow_state: z.enum(['unknown', 'followed', 'unfollowed']),
+  follow_checked_at: z.string().optional(), collection_route: z.enum(['feed_all', 'space']),
   last_poll_at: z.string().optional(), last_success_at: z.string().optional(),
   last_error: z.string().optional(), consecutive_fail: z.number(),
 })

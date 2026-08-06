@@ -3,6 +3,7 @@ package service
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,12 @@ import (
 	"github.com/linxin2429/bili_notify/state"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
+)
+
+const (
+	relationRefreshInterval = 10 * time.Minute
+	spaceReconcileInterval  = 30 * time.Minute
+	maxDynamicPages         = 10
 )
 
 type Engine struct {
@@ -38,7 +45,11 @@ type Engine struct {
 	commentBatchInterval time.Duration
 	limiter              *rate.Limiter
 	settingsNotify       chan struct{}
+	relationNotify       chan struct{}
 	httpTimeout          time.Duration
+	sessionMu            sync.RWMutex
+	accountMu            sync.RWMutex
+	account              model.BiliAccount
 	authValid            atomic.Bool
 	authEverValid        atomic.Bool
 	lastSuccess          atomic.Int64
@@ -77,6 +88,7 @@ func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger,
 		commentBatchInterval: settings.CommentBatchInterval(),
 		limiter:              rate.NewLimiter(rate.Limit(settings.RequestRate), max(1, int(settings.RequestRate))),
 		settingsNotify:       make(chan struct{}, 1),
+		relationNotify:       make(chan struct{}, 1),
 		httpTimeout:          10 * time.Second,
 		microsoftLogins:      make(map[string]*MicrosoftLoginSession),
 		events:               events,
@@ -181,14 +193,15 @@ type MicrosoftLoginSession struct {
 var ErrMicrosoftLoginNotFound = errors.New("Microsoft login session not found")
 
 type Status struct {
-	AuthValid       bool      `json:"auth_valid"`
-	LastSuccessAt   time.Time `json:"last_success_at,omitzero"`
-	UPCount         int       `json:"up_count"`
-	ChannelCount    int       `json:"channel_count"`
-	OutboxDepth     int       `json:"outbox_depth"`
-	OldestDelivery  time.Time `json:"oldest_delivery,omitzero"`
-	Ready           bool      `json:"ready"`
-	RiskPausedUntil time.Time `json:"risk_paused_until,omitzero"`
+	AuthValid       bool               `json:"auth_valid"`
+	BiliAccount     *model.BiliAccount `json:"bili_account,omitempty"`
+	LastSuccessAt   time.Time          `json:"last_success_at,omitzero"`
+	UPCount         int                `json:"up_count"`
+	ChannelCount    int                `json:"channel_count"`
+	OutboxDepth     int                `json:"outbox_depth"`
+	OldestDelivery  time.Time          `json:"oldest_delivery,omitzero"`
+	Ready           bool               `json:"ready"`
+	RiskPausedUntil time.Time          `json:"risk_paused_until,omitzero"`
 }
 
 type clockStatus struct {
@@ -224,9 +237,15 @@ func (e *Engine) Run(ctx context.Context) error {
 	if session, err := e.store.Session(); err == nil {
 		e.client.SetSession(session)
 		validateCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
-		_, validateErr := e.client.ValidateSession(validateCtx)
+		account, validateErr := e.client.ValidateSession(validateCtx)
 		cancel()
 		if validateErr == nil {
+			session.AccountUID = account.UID
+			session.AccountName = account.Name
+			if err := e.store.SaveSession(session); err != nil {
+				return fmt.Errorf("updating restored Bilibili session identity: %w", err)
+			}
+			e.setAccount(account)
 			e.authEverValid.Store(true)
 			e.authValid.Store(true)
 			e.metrics.AuthState.Set(1)
@@ -245,6 +264,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	g.Go(func() error { return e.commentLoop(ctx) })
 	g.Go(func() error { return e.deliveryLoop(ctx) })
 	g.Go(func() error { return e.authLoop(ctx) })
+	g.Go(func() error { return e.relationLoop(ctx) })
 	return g.Wait()
 }
 
@@ -273,6 +293,96 @@ func (e *Engine) collectLoop(ctx context.Context) error {
 	}
 }
 
+func (e *Engine) relationLoop(ctx context.Context) error {
+	ticker := time.NewTicker(relationRefreshInterval)
+	defer ticker.Stop()
+	run := func() {
+		if err := e.refreshRelations(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			e.logger.Warn("Bilibili follow relations refresh failed", "err", err)
+		}
+	}
+	run()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			run()
+		case <-e.relationNotify:
+			run()
+		}
+	}
+}
+
+func (e *Engine) refreshRelations(ctx context.Context) error {
+	if !e.authValid.Load() {
+		return nil
+	}
+	if until := e.riskUntil.Load(); until > time.Now().Unix() {
+		return nil
+	}
+	account := e.currentAccount()
+	if account.UID == "" {
+		return nil
+	}
+	ups, err := e.store.ListUPs()
+	if err != nil {
+		return fmt.Errorf("listing UPs for follow relations: %w", err)
+	}
+	if len(ups) == 0 {
+		return nil
+	}
+	states := make(map[string]model.FollowState, len(ups))
+	uids := make([]string, 0, len(ups))
+	for _, up := range ups {
+		states[up.UID] = model.FollowUnknown
+		uids = append(uids, up.UID)
+	}
+	e.sessionMu.RLock()
+	defer e.sessionMu.RUnlock()
+	for start := 0; start < len(uids); start += 50 {
+		end := min(start+50, len(uids))
+		if err := e.limiter.Wait(ctx); err != nil {
+			return err
+		}
+		requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
+		batch, fetchErr := e.client.FetchRelations(requestCtx, uids[start:end])
+		cancel()
+		if fetchErr != nil {
+			e.handleBiliAPIError(fetchErr)
+			if err := e.store.PutFollowRelations(account.UID, states, time.Now()); err != nil {
+				return fmt.Errorf("recording unknown follow relations: %w", err)
+			}
+			e.publish(TopicUPs)
+			return fetchErr
+		}
+		for uid, state := range batch {
+			states[uid] = state
+		}
+	}
+	if err := e.store.PutFollowRelations(account.UID, states, time.Now()); err != nil {
+		return fmt.Errorf("recording follow relations: %w", err)
+	}
+	e.publish(TopicUPs)
+	e.logger.Debug("Bilibili follow relations refreshed", "account_uid", account.UID, "up_count", len(uids))
+	return nil
+}
+
+func (e *Engine) handleBiliAPIError(err error) {
+	if bilibili.IsAuthentication(err) {
+		e.setAuth(false)
+	}
+	if !bilibili.IsRiskControl(err) {
+		return
+	}
+	now := time.Now()
+	previousUntil := e.riskUntil.Swap(now.Add(5 * time.Minute).Unix())
+	if previousUntil <= now.Unix() {
+		e.publish(TopicStatus)
+		e.enqueueSystem("B站接口触发风控，采集已暂停五分钟；服务不会尝试绕过风控。")
+	}
+}
+
 func (e *Engine) collectOnce(ctx context.Context) error {
 	if err := e.publishClockStatusIfChanged(); err != nil {
 		return fmt.Errorf("checking time-derived status: %w", err)
@@ -285,6 +395,10 @@ func (e *Engine) collectOnce(ctx context.Context) error {
 	if until := e.riskUntil.Load(); until > time.Now().Unix() {
 		e.logger.Debug("collection cycle skipped", "reason", "Bilibili risk-control pause", "resume_at", time.Unix(until, 0))
 		return nil
+	}
+	account := e.currentAccount()
+	if account.UID == "" {
+		return errors.New("authenticated Bilibili session has no account identity")
 	}
 	ups, err := e.store.ListUPs()
 	if err != nil {
@@ -299,20 +413,56 @@ func (e *Engine) collectOnce(ctx context.Context) error {
 		e.logger.Debug("collection cycle skipped", "reason", "no enabled notification channels")
 		return nil
 	}
+	relations, err := e.store.FollowRelations(account.UID)
+	if err != nil {
+		return fmt.Errorf("listing follow relations: %w", err)
+	}
+	followedEnabled := false
+	for _, up := range ups {
+		if up.Enabled && relations[up.UID].State == model.Followed {
+			followedEnabled = true
+			break
+		}
+	}
+	feedInitialized := false
+	if followedEnabled {
+		feed, feedErr := e.store.FeedState(account.UID)
+		if errors.Is(feedErr, state.ErrNotFound) || (feedErr == nil && !feed.Initialized) {
+			e.sessionMu.RLock()
+			initializeErr := e.initializeFeed(ctx, account.UID)
+			e.sessionMu.RUnlock()
+			if initializeErr != nil {
+				e.logger.Warn("Bilibili aggregate feed baseline failed", "account_uid", account.UID, "err", initializeErr)
+			}
+			feed, feedErr = e.store.FeedState(account.UID)
+		}
+		if feedErr != nil && !errors.Is(feedErr, state.ErrNotFound) {
+			return fmt.Errorf("loading aggregate feed state: %w", feedErr)
+		}
+		feedInitialized = feed.Initialized
+	}
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(e.currentConcurrency())
 	enabledUPs := 0
+	feedUPs := make([]model.UP, 0, len(ups))
+	now := time.Now()
 	for _, up := range ups {
 		if !up.Enabled {
 			continue
 		}
 		enabledUPs++
-		g.Go(func() error {
-			if err := e.limiter.Wait(gctx); err != nil {
-				return err
-			}
-			return e.pollUP(gctx, up, channelIDs)
-		})
+		relation := relations[up.UID]
+		feedReady := feedInitialized && relation.State == model.Followed && relation.SpaceSynced && up.BaselineReady && up.ExclusiveBaselineReady
+		if feedReady {
+			feedUPs = append(feedUPs, up)
+		}
+		spaceDue := !feedReady || relation.LastSpacePollAt.IsZero() || now.Sub(relation.LastSpacePollAt) >= spaceReconcileInterval
+		if spaceDue {
+			g.Go(func() error { return e.pollUP(gctx, up, channelIDs) })
+		}
+	}
+	if len(feedUPs) > 0 {
+		g.Go(func() error { return e.pollFeed(gctx, account, feedUPs, channelIDs) })
 	}
 	err = g.Wait()
 	if err != nil {
@@ -322,9 +472,205 @@ func (e *Engine) collectOnce(ctx context.Context) error {
 	return nil
 }
 
+func (e *Engine) initializeFeed(ctx context.Context, accountUID string) error {
+	if err := e.limiter.Wait(ctx); err != nil {
+		return err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
+	defer cancel()
+	page, err := e.client.FetchAllPage(requestCtx, "", "")
+	if err != nil {
+		e.handleBiliAPIError(err)
+		return err
+	}
+	if page.UpdateBaseline == "" {
+		return &bilibili.APIError{Kind: bilibili.ErrorSchema, Message: "aggregate feed baseline is missing"}
+	}
+	if err := e.store.InitializeFeed(accountUID, page.UpdateBaseline, time.Now()); err != nil {
+		return fmt.Errorf("recording aggregate feed baseline: %w", err)
+	}
+	e.publish(TopicUPs)
+	return nil
+}
+
+func (e *Engine) pollFeed(ctx context.Context, account model.BiliAccount, ups []model.UP, channelIDs []string) error {
+	started := time.Now()
+	e.sessionMu.RLock()
+	defer e.sessionMu.RUnlock()
+	feed, err := e.store.FeedState(account.UID)
+	if err != nil {
+		return err
+	}
+	uids := make([]string, 0, len(ups))
+	targets := make(map[string]model.UP, len(ups))
+	for _, up := range ups {
+		uids = append(uids, up.UID)
+		targets[up.UID] = up
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
+	defer cancel()
+	if err := e.limiter.Wait(requestCtx); err != nil {
+		return err
+	}
+	update, err := e.client.CheckFeedUpdate(requestCtx, feed.UpdateBaseline)
+	if err != nil {
+		return e.failFeed(ups, started, err)
+	}
+	if update.UpdateNum == 0 {
+		return e.completeFeedPoll(ups, nil, started, 0)
+	}
+
+	var (
+		rawItems    []json.RawMessage
+		offset      string
+		newBaseline string
+		updateNum   = -1
+	)
+	for pageNumber := range maxDynamicPages {
+		if err := e.limiter.Wait(requestCtx); err != nil {
+			return err
+		}
+		page, fetchErr := e.client.FetchAllPage(requestCtx, feed.UpdateBaseline, offset)
+		if fetchErr != nil {
+			return e.failFeed(ups, started, fetchErr)
+		}
+		if pageNumber == 0 {
+			newBaseline = page.UpdateBaseline
+			updateNum = page.UpdateNum
+			if newBaseline == "" {
+				return e.failFeed(ups, started, &bilibili.APIError{Kind: bilibili.ErrorSchema, Message: "aggregate feed update baseline is missing"})
+			}
+		}
+		remaining := updateNum - len(rawItems)
+		if remaining > 0 {
+			rawItems = append(rawItems, page.Items[:min(remaining, len(page.Items))]...)
+		}
+		if len(rawItems) >= updateNum {
+			break
+		}
+		if !page.HasMore || page.Offset == "" || page.Offset == offset {
+			return e.failFeed(ups, started, &bilibili.APIError{Kind: bilibili.ErrorSchema, Message: "aggregate feed ended before update count was reached"})
+		}
+		if pageNumber == maxDynamicPages-1 {
+			if resetErr := e.store.ResetFeed(account.UID, uids, time.Now()); resetErr != nil {
+				return fmt.Errorf("resetting aggregate feed after pagination overflow: %w", resetErr)
+			}
+			e.publish(TopicUPs)
+			return e.failFeed(ups, started, errors.New("more than 10 aggregate feed pages; space resynchronization required"))
+		}
+		offset = page.Offset
+	}
+
+	rawByUID := make(map[string][]json.RawMessage)
+	for _, raw := range rawItems {
+		uid, parseErr := bilibili.DynamicAuthorUID(raw)
+		if parseErr != nil {
+			return e.failFeed(ups, started, parseErr)
+		}
+		if _, ok := targets[uid]; ok {
+			rawByUID[uid] = append(rawByUID[uid], raw)
+		}
+	}
+	failedUIDs := make([]string, 0)
+	dynamicsByUID := make(map[string][]model.Dynamic, len(rawByUID))
+	allDynamics := make([]model.Dynamic, 0)
+	for uid, raws := range rawByUID {
+		group := make([]model.Dynamic, 0, len(raws))
+		var groupErr error
+		for _, raw := range raws {
+			dynamic, parseErr := bilibili.ParseDynamicItem(raw)
+			if bilibili.IsDynamicBlocked(parseErr) {
+				continue
+			}
+			if parseErr != nil {
+				groupErr = parseErr
+				break
+			}
+			if dynamic.Type != "DYNAMIC_TYPE_LIVE_RCMD" {
+				group = append(group, dynamic)
+			}
+		}
+		if groupErr != nil {
+			failedUIDs = append(failedUIDs, uid)
+			if err := e.failPoll(targets[uid], targets[uid].Name, started, groupErr); err != nil {
+				return err
+			}
+			continue
+		}
+		dynamicsByUID[uid] = group
+		allDynamics = append(allDynamics, group...)
+	}
+	slices.SortFunc(allDynamics, func(a, b model.Dynamic) int { return a.PublishedAt.Compare(b.PublishedAt) })
+	e.enrichMedia(ctx, allDynamics)
+	created, err := e.store.RecordFeedDynamics(account.UID, newBaseline, allDynamics, channelIDs, failedUIDs)
+	if err != nil {
+		return err
+	}
+	if created > 0 {
+		e.publish(TopicStatus | TopicDeliveries)
+	}
+	for uid, dynamics := range dynamicsByUID {
+		if err := e.refreshCommentTargets(targets[uid], targets[uid].Name, dynamics); err != nil {
+			return err
+		}
+	}
+	successful := make([]model.UP, 0, len(ups)-len(failedUIDs))
+	for _, up := range ups {
+		if !slices.Contains(failedUIDs, up.UID) {
+			successful = append(successful, up)
+		}
+	}
+	if err := e.completeFeedPoll(successful, allDynamics, started, created); err != nil {
+		return err
+	}
+	if len(failedUIDs) > 0 {
+		e.publish(TopicUPs)
+	}
+	return nil
+}
+
+func (e *Engine) completeFeedPoll(ups []model.UP, dynamics []model.Dynamic, started time.Time, created int) error {
+	now := time.Now()
+	uids := make([]string, 0, len(ups))
+	for _, up := range ups {
+		uids = append(uids, up.UID)
+	}
+	if err := e.store.SetUPResults(uids, now, nil); err != nil {
+		return err
+	}
+	e.metrics.PollTotal.WithLabelValues("success").Add(float64(len(ups)))
+	e.metrics.LastPollSuccess.Set(float64(now.Unix()))
+	e.lastSuccess.Store(now.Unix())
+	for _, dynamic := range dynamics {
+		e.metrics.DiscoveryDelay.Observe(max(0, now.Sub(dynamic.PublishedAt).Seconds()))
+	}
+	if created > 0 {
+		e.logger.Info("aggregate feed dynamics queued", "dynamic_count", created, "up_count", len(ups))
+	}
+	e.logger.Debug("Bilibili aggregate feed poll succeeded", "up_count", len(ups), "fetched_items", len(dynamics), "duration", elapsed(started))
+	return nil
+}
+
+func (e *Engine) failFeed(ups []model.UP, started time.Time, pollErr error) error {
+	e.handleBiliAPIError(pollErr)
+	uids := make([]string, 0, len(ups))
+	for _, up := range ups {
+		uids = append(uids, up.UID)
+	}
+	if err := e.store.SetUPResults(uids, time.Now(), pollErr); err != nil {
+		return fmt.Errorf("recording failed aggregate feed poll: %w", err)
+	}
+	e.metrics.PollTotal.WithLabelValues("error").Add(float64(len(ups)))
+	e.publish(TopicStatus | TopicUPs)
+	e.logger.Warn("Bilibili aggregate feed poll failed", "up_count", len(ups), "duration", elapsed(started), "err", pollErr)
+	return nil
+}
+
 func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) error {
 	started := time.Now()
 	defer func() { e.metrics.PollDuration.Observe(time.Since(started).Seconds()) }()
+	e.sessionMu.RLock()
+	defer e.sessionMu.RUnlock()
 	requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
 	defer cancel()
 	var (
@@ -332,20 +678,13 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 		offset string
 		name   string
 	)
-	for pageNumber := range 10 {
+	for pageNumber := range maxDynamicPages {
+		if err := e.limiter.Wait(requestCtx); err != nil {
+			return err
+		}
 		page, err := e.client.FetchPage(requestCtx, up.UID, offset)
 		if err != nil {
-			if bilibili.IsAuthentication(err) {
-				e.setAuth(false)
-			}
-			if bilibili.IsRiskControl(err) {
-				now := time.Now()
-				previousUntil := e.riskUntil.Swap(now.Add(5 * time.Minute).Unix())
-				if previousUntil <= now.Unix() {
-					e.publish(TopicStatus)
-					e.enqueueSystem("B站接口触发风控，采集已暂停五分钟；服务不会尝试绕过风控。")
-				}
-			}
+			e.handleBiliAPIError(err)
 			return e.failPoll(up, name, started, err)
 		}
 		name = page.UPName
@@ -364,7 +703,7 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 		if !up.BaselineReady || foundSeen || !page.HasMore {
 			break
 		}
-		if pageNumber == 9 {
+		if pageNumber == maxDynamicPages-1 {
 			err := errors.New("more than 10 pages of unseen dynamics; manual review required")
 			return e.failPoll(up, name, started, err)
 		}
@@ -399,6 +738,19 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) e
 	now := time.Now()
 	if err := e.store.SetUPResult(up.UID, name, now, nil); err != nil {
 		return err
+	}
+	if account := e.currentAccount(); account.UID != "" {
+		relations, relationErr := e.store.FollowRelations(account.UID)
+		if relationErr != nil {
+			return relationErr
+		}
+		wasSynced := relations[up.UID].SpaceSynced
+		if err := e.store.MarkSpaceSynced(account.UID, up.UID, now); err != nil {
+			return err
+		}
+		if !wasSynced {
+			e.publish(TopicUPs)
+		}
 	}
 	if up.ConsecutiveFail >= 3 {
 		e.enqueueSystem(fmt.Sprintf("UP %s 的动态采集已恢复。", up.UID))
@@ -519,6 +871,8 @@ func (e *Engine) commentOnce(ctx context.Context) error {
 	if until := e.riskUntil.Load(); until > time.Now().Unix() {
 		return nil
 	}
+	e.sessionMu.RLock()
+	defer e.sessionMu.RUnlock()
 	channels, err := e.store.ListChannels()
 	if err != nil {
 		return fmt.Errorf("listing channels for comments: %w", err)
@@ -987,7 +1341,7 @@ func elapsed(started time.Time) string {
 }
 
 func (e *Engine) authLoop(ctx context.Context) error {
-	ticker := time.NewTicker(10 * time.Minute)
+	ticker := time.NewTicker(relationRefreshInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -998,13 +1352,34 @@ func (e *Engine) authLoop(ctx context.Context) error {
 				continue
 			}
 			checkCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
+			e.sessionMu.RLock()
 			_, err := e.client.ValidateSession(checkCtx)
+			e.sessionMu.RUnlock()
 			cancel()
 			if err != nil {
 				e.setAuth(false)
 				e.logger.Warn("Bilibili session validation failed", "err", err)
 			}
 		}
+	}
+}
+
+func (e *Engine) setAccount(account model.BiliAccount) {
+	e.accountMu.Lock()
+	e.account = account
+	e.accountMu.Unlock()
+}
+
+func (e *Engine) currentAccount() model.BiliAccount {
+	e.accountMu.RLock()
+	defer e.accountMu.RUnlock()
+	return e.account
+}
+
+func (e *Engine) NotifyUPChanged() {
+	select {
+	case e.relationNotify <- struct{}{}:
+	default:
 	}
 }
 
@@ -1154,15 +1529,42 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 		e.logger.Info("Bilibili QR login status changed", "status", status)
 	}
 	if status == bilibili.QRSuccess {
-		e.client.SetSession(session)
-		if _, err := e.client.ValidateSession(ctx); err != nil {
+		e.sessionMu.Lock()
+		defer e.sessionMu.Unlock()
+		previous, previousErr := e.store.Session()
+		if previousErr != nil && !errors.Is(previousErr, state.ErrNotFound) {
+			return LoginSession{}, previousErr
+		}
+		restorePrevious := func() {
+			if previousErr == nil {
+				e.client.SetSession(previous)
+				return
+			}
 			e.client.ClearSession()
+		}
+		e.client.SetSession(session)
+		account, err := e.client.ValidateSession(ctx)
+		if err != nil {
+			restorePrevious()
 			return LoginSession{}, fmt.Errorf("validating new session: %w", err)
 		}
+		session.AccountUID = account.UID
+		session.AccountName = account.Name
 		if err := e.store.SaveSession(session); err != nil {
+			restorePrevious()
 			return LoginSession{}, err
 		}
+		accountChanged := previous.AccountUID != account.UID
+		identityChanged := accountChanged || previous.AccountName != account.Name
+		if accountChanged {
+			e.lastSuccess.Store(0)
+		}
+		e.setAccount(account)
 		e.setAuth(true)
+		if identityChanged {
+			e.publish(TopicStatus | TopicUPs)
+		}
+		e.NotifyUPChanged()
 		e.logger.Info("Bilibili QR login completed")
 	}
 	e.loginMu.Lock()
@@ -1397,6 +1799,9 @@ func (e *Engine) Status() (Status, error) {
 		return Status{}, err
 	}
 	status := Status{AuthValid: e.authValid.Load(), UPCount: len(ups), ChannelCount: len(channels), OutboxDepth: len(deliveries)}
+	if account := e.currentAccount(); account.UID != "" {
+		status.BiliAccount = &account
+	}
 	if unix := e.lastSuccess.Load(); unix > 0 {
 		status.LastSuccessAt = time.Unix(unix, 0)
 	}

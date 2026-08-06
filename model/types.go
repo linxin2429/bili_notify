@@ -13,10 +13,13 @@ import (
 )
 
 type UP struct {
-	UID           string `json:"uid"`
-	Name          string `json:"name"`
-	Enabled       bool   `json:"enabled"`
-	BaselineReady bool   `json:"baseline_ready"`
+	UID             string          `json:"uid"`
+	Name            string          `json:"name"`
+	Enabled         bool            `json:"enabled"`
+	BaselineReady   bool            `json:"baseline_ready"`
+	FollowState     FollowState     `json:"follow_state"`
+	FollowCheckedAt time.Time       `json:"follow_checked_at,omitzero"`
+	CollectionRoute CollectionRoute `json:"collection_route"`
 	// ExclusiveBaselineReady prevents pre-upgrade paid dynamics from being delivered.
 	ExclusiveBaselineReady bool      `json:"-"`
 	LastPollAt             time.Time `json:"last_poll_at,omitzero"`
@@ -24,6 +27,21 @@ type UP struct {
 	LastError              string    `json:"last_error,omitempty"`
 	ConsecutiveFail        int       `json:"consecutive_fail"`
 }
+
+type FollowState string
+
+const (
+	FollowUnknown    FollowState = "unknown"
+	Followed         FollowState = "followed"
+	FollowUnfollowed FollowState = "unfollowed"
+)
+
+type CollectionRoute string
+
+const (
+	CollectionRouteSpace   CollectionRoute = "space"
+	CollectionRouteFeedAll CollectionRoute = "feed_all"
+)
 
 func (u UP) Validate() error {
 	uid, err := strconv.ParseUint(u.UID, 10, 64)
@@ -304,8 +322,15 @@ type CommentNode struct {
 }
 
 type BiliSession struct {
-	Cookies   map[string]string `json:"cookies"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	Cookies     map[string]string `json:"cookies"`
+	AccountUID  string            `json:"account_uid"`
+	AccountName string            `json:"account_name"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+type BiliAccount struct {
+	UID  string `json:"uid"`
+	Name string `json:"name"`
 }
 
 // Collector parameter bounds shared by startup config and runtime settings.

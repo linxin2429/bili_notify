@@ -102,8 +102,129 @@ func TestPollUPBaselinesExistingExclusiveDynamicsOnce(t *testing.T) {
 	assert.ElementsMatch(t, []string{"normal-new", "exclusive-new"}, ids)
 }
 
+func TestPollFeedUsesUpdateGateAndFiltersMonitoredUPs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		updateNum      int
+		wantFullFetch  int32
+		wantDeliveries int
+		wantBaseline   string
+	}{
+		{name: "no update skips full feed", wantBaseline: "old"},
+		{name: "new update filters unrelated author", updateNum: 2, wantFullFetch: 1, wantDeliveries: 1, wantBaseline: "new"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var fullFetches atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/x/polymer/web-dynamic/v1/feed/all/update":
+					_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"update_num":%d}}`, tt.updateNum)
+				case "/x/polymer/web-dynamic/v1/feed/all":
+					fullFetches.Add(1)
+					_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","update_baseline":"new","update_num":2,"items":[%s,%s]}}`,
+						dynamicWithAuthorFixture("new-dynamic", "42", 1700000001),
+						`{"id_str":"irrelevant","type":"NEW_TYPE","modules":{"module_author":{"mid":99,"name":"other","pub_ts":1700000000}}}`,
+					)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+
+			store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = store.Close() })
+			session := model.BiliSession{AccountUID: "100", AccountName: "account", Cookies: map[string]string{"SESSDATA": "session"}}
+			require.NoError(t, store.SaveSession(session))
+			up := model.UP{UID: "42", Name: "target", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}
+			require.NoError(t, store.PutUP(up))
+			require.NoError(t, store.PutFollowRelations("100", map[string]model.FollowState{"42": model.Followed}, time.Now()))
+			require.NoError(t, store.MarkSpaceSynced("100", "42", time.Now()))
+			require.NoError(t, store.InitializeFeed("100", "old", time.Now()))
+
+			client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
+			client.SetSession(session)
+			engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 2), nil, nil)
+			engine.setAccount(model.BiliAccount{UID: "100", Name: "account"})
+			require.NoError(t, engine.pollFeed(t.Context(), model.BiliAccount{UID: "100", Name: "account"}, []model.UP{up}, []string{"channel"}))
+
+			assert.Equal(t, tt.wantFullFetch, fullFetches.Load())
+			deliveries, err := store.ListDeliveries(0)
+			require.NoError(t, err)
+			assert.Len(t, deliveries, tt.wantDeliveries)
+			feed, err := store.FeedState("100")
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantBaseline, feed.UpdateBaseline)
+		})
+	}
+}
+
+func TestPollFeedIsolatesOneMonitoredUPParseFailure(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/x/polymer/web-dynamic/v1/feed/all/update":
+			_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"update_num":2}}`)
+		case "/x/polymer/web-dynamic/v1/feed/all":
+			_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","update_baseline":"new","update_num":2,"items":[%s,%s]}}`,
+				dynamicWithAuthorFixture("good", "42", 1700000001),
+				`{"id_str":"bad","type":"NEW_TYPE","modules":{"module_author":{"mid":43,"name":"bad","pub_ts":1700000000}}}`,
+			)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	session := model.BiliSession{AccountUID: "100", Cookies: map[string]string{"SESSDATA": "session"}}
+	require.NoError(t, store.SaveSession(session))
+	ups := []model.UP{
+		{UID: "42", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true},
+		{UID: "43", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true},
+	}
+	for _, up := range ups {
+		require.NoError(t, store.PutUP(up))
+	}
+	require.NoError(t, store.PutFollowRelations("100", map[string]model.FollowState{"42": model.Followed, "43": model.Followed}, time.Now()))
+	for _, up := range ups {
+		require.NoError(t, store.MarkSpaceSynced("100", up.UID, time.Now()))
+	}
+	require.NoError(t, store.InitializeFeed("100", "old", time.Now()))
+
+	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
+	client.SetSession(session)
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 2), nil, nil)
+	engine.setAccount(model.BiliAccount{UID: "100"})
+	require.NoError(t, engine.pollFeed(t.Context(), model.BiliAccount{UID: "100"}, ups, []string{"channel"}))
+
+	feed, err := store.FeedState("100")
+	require.NoError(t, err)
+	assert.Equal(t, "new", feed.UpdateBaseline)
+	relations, err := store.FollowRelations("100")
+	require.NoError(t, err)
+	assert.True(t, relations["42"].SpaceSynced)
+	assert.False(t, relations["43"].SpaceSynced)
+	badUP, err := store.UP("43")
+	require.NoError(t, err)
+	assert.Equal(t, 1, badUP.ConsecutiveFail)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, "good", deliveries[0].Dynamic.ID)
+}
+
 func dynamicFixture(id string, timestamp int64) string {
 	return fmt.Sprintf(`{"id_str":%q,"type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"name":"tester","pub_ts":%d},"module_dynamic":{"desc":{"text":"hello"},"major":null}}}`, id, timestamp)
+}
+
+func dynamicWithAuthorFixture(id, uid string, timestamp int64) string {
+	return fmt.Sprintf(`{"id_str":%q,"type":"DYNAMIC_TYPE_WORD","modules":{"module_author":{"mid":%q,"name":"tester","pub_ts":%d},"module_dynamic":{"desc":{"text":"hello"},"major":null}}}`, id, uid, timestamp)
 }
 
 func exclusiveDynamicFixture(id string, timestamp int64) string {
