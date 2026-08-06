@@ -25,13 +25,14 @@ LDFLAGS := -s -w \
 
 .NOTPARALLEL: check
 
-.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e build fmt test test-race coverage vet vulncheck check run docker-build docker-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
+.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e build clean fmt test test-race coverage vet vulncheck check run docker-build docker-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
 
 help:
 	@printf '%s\n' \
 		'Development:' \
 		'  setup                 enable repository Git hooks' \
 		'  build                 build web/dist and the local bili-notify binary' \
+		'  clean                 remove local build and test artifacts' \
 		'  run ARGS=serve        run the CLI; override ARGS for another command' \
 		'  fmt                    format all Go packages' \
 		'  test                   run Go tests' \
@@ -87,6 +88,10 @@ frontend-e2e: playwright-install
 
 build: frontend-build
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "$(BINARY)" .
+
+clean:
+	rm -f -- "$(BINARY)" "$(COVERAGE_FILE)" web/ui/*.tsbuildinfo
+	rm -rf -- web/dist web/ui/node_modules web/ui/coverage web/ui/test-results web/ui/playwright-report
 
 fmt:
 	go fmt $(GO_PACKAGES)
