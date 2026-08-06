@@ -64,6 +64,16 @@ CI (`.github/workflows/ci.yml`):
 
 Never commit material under `secrets/`, SQLite DBs (`data.db`), cookies, OAuth tokens, webhooks, or TLS private keys.
 
+## Commit messages
+
+Enable the repository hook once per clone with `git config core.hooksPath .githooks`. Every authored commit subject must follow Conventional Commits:
+
+```text
+<type>[(scope)][!]: <description>
+```
+
+Allowed types are `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, and `revert`. The optional scope must start with a lowercase ASCII letter or digit and may contain lowercase letters, digits, `.`, `_`, `/`, or `-`. Use `!` for a breaking change. The description must be non-empty, concise, and imperative. Examples: `feat: add dynamic filtering`, `fix(notify): retry timed-out webhooks`, and `refactor(state)!: replace the storage schema`. Git-generated `Merge ...` and `Revert "..."` subjects are exempt.
+
 ## Architecture
 
 ```

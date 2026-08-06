@@ -71,4 +71,12 @@ When the code under test is string transform, serialize/deserialize (JSON/YAML/X
 
 ## Commit & Pull Request Guidelines
 
-Recent history uses concise Conventional Commit subjects such as `feat: ...` and `fix: ...`; continue that pattern with an imperative, scoped summary. Pull requests should explain the user-visible behavior, operational or security impact, tests run, and any configuration changes. Link relevant issues and include screenshots for administration UI changes. Never commit generated secrets, Bilibili cookies, OAuth tokens, webhook URLs, databases, or TLS private keys; keep local secret material under the ignored `secrets/` path.
+Enable the repository hook once per clone with `git config core.hooksPath .githooks`. Every authored commit subject must follow Conventional Commits:
+
+```text
+<type>[(scope)][!]: <description>
+```
+
+Allowed types are `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, and `revert`. The optional scope must start with a lowercase ASCII letter or digit and may contain lowercase letters, digits, `.`, `_`, `/`, or `-`. Use `!` for a breaking change. The description must be non-empty, concise, and imperative. Examples: `feat: add dynamic filtering`, `fix(notify): retry timed-out webhooks`, and `refactor(state)!: replace the storage schema`. Git-generated `Merge ...` and `Revert "..."` subjects are exempt.
+
+Pull requests should explain the user-visible behavior, operational or security impact, tests run, and any configuration changes. Link relevant issues and include screenshots for administration UI changes. Never commit generated secrets, Bilibili cookies, OAuth tokens, webhook URLs, databases, or TLS private keys; keep local secret material under the ignored `secrets/` path.

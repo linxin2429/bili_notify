@@ -96,6 +96,14 @@ docker compose exec bili-notify /bili-notify healthcheck
 
 ## 本地开发
 
+克隆仓库后先启用项目内置的 Git hook：
+
+```bash
+git config core.hooksPath .githooks
+```
+
+提交信息必须遵循 Conventional Commits，格式为 `<type>[(scope)][!]: <description>`。允许的类型为 `feat`、`fix`、`docs`、`style`、`refactor`、`perf`、`test`、`build`、`ci`、`chore` 和 `revert`；例如 `feat: add dynamic filtering` 或 `fix(notify): retry timed-out webhooks`。Git 自动生成的 merge 和 revert 提交不受此格式限制。
+
 前端构建产物提交在 `web/dist`，因此干净克隆可以直接执行 Go 构建。修改前端后必须重新生成产物：
 
 ```bash
