@@ -70,6 +70,79 @@ func TestSignalProtocolPrecedence(t *testing.T) {
 	}
 }
 
+func TestParseOTLPEndpoint(t *testing.T) {
+	tests := []struct {
+		name      string
+		endpoint  string
+		want      otlpEndpoint
+		wantError string
+	}{
+		{
+			name:     "http base",
+			endpoint: "http://otel-collector:4318",
+			want:     otlpEndpoint{host: "otel-collector:4318", insecure: true},
+		},
+		{
+			name:     "https base with prefix",
+			endpoint: "https://collector.example.com:4318/otlp",
+			want:     otlpEndpoint{host: "collector.example.com:4318", basePath: "/otlp", insecure: false},
+		},
+		{
+			name:     "host without scheme defaults to https",
+			endpoint: "collector.example.com:4318",
+			want:     otlpEndpoint{host: "collector.example.com:4318", insecure: false},
+		},
+		{
+			name:      "empty",
+			endpoint:  "   ",
+			wantError: "empty",
+		},
+		{
+			name:      "missing host",
+			endpoint:  "http:///v1/traces",
+			wantError: "missing host",
+		},
+		{
+			name:      "unsupported scheme",
+			endpoint:  "ftp://collector:4318",
+			wantError: "unsupported scheme",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseOTLPEndpoint(tt.endpoint)
+			if tt.wantError != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantError)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestJoinOTLPPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		basePath   string
+		signalPath string
+		want       string
+	}{
+		{name: "empty base", basePath: "", signalPath: defaultOTLPTracesPath, want: "/v1/traces"},
+		{name: "root base", basePath: "/", signalPath: defaultOTLPMetricsPath, want: "/v1/metrics"},
+		{name: "prefix base", basePath: "/otlp", signalPath: defaultOTLPLogsPath, want: "/otlp/v1/logs"},
+		{name: "trailing slash prefix", basePath: "/otlp/", signalPath: defaultOTLPTracesPath, want: "/otlp/v1/traces"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, joinOTLPPath(tt.basePath, tt.signalPath))
+		})
+	}
+}
+
 func TestNewResourceUsesSafeProcessAttributes(t *testing.T) {
 	t.Parallel()
 
