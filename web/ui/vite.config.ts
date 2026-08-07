@@ -13,6 +13,9 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: './src/test-setup.ts',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    // Self-hosted CI runners are slower for MUI + userEvent interactions;
+    // several page tests need more than the default 5s.
+    testTimeout: 15_000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
