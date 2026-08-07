@@ -41,6 +41,13 @@ const (
 	defaultOTLPLogsPath    = "/v1/logs"
 )
 
+var (
+	errOTLPEndpointEmpty             = errors.New("OTLP endpoint is empty")
+	errOTLPEndpointMissingHost       = errors.New("OTLP endpoint missing host")
+	errOTLPEndpointUnsupportedScheme = errors.New("OTLP endpoint unsupported scheme")
+	errOTLPEndpointSignalPath        = errors.New("OTLP endpoint must be a collector base URL; do not include /v1/traces, /v1/metrics, or /v1/logs")
+)
+
 const instrumentationName = "github.com/linxin2429/bili_notify"
 
 // Config contains the process-lifetime OpenTelemetry settings.
@@ -227,13 +234,13 @@ func newExporters(ctx context.Context, cfg Config) (traceExporter, metricExporte
 	case "grpc":
 		options, optErr := grpcTraceOptions(cfg.Endpoint)
 		if optErr != nil {
-			return nil, nil, nil, optErr
+			return nil, nil, nil, fmt.Errorf("creating OTLP trace exporter: %w", optErr)
 		}
 		traces, err = otlptracegrpc.New(ctx, options...)
 	case "http/protobuf":
 		options, optErr := httpTraceOptions(cfg.Endpoint)
 		if optErr != nil {
-			return nil, nil, nil, optErr
+			return nil, nil, nil, fmt.Errorf("creating OTLP trace exporter: %w", optErr)
 		}
 		traces, err = otlptracehttp.New(ctx, options...)
 	}
@@ -246,14 +253,14 @@ func newExporters(ctx context.Context, cfg Config) (traceExporter, metricExporte
 		options, optErr := grpcMetricOptions(cfg.Endpoint)
 		if optErr != nil {
 			_ = traces.Shutdown(ctx)
-			return nil, nil, nil, optErr
+			return nil, nil, nil, fmt.Errorf("creating OTLP metric exporter: %w", optErr)
 		}
 		metrics, err = otlpmetricgrpc.New(ctx, options...)
 	case "http/protobuf":
 		options, optErr := httpMetricOptions(cfg.Endpoint)
 		if optErr != nil {
 			_ = traces.Shutdown(ctx)
-			return nil, nil, nil, optErr
+			return nil, nil, nil, fmt.Errorf("creating OTLP metric exporter: %w", optErr)
 		}
 		metrics, err = otlpmetrichttp.New(ctx, options...)
 	}
@@ -267,14 +274,14 @@ func newExporters(ctx context.Context, cfg Config) (traceExporter, metricExporte
 		options, optErr := grpcLogOptions(cfg.Endpoint)
 		if optErr != nil {
 			_ = errors.Join(metrics.Shutdown(ctx), traces.Shutdown(ctx))
-			return nil, nil, nil, optErr
+			return nil, nil, nil, fmt.Errorf("creating OTLP log exporter: %w", optErr)
 		}
 		logs, err = otlploggrpc.New(ctx, options...)
 	case "http/protobuf":
 		options, optErr := httpLogOptions(cfg.Endpoint)
 		if optErr != nil {
 			_ = errors.Join(metrics.Shutdown(ctx), traces.Shutdown(ctx))
-			return nil, nil, nil, optErr
+			return nil, nil, nil, fmt.Errorf("creating OTLP log exporter: %w", optErr)
 		}
 		logs, err = otlploghttp.New(ctx, options...)
 	}
@@ -395,31 +402,48 @@ type otlpEndpoint struct {
 // WithEndpointURL alone is wrong here because an empty path becomes "/" and does
 // not append the default signal paths.
 func parseOTLPEndpoint(endpoint string) (otlpEndpoint, error) {
-	endpoint = strings.TrimSpace(endpoint)
-	if endpoint == "" {
-		return otlpEndpoint{}, errors.New("OTLP endpoint is empty")
+	raw := strings.TrimSpace(endpoint)
+	if raw == "" {
+		return otlpEndpoint{}, errOTLPEndpointEmpty
 	}
-	if !strings.Contains(endpoint, "://") {
-		endpoint = "https://" + endpoint
+	candidate := raw
+	if !strings.Contains(candidate, "://") {
+		candidate = "https://" + candidate
 	}
-	u, err := url.Parse(endpoint)
+	u, err := url.Parse(candidate)
 	if err != nil {
-		return otlpEndpoint{}, fmt.Errorf("invalid OTLP endpoint %q: %w", endpoint, err)
-	}
-	if u.Host == "" {
-		return otlpEndpoint{}, fmt.Errorf("invalid OTLP endpoint %q: missing host", endpoint)
+		return otlpEndpoint{}, fmt.Errorf("invalid OTLP endpoint %q: %w", raw, err)
 	}
 	scheme := strings.ToLower(u.Scheme)
 	switch scheme {
-	case "http", "https", "unix":
+	case "http", "https":
 	default:
-		return otlpEndpoint{}, fmt.Errorf("invalid OTLP endpoint %q: unsupported scheme %q", endpoint, u.Scheme)
+		return otlpEndpoint{}, fmt.Errorf("invalid OTLP endpoint %q: %w %q", raw, errOTLPEndpointUnsupportedScheme, u.Scheme)
+	}
+	if u.Host == "" {
+		return otlpEndpoint{}, fmt.Errorf("invalid OTLP endpoint %q: %w", raw, errOTLPEndpointMissingHost)
+	}
+	if containsOTLPSignalPath(u.Path) {
+		return otlpEndpoint{}, fmt.Errorf("invalid OTLP endpoint %q: %w", raw, errOTLPEndpointSignalPath)
 	}
 	return otlpEndpoint{
 		host:     u.Host,
 		basePath: u.Path,
-		insecure: scheme == "http" || scheme == "unix",
+		insecure: scheme == "http",
 	}, nil
+}
+
+func containsOTLPSignalPath(basePath string) bool {
+	cleaned := path.Clean("/" + strings.Trim(strings.TrimSpace(basePath), "/"))
+	if cleaned == "/" {
+		return false
+	}
+	for _, signalPath := range []string{defaultOTLPTracesPath, defaultOTLPMetricsPath, defaultOTLPLogsPath} {
+		if cleaned == signalPath || strings.HasSuffix(cleaned, signalPath) {
+			return true
+		}
+	}
+	return false
 }
 
 func joinOTLPPath(basePath, signalPath string) string {
