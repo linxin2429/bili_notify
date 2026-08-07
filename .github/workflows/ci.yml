@@ -20,6 +20,12 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # Keep Go caches inside the job workspace so setup-go restore never
+    # collides with the host user's shared GOMODCACHE on self-hosted runners.
+    env:
+      GOPATH: ${{ github.workspace }}/.go
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+      GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
     steps:
       - uses: actions/checkout@v5
 
@@ -40,7 +46,7 @@ jobs:
         run: make check
 
       - name: Upload core Go coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.out
           flags: core-go
