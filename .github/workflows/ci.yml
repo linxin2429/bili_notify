@@ -21,13 +21,6 @@ jobs:
       contents: read
       id-token: write
     steps:
-      # A prior attempt put GOMODCACHE inside the workspace; module files are
-      # often mode 0444 and block actions/checkout clean on self-hosted runners.
-      - name: Clean leftover workspace caches
-        run: |
-          chmod -R u+w "${GITHUB_WORKSPACE}/.cache" "${GITHUB_WORKSPACE}/.go" 2>/dev/null || true
-          rm -rf "${GITHUB_WORKSPACE}/.cache" "${GITHUB_WORKSPACE}/.go" 2>/dev/null || true
-
       - uses: actions/checkout@v5
 
       - uses: actions/setup-go@v6
