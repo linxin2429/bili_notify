@@ -59,7 +59,7 @@ make compose-run \
   ARGS='rekey --new-key-file /run/secrets/new-master-key'
 ```
 
-CI (`.github/workflows/ci.yml`):
+CI (`.github/workflows/ci.yml`) runs on the repo self-hosted runner (`self-hosted` / `Linux` / `X64`):
 - `test`: `make check` runs the local build, frontend checks, Playwright, Go coverage/race/vet, and govulncheck.
 - `docker-smoke`: `make docker-smoke` builds the multi-stage image with CI metadata and validates startup, health, and restart.
 - `docker`: only `v*` tags push `dengxinlin/bili-notify` (`X.Y.Z`, `X.Y`, `X`, `latest`). Secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
