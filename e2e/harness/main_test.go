@@ -17,8 +17,6 @@ import (
 )
 
 func TestApplicationHTTPIntegration(t *testing.T) {
-	t.Setenv("OTEL_SDK_DISABLED", "true")
-
 	root, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	capture := new(logCapture)

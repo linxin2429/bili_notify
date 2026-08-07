@@ -23,18 +23,28 @@ const (
 )
 
 // Config contains process startup settings.
-// DataDir and listen addresses are immutable for the process lifetime. Collector,
-// logging, and retention values are first-run defaults only: when the store has no
-// runtime settings yet they seed it; afterwards the admin UI owns them.
+// DataDir, listen addresses, and OpenTelemetry values are immutable for the process
+// lifetime. Collector, logging, and retention values are first-run defaults only:
+// when the store has no runtime settings yet they seed it; afterwards the admin UI
+// owns them.
 type Config struct {
-	DataDir            string        `mapstructure:"data_dir"`
-	AdminAddr          string        `mapstructure:"admin_addr"`
-	ObserveAddr        string        `mapstructure:"observe_addr"`
-	PollInterval       time.Duration `mapstructure:"poll_interval"`
-	RequestRate        float64       `mapstructure:"request_rate"`
-	RequestConcurrency int           `mapstructure:"request_concurrency"`
-	LogLevel           string        `mapstructure:"log_level"`
-	AuditLogRetention  time.Duration `mapstructure:"audit_log_retention"`
+	DataDir                         string        `mapstructure:"data_dir"`
+	AdminAddr                       string        `mapstructure:"admin_addr"`
+	ObserveAddr                     string        `mapstructure:"observe_addr"`
+	PollInterval                    time.Duration `mapstructure:"poll_interval"`
+	RequestRate                     float64       `mapstructure:"request_rate"`
+	RequestConcurrency              int           `mapstructure:"request_concurrency"`
+	LogLevel                        string        `mapstructure:"log_level"`
+	AuditLogRetention               time.Duration `mapstructure:"audit_log_retention"`
+	OTelSDKDisabled                 bool          `mapstructure:"otel_sdk_disabled"`
+	OTelServiceName                 string        `mapstructure:"otel_service_name"`
+	OTelDeploymentEnvironment       string        `mapstructure:"otel_deployment_environment"`
+	OTelExporterOTLPEndpoint        string        `mapstructure:"otel_exporter_otlp_endpoint"`
+	OTelExporterOTLPProtocol        string        `mapstructure:"otel_exporter_otlp_protocol"`
+	OTelExporterOTLPTracesProtocol  string        `mapstructure:"otel_exporter_otlp_traces_protocol"`
+	OTelExporterOTLPMetricsProtocol string        `mapstructure:"otel_exporter_otlp_metrics_protocol"`
+	OTelExporterOTLPLogsProtocol    string        `mapstructure:"otel_exporter_otlp_logs_protocol"`
+	OTelMetricExportInterval        time.Duration `mapstructure:"otel_metric_export_interval"`
 }
 
 func (c Config) Validate() error {

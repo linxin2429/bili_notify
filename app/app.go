@@ -57,7 +57,12 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	telemetryRuntime := dependencies.Telemetry
 	if telemetryRuntime == nil {
 		var err error
-		telemetryRuntime, err = telemetry.New(ctx, version)
+		telemetryRuntime, err = telemetry.New(ctx, telemetry.Config{
+			Disabled: cfg.OTelSDKDisabled, ServiceName: cfg.OTelServiceName, DeploymentEnvironment: cfg.OTelDeploymentEnvironment,
+			Endpoint: cfg.OTelExporterOTLPEndpoint, Protocol: cfg.OTelExporterOTLPProtocol,
+			TracesProtocol: cfg.OTelExporterOTLPTracesProtocol, MetricsProtocol: cfg.OTelExporterOTLPMetricsProtocol, LogsProtocol: cfg.OTelExporterOTLPLogsProtocol,
+			MetricExportInterval: cfg.OTelMetricExportInterval,
+		}, version)
 		if err != nil {
 			return fmt.Errorf("initializing OpenTelemetry: %w", err)
 		}

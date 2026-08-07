@@ -109,7 +109,7 @@ ssh -L 3000:127.0.0.1:3000 your-server
 # 浏览器打开 http://127.0.0.1:3000
 ```
 
-应用使用标准 `OTEL_*` 环境变量把 logs、metrics 和 100% 采样的 traces 发送到 OpenTelemetry Collector。Collector 把日志写入 Loki、在 `:9464` 导出 Prometheus metrics、把 trace 写入 Tempo；Prometheus 和 Loki 保留 30 天，Tempo 保留 7 天。Collector 出口使用持久化队列与无限时重试，后端短暂故障不阻塞业务。Grafana 预置了 Prometheus、Loki、Tempo 数据源、两个面板和 metrics/logs/traces 关联。
+应用使用 Cobra/Viper 管理的 `BILI_NOTIFY_OTEL_*` 配置把 logs、metrics 和 100% 采样的 traces 发送到 OpenTelemetry Collector。Collector 把日志写入 Loki、在 `:9464` 导出 Prometheus metrics、把 trace 写入 Tempo；Prometheus 和 Loki 保留 30 天，Tempo 保留 7 天。Collector 出口使用持久化队列与无限时重试，后端短暂故障不阻塞业务。Grafana 预置了 Prometheus、Loki、Tempo 数据源、两个面板和 metrics/logs/traces 关联。
 
 Trace 在这个项目中有必要：一次采集或投递会跨越 B 站 HTTP、SQLite 事务、媒体下载和通知渠道，仅靠日志和指标无法稳定定位慢点与失败链路。本服务流量低，100% 采样的成本可控；不采集探针、静态资源或 WebSocket 长连接生命周期，只记录 WebSocket 握手。
 
@@ -121,7 +121,7 @@ Trace 在这个项目中有必要：一次采集或投递会跨越 B 站 HTTP、
 {service_name="bili-notify"} | trace_id="Trace ID"
 ```
 
-基础 `compose.yaml` 显式设置 `OTEL_SDK_DISABLED=true`，不依赖观测栈。若手工部署 Collector，至少设置 `OTEL_SDK_DISABLED=false`、`OTEL_EXPORTER_OTLP_ENDPOINT`和 `OTEL_EXPORTER_OTLP_PROTOCOL=grpc|http/protobuf`。非法 OpenTelemetry 配置会使启动失败；运行时导出或关闭 flush 失败仅记日志，不使业务退出。
+基础 `compose.yaml` 显式设置 `BILI_NOTIFY_OTEL_SDK_DISABLED=true`，不依赖观测栈。若手工部署 Collector，至少设置 `BILI_NOTIFY_OTEL_SDK_DISABLED=false`、`BILI_NOTIFY_OTEL_EXPORTER_OTLP_ENDPOINT` 和 `BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL=grpc|http/protobuf`。非法 OpenTelemetry 配置会使启动失败；运行时导出或关闭 flush 失败仅记日志，不使业务退出。
 
 管理员密码可在“设置”中修改，修改后所有现有会话与 WebSocket 会立即失效。本版本不提供忘记密码恢复；密码丢失后只能使用新的数据卷重新初始化。
 

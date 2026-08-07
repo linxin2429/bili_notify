@@ -19,12 +19,12 @@ services:
       BILI_NOTIFY_POLL_INTERVAL: ${BILI_NOTIFY_POLL_INTERVAL:-30s}
       BILI_NOTIFY_REQUEST_RATE: ${BILI_NOTIFY_REQUEST_RATE:-2}
       BILI_NOTIFY_REQUEST_CONCURRENCY: ${BILI_NOTIFY_REQUEST_CONCURRENCY:-4}
-      OTEL_SDK_DISABLED: "false"
-      OTEL_SERVICE_NAME: bili-notify
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
-      OTEL_METRIC_EXPORT_INTERVAL: "15000"
-      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=production
+      BILI_NOTIFY_OTEL_SDK_DISABLED: "false"
+      BILI_NOTIFY_OTEL_SERVICE_NAME: bili-notify
+      BILI_NOTIFY_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      BILI_NOTIFY_OTEL_METRIC_EXPORT_INTERVAL: 15s
+      BILI_NOTIFY_OTEL_DEPLOYMENT_ENVIRONMENT: production
     volumes:
       - bili-notify-data:/data
     depends_on: [otel-collector]

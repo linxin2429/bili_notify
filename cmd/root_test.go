@@ -18,6 +18,15 @@ func TestServeFlagBinding(t *testing.T) {
 	assert.Contains(t, err.Error(), "request rate")
 }
 
+func TestServeTelemetryEnvironmentBinding(t *testing.T) {
+	t.Setenv("BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL", "json")
+	root := NewRootCmd()
+	root.SetArgs([]string{"serve", "--data-dir", t.TempDir()})
+	err := root.ExecuteContext(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL")
+}
+
 func TestHealthcheckCommand(t *testing.T) {
 	t.Parallel()
 

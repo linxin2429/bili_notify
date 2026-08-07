@@ -125,7 +125,7 @@ Makefile 是本地与 CI 的统一任务入口：`make check` 执行全部前端
 
 运行日志使用 `log/slog` 输出统一 JSON stdout，并通过 OTel log bridge 导出；字段包含 schema、服务版本、进程 `run_id`、`category=system|audit`、组件、稳定事件名、结果和耗时。日志级别立即热更新，审计日志保留期由应用管理，系统日志保留期由 Loki 管理。密码、Cookie、Webhook、令牌及 URL 查询中的秘密均脱敏；`setup_code` 仅输出 stdout，OTLP 记录中脱敏。
 
-可选观测栈由 OpenTelemetry Collector、Prometheus、Loki、Tempo 和 Grafana 组成。Collector 启用 memory limiter、batch、出口重试和 file-storage 持久化队列，logs 写 Loki，metrics 以 OpenMetrics 在 `:9464` 导出，traces 写 Tempo。Prometheus 还抓取 Collector、Loki、Tempo、Prometheus 和 Grafana 自身指标。Loki/Prometheus 保留 30 天，Tempo 保留 7 天；Grafana 预置数据源关联、运行总览、日志/trace 面板和 Prometheus 告警。基础部署显式禁用 SDK，完整栈使用标准 `OTEL_*` 环境变量启用。
+可选观测栈由 OpenTelemetry Collector、Prometheus、Loki、Tempo 和 Grafana 组成。Collector 启用 memory limiter、batch、出口重试和 file-storage 持久化队列，logs 写 Loki，metrics 以 OpenMetrics 在 `:9464` 导出，traces 写 Tempo。Prometheus 还抓取 Collector、Loki、Tempo、Prometheus 和 Grafana 自身指标。Loki/Prometheus 保留 30 天，Tempo 保留 7 天；Grafana 预置数据源关联、运行总览、日志/trace 面板和 Prometheus 告警。基础部署显式禁用 SDK，完整栈使用 Cobra/Viper 管理的 `BILI_NOTIFY_OTEL_*` 配置启用。
 
 Trace 用于关联管理 HTTP、采集/评论/关系/认证/投递/审计工作流、B 站逻辑外部操作和 GORM/SQLite。对这个低流量服务使用 parent-based always-sample，不记录探针、静态资源和 WebSocket 长连接，只记录握手；外部请求 span 不记录完整 URL/查询，GORM span 不记录查询变量。运行时导出失败不停止业务，非法 SDK/协议配置在启动时拒绝。
 

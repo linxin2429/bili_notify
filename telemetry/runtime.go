@@ -7,8 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -37,6 +35,19 @@ import (
 
 const instrumentationName = "github.com/linxin2429/bili_notify"
 
+// Config contains the process-lifetime OpenTelemetry settings.
+type Config struct {
+	Disabled              bool
+	ServiceName           string
+	DeploymentEnvironment string
+	Endpoint              string
+	Protocol              string
+	TracesProtocol        string
+	MetricsProtocol       string
+	LogsProtocol          string
+	MetricExportInterval  time.Duration
+}
+
 // Runtime contains isolated providers shared by application components.
 type Runtime struct {
 	TracerProvider oteltrace.TracerProvider
@@ -47,18 +58,15 @@ type Runtime struct {
 	shutdown       func(context.Context) error
 }
 
-// New creates providers configured by the standard OTEL_* environment variables.
-func New(ctx context.Context, version string) (*Runtime, error) {
-	disabled, err := sdkDisabled()
-	if err != nil {
-		return nil, err
-	}
+// New creates providers configured by cfg.
+func New(ctx context.Context, cfg Config, version string) (*Runtime, error) {
+	cfg = cfg.normalized()
 	instanceID, err := randomID()
 	if err != nil {
 		return nil, fmt.Errorf("generating service instance id: %w", err)
 	}
 	propagator := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
-	if disabled {
+	if cfg.Disabled {
 		return &Runtime{
 			TracerProvider: tracenoop.NewTracerProvider(),
 			MeterProvider:  metricnoop.NewMeterProvider(),
@@ -69,11 +77,14 @@ func New(ctx context.Context, version string) (*Runtime, error) {
 		}, nil
 	}
 
-	res, err := newResource(ctx, version, instanceID)
+	if cfg.MetricExportInterval < 0 {
+		return nil, errors.New("OpenTelemetry metric export interval must not be negative")
+	}
+	res, err := newResource(ctx, cfg, version, instanceID)
 	if err != nil {
 		return nil, err
 	}
-	traceExporter, metricExporter, logExporter, err := newExporters(ctx)
+	traceExporter, metricExporter, logExporter, err := newExporters(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -83,9 +94,13 @@ func New(ctx context.Context, version string) (*Runtime, error) {
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.AlwaysSample())),
 		sdktrace.WithBatcher(traceExporter),
 	)
+	readerOptions := make([]sdkmetric.PeriodicReaderOption, 0, 1)
+	if cfg.MetricExportInterval > 0 {
+		readerOptions = append(readerOptions, sdkmetric.WithInterval(cfg.MetricExportInterval))
+	}
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter, readerOptions...)),
 	)
 	lp := sdklog.NewLoggerProvider(
 		sdklog.WithResource(res),
@@ -128,25 +143,22 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	return r.shutdown(ctx)
 }
 
-func sdkDisabled() (bool, error) {
-	value := strings.TrimSpace(os.Getenv("OTEL_SDK_DISABLED"))
-	if value == "" {
-		return false, nil
+func (c Config) normalized() Config {
+	c.ServiceName = strings.TrimSpace(c.ServiceName)
+	if c.ServiceName == "" {
+		c.ServiceName = "bili-notify"
 	}
-	disabled, err := strconv.ParseBool(value)
-	if err != nil {
-		return false, fmt.Errorf("invalid OTEL_SDK_DISABLED %q: %w", value, err)
-	}
-	return disabled, nil
+	c.DeploymentEnvironment = strings.TrimSpace(c.DeploymentEnvironment)
+	c.Endpoint = strings.TrimSpace(c.Endpoint)
+	c.Protocol = strings.TrimSpace(c.Protocol)
+	c.TracesProtocol = strings.TrimSpace(c.TracesProtocol)
+	c.MetricsProtocol = strings.TrimSpace(c.MetricsProtocol)
+	c.LogsProtocol = strings.TrimSpace(c.LogsProtocol)
+	return c
 }
 
-func newResource(ctx context.Context, version, instanceID string) (*resource.Resource, error) {
-	serviceName := strings.TrimSpace(os.Getenv("OTEL_SERVICE_NAME"))
-	if serviceName == "" {
-		serviceName = "bili-notify"
-	}
+func newResource(ctx context.Context, cfg Config, version, instanceID string) (*resource.Resource, error) {
 	base, err := resource.New(ctx,
-		resource.WithFromEnv(),
 		resource.WithTelemetrySDK(),
 		resource.WithProcessPID(),
 		resource.WithProcessExecutableName(),
@@ -159,12 +171,16 @@ func newResource(ctx context.Context, version, instanceID string) (*resource.Res
 	if err != nil {
 		return nil, fmt.Errorf("detecting telemetry resource: %w", err)
 	}
-	identity := resource.NewWithAttributes(semconv.SchemaURL,
-		semconv.ServiceName(serviceName),
+	attributes := []attribute.KeyValue{
+		semconv.ServiceName(cfg.ServiceName),
 		semconv.ServiceVersion(version),
 		semconv.ServiceInstanceID(instanceID),
 		attribute.String("service.namespace", "bili-notify"),
-	)
+	}
+	if cfg.DeploymentEnvironment != "" {
+		attributes = append(attributes, semconv.DeploymentEnvironmentNameKey.String(cfg.DeploymentEnvironment))
+	}
+	identity := resource.NewWithAttributes(semconv.SchemaURL, attributes...)
 	merged, err := resource.Merge(base, identity)
 	if err != nil {
 		return nil, fmt.Errorf("merging telemetry resource: %w", err)
@@ -184,16 +200,16 @@ type logExporter interface {
 	sdklog.Exporter
 }
 
-func newExporters(ctx context.Context) (traceExporter, metricExporter, logExporter, error) {
-	traceProtocol, err := signalProtocol("TRACES")
+func newExporters(ctx context.Context, cfg Config) (traceExporter, metricExporter, logExporter, error) {
+	traceProtocol, err := signalProtocol(cfg.Protocol, cfg.TracesProtocol, "TRACES")
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	metricProtocol, err := signalProtocol("METRICS")
+	metricProtocol, err := signalProtocol(cfg.Protocol, cfg.MetricsProtocol, "METRICS")
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	logProtocol, err := signalProtocol("LOGS")
+	logProtocol, err := signalProtocol(cfg.Protocol, cfg.LogsProtocol, "LOGS")
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -201,9 +217,17 @@ func newExporters(ctx context.Context) (traceExporter, metricExporter, logExport
 	var traces traceExporter
 	switch traceProtocol {
 	case "grpc":
-		traces, err = otlptracegrpc.New(ctx)
+		options := make([]otlptracegrpc.Option, 0, 1)
+		if cfg.Endpoint != "" {
+			options = append(options, otlptracegrpc.WithEndpointURL(cfg.Endpoint))
+		}
+		traces, err = otlptracegrpc.New(ctx, options...)
 	case "http/protobuf":
-		traces, err = otlptracehttp.New(ctx)
+		options := make([]otlptracehttp.Option, 0, 1)
+		if cfg.Endpoint != "" {
+			options = append(options, otlptracehttp.WithEndpointURL(cfg.Endpoint))
+		}
+		traces, err = otlptracehttp.New(ctx, options...)
 	}
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("creating OTLP trace exporter: %w", err)
@@ -211,9 +235,17 @@ func newExporters(ctx context.Context) (traceExporter, metricExporter, logExport
 	var metrics metricExporter
 	switch metricProtocol {
 	case "grpc":
-		metrics, err = otlpmetricgrpc.New(ctx)
+		options := make([]otlpmetricgrpc.Option, 0, 1)
+		if cfg.Endpoint != "" {
+			options = append(options, otlpmetricgrpc.WithEndpointURL(cfg.Endpoint))
+		}
+		metrics, err = otlpmetricgrpc.New(ctx, options...)
 	case "http/protobuf":
-		metrics, err = otlpmetrichttp.New(ctx)
+		options := make([]otlpmetrichttp.Option, 0, 1)
+		if cfg.Endpoint != "" {
+			options = append(options, otlpmetrichttp.WithEndpointURL(cfg.Endpoint))
+		}
+		metrics, err = otlpmetrichttp.New(ctx, options...)
 	}
 	if err != nil {
 		_ = traces.Shutdown(ctx)
@@ -222,9 +254,17 @@ func newExporters(ctx context.Context) (traceExporter, metricExporter, logExport
 	var logs logExporter
 	switch logProtocol {
 	case "grpc":
-		logs, err = otlploggrpc.New(ctx)
+		options := make([]otlploggrpc.Option, 0, 1)
+		if cfg.Endpoint != "" {
+			options = append(options, otlploggrpc.WithEndpointURL(cfg.Endpoint))
+		}
+		logs, err = otlploggrpc.New(ctx, options...)
 	case "http/protobuf":
-		logs, err = otlploghttp.New(ctx)
+		options := make([]otlploghttp.Option, 0, 1)
+		if cfg.Endpoint != "" {
+			options = append(options, otlploghttp.WithEndpointURL(cfg.Endpoint))
+		}
+		logs, err = otlploghttp.New(ctx, options...)
 	}
 	if err != nil {
 		_ = errors.Join(metrics.Shutdown(ctx), traces.Shutdown(ctx))
@@ -233,12 +273,12 @@ func newExporters(ctx context.Context) (traceExporter, metricExporter, logExport
 	return traces, metrics, logs, nil
 }
 
-func signalProtocol(signal string) (string, error) {
-	key := "OTEL_EXPORTER_OTLP_" + signal + "_PROTOCOL"
-	protocol := strings.TrimSpace(os.Getenv(key))
+func signalProtocol(common, override, signal string) (string, error) {
+	key := "BILI_NOTIFY_OTEL_EXPORTER_OTLP_" + signal + "_PROTOCOL"
+	protocol := override
 	if protocol == "" {
-		key = "OTEL_EXPORTER_OTLP_PROTOCOL"
-		protocol = strings.TrimSpace(os.Getenv(key))
+		key = "BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL"
+		protocol = common
 	}
 	if protocol == "" {
 		return "http/protobuf", nil

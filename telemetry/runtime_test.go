@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,28 +13,20 @@ import (
 
 func TestNewConfiguration(t *testing.T) {
 	tests := []struct {
-		name        string
-		environment map[string]string
-		wantError   string
+		name      string
+		config    Config
+		wantError string
 	}{
-		{name: "disabled", environment: map[string]string{"OTEL_SDK_DISABLED": "true"}},
-		{name: "invalid disabled value", environment: map[string]string{"OTEL_SDK_DISABLED": "sometimes"}, wantError: "invalid OTEL_SDK_DISABLED"},
-		{name: "invalid common protocol", environment: map[string]string{"OTEL_EXPORTER_OTLP_PROTOCOL": "json"}, wantError: "invalid OTEL_EXPORTER_OTLP_PROTOCOL"},
-		{name: "invalid signal protocol", environment: map[string]string{"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "json"}, wantError: "invalid OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"},
+		{name: "disabled", config: Config{Disabled: true}},
+		{name: "invalid common protocol", config: Config{Protocol: "json"}, wantError: "invalid BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL"},
+		{name: "invalid signal protocol", config: Config{LogsProtocol: "json"}, wantError: "invalid BILI_NOTIFY_OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"},
+		{name: "negative metric interval", config: Config{MetricExportInterval: -time.Second}, wantError: "metric export interval"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for _, key := range []string{
-				"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_PROTOCOL", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
-				"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
-			} {
-				t.Setenv(key, "")
-			}
-			for key, value := range tt.environment {
-				t.Setenv(key, value)
-			}
+			t.Parallel()
 
-			runtime, err := New(t.Context(), "test")
+			runtime, err := New(t.Context(), tt.config, "test")
 			if tt.wantError != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantError)
@@ -65,9 +58,8 @@ func TestSignalProtocolPrecedence(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", tt.common)
-			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", tt.signal)
-			got, err := signalProtocol("TRACES")
+			t.Parallel()
+			got, err := signalProtocol(tt.common, tt.signal, "TRACES")
 			if tt.wantError {
 				require.Error(t, err)
 				return
@@ -79,10 +71,9 @@ func TestSignalProtocolPrecedence(t *testing.T) {
 }
 
 func TestNewResourceUsesSafeProcessAttributes(t *testing.T) {
-	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
-	t.Setenv("OTEL_SERVICE_NAME", "bili-notify-test")
+	t.Parallel()
 
-	got, err := newResource(t.Context(), "1.2.3", "instance-1")
+	got, err := newResource(t.Context(), Config{ServiceName: "bili-notify-test", DeploymentEnvironment: "test"}, "1.2.3", "instance-1")
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -96,11 +87,13 @@ func TestNewResourceUsesSafeProcessAttributes(t *testing.T) {
 		{name: "service instance", key: semconv.ServiceInstanceIDKey, want: "instance-1", present: true},
 		{name: "process id", key: semconv.ProcessPIDKey, present: true},
 		{name: "runtime name", key: semconv.ProcessRuntimeNameKey, want: "go", present: true},
+		{name: "deployment environment", key: semconv.DeploymentEnvironmentNameKey, want: "test", present: true},
 		{name: "command arguments", key: semconv.ProcessCommandArgsKey},
 		{name: "process owner", key: semconv.ProcessOwnerKey},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			value, ok := got.Set().Value(tt.key)
 			assert.Equal(t, tt.present, ok)
 			if tt.want != "" {
