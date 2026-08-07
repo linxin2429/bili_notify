@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -96,29 +98,65 @@ func bindServeFlags(v *viper.Viper, cmd *cobra.Command) error {
 }
 
 func newHealthcheckCmd() *cobra.Command {
-	var endpoint string
+	var (
+		endpoint string
+		method   string
+		body     string
+		contains string
+		insecure bool
+	)
 	cmd := &cobra.Command{
 		Use:   "healthcheck",
-		Short: "Check the local liveness endpoint",
+		Short: "Check a local HTTP endpoint",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
 			defer cancel()
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+			method = strings.ToUpper(strings.TrimSpace(method))
+			if method == "" {
+				method = http.MethodGet
+			}
+			var reqBody io.Reader
+			if body != "" {
+				reqBody = strings.NewReader(body)
+			}
+			req, err := http.NewRequestWithContext(ctx, method, endpoint, reqBody)
 			if err != nil {
 				return err
 			}
-			resp, err := http.DefaultClient.Do(req)
+			if body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			client := http.DefaultClient
+			if insecure {
+				client = &http.Client{
+					Transport: &http.Transport{
+						TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // local container smoke probes only
+					},
+				}
+			}
+			resp, err := client.Do(req)
 			if err != nil {
 				return err
 			}
 			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("health endpoint returned HTTP %d", resp.StatusCode)
+			payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			if err != nil {
+				return err
+			}
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				return fmt.Errorf("endpoint returned HTTP %d", resp.StatusCode)
+			}
+			if contains != "" && !strings.Contains(string(payload), contains) {
+				return fmt.Errorf("response does not contain %q", contains)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&endpoint, "url", "http://127.0.0.1:9090/healthz", "health endpoint URL")
+	cmd.Flags().StringVar(&endpoint, "url", "http://127.0.0.1:9090/healthz", "endpoint URL")
+	cmd.Flags().StringVar(&method, "method", http.MethodGet, "HTTP method")
+	cmd.Flags().StringVar(&body, "body", "", "optional JSON request body")
+	cmd.Flags().StringVar(&contains, "contains", "", "optional response body substring that must be present")
+	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS certificate verification")
 	return cmd
 }

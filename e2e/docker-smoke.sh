@@ -12,13 +12,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-wait_for_health() {
+# All probes run via docker exec inside the service container. The CI self-hosted
+# runner is itself a container with docker.sock access; publishing 127.0.0.1:port
+# binds on the host loopback and is not reachable from the runner container.
+wait_for_probe() {
+  local label=$1
+  shift
   for _ in $(seq 1 60); do
-    if docker exec "${container}" /bili-notify healthcheck >/dev/null 2>&1; then
+    if docker exec "${container}" /bili-notify healthcheck "$@"; then
       return 0
     fi
     sleep 1
   done
+  echo "timed out waiting for ${label}" >&2
   docker logs "${container}" >&2
   return 1
 }
@@ -37,17 +43,6 @@ wait_for_setup_code() {
   return 1
 }
 
-wait_for_admin() {
-  for _ in $(seq 1 30); do
-    if curl --fail --silent --insecure "${admin_url}/api/v1/session" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 1
-  done
-  docker logs "${container}" >&2
-  return 1
-}
-
 [[ $(docker image inspect --format '{{.Config.User}}' "${image}") == "65532:65532" ]]
 docker volume create "${volume}" >/dev/null
 docker run --detach \
@@ -57,32 +52,24 @@ docker run --detach \
   --security-opt no-new-privileges \
   --cap-drop ALL \
   --volume "${volume}:/data" \
-  --publish 127.0.0.1::8443 \
   "${image}" >/dev/null
 
-wait_for_health
-admin_port=$(docker port "${container}" 8443/tcp | sed -n '1s/.*://p')
-[[ -n "${admin_port}" ]]
-admin_url="https://127.0.0.1:${admin_port}"
-wait_for_admin
-curl --fail --silent --show-error --insecure "${admin_url}/" | grep -q '<div id="root"></div>'
-curl --fail --silent --show-error --insecure "${admin_url}/api/v1/session" | grep -q '"setup_required":true'
+wait_for_probe "liveness" --url http://127.0.0.1:9090/healthz
+wait_for_probe "admin session" --insecure --url https://127.0.0.1:8443/api/v1/session --contains '"setup_required":true'
+wait_for_probe "admin UI" --insecure --url https://127.0.0.1:8443/ --contains '<div id="root"></div>'
 
 setup_code=$(wait_for_setup_code)
-curl --fail --silent --show-error --insecure \
-  --header 'Content-Type: application/json' \
-  --data "{\"setup_code\":\"${setup_code}\",\"password\":\"correct horse battery staple\"}" \
-  "${admin_url}/api/v1/setup" >/dev/null
+docker exec "${container}" /bili-notify healthcheck \
+  --insecure \
+  --method POST \
+  --url https://127.0.0.1:8443/api/v1/setup \
+  --body "{\"setup_code\":\"${setup_code}\",\"password\":\"correct horse battery staple\"}"
 
 docker stop --time 20 "${container}" >/dev/null
 [[ $(docker inspect --format '{{.State.ExitCode}}' "${container}") == "0" ]]
 docker start "${container}" >/dev/null
-wait_for_health
-admin_port=$(docker port "${container}" 8443/tcp | sed -n '1s/.*://p')
-[[ -n "${admin_port}" ]]
-admin_url="https://127.0.0.1:${admin_port}"
-wait_for_admin
-curl --fail --silent --show-error --insecure "${admin_url}/api/v1/session" | grep -q '"setup_required":false'
+wait_for_probe "liveness after restart" --url http://127.0.0.1:9090/healthz
+wait_for_probe "admin session after restart" --insecure --url https://127.0.0.1:8443/api/v1/session --contains '"setup_required":false'
 
 docker stop --time 20 "${container}" >/dev/null
 [[ $(docker inspect --format '{{.State.ExitCode}}' "${container}") == "0" ]]
