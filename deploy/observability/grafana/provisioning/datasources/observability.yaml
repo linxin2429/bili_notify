@@ -1,0 +1,53 @@
+apiVersion: 1
+
+datasources:
+  - name: Bili Notify Prometheus
+    uid: bili-notify-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: bili-notify-tempo
+  - name: Bili Notify Loki
+    uid: bili-notify-loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          matcherRegex: 'trace_id["=: ]+([a-f0-9]{32})'
+          datasourceUid: bili-notify-tempo
+          url: '$${__value.raw}'
+  - name: Bili Notify Tempo
+    uid: bili-notify-tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: bili-notify-loki
+        spanStartTimeShift: -1m
+        spanEndTimeShift: 1m
+        tags:
+          - key: service.name
+            value: service_name
+        filterByTraceID: true
+        filterBySpanID: true
+      tracesToMetrics:
+        datasourceUid: bili-notify-prometheus
+        spanStartTimeShift: -1m
+        spanEndTimeShift: 1m
+        tags:
+          - key: service.name
+            value: service_name
+      serviceMap:
+        datasourceUid: bili-notify-prometheus
+      nodeGraph:
+        enabled: true

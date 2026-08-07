@@ -22,6 +22,7 @@ import (
 	"github.com/linxin2429/bili_notify/vault"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 )
 
 func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
@@ -36,7 +37,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 		store,
 		bilibili.New(nil, "test"),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		nil,
+		service.NewMetrics(metricnoop.NewMeterProvider()),
 		settings,
 		events,
 		nil,
@@ -223,7 +224,7 @@ func openWebTestStore(t *testing.T) *state.Store {
 	t.Helper()
 	v, err := vault.New(make([]byte, 32))
 	require.NoError(t, err)
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), v)
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), v)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	return store

@@ -33,7 +33,7 @@ func TestRetryDelivery(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 91))
+			store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 91))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
 
@@ -97,7 +97,7 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "data.db")
 	v := mustVault(t, 1)
-	store, err := Open(path, v)
+	store, err := Open(t.Context(), path, v)
 	require.NoError(t, err)
 
 	up := model.UP{UID: "42", Enabled: true}
@@ -130,7 +130,7 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	assert.Equal(t, 1, created)
 	require.NoError(t, store.Close())
 
-	store, err = Open(path, v)
+	store, err = Open(t.Context(), path, v)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	deliveries, err = store.ListDeliveries(0)
@@ -150,7 +150,7 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 
 func TestExclusiveDynamicBaselineKeepsNormalDeliveries(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 10))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 10))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true, BaselineReady: true}))
@@ -210,7 +210,7 @@ func TestMigrationRequiresExclusiveBaselineForExistingUPs(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, legacyDB.Close())
 
-	store, err := Open(path, mustVault(t, 11))
+	store, err := Open(t.Context(), path, mustVault(t, 11))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	up, err := store.UP("42")
@@ -223,7 +223,7 @@ func TestEncryptedRecords(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "data.db")
 	oldVault := mustVault(t, 2)
-	store, err := Open(path, oldVault)
+	store, err := Open(t.Context(), path, oldVault)
 	require.NoError(t, err)
 	_, err = store.PutChannel(model.Channel{Name: "mail", Type: model.ChannelEmail, Settings: map[string]string{
 		"host": "smtp.example.com", "port": "465", "tls": "tls", "from": "a@example.com", "to": "b@example.com", "password": "secret",
@@ -231,7 +231,7 @@ func TestEncryptedRecords(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.Close())
 
-	correct, err := Open(path, oldVault)
+	correct, err := Open(t.Context(), path, oldVault)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = correct.Close() })
 	channels, err := correct.ListChannels()
@@ -242,7 +242,7 @@ func TestEncryptedRecords(t *testing.T) {
 
 func TestMissingSession(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 4))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 4))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	_, err = store.Session()
@@ -251,7 +251,7 @@ func TestMissingSession(t *testing.T) {
 
 func TestAdministratorPasswordInitializationIsAtomic(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 9))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 9))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
@@ -267,7 +267,7 @@ func TestAdministratorPasswordInitializationIsAtomic(t *testing.T) {
 
 func TestUpdateChannelSettingsMergesEncryptedRecord(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 5))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 5))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	channel, err := store.PutChannel(model.Channel{
@@ -289,7 +289,7 @@ func TestUpdateChannelSettingsMergesEncryptedRecord(t *testing.T) {
 
 func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 6))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 6))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
@@ -323,7 +323,7 @@ func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			// Parallel subtests share store; use a dedicated store for write isolation.
-			local, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 7))
+			local, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 7))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = local.Close() })
 
@@ -343,81 +343,27 @@ func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
 	}
 }
 
-func TestUpgradeRuntimeSettings(t *testing.T) {
+func TestRuntimeSettingsRejectsVersionMismatch(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name        string
-		stored      string
-		wantErr     string
-		wantPollSec int
-		wantEnabled bool
+		name   string
+		stored string
 	}{
-		{
-			name:        "legacy collector record",
-			stored:      `{"poll_interval_sec":45,"request_rate":1.5,"request_concurrency":3,"comment_enabled":false,"comment_track_n":7,"comment_root_pages":3,"comment_reply_pages":6,"comment_batch_interval_sec":180}`,
-			wantPollSec: 45,
-		},
-		{name: "unknown version", stored: `{"_version":99}`, wantErr: "unsupported runtime settings version"},
+		{name: "unversioned", stored: `{"poll_interval_sec":45}`},
+		{name: "previous version", stored: `{"_version":1}`},
+		{name: "future version", stored: `{"_version":99}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 8))
+			store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 8))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
 			require.NoError(t, store.db.Create(&metaRow{Key: metaKeyRuntimeSettings, Value: tt.stored}).Error)
 
 			_, err = store.RuntimeSettings()
-			require.ErrorIs(t, err, ErrRuntimeSettingsUpgradeRequired)
-			defaults := model.DefaultRuntimeSettings()
-			defaults.LogLevel = "warn"
-			upgraded, err := store.UpgradeRuntimeSettings(defaults)
-			if tt.wantErr != "" {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantPollSec, upgraded.PollIntervalSec)
-			assert.Equal(t, tt.wantEnabled, upgraded.CommentEnabled)
-			assert.Equal(t, "warn", upgraded.LogLevel)
-			assert.Equal(t, defaults.DeliveryRetryDelaysSec, upgraded.DeliveryRetryDelaysSec)
-			loaded, err := store.RuntimeSettings()
-			require.NoError(t, err)
-			assert.Equal(t, upgraded, loaded)
-		})
-	}
-}
-
-func TestUpgradeRuntimeSettingsFailures(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name           string
-		stored         string
-		mutateDefaults func(*model.RuntimeSettings)
-		wantErr        string
-	}{
-		{name: "missing record", wantErr: "record not found"},
-		{name: "invalid defaults", mutateDefaults: func(settings *model.RuntimeSettings) { settings.LogLevel = "trace" }, wantErr: "migration defaults"},
-		{name: "malformed record", stored: `{`, wantErr: "decoding runtime settings version"},
-		{name: "invalid legacy values", stored: `{"poll_interval_sec":1}`, wantErr: "validating upgraded runtime settings"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 9))
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = store.Close() })
-			if tt.stored != "" {
-				require.NoError(t, store.db.Create(&metaRow{Key: metaKeyRuntimeSettings, Value: tt.stored}).Error)
-			}
-			defaults := model.DefaultRuntimeSettings()
-			if tt.mutateDefaults != nil {
-				tt.mutateDefaults(&defaults)
-			}
-			_, err = store.UpgradeRuntimeSettings(defaults)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.wantErr)
+			require.ErrorIs(t, err, ErrRuntimeSettingsVersionMismatch)
+			assert.Contains(t, err.Error(), "fresh data volume")
 		})
 	}
 }
@@ -430,12 +376,12 @@ func TestRuntimeSettingsRejectsInvalidRecords(t *testing.T) {
 		wantErr string
 	}{
 		{name: "malformed JSON", stored: `{`, wantErr: "decoding runtime settings"},
-		{name: "invalid current record", stored: `{"_version":1}`, wantErr: "validating stored runtime settings"},
+		{name: "invalid current record", stored: `{"_version":2}`, wantErr: "validating stored runtime settings"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 10))
+			store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 10))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
 			require.NoError(t, store.db.Create(&metaRow{Key: metaKeyRuntimeSettings, Value: tt.stored}).Error)
@@ -455,7 +401,7 @@ func mustVault(t *testing.T, fill byte) *vault.Vault {
 
 func TestCommentTargetsAndOutbox(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 8))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 8))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
@@ -529,7 +475,7 @@ func TestCommentTargetsAndOutbox(t *testing.T) {
 
 func TestSessionSwitchResetsAccountScopedCollectionState(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 9))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 9))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
@@ -577,7 +523,7 @@ func TestUPCollectionRouteUsesFollowAndSynchronizationState(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 10))
+			store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 10))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
 			require.NoError(t, store.SaveSession(model.BiliSession{AccountUID: "100", Cookies: map[string]string{"SESSDATA": "a"}}))
@@ -599,7 +545,7 @@ func TestUPCollectionRouteUsesFollowAndSynchronizationState(t *testing.T) {
 
 func TestRecordFeedDynamicsAdvancesCursorWithDurableOutbox(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 11))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 11))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	require.NoError(t, store.SaveSession(model.BiliSession{AccountUID: "100", Cookies: map[string]string{"SESSDATA": "a"}}))

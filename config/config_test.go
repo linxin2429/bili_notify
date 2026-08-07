@@ -15,7 +15,7 @@ func TestConfigValidate(t *testing.T) {
 	valid := Config{
 		DataDir: "/data", AdminAddr: ":8443", ObserveAddr: ":9090", PollInterval: 30 * time.Second,
 		RequestRate: 2, RequestConcurrency: 4, LogLevel: "info",
-		AuditLogRetention: 180 * 24 * time.Hour, SystemLogRetention: 30 * 24 * time.Hour,
+		AuditLogRetention: 180 * 24 * time.Hour,
 	}
 	tests := []struct {
 		name    string
@@ -37,11 +37,6 @@ func TestConfigValidate(t *testing.T) {
 			name:    "sub-day audit retention",
 			mutate:  func(c *Config) { c.AuditLogRetention = 12 * time.Hour },
 			wantErr: "audit log retention",
-		},
-		{
-			name:    "fractional system retention",
-			mutate:  func(c *Config) { c.SystemLogRetention = 25 * time.Hour },
-			wantErr: "system log retention",
 		},
 	}
 	for _, tt := range tests {
@@ -66,7 +61,7 @@ func TestSeedRuntimeSettings(t *testing.T) {
 	t.Parallel()
 	cfg := Config{
 		PollInterval: 45 * time.Second, RequestRate: 1.5, RequestConcurrency: 3, LogLevel: " WARN ",
-		AuditLogRetention: 90 * 24 * time.Hour, SystemLogRetention: 14 * 24 * time.Hour,
+		AuditLogRetention: 90 * 24 * time.Hour,
 	}
 	settings := cfg.SeedRuntimeSettings()
 	require.NoError(t, settings.Validate())
@@ -75,7 +70,6 @@ func TestSeedRuntimeSettings(t *testing.T) {
 	assert.Equal(t, 3, settings.RequestConcurrency)
 	assert.Equal(t, "warn", settings.LogLevel)
 	assert.Equal(t, 90, settings.AuditLogRetentionDays)
-	assert.Equal(t, 14, settings.SystemLogRetentionDays)
 	assert.Equal(t, 10, settings.MaxDynamicPages)
 	assert.Equal(t, [5]int{5, 30, 120, 600, 3600}, [5]int(settings.DeliveryRetryDelaysSec))
 }

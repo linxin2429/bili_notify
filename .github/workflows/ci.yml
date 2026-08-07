@@ -16,9 +16,10 @@ permissions:
 
 jobs:
   test:
-    runs-on: [self-hosted, Linux, X64, bili-notify]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v5
 
@@ -36,16 +37,14 @@ jobs:
       - name: Build and test
         run: make check PLAYWRIGHT_INSTALL_FLAGS=--with-deps
 
-      # Codecov S3 pre-signed upload URLs expire in ~30s. The self-hosted runner
-      # cannot finish the ~400KB upload in time, so ship coverage as an artifact
-      # and let a GitHub-hosted job perform the Codecov upload.
-      - name: Upload core Go coverage artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload core Go coverage to Codecov
+        uses: codecov/codecov-action@v5
         with:
-          name: core-go-coverage
-          path: coverage.out
-          if-no-files-found: error
-          retention-days: 1
+          files: coverage.out
+          flags: core-go
+          disable_search: true
+          use_oidc: true
+          fail_ci_if_error: true
 
       - name: Upload browser failure artifacts
         if: failure()
@@ -58,32 +57,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  codecov:
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Download core Go coverage artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: core-go-coverage
-
-      - name: Upload core Go coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          files: coverage.out
-          flags: core-go
-          disable_search: true
-          use_oidc: true
-          fail_ci_if_error: true
-
   docker-smoke:
     needs: test
-    runs-on: [self-hosted, Linux, X64, bili-notify]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       actions: write # GHA docker layer cache
@@ -104,9 +80,9 @@ jobs:
         run: make docker-smoke
 
   docker:
-    needs: [test, docker-smoke, codecov]
+    needs: [test, docker-smoke]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: [self-hosted, Linux, X64, bili-notify]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       actions: write # GHA docker layer cache

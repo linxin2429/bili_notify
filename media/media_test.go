@@ -1,6 +1,7 @@
 package media
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestEnsureDownloadsAndSkipsExisting(t *testing.T) {
@@ -42,7 +45,7 @@ func TestEnsureDownloadsAndSkipsExisting(t *testing.T) {
 			Media: []model.DynamicMedia{{Kind: model.DynamicMediaCover, URL: server.URL + "/b.png"}},
 		},
 	}
-	ok, bad := d.Ensure(t.Context(), dynamic)
+	ok, bad, _ := d.Ensure(t.Context(), dynamic)
 	require.Equal(t, 0, bad)
 	require.Equal(t, 2, ok)
 	require.NotEmpty(t, dynamic.Media[0].LocalPath)
@@ -52,7 +55,7 @@ func TestEnsureDownloadsAndSkipsExisting(t *testing.T) {
 	assert.FileExists(t, filepath.Join(dir, filepath.FromSlash(dynamic.Media[0].LocalPath)))
 	assert.Equal(t, 2, hits)
 
-	ok, bad = d.Ensure(t.Context(), dynamic)
+	ok, bad, _ = d.Ensure(t.Context(), dynamic)
 	require.Equal(t, 0, bad)
 	require.Equal(t, 0, ok)
 	assert.Equal(t, 2, hits)
@@ -70,7 +73,7 @@ func TestEnsureFailureLeavesURL(t *testing.T) {
 		ID: "1", UID: "2",
 		Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: server.URL + "/missing.jpg"}},
 	}
-	ok, bad := d.Ensure(t.Context(), dynamic)
+	ok, bad, _ := d.Ensure(t.Context(), dynamic)
 	assert.Equal(t, 0, ok)
 	assert.Equal(t, 1, bad)
 	assert.Empty(t, dynamic.Media[0].LocalPath)
@@ -89,10 +92,44 @@ func TestEnsureRejectsTooLarge(t *testing.T) {
 		ID: "1", UID: "2",
 		Media: []model.DynamicMedia{{URL: server.URL + "/big.jpg"}},
 	}
-	ok, bad := d.Ensure(t.Context(), dynamic)
+	ok, bad, _ := d.Ensure(t.Context(), dynamic)
 	assert.Equal(t, 0, ok)
 	assert.Equal(t, 1, bad)
 	assert.Empty(t, dynamic.Media[0].LocalPath)
+}
+
+func TestDownloadTraceDoesNotRecordURLOrQuery(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("image-data"))
+	}))
+	t.Cleanup(server.Close)
+	spanRecorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
+	t.Cleanup(func() { require.NoError(t, tracerProvider.Shutdown(context.Background())) })
+
+	d := &Downloader{
+		DataDir: t.TempDir(),
+		Client:  server.Client(),
+		Tracer:  tracerProvider.Tracer("test/media"),
+	}
+	dynamic := &model.Dynamic{
+		ID: "1", UID: "2",
+		Media: []model.DynamicMedia{{URL: server.URL + "/image.png?token=secret-query-value"}},
+	}
+	downloaded, failed, _ := d.Ensure(t.Context(), dynamic)
+	require.Equal(t, 1, downloaded)
+	require.Equal(t, 0, failed)
+
+	spans := spanRecorder.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "media.download", spans[0].Name())
+	for _, value := range spans[0].Attributes() {
+		assert.NotEqual(t, "url.full", string(value.Key))
+		assert.NotEqual(t, "url.query", string(value.Key))
+		assert.False(t, strings.Contains(value.Value.Emit(), "secret-query-value"))
+	}
 }
 
 func TestResolveAndRemoveUP(t *testing.T) {

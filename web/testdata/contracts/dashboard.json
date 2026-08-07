@@ -17,7 +17,6 @@
     "comment_batch_interval_sec": 120,
     "log_level": "info",
     "audit_log_retention_days": 180,
-    "system_log_retention_days": 30,
     "relation_refresh_interval_sec": 600,
     "space_reconcile_interval_sec": 1800,
     "max_dynamic_pages": 10,

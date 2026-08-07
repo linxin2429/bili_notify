@@ -11,7 +11,7 @@ describe('parseRuntimeSettingsForm', () => {
     { field: 'concurrency', value: '0', want: '请求并发数' }, { field: 'concurrency', value: '2.5', want: '请求并发数' },
     { field: 'commentTrackN', value: '51', want: '评论跟踪条数' }, { field: 'commentRootPages', value: '0', want: '根评论页数' },
     { field: 'commentReplyPages', value: '21', want: '子评论页数' }, { field: 'commentBatchSec', value: '29', want: '评论批次间隔' },
-    { field: 'auditRetentionDays', value: '0', want: '审计日志' }, { field: 'systemRetentionDays', value: '3651', want: '系统日志' },
+    { field: 'auditRetentionDays', value: '0', want: '审计日志' },
     { field: 'relationRefreshSec', value: '59', want: '关注关系' }, { field: 'spaceReconcileSec', value: '299', want: '空间校验' },
     { field: 'maxDynamicPages', value: '21', want: '动态翻页' }, { field: 'riskPauseSec', value: '59', want: '风控暂停' },
     { field: 'deliveryConcurrency', value: '33', want: '投递并发' }, { field: 'backlogAlertCount', value: '0', want: '积压条数' },

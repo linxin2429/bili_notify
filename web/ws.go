@@ -22,6 +22,8 @@ import (
 	"github.com/linxin2429/bili_notify/state"
 	qrcode "github.com/yeqown/go-qrcode/v2"
 	"github.com/yeqown/go-qrcode/writer/standard"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -197,15 +199,27 @@ func (w *wsWriter) ping(ctx context.Context) error {
 }
 
 func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
+	endHandshake := func() {}
+	if s.tracer != nil {
+		ctx := r.Context()
+		if s.propagator != nil {
+			ctx = s.propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
+		}
+		_, span := s.tracer.Start(ctx, "GET /api/v1/ws", trace.WithSpanKind(trace.SpanKindServer))
+		endHandshake = func() { span.End() }
+	}
 	token, _, ok := s.auth.validate(r)
 	if !ok {
 		writeAPIError(w, http.StatusUnauthorized, "authentication_required", "authentication required")
+		endHandshake()
 		return
 	}
 	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover})
 	if err != nil {
+		endHandshake()
 		return
 	}
+	endHandshake()
 	connection.SetReadLimit(1 << 20)
 	s.registerConnection(token, connection)
 	defer s.unregisterConnection(token, connection)

@@ -129,12 +129,11 @@ export function SettingsPage({ csrf, preference, setPreference, settings, api, r
       </Stack>
     </SettingsCard>
 
-    <SettingsCard sectionKey="logs" title="日志" description="日志级别立即生效；缩短保留期后，旧数据在下一次清理或轮转维护时删除。" expanded={expanded.logs} onToggle={toggleSection}>
+    <SettingsCard sectionKey="logs" title="日志" description="日志级别立即生效；审计日志保留期由应用管理，系统日志保留期由 Loki 管理。" expanded={expanded.logs} onToggle={toggleSection}>
       <TextField select label="日志级别" value={form.logLevel} onChange={event => setField('logLevel', event.target.value as RuntimeSettings['log_level'])}>
         {(['debug', 'info', 'warn', 'error'] as const).map(level => <MenuItem key={level} value={level}>{level}</MenuItem>)}
       </TextField>
       <TextField label="审计日志保留天数" type="number" value={form.auditRetentionDays} onChange={event => setField('auditRetentionDays', event.target.value)} helperText="1–3650；下一次每日清理生效" />
-      <TextField label="系统日志保留天数" type="number" value={form.systemRetentionDays} onChange={event => setField('systemRetentionDays', event.target.value)} helperText="1–3650；下一次日志轮转维护生效" />
     </SettingsCard>
 
     {settingsMessage && <Alert severity="error">{settingsMessage}</Alert>}

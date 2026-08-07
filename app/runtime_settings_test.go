@@ -12,9 +12,9 @@ import (
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
 	"github.com/linxin2429/bili_notify/vault"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 )
 
 func TestRuntimeSettingsManagerUpdate(t *testing.T) {
@@ -34,13 +34,13 @@ func TestRuntimeSettingsManagerUpdate(t *testing.T) {
 			t.Parallel()
 			v, err := vault.New(bytes.Repeat([]byte{7}, 32))
 			require.NoError(t, err)
-			store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), v)
+			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), v)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
 			initial := model.DefaultRuntimeSettings()
 			require.NoError(t, store.PutRuntimeSettings(initial))
 			events := service.NewEventBus()
-			engine := service.NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), service.NewMetrics(prometheus.NewRegistry()), initial, events, nil)
+			engine := service.NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), service.NewMetrics(metricnoop.NewMeterProvider()), initial, events, nil)
 			manager := newRuntimeSettingsManager(store, engine, nil, events)
 			updated := initial
 			tt.mutate(&updated)

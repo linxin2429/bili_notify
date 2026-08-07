@@ -30,7 +30,6 @@ func TestRuntimeSettingsExtendedValidation(t *testing.T) {
 		{name: "comment batch too long", mutate: func(s *RuntimeSettings) { s.CommentBatchIntervalSec = MaxCommentBatchIntervalSec + 1 }, wantErr: "comment_batch_interval_sec"},
 		{name: "bad log level", mutate: func(s *RuntimeSettings) { s.LogLevel = "trace" }, wantErr: "log_level"},
 		{name: "audit retention too long", mutate: func(s *RuntimeSettings) { s.AuditLogRetentionDays = MaxLogRetentionDays + 1 }, wantErr: "audit_log_retention_days"},
-		{name: "system retention too short", mutate: func(s *RuntimeSettings) { s.SystemLogRetentionDays = 0 }, wantErr: "system_log_retention_days"},
 		{name: "relation refresh too short", mutate: func(s *RuntimeSettings) { s.RelationRefreshSec = MinRelationRefreshSec - 1 }, wantErr: "relation_refresh_interval_sec"},
 		{name: "space reconcile too long", mutate: func(s *RuntimeSettings) { s.SpaceReconcileSec = MaxSpaceReconcileSec + 1 }, wantErr: "space_reconcile_interval_sec"},
 		{name: "dynamic pages too high", mutate: func(s *RuntimeSettings) { s.MaxDynamicPages = MaxDynamicPages + 1 }, wantErr: "max_dynamic_pages"},

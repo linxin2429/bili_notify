@@ -8,7 +8,7 @@
       "id": 1,
       "options": { "legend": { "showLegend": true } },
       "targets": [
-        { "expr": "sum by (level) (count_over_time({service=\"bili-notify\",category=\"system\"}[$__auto]))", "refId": "A" }
+        { "expr": "sum by (severity_text) (count_over_time({service_name=\"bili-notify\"} | category=\"system\" [$__auto]))", "refId": "A" }
       ],
       "title": "System log volume by level",
       "type": "timeseries"
@@ -19,7 +19,7 @@
       "id": 2,
       "options": { "dedupStrategy": "none", "enableLogDetails": true, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
       "targets": [
-        { "expr": "{service=\"bili-notify\",category=\"system\",level=~\"WARN|ERROR\"} | json", "refId": "A" }
+        { "expr": "{service_name=\"bili-notify\"} | category=\"system\" | severity_text=~\"WARN|ERROR\"", "refId": "A" }
       ],
       "title": "Recent warnings and errors",
       "type": "logs"
@@ -30,7 +30,7 @@
   "tags": ["bili-notify", "logs"],
   "templating": { "list": [] },
   "time": { "from": "now-6h", "to": "now" },
-  "title": "Bili Notify System Logs",
-  "uid": "bili-notify-system-logs",
+  "title": "Bili Notify Logs and Traces",
+  "uid": "bili-notify-logs-traces",
   "version": 1
 }

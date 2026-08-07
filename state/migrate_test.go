@@ -17,11 +17,11 @@ func TestMigrationsIdempotent(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "data.db")
 	v := mustVault(t, 30)
-	store, err := Open(path, v)
+	store, err := Open(t.Context(), path, v)
 	require.NoError(t, err)
 	require.NoError(t, store.Close())
 
-	store, err = Open(path, v)
+	store, err = Open(t.Context(), path, v)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 

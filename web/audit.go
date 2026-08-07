@@ -112,15 +112,15 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 		}
 		switch {
 		case status >= 500:
-			s.logger.Error("admin API request failed", append(attrs, "result", "failure")...)
+			s.logger.ErrorContext(r.Context(), "admin API request failed", append(attrs, "result", "failure")...)
 		case status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusTooManyRequests:
-			s.logger.Warn("admin API request denied", append(attrs, "result", "denied")...)
+			s.logger.WarnContext(r.Context(), "admin API request denied", append(attrs, "result", "denied")...)
 		case status >= 400:
-			s.logger.Info("admin API request rejected", append(attrs, "result", "failure")...)
+			s.logger.InfoContext(r.Context(), "admin API request rejected", append(attrs, "result", "failure")...)
 		case duration >= time.Second:
-			s.logger.Warn("slow admin API request", append(attrs, "result", "success")...)
+			s.logger.WarnContext(r.Context(), "slow admin API request", append(attrs, "result", "success")...)
 		default:
-			s.logger.Debug("admin API request completed", append(attrs, "result", statusResult(status))...)
+			s.logger.DebugContext(r.Context(), "admin API request completed", append(attrs, "result", statusResult(status))...)
 		}
 	})
 }
@@ -158,13 +158,11 @@ func (s *Server) audit(action, resourceType, resourceParam string, next http.Han
 			Outcome: statusResult(status), HTTPMethod: r.Method, Route: routePattern(r), StatusCode: status,
 			ErrorCode: responseErrorCode(buffer.body.Bytes()), DurationMS: time.Since(started).Milliseconds(), Details: stateContext.details,
 		}
-		stored, err := s.store.AppendAudit(entry)
+		stored, err := s.store.WithContext(r.Context()).AppendAudit(entry)
 		if err != nil {
-			if s.metrics != nil && s.metrics.AuditWriteFailures != nil {
-				s.metrics.AuditWriteFailures.Inc()
-			}
+			s.metrics.RecordAuditWriteFailure(r.Context())
 			if s.logger != nil {
-				s.logger.Error("administrator operation log could not be persisted",
+				s.logger.ErrorContext(r.Context(), "administrator operation log could not be persisted",
 					"event", "audit.write_failed", "request_id", requestID, "action", action, "error", err)
 			}
 		} else if s.auditLogger != nil {

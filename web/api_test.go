@@ -12,9 +12,10 @@ import (
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestRetryDeliveryAPI(t *testing.T) {
@@ -199,8 +200,9 @@ func TestAuditWriteFailurePreservesBusinessResponse(t *testing.T) {
 	require.NoError(t, auth.initialize(setupCode, "correct horse battery staple"))
 	token, csrf, _, err := auth.createSession()
 	require.NoError(t, err)
-	registry := prometheus.NewRegistry()
-	metrics := service.NewMetrics(registry)
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	metrics := service.NewMetrics(meterProvider)
 	server := &Server{auth: auth, store: store, events: service.NewEventBus(), metrics: metrics}
 	httpServer := httptest.NewServer(server.adminHandler())
 	t.Cleanup(httpServer.Close)
@@ -215,13 +217,17 @@ func TestAuditWriteFailurePreservesBusinessResponse(t *testing.T) {
 	t.Cleanup(func() { _ = response.Body.Close() })
 
 	assert.Equal(t, http.StatusNoContent, response.StatusCode)
-	families, err := registry.Gather()
-	require.NoError(t, err)
-	for _, family := range families {
-		if family.GetName() == "bili_notify_audit_write_failures_total" {
-			require.Len(t, family.Metric, 1)
-			assert.Equal(t, float64(1), family.Metric[0].GetCounter().GetValue())
-			return
+	var data metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &data))
+	for _, scope := range data.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			if measurement.Name == "bili_notify.audit.write_failures" {
+				sum, ok := measurement.Data.(metricdata.Sum[int64])
+				require.True(t, ok)
+				require.Len(t, sum.DataPoints, 1)
+				assert.Equal(t, int64(1), sum.DataPoints[0].Value)
+				return
+			}
 		}
 	}
 	t.Fatal("audit write failure metric was not gathered")

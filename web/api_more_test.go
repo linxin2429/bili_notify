@@ -17,9 +17,9 @@ import (
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 )
 
 func TestAdminAPILifecycle(t *testing.T) {
@@ -324,8 +324,8 @@ func newAdminAPIFixture(t *testing.T, client *http.Client) *adminAPIFixture {
 		client = webhook.Client()
 	}
 	events := service.NewEventBus()
-	registry := prometheus.NewRegistry()
-	metrics := service.NewMetrics(registry)
+	meterProvider := metricnoop.NewMeterProvider()
+	metrics := service.NewMetrics(meterProvider)
 	engine := service.NewEngine(
 		store, bilibili.New(client, "web-api-test"), slog.New(slog.NewTextHandler(io.Discard, nil)),
 		metrics, webTestSettings(), events, nil, service.WithNotificationHTTPClient(client),
@@ -334,7 +334,7 @@ func newAdminAPIFixture(t *testing.T, client *http.Client) *adminAPIFixture {
 	dataDir := t.TempDir()
 	server := &Server{
 		auth: auth, engine: engine, settings: settingsManager, store: store, events: events,
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), metrics: metrics, registry: registry,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), metrics: metrics,
 		dataDir: dataDir, connections: make(map[string]map[*websocket.Conn]struct{}),
 	}
 	return &adminAPIFixture{server: server, store: store, events: events, token: token, csrf: csrf, dataDir: dataDir, webhook: webhook}

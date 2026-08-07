@@ -17,9 +17,11 @@ import (
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
+	"github.com/linxin2429/bili_notify/telemetry"
 	"github.com/linxin2429/bili_notify/vault"
 	"github.com/linxin2429/bili_notify/web"
-	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -34,6 +36,7 @@ type Dependencies struct {
 	AuditLogger            *slog.Logger
 	AdminListener          net.Listener
 	ObserveListener        net.Listener
+	Telemetry              *telemetry.Runtime
 }
 
 func Run(ctx context.Context, cfg config.Config, version string) error {
@@ -41,7 +44,7 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 }
 
 // RunWithDependencies runs the application with explicitly supplied process boundaries.
-func RunWithDependencies(ctx context.Context, cfg config.Config, version string, dependencies Dependencies) error {
+func RunWithDependencies(ctx context.Context, cfg config.Config, version string, dependencies Dependencies) (runErr error) {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -51,14 +54,29 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if err := config.RefuseLegacyDataDir(cfg.DataDir); err != nil {
 		return err
 	}
+	telemetryRuntime := dependencies.Telemetry
+	if telemetryRuntime == nil {
+		var err error
+		telemetryRuntime, err = telemetry.New(ctx, version)
+		if err != nil {
+			return fmt.Errorf("initializing OpenTelemetry: %w", err)
+		}
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := telemetryRuntime.Shutdown(shutdownCtx); err != nil {
+			slog.New(slog.NewJSONHandler(os.Stderr, nil)).Warn("OpenTelemetry shutdown failed", "error", err)
+		}
+	}()
 	logger := dependencies.Logger
 	auditLogger := dependencies.AuditLogger
 	var loggers *logging.Set
 	if logger == nil {
 		var err error
 		loggers, err = logging.Open(logging.Config{
-			Level: cfg.LogLevel, Version: version, FilePath: config.LogPath(cfg.DataDir),
-			Retention: cfg.SystemLogRetention, Stdout: os.Stdout,
+			Level: cfg.LogLevel, Version: version, Stdout: os.Stdout,
+			RunID: telemetryRuntime.InstanceID, Provider: telemetryRuntime.LoggerProvider,
 		})
 		if err != nil {
 			return fmt.Errorf("initializing structured logging: %w", err)
@@ -80,7 +98,7 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 		return err
 	}
 	dataPath, _, tlsPath := config.Paths(cfg.DataDir)
-	store, err := state.Open(dataPath, v)
+	store, err := state.Open(ctx, dataPath, v, telemetryRuntime.TracerProvider)
 	if err != nil {
 		return err
 	}
@@ -98,21 +116,16 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 		if err := store.PutRuntimeSettings(settings); err != nil {
 			return fmt.Errorf("seeding runtime settings: %w", err)
 		}
-	} else if errors.Is(err, state.ErrRuntimeSettingsUpgradeRequired) {
-		settings, err = store.UpgradeRuntimeSettings(cfg.SeedRuntimeSettings())
-		if err != nil {
-			return fmt.Errorf("upgrading runtime settings: %w", err)
-		}
 	} else if err != nil {
 		return fmt.Errorf("loading runtime settings: %w", err)
 	}
 	if loggers != nil {
-		if err := loggers.Apply(settings.LogLevel, settings.SystemLogRetention()); err != nil {
+		if err := loggers.Apply(settings.LogLevel); err != nil {
 			return fmt.Errorf("applying stored logging settings: %w", err)
 		}
 	}
 
-	appLogger.Info("Bili Notify starting",
+	appLogger.InfoContext(ctx, "Bili Notify starting",
 		"event", "process.start",
 		"version", version,
 		"timezone", time.Local.String(),
@@ -130,6 +143,7 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if dependencies.BilibiliAPIURL != "" {
 		clientOptions = append(clientOptions, bilibili.WithBaseURLs(dependencies.BilibiliAPIURL, dependencies.BilibiliPassportURL))
 	}
+	clientOptions = append(clientOptions, bilibili.WithTelemetry(telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider))
 	client := bilibili.New(httpClient, "bili-notify/"+version, clientOptions...)
 	if err := os.MkdirAll(config.MediaDir(cfg.DataDir), 0o700); err != nil {
 		return fmt.Errorf("creating media directory: %w", err)
@@ -138,24 +152,27 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 		DataDir:   cfg.DataDir,
 		Client:    httpClient,
 		UserAgent: "bili-notify/" + version,
+		Tracer:    telemetryRuntime.TracerProvider.Tracer("github.com/linxin2429/bili_notify/media"),
 	}
-	registry := prometheus.NewRegistry()
-	metrics := service.NewMetrics(registry)
+	metrics := service.NewMetrics(telemetryRuntime.MeterProvider)
 	events := service.NewEventBus()
 	var engineOptions []service.EngineOption
 	if dependencies.NotificationHTTPClient != nil {
 		engineOptions = append(engineOptions, service.WithNotificationHTTPClient(dependencies.NotificationHTTPClient))
 	}
+	engineOptions = append(engineOptions, service.WithTracerProvider(telemetryRuntime.TracerProvider))
 	engine := service.NewEngine(store, client, logger.With("component", "engine"), metrics, settings, events, downloader, engineOptions...)
 	settingsManager := newRuntimeSettingsManager(store, engine, loggers, events)
-	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), registry, cfg.DataDir)
+	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator, cfg.DataDir)
 	if err != nil {
 		return err
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return engine.Run(gctx) })
-	g.Go(func() error { return runAuditRetention(gctx, store, settingsManager.Settings, appLogger) })
+	g.Go(func() error {
+		return runAuditRetention(gctx, store, settingsManager.Settings, appLogger, telemetryRuntime.Tracer(), metrics)
+	})
 	if dependencies.AdminListener != nil {
 		g.Go(func() error { return server.Serve(gctx, dependencies.AdminListener, dependencies.ObserveListener) })
 	} else {
@@ -163,10 +180,10 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	}
 	err = g.Wait()
 	if err != nil {
-		appLogger.Error("Bili Notify stopped with an error", "event", "process.stop", "result", "failure", "error", err)
+		appLogger.ErrorContext(ctx, "Bili Notify stopped with an error", "event", "process.stop", "result", "failure", "error", err)
 		return err
 	}
-	appLogger.Info("Bili Notify stopped", "event", "process.stop", "result", "success")
+	appLogger.InfoContext(ctx, "Bili Notify stopped", "event", "process.stop", "result", "success")
 	return nil
 }
 
@@ -192,14 +209,20 @@ func newHTTPClient() *http.Client {
 	return &http.Client{Transport: transport, Timeout: 10 * time.Second}
 }
 
-func runAuditRetention(ctx context.Context, store *state.Store, currentSettings func() model.RuntimeSettings, logger *slog.Logger) error {
+func runAuditRetention(ctx context.Context, store *state.Store, currentSettings func() model.RuntimeSettings, logger *slog.Logger, tracer trace.Tracer, metrics *service.Metrics) error {
 	prune := func() {
+		pruneCtx, span := tracer.Start(ctx, "audit.retention")
+		started := time.Now()
+		contextStore := store.WithContext(pruneCtx)
 		retention := currentSettings().AuditLogRetention()
 		var deleted int64
 		for {
-			count, err := store.PruneAuditLogs(time.Now().Add(-retention), 1000)
+			count, err := contextStore.PruneAuditLogs(time.Now().Add(-retention), 1000)
 			if err != nil {
-				logger.Error("audit log retention failed", "event", "audit.retention.failed", "error", err)
+				span.SetStatus(codes.Error, "audit retention failed")
+				span.End()
+				metrics.RecordWorkflow(pruneCtx, "audit_retention", "error", time.Since(started))
+				logger.ErrorContext(pruneCtx, "audit log retention failed", "event", "audit.retention.failed", "error", err)
 				return
 			}
 			deleted += count
@@ -207,9 +230,11 @@ func runAuditRetention(ctx context.Context, store *state.Store, currentSettings 
 				break
 			}
 		}
+		metrics.RecordWorkflow(pruneCtx, "audit_retention", "success", time.Since(started))
 		if deleted > 0 {
-			logger.Info("expired audit logs removed", "event", "audit.retention.completed", "deleted", deleted)
+			logger.InfoContext(pruneCtx, "expired audit logs removed", "event", "audit.retention.completed", "deleted", deleted)
 		}
+		span.End()
 	}
 	prune()
 	ticker := time.NewTicker(24 * time.Hour)

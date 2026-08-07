@@ -41,7 +41,7 @@ func (m *runtimeSettingsManager) UpdateSettings(settings model.RuntimeSettings) 
 		return fmt.Errorf("persisting runtime settings: %w", err)
 	}
 	if m.loggers != nil {
-		if err := m.loggers.Apply(settings.LogLevel, settings.SystemLogRetention()); err != nil {
+		if err := m.loggers.Apply(settings.LogLevel); err != nil {
 			return fmt.Errorf("applying logging settings: %w", err)
 		}
 	}

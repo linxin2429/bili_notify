@@ -83,7 +83,6 @@ export const runtimeSettingsSchema = z.object({
 	comment_batch_interval_sec: z.number().int().min(30).max(86400),
 	log_level: z.enum(['debug', 'info', 'warn', 'error']),
 	audit_log_retention_days: z.number().int().min(1).max(3650),
-	system_log_retention_days: z.number().int().min(1).max(3650),
 	relation_refresh_interval_sec: z.number().int().min(60).max(86400),
 	space_reconcile_interval_sec: z.number().int().min(300).max(604800),
 	max_dynamic_pages: z.number().int().min(1).max(20),

@@ -18,9 +18,12 @@ import (
 	"github.com/linxin2429/bili_notify/media"
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/state"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/codes"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestDeliverClassifiesOutcomes(t *testing.T) {
@@ -34,10 +37,12 @@ func TestDeliverClassifiesOutcomes(t *testing.T) {
 		wantRemaining bool
 		wantState     model.DeliveryState
 		wantAttempts  int
+		wantSendSpan  bool
+		wantSpanError bool
 	}{
-		{name: "success completes delivery", status: http.StatusOK, enabled: true, wantChanged: true},
-		{name: "server failure schedules retry", status: http.StatusInternalServerError, enabled: true, wantChanged: true, wantRemaining: true, wantState: model.DeliveryPending, wantAttempts: 1},
-		{name: "client failure blocks delivery", status: http.StatusBadRequest, enabled: true, wantChanged: true, wantRemaining: true, wantState: model.DeliveryBlocked, wantAttempts: 1},
+		{name: "success completes delivery", status: http.StatusOK, enabled: true, wantChanged: true, wantSendSpan: true},
+		{name: "server failure schedules retry", status: http.StatusInternalServerError, enabled: true, wantChanged: true, wantRemaining: true, wantState: model.DeliveryPending, wantAttempts: 1, wantSendSpan: true, wantSpanError: true},
+		{name: "client failure blocks delivery", status: http.StatusBadRequest, enabled: true, wantChanged: true, wantRemaining: true, wantState: model.DeliveryBlocked, wantAttempts: 1, wantSendSpan: true, wantSpanError: true},
 		{name: "disabled channel leaves delivery alone", status: http.StatusOK, wantRemaining: true, wantState: model.DeliveryPending},
 		{name: "missing channel blocks delivery", missing: true, wantChanged: true, wantRemaining: true, wantState: model.DeliveryBlocked, wantAttempts: 1},
 	}
@@ -49,7 +54,10 @@ func TestDeliverClassifiesOutcomes(t *testing.T) {
 				_, _ = io.WriteString(w, `{"errcode":0,"errmsg":"ok"}`)
 			}))
 			t.Cleanup(webhook.Close)
-			store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+			spanRecorder := tracetest.NewSpanRecorder()
+			tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
+			t.Cleanup(func() { require.NoError(t, tracerProvider.Shutdown(context.Background())) })
+			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
 			channelID := "missing"
@@ -72,13 +80,31 @@ func TestDeliverClassifiesOutcomes(t *testing.T) {
 			require.Len(t, deliveries, 1)
 			engine := NewEngine(
 				store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)),
-				NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil, nil,
+				NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil,
 				WithNotificationHTTPClient(webhook.Client()),
+				WithTracerProvider(tracerProvider),
 			)
 
 			changed, err := engine.deliver(t.Context(), deliveries[0])
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantChanged, changed)
+			var sendSpan sdktrace.ReadOnlySpan
+			for _, span := range spanRecorder.Ended() {
+				if span.Name() == "notification.send" {
+					sendSpan = span
+					break
+				}
+			}
+			if tt.wantSendSpan {
+				require.NotNil(t, sendSpan)
+				if tt.wantSpanError {
+					assert.Equal(t, codes.Error, sendSpan.Status().Code)
+				} else {
+					assert.Equal(t, codes.Unset, sendSpan.Status().Code)
+				}
+			} else {
+				assert.Nil(t, sendSpan)
+			}
 			deliveries, err = store.ListDeliveries(0)
 			require.NoError(t, err)
 			if !tt.wantRemaining {
@@ -143,7 +169,7 @@ func TestPollCommentTargetBaselinesThenQueuesNewReply(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	channel, err := store.PutChannel(model.Channel{
@@ -158,7 +184,7 @@ func TestPollCommentTargetBaselinesThenQueuesNewReply(t *testing.T) {
 	}
 	require.NoError(t, store.PutCommentTargets("42", []model.CommentTarget{target}))
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
-	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil, nil)
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
 
 	require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{channel.ID}, 1, 1))
 	deliveries, err := store.ListDeliveries(0)
@@ -186,14 +212,14 @@ func TestPollCommentTargetClosesUnavailableTarget(t *testing.T) {
 		_, _ = io.WriteString(w, `{"code":12002,"message":"closed","data":null}`)
 	}))
 	t.Cleanup(server.Close)
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	target := model.CommentTarget{UID: "42", CommentType: 11, CommentOID: "oid"}
 	require.NoError(t, store.PutCommentTargets("42", []model.CommentTarget{target}))
 	engine := NewEngine(
 		store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)),
-		slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil, nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil,
 	)
 	require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{"channel"}, 1, 1))
 	targets, err := store.ListCommentTargets("42")
@@ -219,12 +245,12 @@ func TestLoginLifecycle(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	engine := NewEngine(
 		store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)),
-		slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), NewEventBus(), nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), NewEventBus(), nil,
 	)
 	runCtx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
@@ -303,7 +329,7 @@ func TestRefreshRelationsPersistsRouting(t *testing.T) {
 		_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"42":{"attribute":2},"43":{"attribute":0}}}`)
 	}))
 	t.Cleanup(server.Close)
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	for _, up := range []model.UP{{UID: "42", Enabled: true}, {UID: "43", Enabled: true}} {
@@ -312,7 +338,7 @@ func TestRefreshRelationsPersistsRouting(t *testing.T) {
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 	client.SetSession(model.BiliSession{Cookies: map[string]string{"SESSDATA": "session"}})
 	events := NewEventBus()
-	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), events, nil)
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), events, nil)
 	engine.authValid.Store(true)
 	engine.setAccount(model.BiliAccount{UID: "100", Name: "account"})
 	require.NoError(t, engine.refreshRelations(t.Context()))
@@ -330,7 +356,7 @@ func TestCollectOnceRoutesEnabledUP(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","items":[%s]}}`, dynamicFixture("baseline", 1700000000))
 	}))
 	t.Cleanup(server.Close)
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Name: "UP", Enabled: true}))
@@ -338,7 +364,7 @@ func TestCollectOnceRoutesEnabledUP(t *testing.T) {
 	require.NoError(t, err)
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 	client.SetSession(model.BiliSession{Cookies: map[string]string{"SESSDATA": "session"}})
-	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil, nil)
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
 	engine.authValid.Store(true)
 	engine.setAccount(model.BiliAccount{UID: "100", Name: "account"})
 	require.NoError(t, engine.collectOnce(t.Context()))
@@ -370,12 +396,12 @@ func TestInitializeFeed(t *testing.T) {
 				_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","update_baseline":%q,"update_num":%s,"items":[]}}`, tt.baseline, tt.updateNumJSON)
 			}))
 			t.Cleanup(server.Close)
-			store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
 			engine := NewEngine(
 				store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)),
-				slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil, nil,
+				slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil,
 			)
 			err = engine.initializeFeed(t.Context(), "100")
 			if tt.wantErr != "" {
@@ -397,7 +423,7 @@ func TestCommentOncePollsEligibleTargets(t *testing.T) {
 		_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"page":{"num":1,"size":20,"count":0},"replies":[]}}`)
 	}))
 	t.Cleanup(server.Close)
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
@@ -407,7 +433,7 @@ func TestCommentOncePollsEligibleTargets(t *testing.T) {
 	require.NoError(t, store.PutCommentTargets("42", []model.CommentTarget{target}))
 	engine := NewEngine(
 		store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)),
-		slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 2), nil, nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 2), nil, nil,
 	)
 	engine.authValid.Store(true)
 	require.NoError(t, engine.commentOnce(t.Context()))
@@ -433,7 +459,7 @@ func TestMicrosoftLoginLifecycle(t *testing.T) {
 		return serviceResponse(request, http.StatusOK, body), nil
 	})}
 	t.Cleanup(client.CloseIdleConnections)
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	channel, err := store.PutChannel(model.Channel{
@@ -445,7 +471,7 @@ func TestMicrosoftLoginLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	engine := NewEngine(
 		store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), NewEventBus(), nil,
+		NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), NewEventBus(), nil,
 		WithNotificationHTTPClient(client),
 	)
 	runCtx, cancel := context.WithCancel(t.Context())
@@ -492,12 +518,12 @@ func serviceResponse(request *http.Request, status int, body string) *http.Respo
 
 func TestSetAuthQueuesLifecycleAlerts(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	_, err = store.PutChannel(model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com/hook"}})
 	require.NoError(t, err)
-	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), NewEventBus(), nil)
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), NewEventBus(), nil)
 	engine.setAuth(true)
 	engine.setAuth(false)
 	engine.setAuth(true)
@@ -528,7 +554,7 @@ func TestEngineRunLifecycle(t *testing.T) {
 				http.NotFound(w, r)
 			}))
 			t.Cleanup(server.Close)
-			store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
 			if tt.storedSession {
@@ -536,7 +562,7 @@ func TestEngineRunLifecycle(t *testing.T) {
 			}
 			engine := NewEngine(
 				store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)),
-				slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil, nil,
+				slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil,
 			)
 			ctx, cancel := context.WithCancel(t.Context())
 			t.Cleanup(cancel)
@@ -569,17 +595,17 @@ func TestHandleCommentPollError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
 			require.NoError(t, store.PutCommentTargets("42", []model.CommentTarget{{UID: "42", CommentType: 11, CommentOID: "oid"}}))
 			engine := NewEngine(
 				store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)),
-				NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), NewEventBus(), nil,
+				NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), NewEventBus(), nil,
 			)
 			engine.authValid.Store(true)
 			target := model.CommentTarget{UID: "42", CommentType: 11, CommentOID: "oid"}
-			require.NoError(t, engine.handleCommentPollError(target, tt.err))
+			require.NoError(t, engine.handleCommentPollError(t.Context(), target, tt.err))
 			assert.Equal(t, tt.authOff, !engine.authValid.Load())
 			assert.Equal(t, tt.risk, engine.riskUntil.Load() > time.Now().Unix())
 			targets, listErr := store.ListCommentTargets("42")
@@ -592,7 +618,7 @@ func TestHandleCommentPollError(t *testing.T) {
 
 func TestEngineErrorAndMediaHelpers(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Name: "UP", Enabled: true}))
@@ -603,7 +629,7 @@ func TestEngineErrorAndMediaHelpers(t *testing.T) {
 	t.Cleanup(imageServer.Close)
 	engine := NewEngine(
 		store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), NewEventBus(),
+		NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), NewEventBus(),
 		&media.Downloader{DataDir: t.TempDir(), Client: imageServer.Client(), UserAgent: "test"},
 	)
 
@@ -612,7 +638,7 @@ func TestEngineErrorAndMediaHelpers(t *testing.T) {
 	engine.authValid.Store(true)
 	engine.handleBiliAPIError(&bilibili.APIError{Kind: bilibili.ErrorAuthentication, Message: "expired"})
 	assert.False(t, engine.authValid.Load())
-	require.NoError(t, engine.failFeed([]model.UP{{UID: "42"}}, time.Now(), errors.New("feed failed")))
+	require.NoError(t, engine.failFeed(t.Context(), []model.UP{{UID: "42"}}, time.Now(), errors.New("feed failed")))
 	up, err := store.UP("42")
 	require.NoError(t, err)
 	assert.Equal(t, 1, up.ConsecutiveFail)

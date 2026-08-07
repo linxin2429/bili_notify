@@ -125,8 +125,6 @@ test('runs the collection, durable outbox, restart, and retry journey', async ({
     await page.getByRole('button', { name: '投递队列', exact: true }).click()
     await expect(page.getByText('已阻塞', { exact: true }).last()).toBeVisible()
     await expect(page.getByText('new dynamic content')).toBeVisible()
-    const metrics = await (await control.get(`${manifest.observe_url}/metrics`)).text()
-    expect(metrics).toContain('bili_notify_delivery_total{channel_type="wecom",result="blocked"} 1')
     await page.getByRole('button', { name: '历史', exact: true }).click()
     await expect(page.getByText('new dynamic content')).toBeVisible()
   })
@@ -160,13 +158,7 @@ test('runs the collection, durable outbox, restart, and retry journey', async ({
     await expect(page.getByText('当前筛选下没有待投递任务')).toBeVisible()
 
     await expect.poll(async () => (await control.get(`${manifest.observe_url}/readyz`)).status()).toBe(200)
-    await expect.poll(async () => {
-      const response = await control.get(`${manifest.observe_url}/metrics`)
-      return response.text()
-    }).toContain('bili_notify_outbox_depth 0')
-    const metrics = await (await control.get(`${manifest.observe_url}/metrics`)).text()
-    expect(metrics).toContain('bili_notify_delivery_total{channel_type="wecom",result="success"} 1')
-    expect(metrics).toContain('bili_notify_auth_state 1')
+    expect((await control.get(`${manifest.observe_url}/metrics`)).status()).toBe(404)
     expect((await harnessState()).unexpected || []).toEqual([])
   })
 

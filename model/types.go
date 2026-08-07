@@ -376,7 +376,6 @@ const (
 	DefaultCommentBatchSec     = 120
 	DefaultLogLevel            = "info"
 	DefaultAuditRetentionDays  = 180
-	DefaultSystemRetentionDays = 30
 	DefaultRelationRefreshSec  = 10 * 60
 	DefaultSpaceReconcileSec   = 30 * 60
 	DefaultMaxDynamicPages     = 10
@@ -401,7 +400,6 @@ type RuntimeSettings struct {
 	CommentBatchIntervalSec int                 `json:"comment_batch_interval_sec"`
 	LogLevel                string              `json:"log_level"`
 	AuditLogRetentionDays   int                 `json:"audit_log_retention_days"`
-	SystemLogRetentionDays  int                 `json:"system_log_retention_days"`
 	RelationRefreshSec      int                 `json:"relation_refresh_interval_sec"`
 	SpaceReconcileSec       int                 `json:"space_reconcile_interval_sec"`
 	MaxDynamicPages         int                 `json:"max_dynamic_pages"`
@@ -440,16 +438,12 @@ func (s RuntimeSettings) AuditLogRetention() time.Duration {
 	return time.Duration(s.AuditLogRetentionDays) * 24 * time.Hour
 }
 
-func (s RuntimeSettings) SystemLogRetention() time.Duration {
-	return time.Duration(s.SystemLogRetentionDays) * 24 * time.Hour
-}
-
 func DefaultRuntimeSettings() RuntimeSettings {
 	return RuntimeSettings{
 		PollIntervalSec: DefaultPollIntervalSec, RequestRate: DefaultRequestRate, RequestConcurrency: DefaultRequestConcurrency,
 		CommentEnabled: true, CommentTrackN: DefaultCommentTrackN, CommentRootPages: DefaultCommentRootPages,
 		CommentReplyPages: DefaultCommentReplyPages, CommentBatchIntervalSec: DefaultCommentBatchSec,
-		LogLevel: DefaultLogLevel, AuditLogRetentionDays: DefaultAuditRetentionDays, SystemLogRetentionDays: DefaultSystemRetentionDays,
+		LogLevel: DefaultLogLevel, AuditLogRetentionDays: DefaultAuditRetentionDays,
 		RelationRefreshSec: DefaultRelationRefreshSec, SpaceReconcileSec: DefaultSpaceReconcileSec, MaxDynamicPages: DefaultMaxDynamicPages,
 		RiskPauseSec: DefaultRiskPauseSec, DeliveryConcurrency: DefaultDeliveryConcurrency,
 		BacklogAlertCount: DefaultBacklogAlertCount, BacklogAlertAgeSec: DefaultBacklogAlertAgeSec,
@@ -481,9 +475,6 @@ func (s RuntimeSettings) Validate() error {
 	}
 	if s.AuditLogRetentionDays < MinLogRetentionDays || s.AuditLogRetentionDays > MaxLogRetentionDays {
 		errs = append(errs, fmt.Errorf("audit_log_retention_days must be in [%d, %d]", MinLogRetentionDays, MaxLogRetentionDays))
-	}
-	if s.SystemLogRetentionDays < MinLogRetentionDays || s.SystemLogRetentionDays > MaxLogRetentionDays {
-		errs = append(errs, fmt.Errorf("system_log_retention_days must be in [%d, %d]", MinLogRetentionDays, MaxLogRetentionDays))
 	}
 	if s.RelationRefreshSec < MinRelationRefreshSec || s.RelationRefreshSec > MaxRelationRefreshSec {
 		errs = append(errs, fmt.Errorf("relation_refresh_interval_sec must be in [%d, %d]", MinRelationRefreshSec, MaxRelationRefreshSec))

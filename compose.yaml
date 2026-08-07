@@ -26,7 +26,7 @@ services:
     restart: unless-stopped
     ports:
       - "${ADMIN_PORT:-8443}:8443"
-      # 需要 /healthz /readyz /metrics 时取消注释：
+      # 需要 /healthz /readyz 时取消注释：
       # - "${OBSERVE_PORT:-9090}:9090"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
@@ -35,7 +35,7 @@ services:
       BILI_NOTIFY_OBSERVE_ADDR: ":9090"
       BILI_NOTIFY_LOG_LEVEL: ${BILI_NOTIFY_LOG_LEVEL:-info}
       BILI_NOTIFY_AUDIT_LOG_RETENTION: ${BILI_NOTIFY_AUDIT_LOG_RETENTION:-4320h}
-      BILI_NOTIFY_SYSTEM_LOG_RETENTION: ${BILI_NOTIFY_SYSTEM_LOG_RETENTION:-720h}
+      OTEL_SDK_DISABLED: "true"
       # 仅空库首次启动写入 data.db，之后由管理台热更新
       BILI_NOTIFY_POLL_INTERVAL: ${BILI_NOTIFY_POLL_INTERVAL:-30s}
       BILI_NOTIFY_REQUEST_RATE: ${BILI_NOTIFY_REQUEST_RATE:-2}
