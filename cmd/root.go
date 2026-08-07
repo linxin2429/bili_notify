@@ -94,7 +94,7 @@ func newServeCmd(v *viper.Viper) *cobra.Command {
 	cmd.Flags().Bool("otel-sdk-disabled", v.GetBool("otel_sdk_disabled"), "disable OpenTelemetry")
 	cmd.Flags().String("otel-service-name", v.GetString("otel_service_name"), "OpenTelemetry service name")
 	cmd.Flags().String("otel-deployment-environment", v.GetString("otel_deployment_environment"), "OpenTelemetry deployment environment")
-	cmd.Flags().String("otel-exporter-otlp-endpoint", v.GetString("otel_exporter_otlp_endpoint"), "OTLP collector endpoint URL")
+	cmd.Flags().String("otel-exporter-otlp-endpoint", v.GetString("otel_exporter_otlp_endpoint"), "OTLP collector base URL (scheme://host:port[/prefix]; HTTP appends /v1/{traces,metrics,logs})")
 	cmd.Flags().String("otel-exporter-otlp-protocol", v.GetString("otel_exporter_otlp_protocol"), "default OTLP protocol: grpc or http/protobuf")
 	cmd.Flags().String("otel-exporter-otlp-traces-protocol", v.GetString("otel_exporter_otlp_traces_protocol"), "trace OTLP protocol override")
 	cmd.Flags().String("otel-exporter-otlp-metrics-protocol", v.GetString("otel_exporter_otlp_metrics_protocol"), "metrics OTLP protocol override")

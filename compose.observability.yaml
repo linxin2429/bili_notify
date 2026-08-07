@@ -45,7 +45,8 @@ services:
     depends_on: [otel-collector]
     restart: unless-stopped
     read_only: true
-    tmpfs: [/tmp:size=32m,mode=1777]
+    tmpfs:
+      - /tmp:size=32m,mode=1777
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
 
@@ -58,7 +59,8 @@ services:
       - bili-notify-loki:/loki
     restart: unless-stopped
     read_only: true
-    tmpfs: [/tmp:size=32m,mode=1777]
+    tmpfs:
+      - /tmp:size=32m,mode=1777
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
 
@@ -71,7 +73,8 @@ services:
       - bili-notify-tempo:/var/tempo
     restart: unless-stopped
     read_only: true
-    tmpfs: [/tmp:size=32m,mode=1777]
+    tmpfs:
+      - /tmp:size=32m,mode=1777
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
 
