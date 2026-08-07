@@ -20,12 +20,13 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # Keep Go caches inside the job workspace so setup-go restore never
-    # collides with the host user's shared GOMODCACHE on self-hosted runners.
+    # Isolate Go caches outside the workspace so:
+    # 1) setup-go restore never collides with the host GOMODCACHE
+    # 2) checkout of later jobs is not blocked by read-only module files
     env:
-      GOPATH: ${{ github.workspace }}/.go
-      GOCACHE: ${{ github.workspace }}/.cache/go-build
-      GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
+      GOPATH: ${{ runner.temp }}/go
+      GOCACHE: ${{ runner.temp }}/go-build
+      GOMODCACHE: ${{ runner.temp }}/go-mod
     steps:
       - uses: actions/checkout@v5
 
