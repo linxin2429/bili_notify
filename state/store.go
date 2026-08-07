@@ -18,35 +18,27 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/vault"
+	oteltrace "go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
+	"gorm.io/plugin/opentelemetry/tracing"
 )
 
 var (
 	ErrNotFound                       = errors.New("record not found")
 	ErrInitialized                    = errors.New("administrator is already initialized")
-	ErrRuntimeSettingsUpgradeRequired = errors.New("runtime settings upgrade required")
+	ErrRuntimeSettingsVersionMismatch = errors.New("runtime settings version mismatch")
 	// ErrDeliveryNotBlocked reports that a delivery cannot be manually retried.
 	ErrDeliveryNotBlocked = errors.New("delivery is not blocked")
 )
 
-const runtimeSettingsVersion = 1
+const runtimeSettingsVersion = 2
 
 type runtimeSettingsRecord struct {
 	Version int `json:"_version"`
 	model.RuntimeSettings
-}
-
-type legacyRuntimeSettings struct {
-	PollIntervalSec         *int     `json:"poll_interval_sec"`
-	RequestRate             *float64 `json:"request_rate"`
-	RequestConcurrency      *int     `json:"request_concurrency"`
-	CommentEnabled          *bool    `json:"comment_enabled"`
-	CommentTrackN           *int     `json:"comment_track_n"`
-	CommentRootPages        *int     `json:"comment_root_pages"`
-	CommentReplyPages       *int     `json:"comment_reply_pages"`
-	CommentBatchIntervalSec *int     `json:"comment_batch_interval_sec"`
 }
 
 // Store is the single SQLite persistence layer for config, secrets, outbox, and content archive.
@@ -58,9 +50,16 @@ type Store struct {
 }
 
 // Open opens (or creates) the SQLite database at path, runs migrations, and returns a Store.
-func Open(path string, v *vault.Vault) (*Store, error) {
+func Open(ctx context.Context, path string, v *vault.Vault, providers ...oteltrace.TracerProvider) (*Store, error) {
 	if v == nil {
 		return nil, errors.New("vault is required")
+	}
+	if len(providers) > 1 {
+		return nil, errors.New("at most one tracer provider is allowed")
+	}
+	provider := oteltrace.TracerProvider(tracenoop.NewTracerProvider())
+	if len(providers) == 1 && providers[0] != nil {
+		provider = providers[0]
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("creating database directory: %w", err)
@@ -78,7 +77,7 @@ func Open(path string, v *vault.Vault) (*Store, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("securing database file: %w", err)
 	}
-	if err := runMigrations(context.Background(), sqlDB); err != nil {
+	if err := runMigrations(ctx, sqlDB); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
 	}
@@ -94,7 +93,23 @@ func Open(path string, v *vault.Vault) (*Store, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("opening gorm: %w", err)
 	}
+	if err := gdb.Use(tracing.NewPlugin(
+		tracing.WithTracerProvider(provider),
+		tracing.WithDBSystem("sqlite"),
+		tracing.WithoutQueryVariables(),
+		tracing.WithoutMetrics(),
+	)); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("installing gorm telemetry: %w", err)
+	}
 	return &Store{db: gdb, sql: sqlDB, vault: v, path: path}, nil
+}
+
+// WithContext returns a lightweight view whose database spans inherit ctx.
+func (s *Store) WithContext(ctx context.Context) *Store {
+	copy := *s
+	copy.db = s.db.WithContext(ctx)
+	return &copy
 }
 
 func (s *Store) Close() error {
@@ -146,7 +161,7 @@ func (s *Store) RuntimeSettings() (model.RuntimeSettings, error) {
 		return model.RuntimeSettings{}, err
 	}
 	if record.Version != runtimeSettingsVersion {
-		return model.RuntimeSettings{}, fmt.Errorf("%w: found version %d, want %d", ErrRuntimeSettingsUpgradeRequired, record.Version, runtimeSettingsVersion)
+		return model.RuntimeSettings{}, fmt.Errorf("%w: found version %d, want %d; start with a fresh data volume", ErrRuntimeSettingsVersionMismatch, record.Version, runtimeSettingsVersion)
 	}
 	if err := record.RuntimeSettings.Validate(); err != nil {
 		return model.RuntimeSettings{}, fmt.Errorf("validating stored runtime settings: %w", err)
@@ -168,66 +183,6 @@ func (s *Store) runtimeSettingsRecord() (runtimeSettingsRecord, error) {
 		return runtimeSettingsRecord{}, fmt.Errorf("decoding runtime settings: %w", err)
 	}
 	return record, nil
-}
-
-// UpgradeRuntimeSettings converts the sole supported legacy flat record into
-// the current version. Defaults supply only fields absent from the old record.
-func (s *Store) UpgradeRuntimeSettings(defaults model.RuntimeSettings) (model.RuntimeSettings, error) {
-	if err := defaults.Validate(); err != nil {
-		return model.RuntimeSettings{}, fmt.Errorf("validating runtime settings migration defaults: %w", err)
-	}
-	var row metaRow
-	if err := s.db.Where("key = ?", metaKeyRuntimeSettings).Take(&row).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return model.RuntimeSettings{}, ErrNotFound
-		}
-		return model.RuntimeSettings{}, err
-	}
-	var version struct {
-		Version int `json:"_version"`
-	}
-	if err := json.Unmarshal([]byte(row.Value), &version); err != nil {
-		return model.RuntimeSettings{}, fmt.Errorf("decoding runtime settings version: %w", err)
-	}
-	if version.Version != 0 {
-		return model.RuntimeSettings{}, fmt.Errorf("unsupported runtime settings version %d", version.Version)
-	}
-	var legacy legacyRuntimeSettings
-	if err := json.Unmarshal([]byte(row.Value), &legacy); err != nil {
-		return model.RuntimeSettings{}, fmt.Errorf("decoding legacy runtime settings: %w", err)
-	}
-	settings := defaults
-	if legacy.PollIntervalSec != nil {
-		settings.PollIntervalSec = *legacy.PollIntervalSec
-	}
-	if legacy.RequestRate != nil {
-		settings.RequestRate = *legacy.RequestRate
-	}
-	if legacy.RequestConcurrency != nil {
-		settings.RequestConcurrency = *legacy.RequestConcurrency
-	}
-	if legacy.CommentEnabled != nil {
-		settings.CommentEnabled = *legacy.CommentEnabled
-	}
-	if legacy.CommentTrackN != nil {
-		settings.CommentTrackN = *legacy.CommentTrackN
-	}
-	if legacy.CommentRootPages != nil {
-		settings.CommentRootPages = *legacy.CommentRootPages
-	}
-	if legacy.CommentReplyPages != nil {
-		settings.CommentReplyPages = *legacy.CommentReplyPages
-	}
-	if legacy.CommentBatchIntervalSec != nil {
-		settings.CommentBatchIntervalSec = *legacy.CommentBatchIntervalSec
-	}
-	if err := settings.Validate(); err != nil {
-		return model.RuntimeSettings{}, fmt.Errorf("validating upgraded runtime settings: %w", err)
-	}
-	if err := s.PutRuntimeSettings(settings); err != nil {
-		return model.RuntimeSettings{}, fmt.Errorf("persisting upgraded runtime settings: %w", err)
-	}
-	return settings, nil
 }
 
 func (s *Store) PutRuntimeSettings(settings model.RuntimeSettings) error {

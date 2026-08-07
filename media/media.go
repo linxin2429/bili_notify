@@ -13,6 +13,10 @@ import (
 	"strings"
 
 	"github.com/linxin2429/bili_notify/model"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const (
@@ -30,25 +34,27 @@ type Downloader struct {
 	DataDir   string
 	Client    *http.Client
 	UserAgent string
+	Tracer    trace.Tracer
 }
 
 // Ensure downloads missing media for d and its Original chain. Failures leave
 // LocalPath empty and never return a fatal error to the caller — collection must proceed.
-func (d *Downloader) Ensure(ctx context.Context, dynamic *model.Dynamic) (downloaded int, failed int) {
+func (d *Downloader) Ensure(ctx context.Context, dynamic *model.Dynamic) (downloaded int, failed int, downloadedBytes int64) {
 	if d == nil || dynamic == nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	for current := dynamic; current != nil; current = current.Original {
-		ok, bad := d.ensureOne(ctx, current)
+		ok, bad, size := d.ensureOne(ctx, current)
 		downloaded += ok
 		failed += bad
+		downloadedBytes += size
 	}
-	return downloaded, failed
+	return downloaded, failed, downloadedBytes
 }
 
-func (d *Downloader) ensureOne(ctx context.Context, dynamic *model.Dynamic) (downloaded int, failed int) {
+func (d *Downloader) ensureOne(ctx context.Context, dynamic *model.Dynamic) (downloaded int, failed int, downloadedBytes int64) {
 	if dynamic.ID == "" || dynamic.UID == "" || dynamic.UID == "system" {
-		return 0, 0
+		return 0, 0, 0
 	}
 	for i := range dynamic.Media {
 		item := &dynamic.Media[i]
@@ -71,11 +77,22 @@ func (d *Downloader) ensureOne(ctx context.Context, dynamic *model.Dynamic) (dow
 			continue
 		}
 		downloaded++
+		downloadedBytes += item.Size
 	}
-	return downloaded, failed
+	return downloaded, failed, downloadedBytes
 }
 
-func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index int, item *model.DynamicMedia) error {
+func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index int, item *model.DynamicMedia) (err error) {
+	ctx, span := d.tracer().Start(ctx, "media.download", trace.WithSpanKind(trace.SpanKindClient))
+	defer func() {
+		if err != nil {
+			span.SetStatus(codes.Error, "media download failed")
+		} else {
+			span.SetAttributes(attribute.String("result", "success"))
+		}
+		span.End()
+	}()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, item.URL, nil)
 	if err != nil {
 		return err
@@ -97,6 +114,7 @@ func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index 
 		return err
 	}
 	defer resp.Body.Close()
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
@@ -163,6 +181,13 @@ func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index 
 	item.ContentType = contentType
 	item.Size = int64(len(data))
 	return nil
+}
+
+func (d *Downloader) tracer() trace.Tracer {
+	if d.Tracer != nil {
+		return d.Tracer
+	}
+	return noop.NewTracerProvider().Tracer("github.com/linxin2429/bili_notify/media")
 }
 
 func relativePath(uid, dynamicID string, index int, ext string) string {

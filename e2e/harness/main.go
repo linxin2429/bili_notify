@@ -453,7 +453,7 @@ func (m *applicationManager) startLocked(admin, observe net.Listener) error {
 	cfg := config.Config{
 		DataDir: m.dataDir, AdminAddr: m.adminAddr, ObserveAddr: m.observeAddr,
 		PollInterval: 10 * time.Second, RequestRate: 10, RequestConcurrency: 2, LogLevel: "warn",
-		AuditLogRetention: 180 * 24 * time.Hour, SystemLogRetention: 30 * 24 * time.Hour,
+		AuditLogRetention: 180 * 24 * time.Hour, OTelSDKDisabled: true,
 	}
 	go func() {
 		err := app.RunWithDependencies(ctx, cfg, "e2e", dependencies)

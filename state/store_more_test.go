@@ -13,7 +13,7 @@ import (
 
 func TestClearSessionAndResetFeed(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 101))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 101))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	require.NoError(t, store.SaveSession(model.BiliSession{AccountUID: "100", Cookies: map[string]string{"SESSDATA": "session"}}))
@@ -41,7 +41,7 @@ func TestClearSessionAndResetFeed(t *testing.T) {
 
 func TestUnblockChannelRequeuesBlockedDeliveries(t *testing.T) {
 	t.Parallel()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 102))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 102))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	channel, err := store.PutChannel(model.Channel{

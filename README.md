@@ -53,9 +53,9 @@ docker run -d --name bili-notify \
 3. 添加需要监控的 UID。首次拉取只建立基线，不通知历史动态；基线内容仍会写入“历史”页。
 4. 在“历史”中按 UP、时间与关键字浏览已采集内容。
 
-“设置”页可热更新基础与高级采集策略、投递并发与重试、积压告警、日志级别和日志保留期。保存的是一份完整运行设置：后续任务立即读取新策略，正在执行的任务和已经排定的重试不会被取消或改写。`BILI_NOTIFY_POLL_INTERVAL`、`BILI_NOTIFY_REQUEST_RATE`、`BILI_NOTIFY_REQUEST_CONCURRENCY`、`BILI_NOTIFY_LOG_LEVEL` 及两项日志保留环境变量只在新数据目录首次启动时播种默认值，之后以 `data.db` 中的管理台设置为准。
+“设置”页可热更新基础与高级采集策略、投递并发与重试、积压告警、日志级别和审计日志保留期。保存的是一份完整运行设置：后续任务立即读取新策略，正在执行的任务和已经排定的重试不会被取消或改写。`BILI_NOTIFY_POLL_INTERVAL`、`BILI_NOTIFY_REQUEST_RATE`、`BILI_NOTIFY_REQUEST_CONCURRENCY`、`BILI_NOTIFY_LOG_LEVEL` 和 `BILI_NOTIFY_AUDIT_LOG_RETENTION` 只在新数据目录首次启动时播种默认值，之后以 `data.db` 中的管理台设置为准。
 
-观测接口默认监听容器内 `:9090`，包含 `/healthz`、`/readyz` 和 `/metrics`，Compose 默认不发布到宿主机。
+观测接口默认监听容器内 `:9090`，只包含 `/healthz` 和 `/readyz`，Compose 默认不发布到宿主机。Metrics 通过 OTLP 发送到 OpenTelemetry Collector，由 Collector 在 `:9464/metrics` 上转换为 Prometheus/OpenMetrics。
 
 ## 通知渠道
 
@@ -92,13 +92,13 @@ docker compose run --rm bili-notify --help
 docker compose exec bili-notify /bili-notify healthcheck
 ```
 
-服务把结构化 JSON 同时写到 stdout 和数据卷的 `/data/logs/bili-notify.jsonl`。`category=system` 是系统运行日志，`category=audit` 是已成功写入 SQLite 的管理员操作日志；管理台“操作日志”页面可按操作、结果、时间、来源和请求 ID 查询。默认审计保留 180 天，运行日志保留 30 天；首次启动后在“设置”页修改。日志级别立即生效，缩短保留期后分别在下一次每日清理和日志轮转维护时删除超期数据。
+服务始终把结构化 JSON 写到 stdout，启用 OpenTelemetry 时同时通过 OTLP 发送。`category=system` 是系统运行日志，`category=audit` 是已成功写入 SQLite 的管理员操作日志；管理台“操作日志”页面可按操作、结果、时间、来源和请求 ID 查询。审计日志默认保留 180 天，Loki 中的系统日志保留 30 天。`setup_code` 仅保留在 stdout，不会发送到 Collector。
 
 需要集中收集和查询系统日志时，设置 Grafana 密码并启动可选观测配置：
 
 ```bash
 export GRAFANA_ADMIN_PASSWORD='使用独立的强密码'
-# 单个完整 Compose 文件，同时启动 Bili Notify、Alloy、Loki 和 Grafana
+# 单个完整 Compose 文件，启动应用和完整可观测栈
 docker compose -f compose.full.yaml up -d
 
 # 或者在基础 Compose 上叠加可观测配置
@@ -109,15 +109,19 @@ ssh -L 3000:127.0.0.1:3000 your-server
 # 浏览器打开 http://127.0.0.1:3000
 ```
 
-该配置使用 Alloy 读取共享日志文件并写入 Loki，不挂载 Docker Socket。Grafana 已预置 Loki 数据源和系统日志面板；在 Explore 中可使用：
+应用使用 Cobra/Viper 管理的 `BILI_NOTIFY_OTEL_*` 配置把 logs、metrics 和 100% 采样的 traces 发送到 OpenTelemetry Collector。Collector 把日志写入 Loki、在 `:9464` 导出 Prometheus metrics、把 trace 写入 Tempo；Prometheus 和 Loki 保留 30 天，Tempo 保留 7 天。Collector 出口使用持久化队列与无限时重试，后端短暂故障不阻塞业务。Grafana 预置了 Prometheus、Loki、Tempo 数据源、两个面板和 metrics/logs/traces 关联。
+
+Trace 在这个项目中有必要：一次采集或投递会跨越 B 站 HTTP、SQLite 事务、媒体下载和通知渠道，仅靠日志和指标无法稳定定位慢点与失败链路。本服务流量低，100% 采样的成本可控；不采集探针、静态资源或 WebSocket 长连接生命周期，只记录 WebSocket 握手。
+
+在 Explore 中可使用：
 
 ```logql
-{service="bili-notify",category="system"} | json
-{service="bili-notify",category="system",level=~"WARN|ERROR"} | json
-{service="bili-notify",category="system"} | json | request_id="请求 ID"
+{service_name="bili-notify"} | category="system"
+{service_name="bili-notify"} | category="system" | severity_text=~"WARN|ERROR"
+{service_name="bili-notify"} | trace_id="Trace ID"
 ```
 
-停止观测组件不会影响采集、投递和管理台操作日志；Alloy 重启后会从持久化读取位置继续采集。Loki 和 Grafana 数据分别保存在独立命名卷中。
+基础 `compose.yaml` 显式设置 `BILI_NOTIFY_OTEL_SDK_DISABLED=true`，不依赖观测栈。若手工部署 Collector，至少设置 `BILI_NOTIFY_OTEL_SDK_DISABLED=false`、`BILI_NOTIFY_OTEL_EXPORTER_OTLP_ENDPOINT` 和 `BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL=grpc|http/protobuf`。非法 OpenTelemetry 配置会使启动失败；运行时导出或关闭 flush 失败仅记日志，不使业务退出。
 
 管理员密码可在“设置”中修改，修改后所有现有会话与 WebSocket 会立即失效。本版本不提供忘记密码恢复；密码丢失后只能使用新的数据卷重新初始化。
 

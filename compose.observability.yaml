@@ -1,46 +1,86 @@
+# Merge with compose.yaml:
+# docker compose -f compose.yaml -f compose.observability.yaml --profile observability up -d
 services:
-  loki:
-    image: grafana/loki:3.7.5
-    profiles: ["observability"]
-    command: ["-config.file=/etc/loki/loki.yaml", "-config.expand-env=true"]
+  bili-notify:
     environment:
-      BILI_NOTIFY_SYSTEM_LOG_RETENTION: ${BILI_NOTIFY_SYSTEM_LOG_RETENTION:-720h}
+      BILI_NOTIFY_OTEL_SDK_DISABLED: "false"
+      BILI_NOTIFY_OTEL_SERVICE_NAME: bili-notify
+      BILI_NOTIFY_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      BILI_NOTIFY_OTEL_METRIC_EXPORT_INTERVAL: 15s
+      BILI_NOTIFY_OTEL_DEPLOYMENT_ENVIRONMENT: production
+    depends_on:
+      - otel-collector
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.158.0
+    profiles: ["observability"]
+    user: "0:0"
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deploy/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+      - bili-notify-otelcol:/var/lib/otelcol/storage
+    depends_on:
+      - loki
+      - tempo
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    profiles: ["observability"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yaml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./deploy/observability/rules:/etc/prometheus/rules:ro
+      - bili-notify-prometheus:/prometheus
+    depends_on: [otel-collector]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp:size=32m,mode=1777]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  loki:
+    image: grafana/loki:3.7.6
+    profiles: ["observability"]
+    command: ["-config.file=/etc/loki/loki.yaml"]
     volumes:
       - ./deploy/observability/loki.yaml:/etc/loki/loki.yaml:ro
       - bili-notify-loki:/loki
     restart: unless-stopped
     read_only: true
-    tmpfs:
-      - /tmp:size=32m,mode=1777
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
+    tmpfs: [/tmp:size=32m,mode=1777]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
 
-  alloy:
-    image: grafana/alloy:v1.18.0
+  tempo:
+    image: grafana/tempo:3.0.2
     profiles: ["observability"]
-    user: "0:0"
-    command: ["run", "--server.http.listen-addr=127.0.0.1:12345", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
     volumes:
-      - ./deploy/observability/alloy.config:/etc/alloy/config.alloy:ro
-      - bili-notify-data:/bili-data:ro
-      - bili-notify-alloy:/var/lib/alloy/data
-    depends_on:
-      - loki
+      - ./deploy/observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - bili-notify-tempo:/var/tempo
     restart: unless-stopped
     read_only: true
-    tmpfs:
-      - /tmp:size=32m,mode=1777
-    security_opt:
-      - no-new-privileges:true
+    tmpfs: [/tmp:size=32m,mode=1777]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
 
   grafana:
-    image: grafana/grafana:13.1.2
+    image: grafana/grafana:13.1.3
     profiles: ["observability"]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD before starting the observability profile}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD before starting observability}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_USERS_ALLOW_SIGN_UP: "false"
     ports:
@@ -48,15 +88,14 @@ services:
     volumes:
       - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - bili-notify-grafana:/var/lib/grafana
-    depends_on:
-      - loki
+    depends_on: [prometheus, loki, tempo]
     restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
 
 volumes:
+  bili-notify-otelcol:
+  bili-notify-prometheus:
   bili-notify-loki:
-  bili-notify-alloy:
+  bili-notify-tempo:
   bili-notify-grafana:

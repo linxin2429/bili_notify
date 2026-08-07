@@ -96,7 +96,7 @@ main.go → cmd/ (Cobra CLI + Viper/BILI_NOTIFY_* env)
 | `vault/` | AES-256-GCM seal/open with per-record nonce; AAD = table+key. |
 | `service/` | Engine: poll loop, Outbox delivery loop, auth loop, QR/Microsoft login sessions, metrics, system alerts. |
 | `notify/` | Channel adapters (`Sender` interface): SMTP, Microsoft Graph, DingTalk/Feishu/WeCom robots. |
-| `web/` | TLS 1.3 admin UI (`index.html` + JSON API) on `:8443`; observe (`/healthz`, `/readyz`, `/metrics`) on `:9090`. |
+| `web/` | TLS 1.3 admin UI (`index.html` + JSON API) on `:8443`; observe (`/healthz`, `/readyz`) on `:9090`; OTLP metrics are exported through the Collector. |
 
 ### Core runtime flow
 

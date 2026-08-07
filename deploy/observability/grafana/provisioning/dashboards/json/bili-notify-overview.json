@@ -1,0 +1,82 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "bili-notify-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "bili_notify_ready", "refId": "A" }],
+      "title": "Ready",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "bili-notify-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "bili_notify_auth_valid", "refId": "A" }],
+      "title": "Bilibili session valid",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "bili-notify-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "bili_notify_outbox_pending + bili_notify_outbox_blocked", "refId": "A" }],
+      "title": "Outbox depth",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "bili-notify-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "bili_notify_outbox_oldest_age_seconds", "refId": "A" }],
+      "title": "Oldest delivery age",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "bili-notify-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "id": 5,
+      "targets": [{ "expr": "sum by (workflow, result) (rate(bili_notify_workflow_runs_total[$__rate_interval]))", "legendFormat": "{{workflow}} {{result}}", "refId": "A" }],
+      "title": "Workflow run rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "bili-notify-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "id": 6,
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, workflow) (rate(bili_notify_workflow_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "p95 {{workflow}}", "refId": "A" }],
+      "title": "Workflow p95 duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "bili-notify-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "id": 7,
+      "targets": [{ "expr": "sum by (notification_channel_type, result) (rate(bili_notify_notification_delivery_attempts_total[$__rate_interval]))", "legendFormat": "{{notification_channel_type}} {{result}}", "refId": "A" }],
+      "title": "Notification delivery rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "bili-notify-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "id": 8,
+      "targets": [{ "expr": "sum by (result) (rate(bili_notify_bilibili_requests_total[$__rate_interval]))", "legendFormat": "{{result}}", "refId": "A" }],
+      "title": "Bilibili request rate",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["bili-notify", "operations"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Bili Notify Operational Overview",
+  "uid": "bili-notify-overview",
+  "version": 1
+}

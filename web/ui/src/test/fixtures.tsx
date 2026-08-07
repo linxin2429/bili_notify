@@ -8,7 +8,7 @@ export const settings: RuntimeSettings = {
   poll_interval_sec: 30, request_rate: 2, request_concurrency: 4,
 	comment_enabled: true, comment_track_n: 10, comment_root_pages: 2,
 	comment_reply_pages: 5, comment_batch_interval_sec: 120,
-	log_level: 'info', audit_log_retention_days: 180, system_log_retention_days: 30,
+	log_level: 'info', audit_log_retention_days: 180,
 	relation_refresh_interval_sec: 600, space_reconcile_interval_sec: 1800, max_dynamic_pages: 10, risk_pause_sec: 300,
 	delivery_concurrency: 8, backlog_alert_count: 100, backlog_alert_age_sec: 300,
 	delivery_retry_delays_sec: [5, 30, 120, 600, 3600],

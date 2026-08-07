@@ -31,7 +31,7 @@ compactor:
   delete_request_store: filesystem
 
 limits_config:
-  retention_period: ${BILI_NOTIFY_SYSTEM_LOG_RETENTION}
+  retention_period: 720h
   allow_structured_metadata: true
 
 analytics:

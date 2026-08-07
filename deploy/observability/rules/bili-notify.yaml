@@ -1,0 +1,45 @@
+groups:
+  - name: bili-notify
+    rules:
+      - alert: BiliNotifyNotReady
+        expr: bili_notify_ready == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Bili Notify has not been ready for 10 minutes
+      - alert: BiliNotifyCollectionStalled
+        expr: time() - bili_notify_workflow_last_success{workflow="collection"} > 600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Bili Notify collection has not succeeded recently
+      - alert: BiliNotifyOutboxBacklog
+        expr: bili_notify_outbox_pending + bili_notify_outbox_blocked > bili_notify_config_backlog_alert_count
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Bili Notify delivery queue exceeds its configured threshold
+      - alert: BiliNotifyOldestDeliveryTooOld
+        expr: bili_notify_outbox_oldest_age_seconds > bili_notify_config_backlog_alert_age
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Bili Notify oldest queued delivery exceeds its configured threshold
+      - alert: BiliNotifyDeliveryFailures
+        expr: sum(rate(bili_notify_notification_delivery_attempts_total{result=~"retry|blocked"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Bili Notify notification deliveries are failing
+      - alert: BiliNotifyCollectorExportFailures
+        expr: rate(otelcol_exporter_send_failed_log_records_total[5m]) + rate(otelcol_exporter_send_failed_metric_points_total[5m]) + rate(otelcol_exporter_send_failed_spans_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: OpenTelemetry Collector cannot export telemetry

@@ -17,9 +17,9 @@ import (
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/state"
 	"github.com/linxin2429/bili_notify/vault"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 )
 
 func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
@@ -37,14 +37,14 @@ func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
 
 	v, err := vault.New(bytes.Repeat([]byte{8}, 32))
 	require.NoError(t, err)
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), v)
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), v)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	up := model.UP{UID: "42", Enabled: true}
 	require.NoError(t, store.PutUP(up))
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 	events := NewEventBus()
-	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), events, nil)
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), events, nil)
 	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
 	got, err := store.ListDeliveries(0)
 	require.NoError(t, err)
@@ -77,13 +77,13 @@ func TestPollUPBaselinesExistingExclusiveDynamicsOnce(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	up := model.UP{UID: "42", Enabled: true, BaselineReady: true}
 	require.NoError(t, store.PutUP(up))
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
-	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil, nil)
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
 
 	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
 	deliveries, err := store.ListDeliveries(0)
@@ -134,7 +134,7 @@ func TestPollFeedUsesUpdateGateAndFiltersMonitoredUPs(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 
-			store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
 			session := model.BiliSession{AccountUID: "100", AccountName: "account", Cookies: map[string]string{"SESSDATA": "session"}}
@@ -147,7 +147,7 @@ func TestPollFeedUsesUpdateGateAndFiltersMonitoredUPs(t *testing.T) {
 
 			client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 			client.SetSession(session)
-			engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 2), nil, nil)
+			engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 2), nil, nil)
 			engine.setAccount(model.BiliAccount{UID: "100", Name: "account"})
 			require.NoError(t, engine.pollFeed(t.Context(), model.BiliAccount{UID: "100", Name: "account"}, []model.UP{up}, []string{"channel"}))
 
@@ -179,7 +179,7 @@ func TestPollFeedIsolatesOneMonitoredUPParseFailure(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	session := model.BiliSession{AccountUID: "100", Cookies: map[string]string{"SESSDATA": "session"}}
@@ -199,7 +199,7 @@ func TestPollFeedIsolatesOneMonitoredUPParseFailure(t *testing.T) {
 
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 	client.SetSession(session)
-	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 2), nil, nil)
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 2), nil, nil)
 	engine.setAccount(model.BiliAccount{UID: "100"})
 	require.NoError(t, engine.pollFeed(t.Context(), model.BiliAccount{UID: "100"}, ups, []string{"channel"}))
 
@@ -248,14 +248,14 @@ func TestPollUPLogsSchemaFailure(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	up := model.UP{UID: "42", Name: "configured name", Enabled: true}
 	require.NoError(t, store.PutUP(up))
 	var logs bytes.Buffer
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
-	engine := NewEngine(store, client, slog.New(slog.NewJSONHandler(&logs, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), nil, nil)
+	engine := NewEngine(store, client, slog.New(slog.NewJSONHandler(&logs, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
 	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
 	updated, err := store.UP(up.UID)
 	require.NoError(t, err)
@@ -282,11 +282,11 @@ func testSettings(pollSec int, rate float64, concurrency int) model.RuntimeSetti
 
 func TestApplySettingsHotReloads(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), NewEventBus(), nil)
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 2, 4), NewEventBus(), nil)
 	_, changed := engine.settingsSnapshot()
 	updated := testSettings(120, 1.5, 8)
 	updated.RelationRefreshSec = 900
@@ -302,7 +302,7 @@ func TestApplySettingsHotReloads(t *testing.T) {
 
 func TestStatusReadyUsesPollIntervalWindow(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
@@ -313,7 +313,7 @@ func TestStatusReadyUsesPollIntervalWindow(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(180, 2, 4), nil, nil)
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(180, 2, 4), nil, nil)
 	engine.authValid.Store(true)
 	engine.lastSuccess.Store(time.Now().Add(-150 * time.Second).Unix())
 
@@ -329,7 +329,7 @@ func TestStatusReadyUsesPollIntervalWindow(t *testing.T) {
 
 func TestClockDerivedStatusPublishesOnlyOnBoundaryChanges(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	require.NoError(t, store.PutUP(model.UP{UID: "1", Enabled: true, BaselineReady: true}))
@@ -340,7 +340,7 @@ func TestClockDerivedStatusPublishesOnlyOnBoundaryChanges(t *testing.T) {
 	require.NoError(t, err)
 
 	events := NewEventBus()
-	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), events, nil)
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 2, 4), events, nil)
 	engine.authValid.Store(true)
 	engine.lastSuccess.Store(time.Now().Unix())
 	engine.riskUntil.Store(time.Now().Add(5 * time.Minute).Unix())
@@ -362,14 +362,14 @@ func TestPollUPPublishesCommittedOutboxBeforeLaterBookkeepingFailure(t *testing.
 	}))
 	t.Cleanup(server.Close)
 
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	events := NewEventBus()
 	subscription := events.Subscribe()
 	t.Cleanup(subscription.Close)
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
-	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 10, 1), events, nil)
+	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), events, nil)
 
 	err = engine.pollUP(t.Context(), model.UP{
 		UID: "42", Name: "tester", Enabled: true,
@@ -390,11 +390,11 @@ func TestPollUPPublishesCommittedOutboxBeforeLaterBookkeepingFailure(t *testing.
 
 func TestDispatchOnceDoesNotPublishWhenQueueIsIdle(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	events := NewEventBus()
-	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), events, nil)
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 2, 4), events, nil)
 
 	before := events.Revision()
 	require.NoError(t, engine.dispatchOnce(t.Context()))
@@ -403,7 +403,7 @@ func TestDispatchOnceDoesNotPublishWhenQueueIsIdle(t *testing.T) {
 
 func TestDispatchOncePublishesMinimalTopicsAfterDeliveryChanges(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	created, err := store.RecordDynamics("42", []model.Dynamic{{
@@ -416,7 +416,7 @@ func TestDispatchOncePublishesMinimalTopicsAfterDeliveryChanges(t *testing.T) {
 	events := NewEventBus()
 	subscription := events.Subscribe()
 	t.Cleanup(subscription.Close)
-	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(prometheus.NewRegistry()), testSettings(30, 2, 4), events, nil)
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 2, 4), events, nil)
 	require.NoError(t, engine.dispatchOnce(t.Context()))
 
 	topics, _, err := subscription.Next(t.Context())

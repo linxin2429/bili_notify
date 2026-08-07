@@ -53,7 +53,7 @@ func TestAuditLogPrune(t *testing.T) {
 
 func seedAuditStore(t *testing.T, base time.Time) *Store {
 	t.Helper()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, 72))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 72))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	entries := []AuditLog{

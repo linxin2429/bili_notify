@@ -12,7 +12,7 @@ import (
 
 func openTestStore(t *testing.T, fill byte) *Store {
 	t.Helper()
-	store, err := Open(filepath.Join(t.TempDir(), "data.db"), mustVault(t, fill))
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, fill))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	return store

@@ -14,6 +14,12 @@ import (
 	"time"
 
 	"github.com/linxin2429/bili_notify/model"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 const (
@@ -63,6 +69,9 @@ type Client struct {
 	userAgent   string
 	mu          sync.RWMutex
 	cookies     map[string]string
+	tracer      trace.Tracer
+	requests    metric.Int64Counter
+	duration    metric.Float64Histogram
 }
 
 type Option func(*Client)
@@ -71,6 +80,19 @@ func WithBaseURLs(apiURL, passportURL string) Option {
 	return func(c *Client) {
 		c.apiURL = strings.TrimRight(apiURL, "/")
 		c.passportURL = strings.TrimRight(passportURL, "/")
+	}
+}
+
+// WithTelemetry instruments Bilibili operations without recording request URLs or query values.
+func WithTelemetry(tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider) Option {
+	return func(c *Client) {
+		c.tracer = tracerProvider.Tracer("github.com/linxin2429/bili_notify/bilibili")
+		meter := meterProvider.Meter("github.com/linxin2429/bili_notify/bilibili")
+		c.requests = mustInstrument(meter.Int64Counter("bili_notify.bilibili.requests",
+			metric.WithDescription("Bilibili API request outcomes.")))
+		c.duration = mustInstrument(meter.Float64Histogram("bili_notify.bilibili.request.duration",
+			metric.WithDescription("Bilibili API request duration."), metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)))
 	}
 }
 
@@ -84,7 +106,11 @@ func New(httpClient *http.Client, userAgent string, opts ...Option) *Client {
 		passportURL: defaultPassport,
 		userAgent:   userAgent,
 		cookies:     make(map[string]string),
+		tracer:      tracenoop.NewTracerProvider().Tracer("github.com/linxin2429/bili_notify/bilibili"),
 	}
+	meter := metricnoop.NewMeterProvider().Meter("github.com/linxin2429/bili_notify/bilibili")
+	c.requests = mustInstrument(meter.Int64Counter("bili_notify.bilibili.requests"))
+	c.duration = mustInstrument(meter.Float64Histogram("bili_notify.bilibili.request.duration"))
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -124,7 +150,29 @@ func (c *Client) addHeaders(req *http.Request, withAuth bool) {
 	}
 }
 
-func (c *Client) get(ctx context.Context, endpoint string, query url.Values, withAuth bool) (*http.Response, []byte, error) {
+func (c *Client) get(ctx context.Context, endpoint string, query url.Values, withAuth bool) (resp *http.Response, body []byte, err error) {
+	operation := "unknown"
+	if parsed, parseErr := url.Parse(endpoint); parseErr == nil {
+		operation = parsed.Path
+	}
+	ctx, span := c.tracer.Start(ctx, "bilibili "+operation, trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("bilibili.operation", operation)))
+	started := time.Now()
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "error"
+			span.SetStatus(codes.Error, "Bilibili operation failed")
+		}
+		attrs := []attribute.KeyValue{attribute.String("bilibili.operation", operation), attribute.String("result", result)}
+		if resp != nil {
+			attrs = append(attrs, attribute.Int("http.response.status_code", resp.StatusCode))
+		}
+		options := metric.WithAttributes(attrs...)
+		c.requests.Add(ctx, 1, options)
+		c.duration.Record(ctx, time.Since(started).Seconds(), options)
+		span.End()
+	}()
 	u := endpoint
 	if len(query) > 0 {
 		u += "?" + query.Encode()
@@ -134,12 +182,12 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, wit
 		return nil, nil, fmt.Errorf("creating request: %w", err)
 	}
 	c.addHeaders(req, withAuth)
-	resp, err := c.httpClient.Do(req)
+	resp, err = c.httpClient.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("requesting bilibili: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	body, err = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return resp, nil, fmt.Errorf("reading bilibili response: %w", err)
 	}
@@ -153,6 +201,13 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, wit
 		return resp, body, &APIError{Kind: ErrorTemporary, HTTPStatus: resp.StatusCode, Message: http.StatusText(resp.StatusCode)}
 	}
 	return resp, body, nil
+}
+
+func mustInstrument[T any](instrument T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return instrument
 }
 
 type envelope struct {

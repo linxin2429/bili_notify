@@ -21,8 +21,10 @@ import (
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -35,27 +37,33 @@ type SettingsService interface {
 }
 
 type Server struct {
-	adminAddr     string
-	observeAddr   string
-	tlsConfig     *tls.Config
-	auth          *authenticator
-	engine        *service.Engine
-	settings      SettingsService
-	store         *state.Store
-	events        *service.EventBus
-	logger        *slog.Logger
-	auditLogger   *slog.Logger
-	metrics       *service.Metrics
-	registry      *prometheus.Registry
-	dataDir       string
-	static        fs.FS
-	connectionsMu sync.Mutex
-	connections   map[string]map[*websocket.Conn]struct{}
+	adminAddr      string
+	observeAddr    string
+	tlsConfig      *tls.Config
+	auth           *authenticator
+	engine         *service.Engine
+	settings       SettingsService
+	store          *state.Store
+	events         *service.EventBus
+	logger         *slog.Logger
+	auditLogger    *slog.Logger
+	metrics        *service.Metrics
+	tracer         trace.Tracer
+	tracerProvider trace.TracerProvider
+	meterProvider  metric.MeterProvider
+	propagator     propagation.TextMapPropagator
+	dataDir        string
+	static         fs.FS
+	connectionsMu  sync.Mutex
+	connections    map[string]map[*websocket.Conn]struct{}
 }
 
-func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, settings SettingsService, store *state.Store, events *service.EventBus, logger, auditLogger *slog.Logger, registry *prometheus.Registry, dataDir string) (*Server, error) {
+func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, settings SettingsService, store *state.Store, events *service.EventBus, logger, auditLogger *slog.Logger, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, propagator propagation.TextMapPropagator, dataDir string) (*Server, error) {
 	if settings == nil {
 		return nil, errors.New("settings service is required")
+	}
+	if tracerProvider == nil || meterProvider == nil || propagator == nil {
+		return nil, errors.New("OpenTelemetry providers and propagator are required")
 	}
 	tlsConfig, err := loadOrCreateTLSConfig(tlsPath)
 	if err != nil {
@@ -74,7 +82,9 @@ func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, s
 	}
 	return &Server{
 		adminAddr: adminAddr, observeAddr: observeAddr, tlsConfig: tlsConfig, auth: auth,
-		engine: engine, settings: settings, store: store, events: events, logger: logger, auditLogger: auditLogger, metrics: engine.Metrics(), registry: registry, dataDir: dataDir, static: static,
+		engine: engine, settings: settings, store: store, events: events, logger: logger, auditLogger: auditLogger, metrics: engine.Metrics(),
+		tracer: tracerProvider.Tracer("github.com/linxin2429/bili_notify/web"), tracerProvider: tracerProvider, meterProvider: meterProvider, propagator: propagator,
+		dataDir: dataDir, static: static,
 		connections: make(map[string]map[*websocket.Conn]struct{}),
 	}, nil
 }
@@ -140,7 +150,6 @@ func (s *Server) observeHandler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ready": true})
 	})
-	mux.Handle("GET /metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))
 	return mux
 }
 
@@ -156,7 +165,15 @@ func (s *Server) adminHandler() http.Handler {
 	mux.Handle("GET /assets/", http.FileServer(http.FS(s.static)))
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /{path...}", s.index)
-	return securityHeaders(s.withRequestLog(mux))
+	handler := http.Handler(securityHeaders(s.withRequestLog(mux)))
+	return otelhttp.NewHandler(handler, "admin.request",
+		otelhttp.WithTracerProvider(s.tracerProvider),
+		otelhttp.WithMeterProvider(s.meterProvider),
+		otelhttp.WithPropagators(s.propagator),
+		otelhttp.WithFilter(func(request *http.Request) bool {
+			return strings.HasPrefix(request.URL.Path, "/api/") && request.URL.Path != "/api/v1/ws"
+		}),
+	)
 }
 
 func securityHeaders(next http.Handler) http.Handler {

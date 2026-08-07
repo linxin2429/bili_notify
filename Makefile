@@ -25,7 +25,7 @@ LDFLAGS := -s -w \
 
 .NOTPARALLEL: check
 
-.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e build clean fmt test test-race coverage vet vulncheck check run docker-build docker-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
+.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e build clean fmt test test-race coverage vet vulncheck check run docker-build docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
 
 help:
 	@printf '%s\n' \
@@ -53,6 +53,8 @@ help:
 		'Docker:' \
 		'  docker-build           build DOCKER_IMAGE (default: bili-notify:local)' \
 		'  docker-smoke           build and smoke-test DOCKER_IMAGE' \
+		'  observability-validate validate Compose, Collector, Prometheus, Loki, and Tempo configs' \
+		'  observability-smoke    query a running full observability stack' \
 		'  compose-pull           pull Compose images' \
 		'  compose-up             start Compose services' \
 		'  compose-stop           stop the bili-notify service' \
@@ -131,6 +133,17 @@ docker-build:
 
 docker-smoke: docker-build
 	./e2e/docker-smoke.sh "$(DOCKER_IMAGE)"
+
+observability-validate:
+	GRAFANA_ADMIN_PASSWORD=validation $(COMPOSE) -f compose.yaml -f compose.observability.yaml --profile observability config >/dev/null
+	GRAFANA_ADMIN_PASSWORD=validation $(COMPOSE) -f compose.full.yaml config >/dev/null
+	docker run --rm -v "$(CURDIR)/deploy/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro" otel/opentelemetry-collector-contrib:0.158.0 validate --config=/etc/otelcol/config.yaml
+	docker run --rm --entrypoint=/bin/promtool -v "$(CURDIR)/deploy/observability:/etc/prometheus:ro" prom/prometheus:v3.13.2 check config /etc/prometheus/prometheus.yaml
+	docker run --rm -v "$(CURDIR)/deploy/observability/loki.yaml:/etc/loki/loki.yaml:ro" grafana/loki:3.7.6 -config.file=/etc/loki/loki.yaml -verify-config
+	docker run --rm -v "$(CURDIR)/deploy/observability/tempo.yaml:/etc/tempo/tempo.yaml:ro" grafana/tempo:3.0.2 -config.file=/etc/tempo/tempo.yaml -config.verify=true
+
+observability-smoke:
+	./e2e/observability-smoke.sh compose.full.yaml
 
 compose-pull:
 	$(COMPOSE) $(COMPOSE_FLAGS) pull

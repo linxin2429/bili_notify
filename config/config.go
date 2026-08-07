@@ -20,24 +20,31 @@ const (
 	MasterKeyFileName = "master.key"
 	TLSFileName       = "tls.pem"
 	MediaDirName      = "media"
-	LogsDirName       = "logs"
-	LogFileName       = "bili-notify.jsonl"
 )
 
 // Config contains process startup settings.
-// DataDir and listen addresses are immutable for the process lifetime. Collector,
-// logging, and retention values are first-run defaults only: when the store has no
-// runtime settings yet they seed it; afterwards the admin UI owns them.
+// DataDir, listen addresses, and OpenTelemetry values are immutable for the process
+// lifetime. Collector, logging, and retention values are first-run defaults only:
+// when the store has no runtime settings yet they seed it; afterwards the admin UI
+// owns them.
 type Config struct {
-	DataDir            string        `mapstructure:"data_dir"`
-	AdminAddr          string        `mapstructure:"admin_addr"`
-	ObserveAddr        string        `mapstructure:"observe_addr"`
-	PollInterval       time.Duration `mapstructure:"poll_interval"`
-	RequestRate        float64       `mapstructure:"request_rate"`
-	RequestConcurrency int           `mapstructure:"request_concurrency"`
-	LogLevel           string        `mapstructure:"log_level"`
-	AuditLogRetention  time.Duration `mapstructure:"audit_log_retention"`
-	SystemLogRetention time.Duration `mapstructure:"system_log_retention"`
+	DataDir                         string        `mapstructure:"data_dir"`
+	AdminAddr                       string        `mapstructure:"admin_addr"`
+	ObserveAddr                     string        `mapstructure:"observe_addr"`
+	PollInterval                    time.Duration `mapstructure:"poll_interval"`
+	RequestRate                     float64       `mapstructure:"request_rate"`
+	RequestConcurrency              int           `mapstructure:"request_concurrency"`
+	LogLevel                        string        `mapstructure:"log_level"`
+	AuditLogRetention               time.Duration `mapstructure:"audit_log_retention"`
+	OTelSDKDisabled                 bool          `mapstructure:"otel_sdk_disabled"`
+	OTelServiceName                 string        `mapstructure:"otel_service_name"`
+	OTelDeploymentEnvironment       string        `mapstructure:"otel_deployment_environment"`
+	OTelExporterOTLPEndpoint        string        `mapstructure:"otel_exporter_otlp_endpoint"`
+	OTelExporterOTLPProtocol        string        `mapstructure:"otel_exporter_otlp_protocol"`
+	OTelExporterOTLPTracesProtocol  string        `mapstructure:"otel_exporter_otlp_traces_protocol"`
+	OTelExporterOTLPMetricsProtocol string        `mapstructure:"otel_exporter_otlp_metrics_protocol"`
+	OTelExporterOTLPLogsProtocol    string        `mapstructure:"otel_exporter_otlp_logs_protocol"`
+	OTelMetricExportInterval        time.Duration `mapstructure:"otel_metric_export_interval"`
 }
 
 func (c Config) Validate() error {
@@ -58,12 +65,8 @@ func (c Config) Validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("invalid log level %q", c.LogLevel))
 	}
-	for name, retention := range map[string]time.Duration{
-		"audit log": c.AuditLogRetention, "system log": c.SystemLogRetention,
-	} {
-		if retention < 24*time.Hour || retention > 3650*24*time.Hour || retention%(24*time.Hour) != 0 {
-			errs = append(errs, fmt.Errorf("%s retention must be a whole number of days between 1 and 3650", name))
-		}
+	if retention := c.AuditLogRetention; retention < 24*time.Hour || retention > 3650*24*time.Hour || retention%(24*time.Hour) != 0 {
+		errs = append(errs, errors.New("audit log retention must be a whole number of days between 1 and 3650"))
 	}
 	return errors.Join(errs...)
 }
@@ -76,7 +79,6 @@ func (c Config) SeedRuntimeSettings() model.RuntimeSettings {
 	settings.RequestConcurrency = c.RequestConcurrency
 	settings.LogLevel = strings.ToLower(strings.TrimSpace(c.LogLevel))
 	settings.AuditLogRetentionDays = int(c.AuditLogRetention / (24 * time.Hour))
-	settings.SystemLogRetentionDays = int(c.SystemLogRetention / (24 * time.Hour))
 	return settings
 }
 
@@ -93,11 +95,6 @@ func DataPath(dataDir string) string {
 // MediaDir returns the on-disk media archive directory under dataDir.
 func MediaDir(dataDir string) string {
 	return filepath.Join(dataDir, MediaDirName)
-}
-
-// LogPath returns the structured JSON log path under dataDir.
-func LogPath(dataDir string) string {
-	return filepath.Join(dataDir, LogsDirName, LogFileName)
 }
 
 // RefuseLegacyDataDir fails closed when an older bbolt/content dual-store volume is present.

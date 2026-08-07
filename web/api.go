@@ -62,14 +62,14 @@ func (s *Server) createUPAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusCreated, nil, validationFailure(err))
 		return
 	}
-	if _, err := s.store.UP(up.UID); err == nil {
+	if _, err := s.store.WithContext(r.Context()).UP(up.UID); err == nil {
 		s.writeAPIResult(w, http.StatusCreated, nil, conflictFailure(errors.New("UP already exists")))
 		return
 	} else if !errors.Is(err, state.ErrNotFound) {
 		s.writeAPIResult(w, http.StatusCreated, nil, err)
 		return
 	}
-	if err := s.store.PutUP(up); err != nil {
+	if err := s.store.WithContext(r.Context()).PutUP(up); err != nil {
 		s.writeAPIResult(w, http.StatusCreated, nil, err)
 		return
 	}
@@ -88,7 +88,7 @@ func (s *Server) updateUPAPI(w http.ResponseWriter, r *http.Request) {
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	up, err := s.store.UP(r.PathValue("uid"))
+	up, err := s.store.WithContext(r.Context()).UP(r.PathValue("uid"))
 	if err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, err)
 		return
@@ -99,7 +99,7 @@ func (s *Server) updateUPAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(err))
 		return
 	}
-	if err := s.store.PutUP(up); err != nil {
+	if err := s.store.WithContext(r.Context()).PutUP(up); err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, err)
 		return
 	}
@@ -114,16 +114,16 @@ func (s *Server) updateUPAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteUPAPI(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
-	if up, err := s.store.UP(uid); err == nil {
+	if up, err := s.store.WithContext(r.Context()).UP(uid); err == nil {
 		setAuditDetails(r, map[string]any{"name": up.Name, "enabled": up.Enabled})
 	}
-	if err := s.store.DeleteUP(uid); err != nil {
+	if err := s.store.WithContext(r.Context()).DeleteUP(uid); err != nil {
 		s.writeAPIResult(w, http.StatusNoContent, nil, err)
 		return
 	}
 	if s.dataDir != "" {
 		if err := media.RemoveUP(s.dataDir, uid); err != nil {
-			s.logger.Warn("removing media for deleted UP failed", "event", "media.remove_up.failed", "up_uid", uid, "error", err)
+			s.logger.WarnContext(r.Context(), "removing media for deleted UP failed", "event", "media.remove_up.failed", "up_uid", uid, "error", err)
 		}
 	}
 	s.engine.NotifyUPChanged()
@@ -152,7 +152,7 @@ func (s *Server) updateChannelAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	input.ID = r.PathValue("id")
 	var before *model.Channel
-	if current, currentErr := s.store.Channel(input.ID); currentErr == nil {
+	if current, currentErr := s.store.WithContext(r.Context()).Channel(input.ID); currentErr == nil {
 		before = &current
 	}
 	channel, err := s.saveChannel(input, true)
@@ -165,10 +165,10 @@ func (s *Server) updateChannelAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteChannelAPI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if channel, err := s.store.Channel(id); err == nil {
+	if channel, err := s.store.WithContext(r.Context()).Channel(id); err == nil {
 		setAuditDetails(r, channelAuditDetails(&channel, model.Channel{}))
 	}
-	if err := s.store.DeleteChannel(id); err != nil {
+	if err := s.store.WithContext(r.Context()).DeleteChannel(id); err != nil {
 		s.writeAPIResult(w, http.StatusNoContent, nil, err)
 		return
 	}
@@ -193,7 +193,7 @@ func (s *Server) retryDeliveryAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusAccepted, nil, validationFailure(errors.New("delivery id is required")))
 		return
 	}
-	if err := s.store.RetryDelivery(id, time.Now()); err != nil {
+	if err := s.store.WithContext(r.Context()).RetryDelivery(id, time.Now()); err != nil {
 		if errors.Is(err, state.ErrDeliveryNotBlocked) {
 			err = conflictFailure(err)
 		}
@@ -245,7 +245,6 @@ type runtimeSettingsRequest struct {
 	CommentBatchIntervalSec *int     `json:"comment_batch_interval_sec"`
 	LogLevel                *string  `json:"log_level"`
 	AuditLogRetentionDays   *int     `json:"audit_log_retention_days"`
-	SystemLogRetentionDays  *int     `json:"system_log_retention_days"`
 	RelationRefreshSec      *int     `json:"relation_refresh_interval_sec"`
 	SpaceReconcileSec       *int     `json:"space_reconcile_interval_sec"`
 	MaxDynamicPages         *int     `json:"max_dynamic_pages"`
@@ -264,8 +263,8 @@ func (input runtimeSettingsRequest) settings() (model.RuntimeSettings, error) {
 		"comment_track_n": input.CommentTrackN != nil, "comment_root_pages": input.CommentRootPages != nil,
 		"comment_reply_pages": input.CommentReplyPages != nil, "comment_batch_interval_sec": input.CommentBatchIntervalSec != nil,
 		"log_level": input.LogLevel != nil, "audit_log_retention_days": input.AuditLogRetentionDays != nil,
-		"system_log_retention_days": input.SystemLogRetentionDays != nil, "relation_refresh_interval_sec": input.RelationRefreshSec != nil,
-		"space_reconcile_interval_sec": input.SpaceReconcileSec != nil, "max_dynamic_pages": input.MaxDynamicPages != nil,
+		"relation_refresh_interval_sec": input.RelationRefreshSec != nil,
+		"space_reconcile_interval_sec":  input.SpaceReconcileSec != nil, "max_dynamic_pages": input.MaxDynamicPages != nil,
 		"risk_pause_sec": input.RiskPauseSec != nil, "delivery_concurrency": input.DeliveryConcurrency != nil,
 		"backlog_alert_count": input.BacklogAlertCount != nil, "backlog_alert_age_sec": input.BacklogAlertAgeSec != nil,
 		"delivery_retry_delays_sec": input.DeliveryRetryDelaysSec != nil,
@@ -285,7 +284,7 @@ func (input runtimeSettingsRequest) settings() (model.RuntimeSettings, error) {
 		PollIntervalSec: *input.PollIntervalSec, RequestRate: *input.RequestRate, RequestConcurrency: *input.RequestConcurrency,
 		CommentEnabled: *input.CommentEnabled, CommentTrackN: *input.CommentTrackN, CommentRootPages: *input.CommentRootPages,
 		CommentReplyPages: *input.CommentReplyPages, CommentBatchIntervalSec: *input.CommentBatchIntervalSec,
-		LogLevel: *input.LogLevel, AuditLogRetentionDays: *input.AuditLogRetentionDays, SystemLogRetentionDays: *input.SystemLogRetentionDays,
+		LogLevel: *input.LogLevel, AuditLogRetentionDays: *input.AuditLogRetentionDays,
 		RelationRefreshSec: *input.RelationRefreshSec, SpaceReconcileSec: *input.SpaceReconcileSec, MaxDynamicPages: *input.MaxDynamicPages,
 		RiskPauseSec: *input.RiskPauseSec, DeliveryConcurrency: *input.DeliveryConcurrency,
 		BacklogAlertCount: *input.BacklogAlertCount, BacklogAlertAgeSec: *input.BacklogAlertAgeSec,
@@ -359,7 +358,7 @@ func (s *Server) queryAuditLogsAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	items, total, err := s.store.QueryAuditLogs(input)
+	items, total, err := s.store.WithContext(r.Context()).QueryAuditLogs(input)
 	limit, offset := normalizeAuditPage(input.Limit, input.Offset)
 	s.writeAPIResult(w, http.StatusOK, contentPage{Items: items, Total: total, Limit: limit, Offset: offset}, err)
 }
@@ -436,7 +435,7 @@ func (s *Server) queryContentAPI(w http.ResponseWriter, r *http.Request, dynamic
 	}
 	limit, offset := normalizeQueryPage(q.Limit, q.Offset)
 	if dynamics {
-		items, total, err := s.store.QueryDynamics(q)
+		items, total, err := s.store.WithContext(r.Context()).QueryDynamics(q)
 		views := make([]dynamicHistoryView, 0, len(items))
 		for _, item := range items {
 			views = append(views, toDynamicHistoryView(item))
@@ -444,7 +443,7 @@ func (s *Server) queryContentAPI(w http.ResponseWriter, r *http.Request, dynamic
 		s.writeAPIResult(w, http.StatusOK, contentPage{Items: views, Total: total, Limit: limit, Offset: offset}, err)
 		return
 	}
-	items, total, err := s.store.QueryComments(q)
+	items, total, err := s.store.WithContext(r.Context()).QueryComments(q)
 	views := make([]commentHistoryView, 0, len(items))
 	for _, item := range items {
 		views = append(views, toCommentHistoryView(item))
@@ -458,7 +457,7 @@ func (s *Server) getDynamicAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(errors.New("id is required")))
 		return
 	}
-	dynamic, err := s.store.GetDynamic(id)
+	dynamic, err := s.store.WithContext(r.Context()).GetDynamic(id)
 	s.writeAPIResult(w, http.StatusOK, dynamic, err)
 }
 
@@ -473,7 +472,7 @@ func (s *Server) getDynamicMediaAPI(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "validation_error", "media index must be a non-negative integer")
 		return
 	}
-	dynamic, err := s.store.GetDynamic(id)
+	dynamic, err := s.store.WithContext(r.Context()).GetDynamic(id)
 	if err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, err)
 		return
@@ -495,6 +494,7 @@ func (s *Server) getDynamicMediaAPI(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			s.metrics.RecordMediaMissing(r.Context())
 			writeAPIError(w, http.StatusNotFound, "not_found", "local media file is missing")
 			return
 		}
@@ -517,7 +517,7 @@ func (s *Server) getCommentAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(errors.New("rpid is required")))
 		return
 	}
-	note, err := s.store.GetComment(rpid)
+	note, err := s.store.WithContext(r.Context()).GetComment(rpid)
 	s.writeAPIResult(w, http.StatusOK, note, err)
 }
 

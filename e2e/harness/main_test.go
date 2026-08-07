@@ -17,8 +17,6 @@ import (
 )
 
 func TestApplicationHTTPIntegration(t *testing.T) {
-	t.Parallel()
-
 	root, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	capture := new(logCapture)
@@ -121,11 +119,8 @@ func TestApplicationHTTPIntegration(t *testing.T) {
 	assert.Equal(t, false, restarted["authenticated"])
 
 	response = integrationRequest(t, client, http.MethodGet, observeURL+"/metrics", "", nil)
-	assert.Equal(t, http.StatusOK, response.StatusCode)
-	body, err := io.ReadAll(response.Body)
-	require.NoError(t, err)
+	assert.Equal(t, http.StatusNotFound, response.StatusCode)
 	closeIntegrationResponse(t, response)
-	assert.Contains(t, string(body), "bili_notify_auth_state")
 }
 
 func integrationRequest(t *testing.T, client *http.Client, method, endpoint, csrf string, body any) *http.Response {

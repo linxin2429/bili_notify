@@ -11,7 +11,6 @@ export interface RuntimeSettingsForm {
   commentBatchSec: string
   logLevel: RuntimeSettings['log_level']
   auditRetentionDays: string
-  systemRetentionDays: string
   relationRefreshSec: string
   spaceReconcileSec: string
   maxDynamicPages: string
@@ -29,7 +28,7 @@ export function runtimeSettingsToForm(settings: RuntimeSettings): RuntimeSetting
     pollSec: String(settings.poll_interval_sec), requestRate: String(settings.request_rate), concurrency: String(settings.request_concurrency),
     commentEnabled: settings.comment_enabled, commentTrackN: String(settings.comment_track_n), commentRootPages: String(settings.comment_root_pages),
     commentReplyPages: String(settings.comment_reply_pages), commentBatchSec: String(settings.comment_batch_interval_sec), logLevel: settings.log_level,
-    auditRetentionDays: String(settings.audit_log_retention_days), systemRetentionDays: String(settings.system_log_retention_days),
+    auditRetentionDays: String(settings.audit_log_retention_days),
     relationRefreshSec: String(settings.relation_refresh_interval_sec), spaceReconcileSec: String(settings.space_reconcile_interval_sec),
     maxDynamicPages: String(settings.max_dynamic_pages), riskPauseSec: String(settings.risk_pause_sec),
     deliveryConcurrency: String(settings.delivery_concurrency), backlogAlertCount: String(settings.backlog_alert_count),
@@ -46,7 +45,7 @@ export function parseRuntimeSettingsForm(input: RuntimeSettingsForm): RuntimeSet
     poll_interval_sec: Number(input.pollSec), request_rate: Number(input.requestRate), request_concurrency: Number(input.concurrency),
     comment_enabled: input.commentEnabled, comment_track_n: Number(input.commentTrackN), comment_root_pages: Number(input.commentRootPages),
     comment_reply_pages: Number(input.commentReplyPages), comment_batch_interval_sec: Number(input.commentBatchSec), log_level: input.logLevel,
-    audit_log_retention_days: Number(input.auditRetentionDays), system_log_retention_days: Number(input.systemRetentionDays),
+    audit_log_retention_days: Number(input.auditRetentionDays),
     relation_refresh_interval_sec: Number(input.relationRefreshSec), space_reconcile_interval_sec: Number(input.spaceReconcileSec),
     max_dynamic_pages: Number(input.maxDynamicPages), risk_pause_sec: Number(input.riskPauseSec),
     delivery_concurrency: Number(input.deliveryConcurrency), backlog_alert_count: Number(input.backlogAlertCount),
@@ -60,7 +59,6 @@ export function parseRuntimeSettingsForm(input: RuntimeSettingsForm): RuntimeSet
   if (!integerIn(value.comment_reply_pages, 1, 20)) return failure('子评论页数必须是 1 到 20 的整数')
   if (!integerIn(value.comment_batch_interval_sec, 30, 86400)) return failure('评论批次间隔必须是 30 到 86400 秒的整数')
   if (!integerIn(value.audit_log_retention_days, 1, 3650)) return failure('审计日志保留天数必须是 1 到 3650 的整数')
-  if (!integerIn(value.system_log_retention_days, 1, 3650)) return failure('系统日志保留天数必须是 1 到 3650 的整数')
   if (!integerIn(value.relation_refresh_interval_sec, 60, 86400)) return failure('关注关系刷新间隔必须是 60 到 86400 秒的整数')
   if (!integerIn(value.space_reconcile_interval_sec, 300, 604800)) return failure('空间校验间隔必须是 300 到 604800 秒的整数')
   if (!integerIn(value.max_dynamic_pages, 1, 20)) return failure('动态翻页上限必须是 1 到 20 的整数')
