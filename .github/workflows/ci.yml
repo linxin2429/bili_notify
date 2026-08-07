@@ -35,7 +35,9 @@ jobs:
           cache-dependency-path: web/ui/package-lock.json
 
       - name: Build and test
-        run: make check PLAYWRIGHT_INSTALL_FLAGS=--with-deps
+        # Self-hosted runners already have Chromium system libs and cannot
+        # passwordless sudo for playwright install-deps. Install browser only.
+        run: make check
 
       - name: Upload core Go coverage to Codecov
         uses: codecov/codecov-action@v5
