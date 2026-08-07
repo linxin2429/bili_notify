@@ -187,7 +187,7 @@ function messageText(message: Record<string, unknown>): string {
 }
 
 async function startHarness(repository: string, directory: string) {
-  const child = spawn('go', ['run', './e2e/harness', '--data-dir', directory], {
+  const child = spawn('go', ['run', '-trimpath', './e2e/harness', '--data-dir', directory], {
     cwd: repository,
     env: { ...process.env, CGO_ENABLED: '0', OTEL_SDK_DISABLED: 'true' },
   })
