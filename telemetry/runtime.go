@@ -148,7 +148,11 @@ func newResource(ctx context.Context, version, instanceID string) (*resource.Res
 	base, err := resource.New(ctx,
 		resource.WithFromEnv(),
 		resource.WithTelemetrySDK(),
-		resource.WithProcess(),
+		resource.WithProcessPID(),
+		resource.WithProcessExecutableName(),
+		resource.WithProcessRuntimeName(),
+		resource.WithProcessRuntimeVersion(),
+		resource.WithProcessRuntimeDescription(),
 		resource.WithOS(),
 		resource.WithHost(),
 	)

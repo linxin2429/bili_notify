@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 )
 
 func TestNewConfiguration(t *testing.T) {
@@ -72,6 +74,39 @@ func TestSignalProtocolPrecedence(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestNewResourceUsesSafeProcessAttributes(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
+	t.Setenv("OTEL_SERVICE_NAME", "bili-notify-test")
+
+	got, err := newResource(t.Context(), "1.2.3", "instance-1")
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		key     attribute.Key
+		want    string
+		present bool
+	}{
+		{name: "service name", key: semconv.ServiceNameKey, want: "bili-notify-test", present: true},
+		{name: "service version", key: semconv.ServiceVersionKey, want: "1.2.3", present: true},
+		{name: "service instance", key: semconv.ServiceInstanceIDKey, want: "instance-1", present: true},
+		{name: "process id", key: semconv.ProcessPIDKey, present: true},
+		{name: "runtime name", key: semconv.ProcessRuntimeNameKey, want: "go", present: true},
+		{name: "command arguments", key: semconv.ProcessCommandArgsKey},
+		{name: "process owner", key: semconv.ProcessOwnerKey},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			value, ok := got.Set().Value(tt.key)
+			assert.Equal(t, tt.present, ok)
+			if tt.want != "" {
+				require.True(t, ok)
+				assert.Equal(t, tt.want, value.AsString())
+			}
 		})
 	}
 }
