@@ -111,7 +111,7 @@ ssh -L 3000:127.0.0.1:3000 your-server
 
 应用使用 Cobra/Viper 管理的 `BILI_NOTIFY_OTEL_*` 配置把 logs、metrics 和 100% 采样的 traces 发送到 OpenTelemetry Collector。Collector 把日志写入 Loki、在 `:9464` 导出 Prometheus metrics、把 trace 写入 Tempo；Prometheus 和 Loki 保留 30 天，Tempo 保留 7 天。Collector 出口使用持久化队列与无限时重试，后端短暂故障不阻塞业务。Grafana 预置了 Prometheus、Loki、Tempo 数据源、两个面板和 metrics/logs/traces 关联。
 
-Trace 在这个项目中有必要：一次采集或投递会跨越 B 站 HTTP、SQLite 事务、媒体下载和通知渠道，仅靠日志和指标无法稳定定位慢点与失败链路。本服务流量低，100% 采样的成本可控；不采集探针、静态资源或 WebSocket 长连接生命周期，只记录 WebSocket 握手。
+Trace 在这个项目中有必要：一次采集或投递会跨越 B 站 HTTP、SQLite 事务、媒体下载和通知渠道，仅靠日志和指标无法稳定定位慢点与失败链路。采集创建 Outbox 任务时会持久化 W3C Trace Context，异步投递恢复同一 Trace，因此可以在 Tempo 的一条 waterfall 中查看从内容发现、入队到通知渠道发送的完整因果链。本服务流量低，100% 采样的成本可控；空闲 Outbox 轮询、探针、静态资源和 WebSocket 长连接生命周期不采集，只记录 WebSocket 握手。
 
 在 Explore 中可使用：
 

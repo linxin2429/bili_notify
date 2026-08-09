@@ -171,10 +171,12 @@ func (s *Store) RecordFeedDynamics(accountUID, baseline string, dynamics []model
 			if res.RowsAffected == 0 {
 				continue
 			}
+			origin := originTraceparent(tx.Statement.Context)
 			for _, channelID := range channelIDs {
 				delivery := model.Delivery{
 					ID: dynamic.ID + ":" + channelID, Kind: model.DeliveryKindDynamic, Dynamic: dynamic,
 					ChannelID: channelID, State: model.DeliveryPending, NextAt: now, CreatedAt: now,
+					OriginTraceparent: origin,
 				}
 				if err := putDeliveryTx(tx, delivery); err != nil {
 					return err

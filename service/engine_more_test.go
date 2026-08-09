@@ -24,6 +24,7 @@ import (
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestDeliverClassifiesOutcomes(t *testing.T) {
@@ -119,6 +120,125 @@ func TestDeliverClassifiesOutcomes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDeliverContinuesPersistedProducerTrace(t *testing.T) {
+	t.Parallel()
+	webhook := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"errcode":0,"errmsg":"ok"}`)
+	}))
+	t.Cleanup(webhook.Close)
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	channel, err := store.PutChannel(model.Channel{
+		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
+		Settings: map[string]string{"webhook": webhook.URL},
+	})
+	require.NoError(t, err)
+
+	producerCtx, producer := provider.Tracer("test").Start(t.Context(), "collection.poll_up")
+	producerContext := producer.SpanContext()
+	created, err := store.WithContext(producerCtx).RecordDynamics("42", []model.Dynamic{{
+		ID: "dynamic", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_WORD",
+		PublishedAt: time.Now(), Summary: "hello", URL: "https://t.bilibili.com/1",
+	}}, []string{channel.ID}, state.DynamicBaselineNone)
+	require.NoError(t, err)
+	require.Equal(t, 1, created)
+	producer.End()
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	require.NotEmpty(t, deliveries[0].OriginTraceparent)
+
+	engine := NewEngine(
+		store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil,
+		WithNotificationHTTPClient(webhook.Client()), WithTracerProvider(provider),
+	)
+	dispatchCtx, dispatch := provider.Tracer("test").Start(t.Context(), "delivery.dispatch")
+	dispatchContext := dispatch.SpanContext()
+	changed, err := engine.deliver(dispatchCtx, deliveries[0])
+	require.NoError(t, err)
+	assert.True(t, changed)
+	dispatch.End()
+
+	var deliverySpan, notificationSpan sdktrace.ReadOnlySpan
+	for _, span := range recorder.Ended() {
+		switch span.Name() {
+		case "delivery.send":
+			deliverySpan = span
+		case "notification.send":
+			notificationSpan = span
+		}
+	}
+	require.NotNil(t, deliverySpan)
+	require.NotNil(t, notificationSpan)
+	assert.Equal(t, producerContext.TraceID(), deliverySpan.SpanContext().TraceID())
+	assert.Equal(t, producerContext.SpanID(), deliverySpan.Parent().SpanID())
+	assert.True(t, deliverySpan.Parent().IsRemote())
+	assert.NotEqual(t, dispatchContext.TraceID(), deliverySpan.SpanContext().TraceID())
+	assert.Empty(t, deliverySpan.Links())
+	assert.Equal(t, deliverySpan.SpanContext().TraceID(), notificationSpan.SpanContext().TraceID())
+	assert.Equal(t, deliverySpan.SpanContext().SpanID(), notificationSpan.Parent().SpanID())
+}
+
+func TestDeliveryOriginContextValidation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		traceparent string
+		wantValid   bool
+	}{
+		{name: "valid", traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", wantValid: true},
+		{name: "empty"},
+		{name: "malformed", traceparent: "not-a-traceparent"},
+		{name: "zero trace id", traceparent: "00-00000000000000000000000000000000-00f067aa0ba902b7-01"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			provider := sdktrace.NewTracerProvider()
+			t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
+			baseCtx, dispatch := provider.Tracer("test").Start(t.Context(), "dispatch")
+			t.Cleanup(func() { dispatch.End() })
+			baseContext := dispatch.SpanContext()
+			cancelCtx, cancel := context.WithCancel(baseCtx)
+			gotCtx, valid := deliveryOriginContext(cancelCtx, tt.traceparent)
+			assert.Equal(t, tt.wantValid, valid)
+			gotContext := trace.SpanContextFromContext(gotCtx)
+			if tt.wantValid {
+				assert.Equal(t, "4bf92f3577b34da6a3ce929d0e0e4736", gotContext.TraceID().String())
+				assert.True(t, gotContext.IsRemote())
+			} else {
+				assert.Equal(t, baseContext, gotContext)
+			}
+			cancel()
+			assert.ErrorIs(t, gotCtx.Err(), context.Canceled)
+		})
+	}
+}
+
+func TestDispatchOnceDoesNotTraceIdleDatabasePolling(t *testing.T) {
+	t.Parallel()
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t), provider)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	engine := NewEngine(
+		store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil,
+		WithTracerProvider(provider),
+	)
+
+	require.NoError(t, engine.dispatchOnce(t.Context()))
+	assert.Empty(t, recorder.Ended())
 }
 
 func TestDeliveryMessage(t *testing.T) {

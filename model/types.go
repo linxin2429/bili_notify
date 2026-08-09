@@ -260,6 +260,10 @@ type Delivery struct {
 	CreatedAt time.Time            `json:"created_at"`
 	// Progress tracks multi-part channel sends (e.g. WeCom text + images).
 	Progress *DeliveryProgress `json:"progress,omitempty"`
+	// OriginTraceparent is the W3C traceparent captured when the outbox row was
+	// created (collection/comment/feed). Delivery restores it as its parent so
+	// Tempo shows collect → enqueue → send in one trace.
+	OriginTraceparent string `json:"origin_traceparent,omitempty"`
 }
 
 // DeliveryProgress records which parts of a multi-message delivery already succeeded.

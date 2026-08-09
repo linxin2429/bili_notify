@@ -4,7 +4,9 @@ providers:
   - name: Bili Notify
     folder: Bili Notify
     type: file
-    disableDeletion: true
+    disableDeletion: false
     editable: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
     options:
       path: /etc/grafana/provisioning/dashboards/json

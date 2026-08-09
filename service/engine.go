@@ -21,6 +21,7 @@ import (
 	"github.com/linxin2429/bili_notify/state"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"golang.org/x/sync/errgroup"
@@ -1229,23 +1230,17 @@ func (e *Engine) deliveryLoop(ctx context.Context) error {
 }
 
 func (e *Engine) dispatchOnce(ctx context.Context) (err error) {
-	ctx, span := e.tracer.Start(ctx, "delivery.dispatch")
+	// Delivery loop ticks every second. Idle ticks must not create root traces —
+	// they dominated Tempo with empty delivery.dispatch + SQLite select spans.
 	started := time.Now()
-	defer func() {
-		result := "success"
-		if err != nil {
-			result = "error"
-		}
-		e.metrics.RecordWorkflow(ctx, "delivery", result, time.Since(started))
-		finishSpan(span, err)
-	}()
 	store := e.store.WithContext(ctx)
 	deliveries, err := store.DueDeliveries(time.Now(), 50)
 	if err != nil {
+		e.metrics.RecordWorkflow(ctx, "delivery", "error", time.Since(started))
 		return err
 	}
-	all, err := store.ListDeliveries(0)
-	if err == nil {
+	all, listErr := store.ListDeliveries(0)
+	if listErr == nil {
 		var age time.Duration
 		if len(all) > 0 {
 			age = time.Since(oldestDelivery(all))
@@ -1260,6 +1255,21 @@ func (e *Engine) dispatchOnce(ctx context.Context) (err error) {
 			e.enqueueSystem("通知队列积压已恢复。")
 		}
 	}
+	if len(deliveries) == 0 {
+		e.metrics.RecordWorkflow(ctx, "delivery", "success", time.Since(started))
+		return nil
+	}
+
+	ctx, span := e.tracer.Start(ctx, "delivery.dispatch",
+		trace.WithAttributes(attribute.Int("delivery.count", len(deliveries))))
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "error"
+		}
+		e.metrics.RecordWorkflow(ctx, "delivery", result, time.Since(started))
+		finishSpan(span, err)
+	}()
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(e.Settings().DeliveryConcurrency)
 	var changed atomic.Bool
@@ -1280,8 +1290,12 @@ func (e *Engine) dispatchOnce(ctx context.Context) (err error) {
 }
 
 func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (changed bool, err error) {
+	if originCtx, ok := deliveryOriginContext(ctx, delivery.OriginTraceparent); ok {
+		ctx = originCtx
+	}
 	ctx, span := e.tracer.Start(ctx, "delivery.send", trace.WithAttributes(
 		attribute.String("delivery.kind", string(delivery.EffectiveKind())),
+		attribute.String("delivery.id", delivery.ID),
 		attribute.Int("delivery.attempt", delivery.Attempts+1),
 	))
 	defer func() { finishSpan(span, err) }()
@@ -1933,4 +1947,17 @@ func finishSpan(span trace.Span, err error) {
 		span.SetStatus(codes.Error, "operation failed")
 	}
 	span.End()
+}
+
+// deliveryOriginContext restores the producer span saved with an outbox row.
+// Extraction starts from an empty context so an invalid header cannot silently
+// fall back to the dispatch span and be mistaken for a valid origin.
+func deliveryOriginContext(ctx context.Context, traceparent string) (context.Context, bool) {
+	carrier := propagation.MapCarrier{"traceparent": traceparent}
+	extracted := propagation.TraceContext{}.Extract(context.Background(), carrier)
+	spanContext := trace.SpanContextFromContext(extracted)
+	if !spanContext.IsValid() {
+		return ctx, false
+	}
+	return trace.ContextWithRemoteSpanContext(ctx, spanContext), true
 }

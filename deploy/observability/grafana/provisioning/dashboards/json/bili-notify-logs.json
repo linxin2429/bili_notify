@@ -1,25 +1,130 @@
 {
   "annotations": { "list": [] },
   "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "bolt",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Explore Tempo",
+      "tooltip": "Open Tempo Explore for free-form TraceQL",
+      "type": "link",
+      "url": "/explore?schemaVersion=1&panes=%7B%22tempo%22:%7B%22datasource%22:%22bili-notify-tempo%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22tempo%22,%22uid%22:%22bili-notify-tempo%22%7D,%22queryType%22:%22traceql%22,%22query%22:%22%7B%20resource.service.name%20%3D%20%5C%22bili-notify%5C%22%20%7D%22,%22limit%22:20,%22tableType%22:%22traces%22%7D%5D,%22range%22:%7B%22from%22:%22now-6h%22,%22to%22:%22now%22%7D%7D%7D&orgId=1"
+    }
+  ],
   "panels": [
     {
-      "datasource": { "type": "loki", "uid": "bili-notify-loki" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "tempo", "uid": "bili-notify-tempo" },
+      "description": "Recent application traces from Tempo. Click a Trace ID to open the waterfall.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "inspect": false
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
       "id": 1,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Start time" }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "bili-notify-tempo" },
+          "limit": 30,
+          "query": "{ resource.service.name = \"bili-notify\" }",
+          "queryType": "traceql",
+          "refId": "A",
+          "spss": 10,
+          "tableType": "traces"
+        }
+      ],
+      "title": "Recent traces",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "tempo", "uid": "bili-notify-tempo" },
+      "description": "Traces containing delivery spans. Open a result to inspect the same-trace path from collection and Outbox enqueue through notification.send.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "inspect": false
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 12 },
+      "id": 2,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Start time" }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "bili-notify-tempo" },
+          "limit": 20,
+          "query": "{ resource.service.name = \"bili-notify\" && name = \"delivery.send\" }",
+          "queryType": "traceql",
+          "refId": "A",
+          "spss": 10,
+          "tableType": "traces"
+        }
+      ],
+      "title": "Delivery traces",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "bili-notify-loki" },
+      "description": "OTLP log volume by severity. Empty until the app exports log records to the collector.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
+      "id": 3,
       "options": { "legend": { "showLegend": true } },
       "targets": [
-        { "expr": "sum by (severity_text) (count_over_time({service_name=\"bili-notify\"} | category=\"system\" [$__auto]))", "refId": "A" }
+        {
+          "datasource": { "type": "loki", "uid": "bili-notify-loki" },
+          "expr": "sum by (severity_text) (count_over_time({service_name=\"bili-notify\"} | category=\"system\" [$__auto]))",
+          "legendFormat": "{{severity_text}}",
+          "refId": "A"
+        }
       ],
       "title": "System log volume by level",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "loki", "uid": "bili-notify-loki" },
-      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 8 },
-      "id": 2,
-      "options": { "dedupStrategy": "none", "enableLogDetails": true, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
+      "description": "Recent WARN/ERROR system logs. TraceID derived fields jump to Tempo when present.",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 30 },
+      "id": 4,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
       "targets": [
-        { "expr": "{service_name=\"bili-notify\"} | category=\"system\" | severity_text=~\"WARN|ERROR\"", "refId": "A" }
+        {
+          "datasource": { "type": "loki", "uid": "bili-notify-loki" },
+          "expr": "{service_name=\"bili-notify\"} | category=\"system\" | severity_text=~\"WARN|ERROR\"",
+          "refId": "A"
+        }
       ],
       "title": "Recent warnings and errors",
       "type": "logs"
@@ -27,10 +132,12 @@
   ],
   "refresh": "10s",
   "schemaVersion": 41,
-  "tags": ["bili-notify", "logs"],
+  "tags": ["bili-notify", "logs", "traces"],
   "templating": { "list": [] },
   "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
   "title": "Bili Notify Logs and Traces",
   "uid": "bili-notify-logs-traces",
-  "version": 1
+  "version": 2
 }
