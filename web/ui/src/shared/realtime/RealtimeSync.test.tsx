@@ -18,6 +18,7 @@ describe('RealtimeSync', () => {
     { name: 'valid invalidation', input: { event: 'resources.invalidated', revision: 2, topics: ['runtime'] }, valid: true },
     { name: 'unknown topic', input: { event: 'resources.invalidated', revision: 2, topics: ['unknown'] }, valid: false },
     { name: 'negative revision', input: { event: 'sync.required', revision: -1, topics: [] }, valid: false },
+    { name: 'legacy data payload', input: { event: 'resources.invalidated', revision: 2, topics: [], data: {} }, valid: false },
   ])('validates $name messages', ({ input, valid }) => expect(Boolean(parseEnvelope(input))).toBe(valid))
 
   it('keeps the application readable in REST polling mode when websocket closes', async () => {

@@ -16,6 +16,7 @@ PLAYWRIGHT_INSTALL_FLAGS ?=
 COVERAGE_FILE ?= coverage.out
 COVERAGE_MIN ?= 80.0
 ACTIONLINT_VERSION ?= v1.7.7
+OPENAPI_GENERATED_PATHS ?= api/openapi.yaml web/generated web/ui/src/shared/api/generated
 ARGS ?= serve
 COMPOSE ?= docker compose
 COMPOSE_FLAGS ?=
@@ -26,7 +27,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/cmd.commit=$(COMMIT) \
 	-X $(MODULE)/cmd.date=$(BUILD_DATE)
 
-.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage frontend-audit playwright-install frontend-e2e go-check-ready check-diff check-fmt check-mod workflow-lint check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck ci-check check run docker-build docker-smoke-image docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
+.PHONY: help setup frontend-install frontend-contract-check frontend-typecheck frontend-build frontend-bundle-check frontend-lint frontend-test frontend-coverage frontend-audit frontend-quality playwright-install frontend-e2e go-check-ready check-diff check-fmt check-mod workflow-lint check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck ci-check check run docker-build docker-smoke-image docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
 
 help:
 	@printf '%s\n' \
@@ -50,10 +51,14 @@ help:
 		'' \
 		'Frontend:' \
 		'  frontend-build         install locked dependencies and build the UI' \
-		'  frontend-lint          run the TypeScript check' \
+		'  frontend-contract-check regenerate OpenAPI client and reject any diff' \
+		'  frontend-typecheck     run the TypeScript compiler check' \
+		'  frontend-lint          run ESLint, Hooks/Compiler and architecture checks' \
 		'  frontend-test          run frontend unit tests' \
 		'  frontend-coverage      run the frontend coverage gate' \
 		'  frontend-audit         fail on high-severity npm vulnerabilities' \
+		'  frontend-bundle-check  build and enforce gzip bundle budgets' \
+		'  frontend-quality       run the ordered future frontend quality gate' \
 		'  playwright-install     install Chromium' \
 		'  frontend-e2e           build the UI once and run Playwright tests' \
 		'' \
@@ -78,8 +83,17 @@ setup:
 frontend-install:
 	npm --prefix web/ui ci
 
+frontend-contract-check: frontend-install
+	OPENAPI_GENERATED_PATHS="$(OPENAPI_GENERATED_PATHS)" npm --prefix web/ui run api:check
+
+frontend-typecheck: frontend-install
+	npm --prefix web/ui run typecheck
+
 frontend-build: frontend-install
 	npm --prefix web/ui run build
+
+frontend-bundle-check: frontend-build
+	npm --prefix web/ui run bundle:check
 
 frontend-lint: frontend-install
 	npm --prefix web/ui run lint
@@ -92,6 +106,18 @@ frontend-coverage: frontend-install
 
 frontend-audit: frontend-install
 	npm --prefix web/ui audit --audit-level=high
+
+# Activation point: once api:generate exists and the modernized UI satisfies
+# the bundle budgets, replace the independent frontend targets in ci-check with
+# frontend-quality. Keeping this ordered recipe prevents parallel Make from
+# checking stale generated files or a stale Vite manifest.
+frontend-quality: frontend-install
+	OPENAPI_GENERATED_PATHS="$(OPENAPI_GENERATED_PATHS)" npm --prefix web/ui run api:check
+	npm --prefix web/ui run typecheck
+	npm --prefix web/ui run lint
+	npm --prefix web/ui run test:coverage
+	npm --prefix web/ui run build
+	npm --prefix web/ui run bundle:check
 
 playwright-install: frontend-install
 	cd web/ui && npx playwright install $(PLAYWRIGHT_INSTALL_FLAGS) chromium

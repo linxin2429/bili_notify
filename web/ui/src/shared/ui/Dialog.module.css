@@ -1,0 +1,27 @@
+.modal {
+  width: min(620px, calc(100% - 2rem));
+  max-height: calc(100vh - 2rem);
+  padding: 0;
+  overflow: auto;
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow);
+}
+
+.modal::backdrop {
+  background: rgb(0 0 0 / .62);
+  backdrop-filter: blur(3px);
+}
+
+.full { width: min(960px, calc(100% - 2rem)); }
+.dialog { padding: var(--space-5); outline: none; }
+.dialog > h2 { font-size: 1.35rem; }
+.body { margin: 1.2rem 0; }
+.actions { display: flex; justify-content: flex-end; align-items: center; gap: .5rem; }
+
+@media (max-width: 600px) {
+  .modal { width: calc(100% - 1rem); max-height: 94vh; border-radius: var(--radius-lg); }
+  .full { width: 100%; height: 100%; max-height: 100vh; border-radius: 0; }
+}

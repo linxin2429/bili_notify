@@ -71,6 +71,6 @@ const topicSet = new Set<RealtimeTopic>(['runtime', 'settings', 'ups', 'channels
 export function parseEnvelope(value: unknown): { event: 'sync.required' | 'resources.invalidated'; revision: number; topics: RealtimeTopic[] } | null {
   if (!value || typeof value !== 'object') return null
   const data = value as Record<string, unknown>
-  if ((data.event !== 'sync.required' && data.event !== 'resources.invalidated') || !Number.isSafeInteger(data.revision) || (data.revision as number) < 0 || !Array.isArray(data.topics) || !data.topics.every(topic => typeof topic === 'string' && topicSet.has(topic as RealtimeTopic))) return null
+  if (Object.keys(data).some(key => !['event', 'revision', 'topics'].includes(key)) || (data.event !== 'sync.required' && data.event !== 'resources.invalidated') || !Number.isSafeInteger(data.revision) || (data.revision as number) < 0 || !Array.isArray(data.topics) || !data.topics.every(topic => typeof topic === 'string' && topicSet.has(topic as RealtimeTopic))) return null
   return { event: data.event, revision: data.revision as number, topics: data.topics as RealtimeTopic[] }
 }
