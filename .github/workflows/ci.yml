@@ -79,6 +79,7 @@ jobs:
           jq '.defaultNetworkingMode = "ipv4only" | .dnsInhibition = "ipv6"' \
             "${settings_file}" > "${settings_tmp}"
           mv "${settings_tmp}" "${settings_file}"
+          docker desktop restart --timeout 120
 
       - name: Start Docker Desktop
         run: |
@@ -121,6 +122,7 @@ jobs:
           jq '.defaultNetworkingMode = "ipv4only" | .dnsInhibition = "ipv6"' \
             "${settings_file}" > "${settings_tmp}"
           mv "${settings_tmp}" "${settings_file}"
+          docker desktop restart --timeout 120
 
       - name: Start Docker Desktop
         run: |
