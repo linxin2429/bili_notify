@@ -234,9 +234,9 @@ jobs:
           docker_config="${RUNNER_TEMP}/bili-notify-docker-config"
           mkdir -p "${docker_config}"
           chmod 700 "${docker_config}"
-          # Prevent Docker Desktop from falling back to the macOS Keychain
-          # credential helper, which cannot prompt on a headless runner.
-          printf '{}\n' > "${docker_config}/config.json"
+          # An auths entry makes Docker use this file instead of auto-detecting
+          # the macOS Keychain helper, which cannot prompt on a headless runner.
+          printf '{"auths":{"https://index.docker.io/v1/":{}}}\n' > "${docker_config}/config.json"
           chmod 600 "${docker_config}/config.json"
           echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
 
