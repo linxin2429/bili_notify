@@ -14,6 +14,18 @@ func runMigrations(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("creating migration provider: %w", err)
 	}
+	current, err := provider.GetDBVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("reading database migration version: %w", err)
+	}
+	sources := provider.ListSources()
+	if len(sources) == 0 {
+		return fmt.Errorf("database migrations are empty")
+	}
+	latest := sources[len(sources)-1].Version
+	if current > latest {
+		return fmt.Errorf("database migration version %d is newer than supported version %d", current, latest)
+	}
 	if _, err := provider.Up(ctx); err != nil {
 		return fmt.Errorf("applying database migrations: %w", err)
 	}
