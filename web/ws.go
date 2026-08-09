@@ -150,7 +150,6 @@ type channelView struct {
 }
 
 type channelInput struct {
-	ID       string            `json:"id,omitempty"`
 	Name     string            `json:"name"`
 	Type     model.ChannelType `json:"type"`
 	Enabled  bool              `json:"enabled"`
@@ -479,18 +478,13 @@ func toChannelView(channel model.Channel) channelView {
 	}
 }
 
-func (s *Server) saveChannel(input channelInput, update bool) (model.Channel, error) {
+func (s *Server) saveChannel(input channelInput, id string) (model.Channel, error) {
 	settings := make(map[string]string)
 	var current model.Channel
-	if !update && input.ID != "" {
-		return model.Channel{}, validationFailure(errors.New("channel id must be empty when creating a channel"))
-	}
+	update := id != ""
 	if update {
-		if input.ID == "" {
-			return model.Channel{}, validationFailure(errors.New("channel id is required"))
-		}
 		var err error
-		current, err = s.store.Channel(input.ID)
+		current, err = s.store.Channel(id)
 		if err != nil {
 			return model.Channel{}, err
 		}
@@ -522,7 +516,7 @@ func (s *Server) saveChannel(input channelInput, update bool) (model.Channel, er
 			delete(settings, key)
 		}
 	}
-	channel := model.Channel{ID: input.ID, Name: strings.TrimSpace(input.Name), Type: input.Type, Enabled: input.Enabled, Settings: settings}
+	channel := model.Channel{ID: id, Name: strings.TrimSpace(input.Name), Type: input.Type, Enabled: input.Enabled, Settings: settings}
 	if update {
 		channel.CreatedAt = current.CreatedAt
 	}
@@ -531,7 +525,7 @@ func (s *Server) saveChannel(input channelInput, update bool) (model.Channel, er
 	}
 	updated, err := s.store.PutChannel(channel)
 	if err == nil && update {
-		_ = s.store.UnblockChannel(input.ID)
+		_ = s.store.UnblockChannel(id)
 	}
 	return updated, err
 }

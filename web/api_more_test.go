@@ -497,6 +497,8 @@ func TestAdminAPIRequestValidation(t *testing.T) {
 	}{
 		{name: "invalid json", method: http.MethodPost, path: "/api/v2/ups", body: `{`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "unknown field", method: http.MethodPost, path: "/api/v2/ups", body: `{"uid":"42","name":"up","enabled":true,"unknown":1}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "channel create id belongs to server", method: http.MethodPost, path: "/api/v2/channels", body: `{"id":"client-id","name":"mail","type":"email","enabled":true,"settings":{}}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "channel update id belongs to path", method: http.MethodPut, path: "/api/v2/channels/server-id", body: `{"id":"client-id","name":"mail","type":"email","enabled":true,"settings":{}}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "multiple values", method: http.MethodPost, path: "/api/v2/ups", body: `{} {}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "invalid up", method: http.MethodPost, path: "/api/v2/ups", body: `{"uid":"","name":"up","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
 		{name: "missing settings", method: http.MethodPut, path: "/api/v2/settings", body: `{"poll_interval_sec":30}`, status: http.StatusBadRequest, code: "invalid_request"},

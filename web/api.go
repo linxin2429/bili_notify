@@ -220,7 +220,7 @@ func (s *Server) createChannelAPI(w http.ResponseWriter, r *http.Request) {
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	channel, err := s.saveChannel(input, false)
+	channel, err := s.saveChannel(input, "")
 	if err == nil {
 		setAuditResourceID(r, channel.ID)
 		setAuditDetails(r, channelAuditDetails(nil, channel))
@@ -234,12 +234,12 @@ func (s *Server) updateChannelAPI(w http.ResponseWriter, r *http.Request) {
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	input.ID = r.PathValue("id")
+	id := r.PathValue("id")
 	var before *model.Channel
-	if current, currentErr := s.store.WithContext(r.Context()).Channel(input.ID); currentErr == nil {
+	if current, currentErr := s.store.WithContext(r.Context()).Channel(id); currentErr == nil {
 		before = &current
 	}
-	channel, err := s.saveChannel(input, true)
+	channel, err := s.saveChannel(input, id)
 	if err == nil {
 		setAuditDetails(r, channelAuditDetails(before, channel))
 		s.events.Publish(service.TopicStatus | service.TopicChannels | service.TopicDeliveries | service.TopicMicrosoftLogin)
