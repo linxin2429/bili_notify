@@ -1,0 +1,34 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "timezone": "Asia/Shanghai",
+  "enabledManagers": ["gomod", "dockerfile"],
+  "semanticCommits": "enabled",
+  "dependencyDashboard": false,
+  "packageRules": [
+    {
+      "description": "Disable dependency updates outside the Go toolchain",
+      "matchManagers": ["gomod", "dockerfile"],
+      "enabled": false
+    },
+    {
+      "description": "Update the Go requirement and build image together",
+      "matchManagers": ["gomod", "dockerfile"],
+      "matchDepNames": ["go", "golang"],
+      "enabled": true,
+      "groupName": "Go toolchain",
+      "groupSlug": "go-toolchain",
+      "minimumGroupSize": 2,
+      "semanticCommitType": "build",
+      "semanticCommitScope": "go",
+      "commitMessageTopic": "Go toolchain",
+      "commitBody": "Update the module requirement and production build image together.\n\nKeep development, CI, and production on the same stable Go release."
+    },
+    {
+      "description": "Allow the go directive to advance to every stable release",
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go"],
+      "matchDepTypes": ["golang"],
+      "rangeStrategy": "bump"
+    }
+  ]
+}
