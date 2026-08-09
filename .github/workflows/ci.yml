@@ -57,7 +57,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.x'
+          go-version: '1.26.5'
           # Self-hosted runners retain their local Go caches. Restoring a
           # setup-go archive over those shared directories causes collisions.
           cache: ${{ needs.select-runner.outputs.kind == 'github-hosted' }}
