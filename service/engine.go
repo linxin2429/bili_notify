@@ -1401,7 +1401,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (changed 
 		result = "blocked"
 	}
 	e.metrics.RecordDelivery(ctx, string(channel.Type), result, time.Since(started))
-	next := time.Now().Add(retryDelay(delivery.Attempts, e.Settings().DeliveryRetryDelaysSec))
+	next := nextDeliveryRetry(time.Now(), delivery.Attempts, e.Settings().DeliveryRetryDelaysSec, err)
 	if storeErr := store.FailDelivery(delivery.ID, blocked, next, err, progress); storeErr != nil {
 		return false, storeErr
 	}
@@ -1424,6 +1424,14 @@ func deliveryMessage(delivery model.Delivery) (notify.Message, string, error) {
 func retryDelay(attempt int, delays model.DeliveryRetryDelays) time.Duration {
 	base := time.Duration(delays[min(attempt, len(delays)-1)]) * time.Second
 	return base/2 + rand.N(base/2)
+}
+
+func nextDeliveryRetry(now time.Time, attempt int, delays model.DeliveryRetryDelays, sendErr error) time.Time {
+	delay := retryDelay(attempt, delays)
+	if upstreamDelay, ok := notify.RetryAfter(sendErr); ok && upstreamDelay > delay {
+		delay = upstreamDelay
+	}
+	return now.Add(delay)
 }
 
 func elapsedMS(started time.Time) int64 {

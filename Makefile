@@ -25,7 +25,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/cmd.commit=$(COMMIT) \
 	-X $(MODULE)/cmd.date=$(BUILD_DATE)
 
-.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e go-check-ready check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability coverage coverage-race vet vulncheck check run docker-build docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
+.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e go-check-ready check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck check run docker-build docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
 
 help:
 	@printf '%s\n' \
@@ -38,6 +38,8 @@ help:
 		'  test                   run Go tests' \
 		'  test-race              run shuffled Go tests with the race detector' \
 		'  test-stability         repeat shuffled race tests (default: 10 times)' \
+		'  test-protocol          repeat notification and telemetry protocol tests 3 times under race' \
+		'  benchmark              run deterministic protocol and delivery benchmarks' \
 		'  coverage               run the core Go coverage gate' \
 		'  coverage-race          run the race detector and core Go coverage gate together' \
 		'  vet                    run go vet' \
@@ -119,6 +121,12 @@ test-race: frontend-build
 test-stability: frontend-build
 	go test -race -shuffle=on -count=$(GO_STABILITY_COUNT) $(GO_TEST_FLAGS) $(GO_PACKAGES)
 
+test-protocol: frontend-build
+	go test -race -shuffle=on -count=3 $(GO_TEST_FLAGS) ./notify ./telemetry
+
+benchmark: frontend-build
+	go test -run='^$$' -bench=. -benchmem ./notify ./service ./telemetry
+
 coverage: frontend-build
 	@set -eu; \
 	core_packages="$$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"; \
@@ -170,6 +178,7 @@ observability-validate:
 	GRAFANA_ADMIN_PASSWORD=validation $(COMPOSE) -f compose.full.yaml config >/dev/null
 	docker run --rm -v "$(CURDIR)/deploy/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro" otel/opentelemetry-collector-contrib:0.158.0 validate --config=/etc/otelcol/config.yaml
 	docker run --rm --entrypoint=/bin/promtool -v "$(CURDIR)/deploy/observability:/etc/prometheus:ro" prom/prometheus:v3.13.2 check config /etc/prometheus/prometheus.yaml
+	docker run --rm --entrypoint=/bin/promtool -w /etc/prometheus/rules -v "$(CURDIR)/deploy/observability:/etc/prometheus:ro" prom/prometheus:v3.13.2 test rules bili-notify.test.yaml
 	docker run --rm -v "$(CURDIR)/deploy/observability/loki.yaml:/etc/loki/loki.yaml:ro" grafana/loki:3.7.6 -config.file=/etc/loki/loki.yaml -verify-config
 	docker run --rm -v "$(CURDIR)/deploy/observability/tempo.yaml:/etc/tempo/tempo.yaml:ro" grafana/tempo:3.0.2 -config.file=/etc/tempo/tempo.yaml -config.verify=true
 

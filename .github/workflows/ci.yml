@@ -161,8 +161,34 @@ jobs:
           BUILD_DATE: unknown
         run: make docker-smoke
 
+  observability-config:
+    needs: [select-runner, test]
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start Docker Desktop
+        if: runner.os == 'macOS'
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            open -gj -a Docker
+          fi
+          for attempt in {1..60}; do
+            if docker info >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Docker Desktop did not become ready within 120 seconds" >&2
+          exit 1
+
+      - name: Validate observability configuration and alert behavior
+        run: make observability-validate
+
   docker:
-    needs: [select-runner, test, docker-smoke]
+    needs: [select-runner, test, docker-smoke, observability-config]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
     permissions:

@@ -15,6 +15,7 @@ import (
 
 	"github.com/linxin2429/bili_notify/bilibili"
 	"github.com/linxin2429/bili_notify/model"
+	"github.com/linxin2429/bili_notify/notify"
 	"github.com/linxin2429/bili_notify/state"
 	"github.com/linxin2429/bili_notify/vault"
 	"github.com/stretchr/testify/assert"
@@ -238,6 +239,30 @@ func TestRetryDelayBounds(t *testing.T) {
 		delay := retryDelay(0, delays)
 		assert.GreaterOrEqual(t, delay, 2500*time.Millisecond)
 		assert.Less(t, delay, 5*time.Second)
+	}
+}
+
+func TestNextDeliveryRetryHonorsUpstreamMinimum(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)
+	delays := model.DeliveryRetryDelays{10, 20, 30, 40, 50}
+	tests := []struct {
+		name       string
+		retryAfter time.Duration
+		minimum    time.Duration
+		maximum    time.Duration
+	}{
+		{name: "configured jitter when upstream is shorter", retryAfter: time.Second, minimum: 5 * time.Second, maximum: 10 * time.Second},
+		{name: "upstream minimum when longer", retryAfter: 45 * time.Second, minimum: 45 * time.Second, maximum: 45 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := &notify.RetryAfterError{Err: assert.AnError, Delay: tt.retryAfter}
+			delay := nextDeliveryRetry(now, 0, delays, err).Sub(now)
+			assert.GreaterOrEqual(t, delay, tt.minimum)
+			assert.LessOrEqual(t, delay, tt.maximum)
+		})
 	}
 }
 

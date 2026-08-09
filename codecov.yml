@@ -4,7 +4,10 @@ coverage:
       default:
         target: 80%
         threshold: 0%
-    patch: off
+    patch:
+      default:
+        target: 80%
+        threshold: 0%
 
 # go tool cover counts a partially-covered line as a hit; Codecov defaults to
 # counting those lines as partials, which under-reports vs make coverage.
