@@ -65,7 +65,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
-          cache: npm
+          # Self-hosted runners already retain ~/.npm. Uploading that shared
+          # cache can exceed 1 GB and adds minutes to every first run.
+          cache: ${{ needs.select-runner.outputs.kind == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: web/ui/package-lock.json
 
       - name: Cache Playwright browsers
