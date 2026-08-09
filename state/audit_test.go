@@ -57,8 +57,8 @@ func seedAuditStore(t *testing.T, base time.Time) *Store {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	entries := []AuditLog{
-		{OccurredAt: base, RequestID: "request-1", Actor: "anonymous", RemoteIP: "192.0.2.1", Action: "auth.login", Outcome: AuditDenied, HTTPMethod: "POST", Route: "/api/v1/session", StatusCode: 401, ErrorCode: "invalid_credentials"},
-		{OccurredAt: base.Add(time.Minute), RequestID: "request-2", Actor: "administrator", SessionID: "session", RemoteIP: "192.0.2.2", Action: "up.create", ResourceType: "up", ResourceID: "42", Outcome: AuditSuccess, HTTPMethod: "POST", Route: "/api/v1/ups", StatusCode: 201, Details: map[string]any{"enabled": true}},
+		{OccurredAt: base, RequestID: "request-1", Actor: "anonymous", RemoteIP: "192.0.2.1", Action: "auth.login", Outcome: AuditDenied, HTTPMethod: "POST", Route: "/api/v2/session", StatusCode: 401, ErrorCode: "invalid_credentials"},
+		{OccurredAt: base.Add(time.Minute), RequestID: "request-2", Actor: "administrator", SessionID: "session", RemoteIP: "192.0.2.2", Action: "up.create", ResourceType: "up", ResourceID: "42", Outcome: AuditSuccess, HTTPMethod: "POST", Route: "/api/v2/ups", StatusCode: 201, Details: map[string]any{"enabled": true}},
 	}
 	for _, entry := range entries {
 		_, err := store.AppendAudit(entry)

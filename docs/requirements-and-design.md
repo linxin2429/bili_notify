@@ -64,25 +64,30 @@ HTTP 承担认证生命周期和全部管理资源 API：
 
 | 方法与路径 | 用途 |
 | --- | --- |
-| `GET /api/v1/session` | 查询初始化和会话状态 |
-| `POST /api/v1/setup` | 使用日志初始化码设置首个管理员密码 |
-| `POST /api/v1/session` | 登录 |
-| `DELETE /api/v1/session` | 注销 |
-| `PUT /api/v1/session/password` | 验证当前密码并修改密码 |
-| `GET /api/v1/dashboard` | 获取完整管理台快照 |
-| `POST /api/v1/ups`、`PUT/DELETE /api/v1/ups/{uid}` | 创建、更新或删除 UP 主 |
-| `POST /api/v1/channels`、`PUT/DELETE /api/v1/channels/{id}` | 创建、更新或删除通知渠道 |
-| `POST /api/v1/channels/{id}/test` | 发送渠道测试通知 |
-| `POST /api/v1/deliveries/{id}/retry` | 将单个阻塞投递任务立即重新入队，返回 202，不同步等待发送 |
-| `POST/DELETE /api/v1/bilibili-login[/{id}]` | 启动或取消 B 站扫码登录 |
-| `POST/DELETE /api/v1/channels/{id}/microsoft-login` | 启动或取消 Microsoft 授权 |
-| `PUT /api/v1/settings` | 严格校验并完整更新 18 项运行设置 |
-| `GET /api/v1/dynamics[/{id}]`、`GET /api/v1/comments[/{rpid}]` | 查询历史列表或内容详情 |
-| `GET /api/v1/dynamics/{id}/media/{index}` | 读取已落盘的动态媒体（需会话） |
-| `GET /api/v1/audit-logs` | 按操作、结果、资源、时间和关键字分页查询管理员操作日志 |
-| `GET /api/v1/ws` | 校验会话并升级 WebSocket |
+| `GET /api/v2/session` | 查询初始化和会话状态 |
+| `POST /api/v2/setup` | 使用日志初始化码设置首个管理员密码 |
+| `POST /api/v2/session` | 登录 |
+| `DELETE /api/v2/session` | 注销 |
+| `PUT /api/v2/session/password` | 验证当前密码并修改密码 |
+| `GET /api/v2/runtime`、`GET /api/v2/settings` | 分别读取运行状态/时区和完整运行设置 |
+| `GET/POST /api/v2/ups`、`PUT/DELETE /api/v2/ups/{uid}` | 读取、创建、更新或删除 UP 主 |
+| `GET/POST /api/v2/channels`、`PUT/DELETE /api/v2/channels/{id}` | 读取、创建、更新或删除通知渠道 |
+| `POST /api/v2/channels/{id}/test` | 发送渠道测试通知 |
+| `GET /api/v2/deliveries` | 按稳定游标读取投递任务 |
+| `POST /api/v2/deliveries/{id}/retry` | 将单个阻塞投递任务立即重新入队，返回 202，不同步等待发送 |
+| `GET/POST /api/v2/bilibili-login`、`DELETE /api/v2/bilibili-login/{id}` | 读取、启动或取消 B 站扫码登录 |
+| `GET /api/v2/microsoft-logins`、`POST/DELETE /api/v2/channels/{id}/microsoft-login` | 读取、启动或取消 Microsoft 授权 |
+| `PUT /api/v2/settings` | 严格校验并完整更新 18 项运行设置 |
+| `GET /api/v2/dynamics[/{id}]`、`GET /api/v2/comments[/{rpid}]` | 查询历史列表或内容详情 |
+| `GET /api/v2/dynamics/{id}/media/{index}` | 读取已落盘的动态媒体（需会话） |
+| `GET /api/v2/audit-logs` | 按操作、结果、资源、时间和关键字分页查询管理员操作日志 |
+| `GET /api/v2/ws` | 校验会话并升级 WebSocket |
 
-HTTP 负责全部浏览器主动请求：资源写操作使用单个、合法 UTF-8 的 JSON body，硬上限为 1 MiB，写请求必须携带会话中的 CSRF Token；`PUT /api/v1/settings` 必须提交全部字段，缺失和未知字段均拒绝。历史查询使用 `uid?`、`q?`、`from?`、`to?`（RFC3339）、`limit?`（默认 20，最大 100）和 `offset?`，时间范围为半开区间 `[from, to)`。动态历史列表的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)`、互动统计 `stats(forwards/comments/likes)`、视频元数据 `video(duration/views/danmaku)` 和一层 `original` 引用预览（含原内容的视频元数据），前端无需逐条请求内容详情；若条目已有本地文件，列表中的 `media.url` 改写为同源 `/api/v1/dynamics/{id}/media/{index}`，否则保留 CDN URL。旧归档没有统计或视频字段时省略对应字段；列表不返回评论坐标与磁盘路径。WebSocket 仅承载服务端事件 `event/revision/data`，不接受业务命令；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、运行设置、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。重连后使用新快照修复断线期间遗漏的状态。
+HTTP 负责全部浏览器主动请求：资源写操作使用单个、合法 UTF-8 的 JSON body，硬上限为 1 MiB，写请求必须携带会话中的 CSRF Token；`PUT /api/v2/settings` 必须提交全部字段，缺失和未知字段均拒绝。成功响应直接返回资源，不增加通用 `data` 外壳；错误统一返回 `{error:{code,message}}`。`api/openapi.yaml` 是 v2 请求、响应、错误和实时消息的传输契约，旧 `/api/v1` 路由不注册，也不保留 dashboard 兼容适配。
+
+投递、动态、评论和审计列表统一返回 `{items,page:{next_cursor,has_more}}`，下一次请求只把非空 `next_cursor` 原样作为 `after` 传回。游标是服务端不透明值；投递按不可变的 `(created_at DESC,id DESC)`，动态和评论按 `(published_at DESC,id/rpid DESC)`，审计按 `(occurred_at DESC,id DESC)` 稳定排序。动态、评论与投递默认每页 20 条，审计默认 50 条，均最多 100 条且不再接受 offset；历史时间范围为半开区间 `[from,to)`。动态历史列表的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)`、互动统计 `stats(forwards/comments/likes)`、视频元数据 `video(duration/views/danmaku)` 和一层 `original` 引用预览（含原内容的视频元数据），前端无需逐条请求内容详情；若条目已有本地文件，列表中的 `media.url` 改写为同源 `/api/v2/dynamics/{id}/media/{index}`，否则保留 CDN URL。旧归档没有统计或视频字段时省略对应字段；列表不返回评论坐标与磁盘路径。
+
+WebSocket 只承载失效信号，不接受业务命令或资源数据。连接后先发送 `{event:"sync.required",revision,topics}`，客户端按需通过 REST 建立基线；后续将同一事件总线批次合并为 `{event:"resources.invalidated",revision,topics}`。topic 固定为 `runtime`、`settings`、`ups`、`channels`、`deliveries`、`bilibili-login`、`microsoft-logins`、`dynamics`、`comments` 和 `audit-logs`。客户端丢失连接或遇到未知消息后保留最后成功数据，通过资源 GET 重建事实，不在浏览器合成服务端领域状态。
 
 领域事件主要由实际状态写入驱动：空闲投递周期不发布事件，空闲采集不广播整份 UP 列表；关注关系刷新、采集路由改变、就绪状态或风控暂停等时间派生状态跨越边界时发布对应轻量事件。投递成功、失败、重试或阻塞只标记状态和投递主题；渠道授权信息只有在实际变化时才标记渠道主题。事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。WebSocket 消息限制为 1 MiB，并以独立的 30 秒 Ping 保活。
 
@@ -115,7 +120,7 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 
 后端没有指标历史时间序列，因此界面不制造无依据图表。数据使用 KPI、状态标签、卡片和明细列表；成功、警告、失败状态同时使用颜色、图标和文字。主题支持跟随系统、浅色和深色，偏好只存 localStorage；路由和筛选进入 URL，秘密和会话不进入浏览器持久化存储。
 
-桌面使用侧栏，360–430px 手机使用底部导航、卡片列表和全屏编辑对话框。每次点击侧栏或底部导航都主动重新读取 dashboard；再次点击当前页面时保留 URL 筛选条件，历史页还会按当前筛选重新查询内容列表。动态图片点击进入灯箱，组图支持按钮及键盘左右切换、Esc 或遮罩关闭，首尾不循环，灯箱始终使用未加缩略参数的原始媒体地址。投递队列只为阻塞任务提供逐条“立即重试”，提交后由后台异步发送。主要触控区域至少 44px，键盘焦点、屏幕阅读器标签和减少动画偏好必须可用。实时连接中断时保留最后成功数据、显示更新时间和过期警告，并按 1–30 秒指数退避重连。
+桌面使用侧栏，360–430px 手机使用底部导航、卡片列表和全屏编辑对话框。页面只读取自身依赖的资源 query；再次点击当前页面时使活跃资源失效并保留 URL 筛选条件，历史页按当前筛选重新查询内容列表。动态图片点击进入灯箱，组图支持按钮及键盘左右切换、Esc 或遮罩关闭，首尾不循环，灯箱始终使用未加缩略参数的原始媒体地址。投递队列只为阻塞任务提供逐条“立即重试”，提交后由后台异步发送。主要触控区域至少 44px，键盘焦点、屏幕阅读器标签和减少动画偏好必须可用。实时连接中断时保留最后成功数据、显示更新时间和过期警告，并按 1–30 秒指数退避重连。
 
 时间统一使用进程本地时区（`time.Local` / 环境变量 `TZ`，镜像内嵌 `tzdata`）：通知文案中的发布时间、管理台展示、结构化日志时间字段均按本地墙钟输出；相对时刻比较仍基于绝对时间点，不依赖时区。Compose 默认 `TZ=Asia/Shanghai`。
 
@@ -144,7 +149,7 @@ Trace 用于关联管理 HTTP、采集/评论/关系/认证/投递/审计工作�
 - 本地真实 SMTP 会话同时覆盖隐式 TLS、STARTTLS、证书验证、AUTH PLAIN、多收件人、multipart/alternative 与内联 CID，并注入认证、RCPT、DATA 断流和取消故障；Microsoft OAuth/Graph 与群机器人使用本地确定性 HTTP 合同覆盖刷新持久化、401/429/5xx、`Retry-After`、截断/超大/畸形响应、业务码 schema drift、取消和错误脱敏，飞书 token 缓存验证应用隔离、过期刷新与并发单飞；
 - 自动主密钥/TLS 生成、权限、损坏文件和旧 schema 拒绝；
 - Argon2id、一次性初始化、会话、限流、密码变更与连接失效；
-- 真实认证与 CSRF HTTP 管理 API（含 B站/Microsoft 登录和渠道测试的成功、取消、重复、上游失败与超时）、WebSocket 全主题与 revision、空闲周期不推送、会话过期、恶意 Origin、注销/密码变更连接失效、断开客户端隔离、重连快照和秘密读模型；
+- 真实认证与 CSRF HTTP 管理 API（含 B站/Microsoft 登录和渠道测试的成功、取消、重复、上游失败与超时）、WebSocket 全主题与 revision、空闲周期不推送、会话过期、恶意 Origin、注销/密码变更连接失效、断开客户端隔离、重连全资源同步要求和秘密读模型；
 - JSON 体积与 UTF-8 边界、安全响应头、登录限流窗口/来源隔离/伪造代理头、TLS 最低版本与私钥权限，以及媒体路径逃逸、父目录/文件符号链接、重定向、SSRF、非图片、取消和失败临时文件清理；
 - 操作日志追加、筛选、保留清理、拒绝/失败路径、请求 ID和秘密值回归；
 - React 单元、状态和组件测试覆盖 API、WebSocket、状态归约、异步请求竞态、历史坏行容错、结构化表单的全部字段连线、桌面/移动端以及明暗主题；四项全局覆盖率均以 80% 为门禁，设置页、控制台和操作日志页另设不低于当前薄弱面的文件级门禁，避免辅助函数掩盖关键页面回退；

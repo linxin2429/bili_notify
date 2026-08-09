@@ -620,7 +620,9 @@ func (e *Engine) pollFeed(ctx context.Context, account model.BiliAccount, ups []
 		return err
 	}
 	if created > 0 {
-		e.publish(TopicStatus | TopicDeliveries)
+		e.publish(TopicStatus | TopicDeliveries | TopicDynamics)
+	} else if len(allDynamics) > 0 {
+		e.publish(TopicDynamics)
 	}
 	for uid, dynamics := range dynamicsByUID {
 		if err := e.refreshCommentTargets(ctx, targets[uid], targets[uid].Name, dynamics); err != nil {
@@ -748,7 +750,9 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) (
 	if created > 0 {
 		// RecordDynamics commits content, seen markers, and outbox rows atomically.
 		// Publish that committed state before later bookkeeping can fail.
-		e.publish(TopicStatus | TopicDeliveries)
+		e.publish(TopicStatus | TopicDeliveries | TopicDynamics)
+	} else if len(items) > 0 {
+		e.publish(TopicDynamics)
 	}
 	if !up.BaselineReady {
 		// BaselineReady is committed by RecordDynamics as well.
@@ -1113,7 +1117,9 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 	e.metrics.RecordCommentPoll(ctx, "success", created)
 	if created > 0 {
 		e.logger.InfoContext(ctx, "new UP replies queued", "event", "comment.replies_queued", "up_uid", target.UID, "comment_oid", target.CommentOID, "reply_count", created)
-		e.publish(TopicStatus | TopicDeliveries)
+		e.publish(TopicStatus | TopicDeliveries | TopicComments)
+	} else if len(notes) > 0 {
+		e.publish(TopicComments)
 	}
 	return nil
 }

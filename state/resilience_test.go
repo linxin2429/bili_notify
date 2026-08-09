@@ -371,7 +371,7 @@ func seedHistoricalSchema(t *testing.T, db *sql.DB, v *vault.Vault, version int6
 	if version >= 4 {
 		_, err = db.Exec(`INSERT INTO audit_logs
 			(occurred_at, request_id, actor, action, outcome, http_method, route, status_code, duration_ms)
-			VALUES (?, 'request', 'admin', 'up.create', 'success', 'POST', '/api/v1/ups', 201, 1)`, published.Unix())
+			VALUES (?, 'request', 'admin', 'up.create', 'success', 'POST', '/api/v2/ups', 201, 1)`, published.Unix())
 		require.NoError(t, err)
 	}
 }

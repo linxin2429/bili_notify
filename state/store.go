@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	_ "github.com/glebarez/go-sqlite" // pure-Go SQLite driver name "sqlite"
@@ -811,9 +812,33 @@ func (s *Store) RecordCommentNotifications(target model.CommentTarget, notes []m
 
 func (s *Store) ListDeliveries(limit int) ([]model.Delivery, error) {
 	var rows []deliveryRow
-	q := s.db.Order("next_at ASC")
+	q := s.db.Order("next_at ASC, id ASC")
 	if limit > 0 {
 		q = q.Limit(limit)
+	}
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return decodeDeliveries(rows)
+}
+
+// DeliveryQuery selects one stable immutable created-at/id ordered page.
+type DeliveryQuery struct {
+	Limit          int
+	AfterCreatedAt time.Time
+	AfterID        string
+}
+
+// QueryDeliveries returns deliveries ordered by immutable creation time and id
+// so scheduling updates cannot move an item across cursor boundaries.
+func (s *Store) QueryDeliveries(query DeliveryQuery) ([]model.Delivery, error) {
+	var rows []deliveryRow
+	q := s.db.Order("created_at DESC, id DESC")
+	if !query.AfterCreatedAt.IsZero() && strings.TrimSpace(query.AfterID) != "" {
+		q = q.Where("created_at < ? OR (created_at = ? AND id < ?)", query.AfterCreatedAt.Unix(), query.AfterCreatedAt.Unix(), query.AfterID)
+	}
+	if query.Limit > 0 {
+		q = q.Limit(query.Limit)
 	}
 	if err := q.Find(&rows).Error; err != nil {
 		return nil, err

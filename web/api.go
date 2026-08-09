@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,31 +20,113 @@ import (
 )
 
 func (s *Server) registerAdminAPI(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/dashboard", s.requireSession(false, s.dashboardAPI))
-	mux.HandleFunc("POST /api/v1/ups", s.audit("up.create", "up", "", s.requireSession(true, s.createUPAPI)))
-	mux.HandleFunc("PUT /api/v1/ups/{uid}", s.audit("up.update", "up", "uid", s.requireSession(true, s.updateUPAPI)))
-	mux.HandleFunc("DELETE /api/v1/ups/{uid}", s.audit("up.delete", "up", "uid", s.requireSession(true, s.deleteUPAPI)))
-	mux.HandleFunc("POST /api/v1/channels", s.audit("channel.create", "channel", "", s.requireSession(true, s.createChannelAPI)))
-	mux.HandleFunc("PUT /api/v1/channels/{id}", s.audit("channel.update", "channel", "id", s.requireSession(true, s.updateChannelAPI)))
-	mux.HandleFunc("DELETE /api/v1/channels/{id}", s.audit("channel.delete", "channel", "id", s.requireSession(true, s.deleteChannelAPI)))
-	mux.HandleFunc("POST /api/v1/channels/{id}/test", s.audit("channel.test", "channel", "id", s.requireSession(true, s.testChannelAPI)))
-	mux.HandleFunc("POST /api/v1/deliveries/{id}/retry", s.audit("delivery.retry", "delivery", "id", s.requireSession(true, s.retryDeliveryAPI)))
-	mux.HandleFunc("POST /api/v1/bilibili-login", s.audit("bilibili.login.start", "bilibili_login", "", s.requireSession(true, s.startBiliLoginAPI)))
-	mux.HandleFunc("DELETE /api/v1/bilibili-login/{id}", s.audit("bilibili.login.cancel", "bilibili_login", "id", s.requireSession(true, s.cancelBiliLoginAPI)))
-	mux.HandleFunc("POST /api/v1/channels/{id}/microsoft-login", s.audit("microsoft.login.start", "channel", "id", s.requireSession(true, s.startMicrosoftLoginAPI)))
-	mux.HandleFunc("DELETE /api/v1/channels/{id}/microsoft-login", s.audit("microsoft.login.cancel", "channel", "id", s.requireSession(true, s.cancelMicrosoftLoginAPI)))
-	mux.HandleFunc("PUT /api/v1/settings", s.audit("settings.update", "settings", "", s.requireSession(true, s.updateSettingsAPI)))
-	mux.HandleFunc("GET /api/v1/audit-logs", s.requireSession(false, s.queryAuditLogsAPI))
-	mux.HandleFunc("GET /api/v1/dynamics", s.requireSession(false, s.queryDynamicsAPI))
-	mux.HandleFunc("GET /api/v1/dynamics/{id}", s.requireSession(false, s.getDynamicAPI))
-	mux.HandleFunc("GET /api/v1/dynamics/{id}/media/{index}", s.requireSession(false, s.getDynamicMediaAPI))
-	mux.HandleFunc("GET /api/v1/comments", s.requireSession(false, s.queryCommentsAPI))
-	mux.HandleFunc("GET /api/v1/comments/{rpid}", s.requireSession(false, s.getCommentAPI))
+	mux.HandleFunc("GET /api/v2/runtime", s.requireSession(false, s.runtimeAPI))
+	mux.HandleFunc("GET /api/v2/settings", s.requireSession(false, s.settingsAPI))
+	mux.HandleFunc("GET /api/v2/ups", s.requireSession(false, s.upsAPI))
+	mux.HandleFunc("POST /api/v2/ups", s.audit("up.create", "up", "", s.requireSession(true, s.createUPAPI)))
+	mux.HandleFunc("PUT /api/v2/ups/{uid}", s.audit("up.update", "up", "uid", s.requireSession(true, s.updateUPAPI)))
+	mux.HandleFunc("DELETE /api/v2/ups/{uid}", s.audit("up.delete", "up", "uid", s.requireSession(true, s.deleteUPAPI)))
+	mux.HandleFunc("GET /api/v2/channels", s.requireSession(false, s.channelsAPI))
+	mux.HandleFunc("POST /api/v2/channels", s.audit("channel.create", "channel", "", s.requireSession(true, s.createChannelAPI)))
+	mux.HandleFunc("PUT /api/v2/channels/{id}", s.audit("channel.update", "channel", "id", s.requireSession(true, s.updateChannelAPI)))
+	mux.HandleFunc("DELETE /api/v2/channels/{id}", s.audit("channel.delete", "channel", "id", s.requireSession(true, s.deleteChannelAPI)))
+	mux.HandleFunc("POST /api/v2/channels/{id}/test", s.audit("channel.test", "channel", "id", s.requireSession(true, s.testChannelAPI)))
+	mux.HandleFunc("GET /api/v2/deliveries", s.requireSession(false, s.deliveriesAPI))
+	mux.HandleFunc("POST /api/v2/deliveries/{id}/retry", s.audit("delivery.retry", "delivery", "id", s.requireSession(true, s.retryDeliveryAPI)))
+	mux.HandleFunc("GET /api/v2/bilibili-login", s.requireSession(false, s.biliLoginAPI))
+	mux.HandleFunc("POST /api/v2/bilibili-login", s.audit("bilibili.login.start", "bilibili_login", "", s.requireSession(true, s.startBiliLoginAPI)))
+	mux.HandleFunc("DELETE /api/v2/bilibili-login/{id}", s.audit("bilibili.login.cancel", "bilibili_login", "id", s.requireSession(true, s.cancelBiliLoginAPI)))
+	mux.HandleFunc("GET /api/v2/microsoft-logins", s.requireSession(false, s.microsoftLoginsAPI))
+	mux.HandleFunc("POST /api/v2/channels/{id}/microsoft-login", s.audit("microsoft.login.start", "channel", "id", s.requireSession(true, s.startMicrosoftLoginAPI)))
+	mux.HandleFunc("DELETE /api/v2/channels/{id}/microsoft-login", s.audit("microsoft.login.cancel", "channel", "id", s.requireSession(true, s.cancelMicrosoftLoginAPI)))
+	mux.HandleFunc("PUT /api/v2/settings", s.audit("settings.update", "settings", "", s.requireSession(true, s.updateSettingsAPI)))
+	mux.HandleFunc("GET /api/v2/audit-logs", s.requireSession(false, s.queryAuditLogsAPI))
+	mux.HandleFunc("GET /api/v2/dynamics", s.requireSession(false, s.queryDynamicsAPI))
+	mux.HandleFunc("GET /api/v2/dynamics/{id}", s.requireSession(false, s.getDynamicAPI))
+	mux.HandleFunc("GET /api/v2/dynamics/{id}/media/{index}", s.requireSession(false, s.getDynamicMediaAPI))
+	mux.HandleFunc("GET /api/v2/comments", s.requireSession(false, s.queryCommentsAPI))
+	mux.HandleFunc("GET /api/v2/comments/{rpid}", s.requireSession(false, s.getCommentAPI))
 }
 
-func (s *Server) dashboardAPI(w http.ResponseWriter, r *http.Request) {
-	snapshot, err := s.snapshot()
-	s.writeAPIResult(w, http.StatusOK, snapshot, err)
+type runtimeView struct {
+	Status    service.Status `json:"status"`
+	Timezone  string         `json:"timezone"`
+	UpdatedAt time.Time      `json:"updated_at"`
+}
+
+type cursorPage struct {
+	NextCursor string `json:"next_cursor"`
+	HasMore    bool   `json:"has_more"`
+}
+
+type cursorPageResponse struct {
+	Items any        `json:"items"`
+	Page  cursorPage `json:"page"`
+}
+
+type listCursor struct {
+	Version int    `json:"v"`
+	Sort    int64  `json:"sort"`
+	Key     string `json:"key"`
+}
+
+func (s *Server) runtimeAPI(w http.ResponseWriter, r *http.Request) {
+	status, err := s.engine.Status()
+	s.writeAPIResult(w, http.StatusOK, runtimeView{Status: status, Timezone: localTimezoneName(), UpdatedAt: time.Now()}, err)
+}
+
+func (s *Server) settingsAPI(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.settings.Settings())
+}
+
+func (s *Server) upsAPI(w http.ResponseWriter, r *http.Request) {
+	ups, err := s.store.WithContext(r.Context()).ListUPs()
+	s.writeAPIResult(w, http.StatusOK, ups, err)
+}
+
+func (s *Server) channelsAPI(w http.ResponseWriter, _ *http.Request) {
+	channels, err := s.channelViews()
+	s.writeAPIResult(w, http.StatusOK, channels, err)
+}
+
+func (s *Server) deliveriesAPI(w http.ResponseWriter, r *http.Request) {
+	limit, ok := parsePageLimit(w, r, 20)
+	if !ok {
+		return
+	}
+	cursor, ok := parseAfterCursor(w, r)
+	if !ok {
+		return
+	}
+	query := state.DeliveryQuery{Limit: limit + 1}
+	if cursor != nil {
+		query.AfterCreatedAt = time.Unix(cursor.Sort, 0)
+		query.AfterID = cursor.Key
+	}
+	deliveries, err := s.store.WithContext(r.Context()).QueryDeliveries(query)
+	if err != nil {
+		s.writeAPIResult(w, http.StatusOK, nil, err)
+		return
+	}
+	hasMore := len(deliveries) > limit
+	if hasMore {
+		deliveries = deliveries[:limit]
+	}
+	next := ""
+	if hasMore && len(deliveries) > 0 {
+		last := deliveries[len(deliveries)-1]
+		next = encodeListCursor(last.CreatedAt.Unix(), last.ID)
+	}
+	writeJSON(w, http.StatusOK, cursorPageResponse{Items: deliveryViews(deliveries), Page: cursorPage{NextCursor: next, HasMore: hasMore}})
+}
+
+func (s *Server) biliLoginAPI(w http.ResponseWriter, _ *http.Request) {
+	login, err := s.biliLoginView()
+	s.writeAPIResult(w, http.StatusOK, login, err)
+}
+
+func (s *Server) microsoftLoginsAPI(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.engine.MicrosoftLogins())
 }
 
 func (s *Server) createUPAPI(w http.ResponseWriter, r *http.Request) {
@@ -351,16 +435,38 @@ func (s *Server) queryAuditLogsAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if value := query.Get("offset"); value != "" {
-		input.Offset, err = strconv.Atoi(value)
-		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, "invalid_request", "offset must be an integer")
+	limit, ok := normalizeRequestedLimit(w, input.Limit, 50)
+	if !ok {
+		return
+	}
+	cursor, ok := parseAfterCursor(w, r)
+	if !ok {
+		return
+	}
+	input.Limit = limit + 1
+	if cursor != nil {
+		input.AfterOccurredAt = time.UnixMilli(cursor.Sort)
+		input.AfterID, err = strconv.ParseInt(cursor.Key, 10, 64)
+		if err != nil || input.AfterID <= 0 {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", "after cursor is invalid")
 			return
 		}
 	}
-	items, total, err := s.store.WithContext(r.Context()).QueryAuditLogs(input)
-	limit, offset := normalizeAuditPage(input.Limit, input.Offset)
-	s.writeAPIResult(w, http.StatusOK, contentPage{Items: items, Total: total, Limit: limit, Offset: offset}, err)
+	items, _, err := s.store.WithContext(r.Context()).QueryAuditLogs(input)
+	if err != nil {
+		s.writeAPIResult(w, http.StatusOK, nil, err)
+		return
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	next := ""
+	if hasMore && len(items) > 0 {
+		last := items[len(items)-1]
+		next = encodeListCursor(last.OccurredAt.UnixMilli(), strconv.FormatInt(last.ID, 10))
+	}
+	writeJSON(w, http.StatusOK, cursorPageResponse{Items: items, Page: cursorPage{NextCursor: next, HasMore: hasMore}})
 }
 
 func channelAuditDetails(before *model.Channel, after model.Channel) map[string]any {
@@ -395,13 +501,6 @@ func channelAuditDetails(before *model.Channel, after model.Channel) map[string]
 	return details
 }
 
-func normalizeAuditPage(limit, offset int) (int, int) {
-	if limit <= 0 {
-		limit = 50
-	}
-	return min(limit, 100), max(offset, 0)
-}
-
 func (s *Server) queryDynamicsAPI(w http.ResponseWriter, r *http.Request) {
 	s.queryContentAPI(w, r, true)
 }
@@ -421,34 +520,116 @@ func (s *Server) queryContentAPI(w http.ResponseWriter, r *http.Request, dynamic
 			return
 		}
 	}
-	if value := query.Get("offset"); value != "" {
-		input.Offset, err = strconv.Atoi(value)
-		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, "invalid_request", "offset must be an integer")
-			return
-		}
-	}
 	q, err := parseContentQuery(input)
 	if err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(err))
 		return
 	}
-	limit, offset := normalizeQueryPage(q.Limit, q.Offset)
+	limit, ok := normalizeRequestedLimit(w, q.Limit, 20)
+	if !ok {
+		return
+	}
+	cursor, ok := parseAfterCursor(w, r)
+	if !ok {
+		return
+	}
+	q.Limit = limit + 1
+	if cursor != nil {
+		q.AfterPublishedAt = time.Unix(cursor.Sort, 0)
+		q.AfterID = cursor.Key
+	}
 	if dynamics {
-		items, total, err := s.store.WithContext(r.Context()).QueryDynamics(q)
+		items, _, err := s.store.WithContext(r.Context()).QueryDynamics(q)
+		if err != nil {
+			s.writeAPIResult(w, http.StatusOK, nil, err)
+			return
+		}
+		hasMore := len(items) > limit
+		if hasMore {
+			items = items[:limit]
+		}
 		views := make([]dynamicHistoryView, 0, len(items))
 		for _, item := range items {
 			views = append(views, toDynamicHistoryView(item))
 		}
-		s.writeAPIResult(w, http.StatusOK, contentPage{Items: views, Total: total, Limit: limit, Offset: offset}, err)
+		next := ""
+		if hasMore && len(items) > 0 {
+			last := items[len(items)-1]
+			next = encodeListCursor(last.PublishedAt.Unix(), last.ID)
+		}
+		writeJSON(w, http.StatusOK, cursorPageResponse{Items: views, Page: cursorPage{NextCursor: next, HasMore: hasMore}})
 		return
 	}
-	items, total, err := s.store.WithContext(r.Context()).QueryComments(q)
+	items, _, err := s.store.WithContext(r.Context()).QueryComments(q)
+	if err != nil {
+		s.writeAPIResult(w, http.StatusOK, nil, err)
+		return
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
 	views := make([]commentHistoryView, 0, len(items))
 	for _, item := range items {
 		views = append(views, toCommentHistoryView(item))
 	}
-	s.writeAPIResult(w, http.StatusOK, contentPage{Items: views, Total: total, Limit: limit, Offset: offset}, err)
+	next := ""
+	if hasMore && len(items) > 0 {
+		last := items[len(items)-1]
+		next = encodeListCursor(last.PublishedAt.Unix(), last.RPID)
+	}
+	writeJSON(w, http.StatusOK, cursorPageResponse{Items: views, Page: cursorPage{NextCursor: next, HasMore: hasMore}})
+}
+
+func parsePageLimit(w http.ResponseWriter, r *http.Request, defaultLimit int) (int, bool) {
+	value := r.URL.Query().Get("limit")
+	if value == "" {
+		return defaultLimit, true
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "limit must be an integer")
+		return 0, false
+	}
+	return normalizeRequestedLimit(w, limit, defaultLimit)
+}
+
+func normalizeRequestedLimit(w http.ResponseWriter, limit, defaultLimit int) (int, bool) {
+	if limit == 0 {
+		return defaultLimit, true
+	}
+	if limit < 1 || limit > 100 {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "limit must be between 1 and 100")
+		return 0, false
+	}
+	return limit, true
+}
+
+func parseAfterCursor(w http.ResponseWriter, r *http.Request) (*listCursor, bool) {
+	value := strings.TrimSpace(r.URL.Query().Get("after"))
+	if value == "" {
+		return nil, true
+	}
+	if len(value) > 1024 {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "after cursor is invalid")
+		return nil, false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "after cursor is invalid")
+		return nil, false
+	}
+	var cursor listCursor
+	if err := json.Unmarshal(raw, &cursor); err != nil || cursor.Version != 1 || strings.TrimSpace(cursor.Key) == "" {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "after cursor is invalid")
+		return nil, false
+	}
+	return &cursor, true
+}
+
+func encodeListCursor(sortValue int64, key string) string {
+	raw, _ := json.Marshal(listCursor{Version: 1, Sort: sortValue, Key: key})
+	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
 func (s *Server) getDynamicAPI(w http.ResponseWriter, r *http.Request) {

@@ -21,12 +21,14 @@ const (
 // ContentQuery filters archived dynamics or comments.
 // Time range is half-open [From, To). Zero times mean unbounded.
 type ContentQuery struct {
-	UID    string
-	Q      string
-	From   time.Time
-	To     time.Time
-	Limit  int
-	Offset int
+	UID              string
+	Q                string
+	From             time.Time
+	To               time.Time
+	AfterPublishedAt time.Time
+	AfterID          string
+	Limit            int
+	Offset           int
 }
 
 // DynamicRecord is a list-row projection of an archived dynamic.
@@ -157,6 +159,7 @@ func archiveCommentsTx(tx *gorm.DB, notes []model.CommentNotification, baseline 
 func (s *Store) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, error) {
 	limit, offset := normalizePage(q.Limit, q.Offset)
 	where, args := buildWhere(q, "uid")
+	where, args = appendCursorWhere(where, args, q.AfterPublishedAt, q.AfterID, "id")
 
 	var total int64
 	countSQL := `SELECT COUNT(*) FROM dynamics` + where
@@ -221,6 +224,7 @@ func dynamicPreview(dynamic *model.Dynamic) *DynamicPreview {
 func (s *Store) QueryComments(q ContentQuery) ([]CommentRecord, int, error) {
 	limit, offset := normalizePage(q.Limit, q.Offset)
 	where, args := buildWhere(q, "up_uid")
+	where, args = appendCursorWhere(where, args, q.AfterPublishedAt, q.AfterID, "rpid")
 
 	var total int64
 	countSQL := `SELECT COUNT(*) FROM comments` + where
@@ -312,6 +316,19 @@ func buildWhere(q ContentQuery, uidColumn string) (string, []any) {
 		return "", args
 	}
 	return ` WHERE ` + strings.Join(clauses, ` AND `), args
+}
+
+func appendCursorWhere(where string, args []any, publishedAt time.Time, id, idColumn string) (string, []any) {
+	if publishedAt.IsZero() || strings.TrimSpace(id) == "" {
+		return where, args
+	}
+	clause := `(published_at < ? OR (published_at = ? AND ` + idColumn + ` < ?))`
+	if where == "" {
+		where = ` WHERE ` + clause
+	} else {
+		where += ` AND ` + clause
+	}
+	return where, append(args, publishedAt.Unix(), publishedAt.Unix(), id)
 }
 
 func normalizePage(limit, offset int) (int, int) {

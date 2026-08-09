@@ -12,72 +12,66 @@
         "title": "Contract video",
         "summary": "Contract summary",
         "url": "https://t.bilibili.com/1",
-        "media": [{"kind": "cover", "url": "https://example.com/cover.jpg", "width": 1280, "height": 720}],
-        "stats": {"forwards": 1, "comments": 2, "likes": 3},
-        "video": {"duration": "01:23", "views": "456", "danmaku": "7"},
-        "original": {"id": "original-1", "summary": "Original summary", "url": "https://t.bilibili.com/0"}
+        "media": [{"kind":"cover","url":"https://example.com/cover.jpg","width":1280,"height":720}],
+        "stats": {"forwards":1,"comments":2,"likes":3},
+        "video": {"duration":"01:23","views":"456","danmaku":"7"},
+        "original": {"id":"original-1","summary":"Original summary","url":"https://t.bilibili.com/0"}
       }
     ],
-    "total": 1,
-    "limit": 20,
-    "offset": 0
+    "page": {"next_cursor":"","has_more":false}
   },
   "comments": {
     "items": [
       {
-        "rpid": "reply-1",
-        "up_uid": "42",
-        "up_name": "Contract UP",
-        "content_type": "video",
-        "content_id": "BV1contract",
-        "content_title": "Contract video",
-        "content_url": "https://www.bilibili.com/video/BV1contract",
-        "published_at": "2026-08-06T01:02:03Z",
-        "discovered_at": "2026-08-06T01:03:03Z",
-        "baseline": false
+        "rpid":"reply-1",
+        "up_uid":"42",
+        "up_name":"Contract UP",
+        "content_type":"video",
+        "content_id":"BV1contract",
+        "content_title":"Contract video",
+        "content_url":"https://www.bilibili.com/video/BV1contract",
+        "published_at":"2026-08-06T01:02:03Z",
+        "discovered_at":"2026-08-06T01:03:03Z",
+        "baseline":false
       }
     ],
-    "total": 1,
-    "limit": 20,
-    "offset": 0
+    "page":{"next_cursor":"","has_more":false}
   },
   "comment_detail": {
-    "rpid": "reply-1",
-    "up_uid": "42",
-    "up_name": "Contract UP",
-    "content_type": "video",
-    "content_id": "BV1contract",
-    "content_title": "Contract video",
-    "content_url": "https://www.bilibili.com/video/BV1contract",
-    "published_at": "2026-08-06T01:02:03Z",
-    "thread": [
-      {"rpid": "root-1", "mid": "100", "name": "Viewer", "message": "Question", "time": "2026-08-06T01:01:03Z"},
-      {"rpid": "reply-1", "parent": "root-1", "mid": "42", "name": "Contract UP", "message": "Answer", "time": "2026-08-06T01:02:03Z", "is_up": true, "is_trigger": true}
+    "rpid":"reply-1",
+    "up_uid":"42",
+    "up_name":"Contract UP",
+    "content_type":"video",
+    "content_id":"BV1contract",
+    "content_title":"Contract video",
+    "content_url":"https://www.bilibili.com/video/BV1contract",
+    "published_at":"2026-08-06T01:02:03Z",
+    "thread":[
+      {"rpid":"root-1","mid":"100","name":"Viewer","message":"Question","time":"2026-08-06T01:01:03Z"},
+      {"rpid":"reply-1","parent":"root-1","mid":"42","name":"Contract UP","message":"Answer","time":"2026-08-06T01:02:03Z","is_up":true,"is_trigger":true}
     ]
   },
   "audit_logs": {
-    "items": [
+    "items":[
       {
-        "id": 1,
-        "occurred_at": "2026-08-06T01:02:03Z",
-        "request_id": "request-1",
-        "actor": "administrator",
-        "session_id": "session-1",
-        "remote_ip": "192.0.2.1",
-        "user_agent": "contract-test",
-        "action": "up.create",
-        "resource_type": "up",
-        "resource_id": "42",
-        "outcome": "success",
-        "http_method": "POST",
-        "route": "/api/v1/ups",
-        "status_code": 201,
-        "duration_ms": 5,
-        "details": {"enabled": true}
+        "id":1,
+        "occurred_at":"2026-08-06T01:02:03Z",
+        "request_id":"request-1",
+        "actor":"administrator",
+        "session_id":"session-1",
+        "remote_ip":"192.0.2.1",
+        "user_agent":"contract-test",
+        "action":"up.create",
+        "resource_type":"up",
+        "resource_id":"42",
+        "outcome":"success",
+        "http_method":"POST",
+        "route":"/api/v2/ups",
+        "status_code":201,
+        "duration_ms":5,
+        "details":{"enabled":true}
       }
     ],
-    "total": 1,
-    "limit": 20,
-    "offset": 0
+    "page":{"next_cursor":"","has_more":false}
   }
 }

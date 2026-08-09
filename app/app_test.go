@@ -88,7 +88,7 @@ func TestRunWithDependenciesLifecycleAndPersistentSeed(t *testing.T) {
 			return response.StatusCode == http.StatusOK
 		}, 5*time.Second, 10*time.Millisecond)
 		require.Eventually(t, func() bool {
-			response, err := httpClient.Get("https://" + admin.Addr().String() + "/api/v1/session")
+			response, err := httpClient.Get("https://" + admin.Addr().String() + "/api/v2/session")
 			if err != nil {
 				return false
 			}

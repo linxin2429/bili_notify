@@ -27,9 +27,8 @@ func TestRetryDeliveryAPI(t *testing.T) {
 		validCSRF     bool
 		missing       bool
 		wantStatus    int
-		wantRevision  bool
 	}{
-		{name: "queues blocked delivery", deliveryState: model.DeliveryBlocked, authenticated: true, validCSRF: true, wantStatus: http.StatusAccepted, wantRevision: true},
+		{name: "queues blocked delivery", deliveryState: model.DeliveryBlocked, authenticated: true, validCSRF: true, wantStatus: http.StatusAccepted},
 		{name: "rejects pending delivery", deliveryState: model.DeliveryPending, authenticated: true, validCSRF: true, wantStatus: http.StatusConflict},
 		{name: "reports missing delivery", authenticated: true, validCSRF: true, missing: true, wantStatus: http.StatusNotFound},
 		{name: "requires authentication", deliveryState: model.DeliveryBlocked, wantStatus: http.StatusUnauthorized},
@@ -55,7 +54,7 @@ func TestRetryDeliveryAPI(t *testing.T) {
 				}
 			}
 
-			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v1/deliveries/"+id+"/retry", nil)
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v2/deliveries/"+id+"/retry", nil)
 			require.NoError(t, err)
 			if tt.authenticated {
 				token, csrf, _, sessionErr := auth.createSession()
@@ -73,7 +72,7 @@ func TestRetryDeliveryAPI(t *testing.T) {
 
 			assert.Equal(t, tt.wantStatus, response.StatusCode)
 			assert.NotEmpty(t, response.Header.Get("X-Request-ID"))
-			assert.Equal(t, tt.wantRevision, events.Revision() > 0)
+			assert.Greater(t, events.Revision(), uint64(0))
 			auditLogs, total, auditErr := store.QueryAuditLogs(state.AuditQuery{Action: "delivery.retry"})
 			require.NoError(t, auditErr)
 			require.Equal(t, 1, total)
@@ -113,7 +112,7 @@ func TestChannelAuditDoesNotPersistSecretValues(t *testing.T) {
 		"settings": map[string]string{}, "secrets": map[string]string{"webhook": "https://secret.example/hook"},
 	})
 	require.NoError(t, err)
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v1/channels", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v2/channels", bytes.NewReader(body))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-CSRF-Token", csrf)
@@ -159,7 +158,7 @@ func TestLoginAuditSessionCorrelation(t *testing.T) {
 
 			body, err := json.Marshal(map[string]string{"password": tt.password})
 			require.NoError(t, err)
-			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v1/session", bytes.NewReader(body))
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v2/session", bytes.NewReader(body))
 			require.NoError(t, err)
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("User-Agent", "audit-test")
@@ -208,7 +207,7 @@ func TestAuditWriteFailurePreservesBusinessResponse(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	require.NoError(t, store.Close())
 
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpServer.URL+"/api/v1/session", nil)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpServer.URL+"/api/v2/session", nil)
 	require.NoError(t, err)
 	request.Header.Set("X-CSRF-Token", csrf)
 	request.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})

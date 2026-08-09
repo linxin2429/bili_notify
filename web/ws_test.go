@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,7 +54,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	}
 	httpServer := httptest.NewTLSServer(server.adminHandler())
 	t.Cleanup(httpServer.Close)
-	wsURL := "wss" + strings.TrimPrefix(httpServer.URL, "https") + "/api/v1/ws"
+	wsURL := "wss" + strings.TrimPrefix(httpServer.URL, "https") + "/api/v2/ws"
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancel)
@@ -77,15 +78,10 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 
 	var initial testWSEnvelope
 	require.NoError(t, wsjson.Read(ctx, connection, &initial))
-	assert.Equal(t, "snapshot", initial.Event)
-	var snapshot dashboardSnapshot
-	require.NoError(t, json.Unmarshal(initial.Data, &snapshot))
-	assert.NotNil(t, snapshot.UPs)
-	assert.NotNil(t, snapshot.Channels)
-	assert.NotNil(t, snapshot.Deliveries)
-	assert.NotNil(t, snapshot.MicrosoftLogins)
+	assert.Equal(t, "sync.required", initial.Event)
+	assert.Equal(t, allResourceTopics(), initial.Topics)
 
-	badRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v1/ups", strings.NewReader(`{"uid":"42","name":"Test UP","enabled":true}`))
+	badRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v2/ups", strings.NewReader(`{"uid":"42","name":"Test UP","enabled":true}`))
 	require.NoError(t, err)
 	badRequest.Header.Set("Content-Type", "application/json")
 	badRequest.Header.Set("X-CSRF-Token", "invalid")
@@ -95,7 +91,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	t.Cleanup(func() { _ = badResponse.Body.Close() })
 	assert.Equal(t, http.StatusForbidden, badResponse.StatusCode)
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v1/ups", strings.NewReader(`{"uid":"42","name":"Test UP","enabled":true}`))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v2/ups", strings.NewReader(`{"uid":"42","name":"Test UP","enabled":true}`))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-CSRF-Token", csrf)
@@ -114,11 +110,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	for range 3 {
 		var envelope testWSEnvelope
 		require.NoError(t, wsjson.Read(ctx, connection, &envelope))
-		if envelope.Event == "ups.updated" {
-			var ups []model.UP
-			require.NoError(t, json.Unmarshal(envelope.Data, &ups))
-			require.Len(t, ups, 1)
-			assert.Equal(t, "42", ups[0].UID)
+		if envelope.Event == "resources.invalidated" && slices.Contains(envelope.Topics, "ups") {
 			assert.NotZero(t, envelope.Revision)
 			gotUpdate = true
 		}
@@ -126,7 +118,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 			break
 		}
 	}
-	assert.True(t, gotUpdate, "missing ups.updated event")
+	assert.True(t, gotUpdate, "missing ups invalidation")
 }
 
 func TestWebSocketPublishesEveryTopicWithOneRevision(t *testing.T) {
@@ -138,27 +130,17 @@ func TestWebSocketPublishesEveryTopicWithOneRevision(t *testing.T) {
 	t.Cleanup(cancel)
 	connection := dialTestWebSocket(t, ctx, httpServer, fixture.token, httpServer.URL)
 	t.Cleanup(func() { _ = connection.CloseNow() })
-	readSnapshot(t, ctx, connection)
+	readSyncRequired(t, ctx, connection)
 
 	allTopics := service.TopicStatus | service.TopicUPs | service.TopicChannels | service.TopicDeliveries |
-		service.TopicBiliLogin | service.TopicMicrosoftLogin | service.TopicSettings
+		service.TopicBiliLogin | service.TopicMicrosoftLogin | service.TopicSettings | service.TopicDynamics |
+		service.TopicComments | service.TopicAuditLogs
 	revision := fixture.events.Publish(allTopics)
-	wantEvents := map[string]bool{
-		"status.updated": false, "ups.updated": false, "channels.updated": false,
-		"deliveries.updated": false, "bilibili.login.updated": false,
-		"microsoft.login.updated": false, "settings.updated": false,
-	}
-	for range len(wantEvents) {
-		var envelope testWSEnvelope
-		require.NoError(t, wsjson.Read(ctx, connection, &envelope))
-		_, known := wantEvents[envelope.Event]
-		assert.True(t, known, "unexpected event %q", envelope.Event)
-		assert.Equal(t, revision, envelope.Revision)
-		wantEvents[envelope.Event] = true
-	}
-	for event, seen := range wantEvents {
-		assert.True(t, seen, "missing %s", event)
-	}
+	var envelope testWSEnvelope
+	require.NoError(t, wsjson.Read(ctx, connection, &envelope))
+	assert.Equal(t, "resources.invalidated", envelope.Event)
+	assert.Equal(t, revision, envelope.Revision)
+	assert.Equal(t, allResourceTopics(), envelope.Topics)
 }
 
 func TestWebSocketOriginSessionExpiryAndIdleBehavior(t *testing.T) {
@@ -191,7 +173,7 @@ func TestWebSocketOriginSessionExpiryAndIdleBehavior(t *testing.T) {
 				t.Cleanup(cancel)
 				connection := dialTestWebSocket(t, ctx, server, fixture.token, server.URL)
 				t.Cleanup(func() { _ = connection.CloseNow() })
-				readSnapshot(t, ctx, connection)
+				readSyncRequired(t, ctx, connection)
 
 				idleCtx, idleCancel := context.WithTimeout(t.Context(), 75*time.Millisecond)
 				t.Cleanup(idleCancel)
@@ -213,7 +195,7 @@ func TestWebSocketOriginSessionExpiryAndIdleBehavior(t *testing.T) {
 				t.Cleanup(cancel)
 				connection := dialTestWebSocket(t, ctx, server, fixture.token, server.URL)
 				t.Cleanup(func() { _ = connection.CloseNow() })
-				readSnapshot(t, ctx, connection)
+				readSyncRequired(t, ctx, connection)
 				fixture.server.auth.mu.Lock()
 				session := fixture.server.auth.sessions[fixture.token]
 				session.CreatedAt = fixture.server.auth.now().Add(-25 * time.Hour)
@@ -244,8 +226,8 @@ func TestWebSocketIsClosedByLogoutAndPasswordChange(t *testing.T) {
 		path   string
 		body   string
 	}{
-		{name: "logout", method: http.MethodDelete, path: "/api/v1/session"},
-		{name: "password change", method: http.MethodPut, path: "/api/v1/session/password", body: `{"current_password":"correct horse battery staple","new_password":"replacement horse battery staple"}`},
+		{name: "logout", method: http.MethodDelete, path: "/api/v2/session"},
+		{name: "password change", method: http.MethodPut, path: "/api/v2/session/password", body: `{"current_password":"correct horse battery staple","new_password":"replacement horse battery staple"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -257,7 +239,7 @@ func TestWebSocketIsClosedByLogoutAndPasswordChange(t *testing.T) {
 			t.Cleanup(cancel)
 			connection := dialTestWebSocket(t, ctx, server, fixture.token, server.URL)
 			t.Cleanup(func() { _ = connection.CloseNow() })
-			readSnapshot(t, ctx, connection)
+			readSyncRequired(t, ctx, connection)
 
 			request, err := http.NewRequestWithContext(ctx, tt.method, server.URL+tt.path, strings.NewReader(tt.body))
 			require.NoError(t, err)
@@ -277,7 +259,7 @@ func TestWebSocketIsClosedByLogoutAndPasswordChange(t *testing.T) {
 	}
 }
 
-func TestWebSocketReconnectSnapshotAndDisconnectedPeerIsolation(t *testing.T) {
+func TestWebSocketReconnectSyncAndDisconnectedPeerIsolation(t *testing.T) {
 	t.Parallel()
 	fixture := newAdminAPIFixture(t, nil)
 	server := httptest.NewTLSServer(fixture.server.adminHandler())
@@ -285,7 +267,7 @@ func TestWebSocketReconnectSnapshotAndDisconnectedPeerIsolation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
 	t.Cleanup(cancel)
 	disconnected := dialTestWebSocket(t, ctx, server, fixture.token, server.URL)
-	readSnapshot(t, ctx, disconnected)
+	readSyncRequired(t, ctx, disconnected)
 	_ = disconnected.CloseNow()
 
 	require.NoError(t, fixture.store.PutUP(model.UP{UID: "42", Name: "current UP", Enabled: true}))
@@ -294,18 +276,16 @@ func TestWebSocketReconnectSnapshotAndDisconnectedPeerIsolation(t *testing.T) {
 	t.Cleanup(func() { _ = connection.CloseNow() })
 	var initial testWSEnvelope
 	require.NoError(t, wsjson.Read(ctx, connection, &initial))
-	assert.Equal(t, "snapshot", initial.Event)
-	var snapshot dashboardSnapshot
-	require.NoError(t, json.Unmarshal(initial.Data, &snapshot))
-	require.Len(t, snapshot.UPs, 1)
-	assert.Equal(t, "42", snapshot.UPs[0].UID)
+	assert.Equal(t, "sync.required", initial.Event)
+	assert.Contains(t, initial.Topics, "ups")
 	assert.Equal(t, fixture.events.Revision(), initial.Revision)
 
 	revision := fixture.events.Publish(service.TopicUPs)
 	var envelope testWSEnvelope
 	require.NoError(t, wsjson.Read(ctx, connection, &envelope))
-	assert.Equal(t, "ups.updated", envelope.Event)
+	assert.Equal(t, "resources.invalidated", envelope.Event)
 	assert.Equal(t, revision, envelope.Revision)
+	assert.Equal(t, []string{"ups"}, envelope.Topics)
 }
 
 func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
@@ -394,9 +374,9 @@ func TestAPIErrorClassification(t *testing.T) {
 }
 
 type testWSEnvelope struct {
-	Event    string          `json:"event"`
-	Revision uint64          `json:"revision"`
-	Data     json.RawMessage `json:"data"`
+	Event    string   `json:"event"`
+	Revision uint64   `json:"revision"`
+	Topics   []string `json:"topics"`
 }
 
 func dialTestWebSocket(t *testing.T, ctx context.Context, server *httptest.Server, token, origin string) *websocket.Conn {
@@ -410,18 +390,17 @@ func dialTestWebSocketResponse(ctx context.Context, server *httptest.Server, tok
 	headers := http.Header{}
 	headers.Set("Cookie", (&http.Cookie{Name: sessionCookie, Value: token}).String())
 	headers.Set("Origin", origin)
-	wsURL := "wss" + strings.TrimPrefix(server.URL, "https") + "/api/v1/ws"
+	wsURL := "wss" + strings.TrimPrefix(server.URL, "https") + "/api/v2/ws"
 	return websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: server.Client(), HTTPHeader: headers})
 }
 
-func readSnapshot(t *testing.T, ctx context.Context, connection *websocket.Conn) dashboardSnapshot {
+func readSyncRequired(t *testing.T, ctx context.Context, connection *websocket.Conn) testWSEnvelope {
 	t.Helper()
 	var envelope testWSEnvelope
 	require.NoError(t, wsjson.Read(ctx, connection, &envelope))
-	require.Equal(t, "snapshot", envelope.Event)
-	var snapshot dashboardSnapshot
-	require.NoError(t, json.Unmarshal(envelope.Data, &snapshot))
-	return snapshot
+	require.Equal(t, "sync.required", envelope.Event)
+	require.Equal(t, allResourceTopics(), envelope.Topics)
+	return envelope
 }
 
 func openWebTestStore(t *testing.T) *state.Store {
@@ -452,6 +431,6 @@ func TestDynamicHistoryViewRewritesLocalMediaURL(t *testing.T) {
 		}},
 	})
 	require.Len(t, view.Media, 1)
-	assert.Equal(t, "/api/v1/dynamics/10/media/0", view.Media[0].URL)
+	assert.Equal(t, "/api/v2/dynamics/10/media/0", view.Media[0].URL)
 	assert.Empty(t, view.Media[0].LocalPath)
 }
