@@ -46,6 +46,23 @@ func (s *Server) registerAdminAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/dynamics/{id}/media/{index}", s.requireSession(false, s.getDynamicMediaAPI))
 	mux.HandleFunc("GET /api/v2/comments", s.requireSession(false, s.queryCommentsAPI))
 	mux.HandleFunc("GET /api/v2/comments/{rpid}", s.requireSession(false, s.getCommentAPI))
+	mux.HandleFunc("GET /api/v2/ai/status", s.requireSession(false, s.aiStatusAPI))
+	mux.HandleFunc("GET /api/v2/ai/profiles", s.requireSession(false, s.listAIProfilesAPI))
+	mux.HandleFunc("POST /api/v2/ai/profiles", s.audit("ai.profile.create", "ai_profile", "", s.requireSession(true, s.createAIProfileAPI)))
+	mux.HandleFunc("PUT /api/v2/ai/profiles/{id}", s.audit("ai.profile.update", "ai_profile", "id", s.requireSession(true, s.updateAIProfileAPI)))
+	mux.HandleFunc("DELETE /api/v2/ai/profiles/{id}", s.audit("ai.profile.delete", "ai_profile", "id", s.requireSession(true, s.deleteAIProfileAPI)))
+	mux.HandleFunc("POST /api/v2/ai/profiles/{id}/test", s.audit("ai.profile.test", "ai_profile", "id", s.requireSession(true, s.testAIProfileAPI)))
+	mux.HandleFunc("GET /api/v2/ai/prompts", s.requireSession(false, s.listAIPromptsAPI))
+	mux.HandleFunc("POST /api/v2/ai/prompts", s.audit("ai.prompt.create", "ai_prompt", "", s.requireSession(true, s.createAIPromptAPI)))
+	mux.HandleFunc("PUT /api/v2/ai/prompts/{id}", s.audit("ai.prompt.update", "ai_prompt", "id", s.requireSession(true, s.updateAIPromptAPI)))
+	mux.HandleFunc("DELETE /api/v2/ai/prompts/{id}", s.audit("ai.prompt.delete", "ai_prompt", "id", s.requireSession(true, s.deleteAIPromptAPI)))
+	mux.HandleFunc("POST /api/v2/ai/transcriptions", s.audit("ai.transcription.create", "ai_job", "", s.requireSession(true, s.createAITranscriptionAPI)))
+	mux.HandleFunc("POST /api/v2/ai/summaries", s.audit("ai.summary.create", "ai_job", "", s.requireSession(true, s.createAISummaryAPI)))
+	mux.HandleFunc("GET /api/v2/ai/jobs", s.requireSession(false, s.listAIJobsAPI))
+	mux.HandleFunc("GET /api/v2/ai/jobs/{id}", s.requireSession(false, s.getAIJobAPI))
+	mux.HandleFunc("POST /api/v2/ai/jobs/{id}/cancel", s.audit("ai.job.cancel", "ai_job", "id", s.requireSession(true, s.cancelAIJobAPI)))
+	mux.HandleFunc("POST /api/v2/ai/jobs/{id}/retry", s.audit("ai.job.retry", "ai_job", "id", s.requireSession(true, s.retryAIJobAPI)))
+	mux.HandleFunc("DELETE /api/v2/ai/jobs/{id}", s.audit("ai.job.delete", "ai_job", "id", s.requireSession(true, s.deleteAIJobAPI)))
 }
 
 type runtimeView struct {

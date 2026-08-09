@@ -46,6 +46,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("data_dir", "/data")
 	v.SetDefault("admin_addr", ":8443")
 	v.SetDefault("observe_addr", ":9090")
+	v.SetDefault("ai_worker_socket", config.DefaultAIWorkerSocket)
 	v.SetDefault("poll_interval", time.Duration(model.DefaultPollIntervalSec)*time.Second)
 	v.SetDefault("request_rate", model.DefaultRequestRate)
 	v.SetDefault("request_concurrency", model.DefaultRequestConcurrency)
@@ -72,7 +73,7 @@ func newServeCmd(v *viper.Viper) *cobra.Command {
 				return err
 			}
 			cfg := config.Config{
-				DataDir: v.GetString("data_dir"), AdminAddr: v.GetString("admin_addr"), ObserveAddr: v.GetString("observe_addr"),
+				DataDir: v.GetString("data_dir"), AdminAddr: v.GetString("admin_addr"), ObserveAddr: v.GetString("observe_addr"), AIWorkerSocket: v.GetString("ai_worker_socket"),
 				PollInterval: v.GetDuration("poll_interval"), RequestRate: v.GetFloat64("request_rate"), RequestConcurrency: v.GetInt("request_concurrency"), LogLevel: v.GetString("log_level"),
 				AuditLogRetention: v.GetDuration("audit_log_retention"),
 				OTelSDKDisabled:   v.GetBool("otel_sdk_disabled"), OTelServiceName: v.GetString("otel_service_name"), OTelDeploymentEnvironment: v.GetString("otel_deployment_environment"),
@@ -86,6 +87,7 @@ func newServeCmd(v *viper.Viper) *cobra.Command {
 	cmd.Flags().String("data-dir", v.GetString("data_dir"), "persistent data directory")
 	cmd.Flags().String("admin-addr", v.GetString("admin_addr"), "TLS admin listen address")
 	cmd.Flags().String("observe-addr", v.GetString("observe_addr"), "observability listen address")
+	cmd.Flags().String("ai-worker-socket", v.GetString("ai_worker_socket"), "AI worker Unix socket path")
 	cmd.Flags().Duration("poll-interval", v.GetDuration("poll_interval"), "default polling interval for a new data directory")
 	cmd.Flags().Float64("request-rate", v.GetFloat64("request_rate"), "default Bilibili requests per second for a new data directory")
 	cmd.Flags().Int("request-concurrency", v.GetInt("request_concurrency"), "default maximum concurrent Bilibili requests for a new data directory")
@@ -105,7 +107,7 @@ func newServeCmd(v *viper.Viper) *cobra.Command {
 
 func bindServeFlags(v *viper.Viper, cmd *cobra.Command) error {
 	bindings := map[string]string{
-		"data_dir": "data-dir", "admin_addr": "admin-addr", "observe_addr": "observe-addr",
+		"data_dir": "data-dir", "admin_addr": "admin-addr", "observe_addr": "observe-addr", "ai_worker_socket": "ai-worker-socket",
 		"poll_interval": "poll-interval", "request_rate": "request-rate", "request_concurrency": "request-concurrency", "log_level": "log-level",
 		"audit_log_retention": "audit-log-retention",
 		"otel_sdk_disabled":   "otel-sdk-disabled", "otel_service_name": "otel-service-name", "otel_deployment_environment": "otel-deployment-environment",

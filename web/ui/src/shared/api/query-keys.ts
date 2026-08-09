@@ -7,11 +7,14 @@ export const queryKeys = {
   biliLogin: ['bilibili-login'] as const, microsoftLogins: ['microsoft-logins'] as const,
   dynamics: (query: ContentQuery) => ['dynamics', query] as const, comments: (query: ContentQuery) => ['comments', query] as const,
   comment: (rpid: string) => ['comments', 'detail', rpid] as const, auditLogs: (query: AuditQuery) => ['audit-logs', query] as const,
+  aiStatus: ['ai-status'] as const, aiProfiles: ['ai-profiles'] as const, aiPrompts: ['ai-prompts'] as const,
+  aiJobs: (query: object = {}) => ['ai-jobs', query] as const, aiJob: (id: string) => ['ai-jobs', 'detail', id] as const,
 }
 
 const topicKeys: Record<RealtimeTopic, readonly string[]> = {
   runtime: queryKeys.runtime, settings: queryKeys.settings, ups: queryKeys.ups, channels: queryKeys.channels,
   deliveries: ['deliveries'], 'bilibili-login': queryKeys.biliLogin, 'microsoft-logins': queryKeys.microsoftLogins,
   dynamics: ['dynamics'], comments: ['comments'], 'audit-logs': ['audit-logs'],
+  'ai-status': queryKeys.aiStatus, 'ai-jobs': ['ai-jobs'],
 }
 export function invalidateTopics(client: QueryClient, topics: RealtimeTopic[]) { for (const topic of new Set(topics)) void client.invalidateQueries({ queryKey: topicKeys[topic] }) }

@@ -1,4 +1,6 @@
 import type { components } from './generated/schema'
+import type { z } from 'zod'
+import type { aiJobSchema, aiWorkerStatusSchema } from './contracts'
 
 type Schemas = components['schemas']
 
@@ -24,6 +26,12 @@ export type AuditOutcome = AuditLog['outcome']
 export type CommentDetail = Schemas['CommentNotification']
 export type SessionState = Schemas['Session']
 export type RealtimeTopic = Schemas['RealtimeEvent']['topics'][number]
+export interface AIProfile { id: string; name: string; kind: 'transcription' | 'text'; base_url: string; model: string; language?: string; prompt?: string; temperature?: number; max_output_tokens?: number; context_window_chars?: number; timeout_sec: number; default: boolean; configured_secrets: string[]; created_at: string; updated_at: string }
+export interface AIProfileDraft extends Omit<AIProfile, 'id' | 'configured_secrets' | 'created_at' | 'updated_at'> { id?: string; api_key?: string }
+export interface AIPrompt { id: string; name: string; system_prompt: string; chunk_prompt: string; reduce_prompt: string; default: boolean; created_at: string; updated_at: string }
+export interface AIPromptDraft extends Omit<AIPrompt, 'id' | 'created_at' | 'updated_at'> { id?: string }
+export type AIJob = z.infer<typeof aiJobSchema>
+export type AIWorkerStatus = z.infer<typeof aiWorkerStatusSchema>
 
 export type ChannelDraft =
   | { id?: string; name: string; type: 'email'; enabled: boolean; settings: { host: string; port: string; username: string; from: string; to: string; tls: string }; secrets?: { password?: string } }

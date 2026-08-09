@@ -13,6 +13,8 @@ export const appRouter = createBrowserRouter([{
     { path: 'deliveries', lazy: async () => ({ Component: (await import('../pages/DeliveriesPage')).DeliveriesPage }) },
     { path: 'history', lazy: async () => ({ Component: (await import('../pages/HistoryPage')).HistoryPage }) },
     { path: 'audit-logs', lazy: async () => ({ Component: (await import('../pages/AuditLogsPage')).AuditLogsPage }) },
+    { path: 'ai', lazy: async () => ({ Component: (await import('../pages/AIWorkbenchPage')).AIWorkbenchPage }) },
+    { path: 'ai-settings', lazy: async () => ({ Component: (await import('../pages/AISettingsPage')).AISettingsPage }) },
     { path: 'settings', lazy: async () => ({ Component: (await import('../pages/SettingsPage')).SettingsPage }) },
     { path: '*', element: <Navigate to="/overview" replace /> },
   ],

@@ -3,8 +3,9 @@ import {
   auditLogPageSchema, biliLoginSchema, channelSchema, commentDetailSchema, commentHistoryPageSchema,
   deliveryPageSchema, dynamicHistoryPageSchema, emptyResponseSchema, microsoftLoginSchema, queuedStatusSchema,
   runtimeSchema, runtimeSettingsSchema, sentStatusSchema, upSchema,
+  aiWorkerStatusSchema, aiProfileSchema, aiPromptSchema, aiJobSchema, aiJobPageSchema, canceledStatusSchema, workerReachableSchema,
 } from './contracts'
-import type { AuditQuery, ChannelDraft, ContentQuery, RuntimeSettings, UP } from './types'
+import type { AIProfileDraft, AIPromptDraft, AuditQuery, ChannelDraft, ContentQuery, RuntimeSettings, UP } from './types'
 import { queryString, requestJSON } from './client'
 
 const apiRoot = '/api/v2'
@@ -22,6 +23,11 @@ export const resources = {
   comments: (query: ContentQuery, signal?: AbortSignal) => requestJSON(`${apiRoot}/comments${queryString(query)}`, commentHistoryPageSchema, { signal }),
   comment: (rpid: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/comments/${encodeURIComponent(rpid)}`, commentDetailSchema, { signal }),
   auditLogs: (query: AuditQuery, signal?: AbortSignal) => requestJSON(`${apiRoot}/audit-logs${queryString(query)}`, auditLogPageSchema, { signal }),
+  aiStatus: (signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/status`, aiWorkerStatusSchema, { signal }),
+  aiProfiles: (signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/profiles`, array(aiProfileSchema), { signal }),
+  aiPrompts: (signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/prompts`, array(aiPromptSchema), { signal }),
+  aiJobs: (query: { kind?: string; state?: string; limit?: number; offset?: number } = {}, signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/jobs${queryString(query)}`, aiJobPageSchema, { signal }),
+  aiJob: (id: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/jobs/${encodeURIComponent(id)}`, aiJobSchema, { signal }),
 
   createUP: (csrf: string, input: Pick<UP, 'uid' | 'name' | 'enabled'>) => write(`${apiRoot}/ups`, upSchema, 'POST', csrf, input),
   updateUP: (csrf: string, input: Pick<UP, 'uid' | 'name' | 'enabled'>) => write(`${apiRoot}/ups/${encodeURIComponent(input.uid)}`, upSchema, 'PUT', csrf, { name: input.name, enabled: input.enabled }),
@@ -39,6 +45,18 @@ export const resources = {
   startMicrosoftLogin: (csrf: string, channelID: string) => write(`${apiRoot}/channels/${encodeURIComponent(channelID)}/microsoft-login`, microsoftLoginSchema, 'POST', csrf),
   cancelMicrosoftLogin: (csrf: string, channelID: string) => write(`${apiRoot}/channels/${encodeURIComponent(channelID)}/microsoft-login`, emptyResponseSchema, 'DELETE', csrf),
   updateSettings: (csrf: string, settings: RuntimeSettings) => write(`${apiRoot}/settings`, runtimeSettingsSchema, 'PUT', csrf, settings),
+  createAIProfile: (csrf: string, input: AIProfileDraft) => write(`${apiRoot}/ai/profiles`, aiProfileSchema, 'POST', csrf, input),
+  updateAIProfile: (csrf: string, input: AIProfileDraft & { id: string }) => { const { id, ...body } = input; return write(`${apiRoot}/ai/profiles/${encodeURIComponent(id)}`, aiProfileSchema, 'PUT', csrf, body) },
+  deleteAIProfile: (csrf: string, id: string) => write(`${apiRoot}/ai/profiles/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
+  testAIProfile: (csrf: string, id: string) => write(`${apiRoot}/ai/profiles/${encodeURIComponent(id)}/test`, workerReachableSchema, 'POST', csrf),
+  createAIPrompt: (csrf: string, input: AIPromptDraft) => write(`${apiRoot}/ai/prompts`, aiPromptSchema, 'POST', csrf, input),
+  updateAIPrompt: (csrf: string, input: AIPromptDraft & { id: string }) => { const { id, ...body } = input; return write(`${apiRoot}/ai/prompts/${encodeURIComponent(id)}`, aiPromptSchema, 'PUT', csrf, body) },
+  deleteAIPrompt: (csrf: string, id: string) => write(`${apiRoot}/ai/prompts/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
+  createAITranscription: (csrf: string, input: { client_request_id: string; bvid: string; page?: number; profile_id: string }) => write(`${apiRoot}/ai/transcriptions`, aiJobSchema, 'POST', csrf, input),
+  createAISummary: (csrf: string, input: { client_request_id: string; text?: string; transcription_job_id?: string; profile_id: string; prompt_id: string }) => write(`${apiRoot}/ai/summaries`, aiJobSchema, 'POST', csrf, input),
+  cancelAIJob: (csrf: string, id: string) => write(`${apiRoot}/ai/jobs/${encodeURIComponent(id)}/cancel`, canceledStatusSchema, 'POST', csrf),
+  retryAIJob: (csrf: string, id: string) => write(`${apiRoot}/ai/jobs/${encodeURIComponent(id)}/retry`, queuedStatusSchema, 'POST', csrf),
+  deleteAIJob: (csrf: string, id: string) => write(`${apiRoot}/ai/jobs/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
 }
 
 function write<T>(path: string, schema: z.ZodType<T>, method: string, csrf: string, body?: unknown) {

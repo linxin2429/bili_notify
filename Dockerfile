@@ -34,15 +34,16 @@ ARG COMMIT=none
 ARG BUILD_DATE=unknown
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags="-s -w -X github.com/linxin2429/bili_notify/cmd.version=${VERSION} -X github.com/linxin2429/bili_notify/cmd.commit=${COMMIT} -X github.com/linxin2429/bili_notify/cmd.date=${BUILD_DATE}" \
-    -o /out/bili-notify . && mkdir -p /out/data
+    -o /out/bili-notify . && mkdir -p /out/data /out/run/bili-notify
 
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chown=65532:65532 /out/bili-notify /bili-notify
 COPY --from=build --chown=65532:65532 /out/data /data
+COPY --from=build --chown=65532:65532 /out/run/bili-notify /run/bili-notify
 USER 65532:65532
 EXPOSE 8443 9090
-VOLUME ["/data"]
+VOLUME ["/data", "/run/bili-notify"]
 ENTRYPOINT ["/bili-notify"]
 CMD ["serve"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["/bili-notify", "healthcheck"]

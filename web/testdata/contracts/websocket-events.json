@@ -12,7 +12,9 @@
       "microsoft-logins",
       "dynamics",
       "comments",
-      "audit-logs"
+      "audit-logs",
+      "ai-status",
+      "ai-jobs"
     ]
   },
   {

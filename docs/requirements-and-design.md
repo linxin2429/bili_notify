@@ -32,9 +32,16 @@ flowchart LR
     O --> E
     H[健康与就绪检查] --> C
     H --> O
+    W <-->|Unix Socket gRPC| AI[Python AI Worker]
+    AI --> BD[B站视频音频 / yt-dlp + FFmpeg]
+    AI --> OP[OpenAI 兼容转写与文本接口]
 ```
 
 代码按功能划分为顶层包：`bilibili` 负责网页接口与二维码登录，`state` 负责事务和持久化（单一 SQLite `data.db`：配置/Outbox/内容档案，GORM + goose 版本化迁移），`notify` 负责投递协议，`service` 负责编排轮询、OAuth、Outbox 和领域事件，`web` 负责认证、管理 REST API、WebSocket 事件流与嵌入式管理台，`cmd` 只处理命令和非秘密启动配置。
+
+AI 子系统采用“持久化控制面 + 可替换执行面”：Go 主进程把模型配置档、提示词模板、任务输入、进度和结果持久化到 `data.db`，提交任务时同时密封模型与提示词配置快照，避免排队期间的设置修改改变已有任务语义；调度器以一个转写槽位和两个总结槽位从队列领取任务，再通过仅本机 Unix Socket 暴露的内部 gRPC 调用 Python Worker。Python Worker 使用 yt-dlp 读取指定 BVID/分 P、FFmpeg 提取并切分单声道 16kHz FLAC，通过 OpenAI 兼容 `/audio/transcriptions` 请求 `verbose_json` 和 segment timestamps，并把分段时间加上音频切片偏移；文本总结对超长输入执行分块 Map/Reduce。模型 Base URL、API Key、模型名、语言、超时、温度、上下文字符预算和提示词均由管理台配置，不绑定单一供应商。Worker 不可用时任务保持 queued，主进程的采集、通知和管理能力不受影响；正在运行的任务在主进程重启后标为 `worker_interrupted`，由管理员显式重试。
+
+安全边界建立在最小暴露面上：内部 RPC 不监听 TCP，Socket 模式为 `0600`；模型 Key、B站 Cookie、AI 输入和结果使用现有 Vault 加密后写入 SQLite，列表接口不返回任务输入/结果，只有详情接口按需解密；Worker 的任务目录为 `0700`，Cookie 临时文件为 `0600` 且下载完成即删除，成功任务删除音频缓存，失败缓存受 24 小时 TTL 和 5 GiB LRU 上限约束。供应商地址必须是无凭据、查询和 fragment 的绝对 HTTPS URL。取消通过 gRPC Context 传播，任务状态转换由 SQLite 条件更新约束，`client_request_id` 提供提交幂等性。
 
 轮询器默认以 30 秒为目标周期、全局 2 请求/秒、4 个并发请求。服务默认每 10 分钟批量查询当前登录账号与监控 UP 的关注关系：已关注且完成空间同步的 UP 使用账号综合动态流，其余 UP 轮询空间动态；关系未知时明确走空间接口。已关注 UP 默认每 30 分钟额外执行一次空间完整性校验。空间和综合流默认最多翻 10 页；超过上限不会静默推进游标，综合流会退回空间同步后重新建立基线。
 
@@ -87,7 +94,7 @@ HTTP 负责全部浏览器主动请求：资源写操作使用单个、合法 UT
 
 投递、动态、评论和审计列表统一返回 `{items,page:{next_cursor,has_more}}`，下一次请求只把非空 `next_cursor` 原样作为 `after` 传回。游标是服务端不透明值；投递按不可变的 `(created_at DESC,id DESC)`，动态和评论按 `(published_at DESC,id/rpid DESC)`，审计按 `(occurred_at DESC,id DESC)` 稳定排序。动态、评论与投递默认每页 20 条，审计默认 50 条，均最多 100 条且不再接受 offset；历史时间范围为半开区间 `[from,to)`。动态历史列表的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)`、互动统计 `stats(forwards/comments/likes)`、视频元数据 `video(duration/views/danmaku)` 和一层 `original` 引用预览（含原内容的视频元数据），前端无需逐条请求内容详情；若条目已有本地文件，列表中的 `media.url` 改写为同源 `/api/v2/dynamics/{id}/media/{index}`，否则保留 CDN URL。旧归档没有统计或视频字段时省略对应字段；列表不返回评论坐标与磁盘路径。
 
-WebSocket 只承载失效信号，不接受业务命令或资源数据。连接后先发送 `{event:"sync.required",revision,topics}`，客户端按需通过 REST 建立基线；后续将同一事件总线批次合并为 `{event:"resources.invalidated",revision,topics}`。topic 固定为 `runtime`、`settings`、`ups`、`channels`、`deliveries`、`bilibili-login`、`microsoft-logins`、`dynamics`、`comments` 和 `audit-logs`。客户端丢失连接或遇到未知消息后保留最后成功数据，通过资源 GET 重建事实，不在浏览器合成服务端领域状态。
+WebSocket 只承载失效信号，不接受业务命令或资源数据。连接后先发送 `{event:"sync.required",revision,topics}`，客户端按需通过 REST 建立基线；后续将同一事件总线批次合并为 `{event:"resources.invalidated",revision,topics}`。topic 固定为 `runtime`、`settings`、`ups`、`channels`、`deliveries`、`bilibili-login`、`microsoft-logins`、`dynamics`、`comments`、`audit-logs`、`ai-status` 和 `ai-jobs`。客户端丢失连接或遇到未知消息后保留最后成功数据，通过资源 GET 重建事实，不在浏览器合成服务端领域状态。
 
 领域事件主要由实际状态写入驱动：空闲投递周期不发布事件，空闲采集不广播整份 UP 列表；关注关系刷新、采集路由改变、就绪状态或风控暂停等时间派生状态跨越边界时发布对应轻量事件。投递成功、失败、重试或阻塞只标记状态和投递主题；渠道授权信息只有在实际变化时才标记渠道主题。事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。WebSocket 消息限制为 1 MiB，并以独立的 30 秒 Ping 保活。
 

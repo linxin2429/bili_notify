@@ -42,4 +42,8 @@ go.work.sum
 /web/ui/playwright-report/
 /web/ui/coverage/
 /web/dist/
+/worker/.venv/
+/worker/.pytest_cache/
+/worker/.ruff_cache/
+**/__pycache__/
 /logs
