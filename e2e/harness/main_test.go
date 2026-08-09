@@ -87,27 +87,28 @@ func TestApplicationHTTPIntegration(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, response.StatusCode)
 	closeIntegrationResponse(t, response)
 
-	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v2/dashboard", "", nil)
+	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v2/ups", "", nil)
 	assert.Equal(t, http.StatusOK, response.StatusCode)
-	var dashboard struct {
-		UPs      []map[string]any `json:"ups"`
-		Channels []map[string]any `json:"channels"`
-	}
-	require.NoError(t, json.NewDecoder(response.Body).Decode(&dashboard))
+	var ups []map[string]any
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&ups))
 	closeIntegrationResponse(t, response)
-	assert.Len(t, dashboard.UPs, 1)
-	assert.Len(t, dashboard.Channels, 1)
+	assert.Len(t, ups, 1)
+
+	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v2/channels", "", nil)
+	assert.Equal(t, http.StatusOK, response.StatusCode)
+	var channels []map[string]any
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&channels))
+	closeIntegrationResponse(t, response)
+	assert.Len(t, channels, 1)
 
 	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v2/audit-logs?limit=100", "", nil)
 	assert.Equal(t, http.StatusOK, response.StatusCode)
 	var auditPage struct {
 		Items []map[string]any `json:"items"`
-		Total int              `json:"total"`
 	}
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&auditPage))
 	closeIntegrationResponse(t, response)
-	assert.GreaterOrEqual(t, auditPage.Total, 3)
-	assert.NotEmpty(t, auditPage.Items)
+	assert.GreaterOrEqual(t, len(auditPage.Items), 3)
 
 	require.NoError(t, manager.Restart())
 	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v2/session", "", nil)
