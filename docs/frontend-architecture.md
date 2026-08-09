@@ -233,6 +233,8 @@ React Aria 负责 Dialog、Select、Tabs、Tooltip、Switch、NumberField 等需
 
 前端四项覆盖率保持不低于 80%。覆盖率是遗漏风险的下限，不代替行为断言；不通过排除核心文件来提高数字。
 
+Vitest 的测试转换不启用 React Compiler，生产构建和开发模式仍启用。Compiler 会把一个作者函数改写成 memo cache 状态机；V8 再把这些生成分支映射回源文件，会把编译器实现细节误算为业务分支，并随编译器版本变化而漂移。单元覆盖率因此衡量作者代码，Compiler 的接入正确性分别由 `react-hooks` 的 Compiler 规则与生产构建门禁验证。这不排除任何生产模块，也不改变运行语义的断言范围。
+
 ## 14. 工程门禁顺序
 
 最终 CI 的前端门禁固定为：
