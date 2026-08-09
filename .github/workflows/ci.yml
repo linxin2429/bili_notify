@@ -124,6 +124,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      checks: read
       contents: read
       id-token: write
     steps:
@@ -164,13 +165,15 @@ jobs:
         shell: bash
         run: |
           for attempt in {1..120}; do
-            state="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${REPORT_SHA}/status" \
-              --jq '[.statuses[] | select(.context == "codecov/patch")][0].state // "missing"')"
-            case "${state}" in
+            result="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${REPORT_SHA}/check-runs" \
+              --jq '[.check_runs[] | select(.name == "codecov/patch" and .app.slug == "codecov")][0] |
+                if . == null then "missing"
+                elif .status != "completed" then "pending"
+                else (.conclusion // "pending") end')"
+            case "${result}" in
               success) exit 0 ;;
-              failure|error) exit 1 ;;
               pending|missing) sleep 5 ;;
-              *) echo "unexpected Codecov patch state: ${state}" >&2; exit 1 ;;
+              *) echo "Codecov patch coverage concluded with: ${result}" >&2; exit 1 ;;
             esac
           done
           echo 'Codecov did not report patch coverage within 10 minutes' >&2
