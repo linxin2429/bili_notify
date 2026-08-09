@@ -194,10 +194,14 @@ func TestWebSocketOriginSessionExpiryAndIdleBehavior(t *testing.T) {
 				readSnapshot(t, ctx, connection)
 
 				idleCtx, idleCancel := context.WithTimeout(t.Context(), 75*time.Millisecond)
+				t.Cleanup(idleCancel)
 				err := wsjson.Read(idleCtx, connection, &testWSEnvelope{})
-				idleCancel()
 				require.Error(t, err)
-				assert.ErrorIs(t, err, context.DeadlineExceeded)
+				// coder/websocket may surface either the context deadline or the
+				// connection-close error caused while aborting a concurrent Ping.
+				// The invariant under test is that our idle observation window
+				// expired without receiving a business event.
+				assert.ErrorIs(t, idleCtx.Err(), context.DeadlineExceeded)
 			},
 		},
 		{
