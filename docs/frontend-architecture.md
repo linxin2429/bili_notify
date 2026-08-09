@@ -250,7 +250,7 @@ bundle budget
 Playwright
 ```
 
-`make frontend-quality` 实现前七步的严格顺序。OpenAPI 生成器尚未落地或入口仍超过预算时，该命令应明确失败；不得添加静默 skip。迁移完成并且两个严格 target 都通过后，把 `ci-check` 现有的独立前端依赖替换为 `frontend-quality`，Playwright 继续消费同一份生产构建产物。
+`make frontend-quality` 已实现前七步的严格顺序，OpenAPI clean-tree 检查和 gzip 预算均为强制门禁，不允许静默 skip。`frontend-e2e` 在这条质量链之后运行 Playwright，`ci-check` 再让 Go 的 race、覆盖率、vet 和漏洞检查依赖同一份已验证的生产构建产物。
 
 ## 15. 明确禁止
 
