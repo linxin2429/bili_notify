@@ -1,7 +1,7 @@
 import { expect, request, test as base, type APIRequestContext } from '@playwright/test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 
 export interface HarnessManifest {
@@ -40,13 +40,12 @@ interface HarnessFixture {
 export const test = base.extend<HarnessFixture>({
   harness: async ({}, use, testInfo) => {
     const dataDir = mkdtempSync(join(tmpdir(), 'bili-notify-e2e-'))
-    const repository = resolve(import.meta.dirname, '../../..')
     let server: ChildProcessWithoutNullStreams | undefined
     let control: APIRequestContext | undefined
     let logs = ''
 
     try {
-      const started = await startHarness(repository, dataDir, text => {
+      const started = await startHarness(dataDir, text => {
         logs += text
       })
       server = started.server
@@ -100,11 +99,13 @@ export const test = base.extend<HarnessFixture>({
 
 export { expect }
 
-async function startHarness(repository: string, directory: string, capture: (text: string) => void) {
-  const server = spawn('go', ['run', '-trimpath', './e2e/harness', '--data-dir', directory], {
-    cwd: repository,
+async function startHarness(directory: string, capture: (text: string) => void) {
+  const binary = process.env.BILI_NOTIFY_E2E_HARNESS
+  if (!binary) throw new Error('BILI_NOTIFY_E2E_HARNESS was not prepared by Playwright global setup')
+
+  const server = spawn(binary, ['--data-dir', directory], {
     detached: true,
-    env: { ...process.env, CGO_ENABLED: '0' },
+    env: { ...process.env, TZ: 'Asia/Shanghai' },
   })
   try {
     const manifest = await new Promise<HarnessManifest>((resolveReady, reject) => {
