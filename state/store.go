@@ -18,6 +18,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/vault"
+	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"gorm.io/gorm"
@@ -59,7 +60,9 @@ func Open(ctx context.Context, path string, v *vault.Vault, providers ...oteltra
 	}
 	provider := oteltrace.TracerProvider(tracenoop.NewTracerProvider())
 	if len(providers) == 1 && providers[0] != nil {
-		provider = providers[0]
+		// Only emit SQLite spans under an active app span. Background polls would
+		// otherwise flood Tempo with root traces like "select deliveries".
+		provider = parentRequiredTracerProvider{providers[0]}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("creating database directory: %w", err)
@@ -103,6 +106,35 @@ func Open(ctx context.Context, path string, v *vault.Vault, providers ...oteltra
 		return nil, fmt.Errorf("installing gorm telemetry: %w", err)
 	}
 	return &Store{db: gdb, sql: sqlDB, vault: v, path: path}, nil
+}
+
+// parentRequiredTracerProvider suppresses root spans so GORM/SQLite instrumentation
+// only appears as children of application workflows (collection, delivery, admin, …).
+type parentRequiredTracerProvider struct {
+	oteltrace.TracerProvider
+}
+
+func (p parentRequiredTracerProvider) Tracer(name string, options ...oteltrace.TracerOption) oteltrace.Tracer {
+	return parentRequiredTracer{Tracer: p.TracerProvider.Tracer(name, options...)}
+}
+
+type parentRequiredTracer struct {
+	oteltrace.Tracer
+}
+
+func (t parentRequiredTracer) Start(ctx context.Context, spanName string, opts ...oteltrace.SpanStartOption) (context.Context, oteltrace.Span) {
+	if !oteltrace.SpanContextFromContext(ctx).IsValid() {
+		return ctx, oteltrace.SpanFromContext(ctx)
+	}
+	return t.Tracer.Start(ctx, spanName, opts...)
+}
+
+// originTraceparent returns a W3C traceparent for the active span, or "" if none.
+// Stored on outbox rows so delivery can continue collection/comment traces.
+func originTraceparent(ctx context.Context) string {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+	return carrier.Get("traceparent")
 }
 
 // WithContext returns a lightweight view whose database spans inherit ctx.
@@ -529,15 +561,17 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 			if baselineMode.includes(dynamic) {
 				continue
 			}
+			origin := originTraceparent(tx.Statement.Context)
 			for _, channelID := range channelIDs {
 				d := model.Delivery{
-					ID:        dynamic.ID + ":" + channelID,
-					Kind:      model.DeliveryKindDynamic,
-					Dynamic:   dynamic,
-					ChannelID: channelID,
-					State:     model.DeliveryPending,
-					NextAt:    now,
-					CreatedAt: now,
+					ID:                dynamic.ID + ":" + channelID,
+					Kind:              model.DeliveryKindDynamic,
+					Dynamic:           dynamic,
+					ChannelID:         channelID,
+					State:             model.DeliveryPending,
+					NextAt:            now,
+					CreatedAt:         now,
+					OriginTraceparent: origin,
 				}
 				if err := putDeliveryTx(tx, d); err != nil {
 					return err
@@ -711,16 +745,18 @@ func (s *Store) RecordCommentNotifications(target model.CommentTarget, notes []m
 			if baseline {
 				continue
 			}
+			origin := originTraceparent(tx.Statement.Context)
 			for _, channelID := range channelIDs {
 				n := note
 				d := model.Delivery{
-					ID:        "comment:" + note.RPID + ":" + channelID,
-					Kind:      model.DeliveryKindComment,
-					Comment:   &n,
-					ChannelID: channelID,
-					State:     model.DeliveryPending,
-					NextAt:    now,
-					CreatedAt: now,
+					ID:                "comment:" + note.RPID + ":" + channelID,
+					Kind:              model.DeliveryKindComment,
+					Comment:           &n,
+					ChannelID:         channelID,
+					State:             model.DeliveryPending,
+					NextAt:            now,
+					CreatedAt:         now,
+					OriginTraceparent: origin,
 				}
 				if err := putDeliveryTx(tx, d); err != nil {
 					return err

@@ -5,7 +5,6 @@ services:
   bili-notify:
     image: dengxinlin/bili-notify:${IMAGE_TAG:-latest}
     pull_policy: always
-    container_name: bili-notify
     restart: unless-stopped
     user: "0:0"
     ports:
@@ -88,7 +87,7 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_USERS_ALLOW_SIGN_UP: "false"
     ports:
-      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+      - "${GRAFANA_PORT:-3000}:3000"
     volumes:
       - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - bili-notify-grafana:/var/lib/grafana

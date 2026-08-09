@@ -42,3 +42,4 @@ go.work.sum
 /web/ui/playwright-report/
 /web/ui/coverage/
 /web/dist/
+/logs

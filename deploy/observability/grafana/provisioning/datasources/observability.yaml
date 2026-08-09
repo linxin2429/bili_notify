@@ -19,11 +19,15 @@ datasources:
     url: http://loki:3100
     editable: false
     jsonData:
+      # OTLP logs land as message body + structured metadata/labels.
+      # trace_id is NOT in the line text, so regex-on-body never links.
       derivedFields:
         - name: TraceID
-          matcherRegex: 'trace_id["=: ]+([a-f0-9]{32})'
           datasourceUid: bili-notify-tempo
-          url: '$${__value.raw}'
+          matcherType: label
+          matcherRegex: trace_id
+          url: "$${__value.raw}"
+          urlDisplayLabel: View Trace
   - name: Bili Notify Tempo
     uid: bili-notify-tempo
     type: tempo
@@ -35,11 +39,16 @@ datasources:
         datasourceUid: bili-notify-loki
         spanStartTimeShift: -1m
         spanEndTimeShift: 1m
+        # Map span resource.service.name -> Loki label service_name.
         tags:
           - key: service.name
             value: service_name
-        filterByTraceID: true
-        filterBySpanID: true
+        # Do not use body substring filters: OTLP log lines are bare messages.
+        # Filter structured metadata instead (verified working LogQL).
+        filterByTraceID: false
+        filterBySpanID: false
+        customQuery: true
+        query: '{$${__tags}} | trace_id="$${__trace.traceId}"'
       tracesToMetrics:
         datasourceUid: bili-notify-prometheus
         spanStartTimeShift: -1m
