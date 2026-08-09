@@ -252,7 +252,9 @@ func TestWebSocketIsClosedByLogoutAndPasswordChange(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = response.Body.Close() })
 			assert.Less(t, response.StatusCode, http.StatusBadRequest)
-			err = wsjson.Read(ctx, connection, &testWSEnvelope{})
+			for err == nil {
+				err = wsjson.Read(ctx, connection, &testWSEnvelope{})
+			}
 			require.Error(t, err)
 			assert.Equal(t, websocket.StatusPolicyViolation, websocket.CloseStatus(err))
 		})
