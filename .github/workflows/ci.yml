@@ -166,6 +166,11 @@ jobs:
       - name: Wait for the Codecov patch result
         shell: bash
         run: |
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            echo 'Patch coverage applies only to pull requests'
+            exit 0
+          fi
+
           for _ in {1..120}; do
             result="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${REPORT_SHA}/check-runs" \
               --jq '[.check_runs[] | select(.name == "codecov/patch" and .app.slug == "codecov")][0] |
