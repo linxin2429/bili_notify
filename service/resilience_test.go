@@ -32,6 +32,7 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 		page         func(offset string) (items, next string, hasMore bool)
 		wantRequests int32
 		wantIDs      []string
+		wantUnseen   []string
 		wantFailure  bool
 	}{
 		{
@@ -50,13 +51,13 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 			},
 		},
 		{
-			name: "empty offset rejects partial page", maxPages: 2, wantRequests: 1, wantFailure: true,
+			name: "empty offset rejects partial page", maxPages: 2, wantRequests: 1, wantUnseen: []string{"partial"}, wantFailure: true,
 			page: func(string) (string, string, bool) {
 				return dynamicFixture("partial", 1700000001), "", true
 			},
 		},
 		{
-			name: "repeated offset rejects partial pages", maxPages: 3, wantRequests: 2, wantFailure: true,
+			name: "repeated offset rejects partial pages", maxPages: 3, wantRequests: 2, wantUnseen: []string{"partial-1", "partial-2"}, wantFailure: true,
 			page: func(offset string) (string, string, bool) {
 				if offset == "" {
 					return dynamicFixture("partial-1", 1700000002), "same", true
@@ -65,7 +66,7 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 			},
 		},
 		{
-			name: "page limit rejects partial history", maxPages: 2, wantRequests: 2, wantFailure: true,
+			name: "page limit rejects partial history", maxPages: 2, wantRequests: 2, wantUnseen: []string{"partial-1", "partial-2"}, wantFailure: true,
 			page: func(offset string) (string, string, bool) {
 				if offset == "" {
 					return dynamicFixture("partial-1", 1700000002), "second", true
@@ -114,6 +115,14 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 			if tt.wantFailure {
 				assert.Equal(t, 1, updated.ConsecutiveFail)
 				assert.Empty(t, records)
+				deliveries, listErr := store.ListDeliveries(0)
+				require.NoError(t, listErr)
+				assert.Empty(t, deliveries)
+				for _, id := range tt.wantUnseen {
+					seen, seenErr := store.Seen(up.UID, id)
+					require.NoError(t, seenErr)
+					assert.False(t, seen, "partial dynamic %s must not be committed", id)
+				}
 			} else {
 				assert.Zero(t, updated.ConsecutiveFail)
 			}
