@@ -1,4 +1,4 @@
-import { defineConfig } from '@playwright/test'
+import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
@@ -16,5 +16,6 @@ export default defineConfig({
   },
   projects: [
     { name: 'desktop-light', use: { viewport: { width: 1440, height: 1000 }, colorScheme: 'light' } },
+    { name: 'mobile-dark', use: { ...devices['Pixel 7'], colorScheme: 'dark' } },
   ],
 })

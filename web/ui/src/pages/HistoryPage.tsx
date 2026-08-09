@@ -3,7 +3,7 @@ import ChevronLeft from '@mui/icons-material/ChevronLeft'
 import ChevronRight from '@mui/icons-material/ChevronRight'
 import History from '@mui/icons-material/History'
 import OpenInNew from '@mui/icons-material/OpenInNew'
-import { Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, InputLabel, MenuItem, Paper, Select, Stack, Tab, Tabs, TextField, Typography, useMediaQuery } from '@mui/material'
+import { Alert, Box, Button, Card, CardActionArea, CardContent, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, InputLabel, MenuItem, Paper, Select, Stack, Tab, Tabs, TextField, Typography, useMediaQuery } from '@mui/material'
 import { useSearchParams } from 'react-router-dom'
 import type { AdminAPI } from '../api'
 import { DateTimeField } from '../app/DateTimeField'
@@ -61,7 +61,7 @@ export function HistoryPage({ ups, timeZone, api, refresh }: { ups: UP[]; timeZo
 }
 
 function CommentHistoryCard({ item, timeZone, onOpen }: { item: CommentHistoryItem; timeZone: string; onOpen: () => void }) {
-  return <Card sx={{ cursor: 'pointer' }} onClick={onOpen}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box minWidth={0}><Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap"><Typography fontWeight={750}>{item.content_title || 'UP 回复'}</Typography>{item.baseline && <Chip size="small" label="基线" variant="outlined" />}{item.incomplete && <Chip size="small" color="warning" label="串不完整" />}</Stack><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>{item.up_name || item.up_uid} · {dynamicTypeLabel(item.content_type || '')}</Typography></Box><Box flexShrink={0}><Typography variant="body2" color="text.secondary">回复时间</Typography><Typography>{formatDate(item.published_at, timeZone)}</Typography></Box></Stack></CardContent></Card>
+  return <Card><CardActionArea onClick={onOpen} aria-label={`查看评论对话：${item.content_title || 'UP 回复'}`}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box minWidth={0}><Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap"><Typography fontWeight={750}>{item.content_title || 'UP 回复'}</Typography>{item.baseline && <Chip size="small" label="基线" variant="outlined" />}{item.incomplete && <Chip size="small" color="warning" label="串不完整" />}</Stack><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>{item.up_name || item.up_uid} · {dynamicTypeLabel(item.content_type || '')}</Typography></Box><Box flexShrink={0}><Typography variant="body2" color="text.secondary">回复时间</Typography><Typography>{formatDate(item.published_at, timeZone)}</Typography></Box></Stack></CardContent></CardActionArea></Card>
 }
 
 function CommentHistoryDialog({ open, detail, timeZone, fullScreen, onClose }: { open: boolean; detail: CommentDetail | null; timeZone: string; fullScreen: boolean; onClose: () => void }) {

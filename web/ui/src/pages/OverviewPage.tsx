@@ -25,9 +25,9 @@ export function OverviewPage({ snapshot, api, runMutation }: { snapshot: Dashboa
     try { await runMutation(() => api.cancelBiliLogin(id), current => applyBiliLoginMutation(current, null)) } catch { /* shared handler reports it */ }
   }
   return <Stack spacing={3}>
-    <Box><Typography variant="h4" fontWeight={850}>运行概览</Typography><Typography color="text.secondary">第一眼确认服务是否正在发现并可靠投递动态。</Typography></Box>
+    <Box><Typography component="h1" variant="h4" fontWeight={850}>运行概览</Typography><Typography color="text.secondary">第一眼确认服务是否正在发现并可靠投递动态。</Typography></Box>
     <Alert severity={status.ready ? 'success' : 'warning'} icon={status.ready ? <CheckCircle /> : <WarningAmber />} sx={{ py: 1.5 }}>
-      <Typography variant="h6" fontWeight={800}>{status.ready ? '服务已就绪' : '服务尚未就绪'}</Typography><Typography>{readinessMessage(snapshot)}</Typography>
+      <Typography component="h2" variant="h6" fontWeight={800}>{status.ready ? '服务已就绪' : '服务尚未就绪'}</Typography><Typography>{readinessMessage(snapshot)}</Typography>
     </Alert>
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', lg: 'repeat(4, 1fr)' }, gap: 2 }}>
       <MetricCard label="B站登录" value={status.auth_valid ? '有效' : '未登录'} icon={<LiveTv />} tone={status.auth_valid ? 'success.main' : 'warning.main'} />
@@ -38,8 +38,8 @@ export function OverviewPage({ snapshot, api, runMutation }: { snapshot: Dashboa
     {status.risk_paused_until && <Alert severity="error" icon={<ErrorOutlined />}>B站风控暂停至 {formatDate(status.risk_paused_until, snapshot.timezone)}，程序不会尝试绕过风控。</Alert>}
     <Typography variant="body2" color="text.secondary">当前采集参数：每 {snapshot.settings.poll_interval_sec} 秒轮询 · {snapshot.settings.request_rate} 请求/秒 · 并发 {snapshot.settings.request_concurrency} · 评论监控{snapshot.settings.comment_enabled ? '开' : '关'}（N={snapshot.settings.comment_track_n}，批次 {snapshot.settings.comment_batch_interval_sec}s）</Typography>
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1.35fr) minmax(320px, .65fr)' }, gap: 2 }}>
-      <Card><CardContent><Stack spacing={2}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="h6" fontWeight={800}>B站账号</Typography><Typography color="text.secondary">{status.bili_account ? `${status.bili_account.name || '已登录账号'} · UID ${status.bili_account.uid}` : '使用哔哩哔哩 App 扫码建立网页会话'}</Typography></Box><QrCode2 color="primary" /></Stack><BiliLoginPanel login={snapshot.bili_login || null} busy={busy} timeZone={snapshot.timezone} start={() => void startLogin()} cancel={id => void cancelLogin(id)} /></Stack></CardContent></Card>
-      <Card><CardContent><Typography variant="h6" fontWeight={800} gutterBottom>启动检查</Typography><Stack spacing={1.5}><Checklist done={status.auth_valid} label="B站账号已登录" /><Checklist done={snapshot.channels.some(channel => channel.enabled)} label="至少一个通知渠道已启用" /><Checklist done={snapshot.ups.some(up => up.enabled)} label="至少一个 UP 主已启用" /></Stack><Divider sx={{ my: 2 }} /><Typography variant="body2" color="text.secondary">最后成功采集：{status.last_success_at ? formatDate(status.last_success_at, snapshot.timezone) : '尚无记录'}</Typography></CardContent></Card>
+      <Card><CardContent><Stack spacing={2}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography component="h2" variant="h6" fontWeight={800}>B站账号</Typography><Typography color="text.secondary">{status.bili_account ? `${status.bili_account.name || '已登录账号'} · UID ${status.bili_account.uid}` : '使用哔哩哔哩 App 扫码建立网页会话'}</Typography></Box><QrCode2 color="primary" /></Stack><BiliLoginPanel login={snapshot.bili_login || null} busy={busy} timeZone={snapshot.timezone} start={() => void startLogin()} cancel={id => void cancelLogin(id)} /></Stack></CardContent></Card>
+      <Card><CardContent><Typography component="h2" variant="h6" fontWeight={800} gutterBottom>启动检查</Typography><Stack spacing={1.5}><Checklist done={status.auth_valid} label="B站账号已登录" /><Checklist done={snapshot.channels.some(channel => channel.enabled)} label="至少一个通知渠道已启用" /><Checklist done={snapshot.ups.some(up => up.enabled)} label="至少一个 UP 主已启用" /></Stack><Divider sx={{ my: 2 }} /><Typography variant="body2" color="text.secondary">最后成功采集：{status.last_success_at ? formatDate(status.last_success_at, snapshot.timezone) : '尚无记录'}</Typography></CardContent></Card>
     </Box>
   </Stack>
 }
