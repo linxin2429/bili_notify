@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState } from 'react'
+import { createContext, useCallback, useContext, useId, useState } from 'react'
 
 interface ButtonProps { variant?: 'primary' | 'ghost' | 'outline'; danger?: boolean; busy?: boolean; children: React.ReactNode; className?: string; isDisabled?: boolean; onPress?: () => void; type?: 'button' | 'submit' | 'reset'; role?: string; 'aria-selected'?: boolean }
 export function Button({ variant = 'ghost', danger = false, busy = false, children, className = '', isDisabled, onPress, type = 'button', ...aria }: ButtonProps) {
@@ -13,11 +13,16 @@ export function TextField({ label, value, onChange, type = 'text', required, des
   label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean; description?: string; error?: string;
   multiline?: boolean; disabled?: boolean; name?: string; autoComplete?: string; inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode']
 }) {
-  return <label className="field"><span>{label}</span>
-    {multiline ? <textarea value={value} onChange={event => onChange(event.target.value)} required={required} disabled={disabled} name={name} /> : <input value={value} onChange={event => onChange(event.target.value)} required={required} disabled={disabled} name={name} type={type} autoComplete={autoComplete} inputMode={inputMode} />}
-    {description && <span className="field__description">{description}</span>}
-    {error && <span className="field__error">{error}</span>}
-  </label>
+  const id = useId()
+  const descriptionID = description ? `${id}-description` : undefined
+  const errorID = error ? `${id}-error` : undefined
+  const describedBy = [descriptionID, errorID].filter(Boolean).join(' ') || undefined
+  const common = { id, value, required, disabled, name, 'aria-describedby': describedBy, 'aria-invalid': Boolean(error) || undefined }
+  return <div className="field"><label htmlFor={id}>{label}</label>
+    {multiline ? <textarea {...common} onChange={event => onChange(event.target.value)} /> : <input {...common} onChange={event => onChange(event.target.value)} type={type} autoComplete={autoComplete} inputMode={inputMode} />}
+    {description && <span id={descriptionID} className="field__description">{description}</span>}
+    {error && <span id={errorID} className="field__error">{error}</span>}
+  </div>
 }
 
 export function NativeDateTimeField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {

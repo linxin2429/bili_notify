@@ -34,6 +34,7 @@ test('runs resource administration, audit, and session security workflows', asyn
 
     await navigateTo(page, '设置')
     await page.getByLabel('轮询间隔（秒）').fill('45')
+    await page.getByText('日志与保留', { exact: true }).click()
     await page.getByLabel('日志级别').selectOption('debug')
     const settingsResponse = page.waitForResponse(response => response.url().endsWith('/api/v2/settings') && response.request().method() === 'PUT')
     await page.getByRole('button', { name: '保存运行设置' }).click()
@@ -43,6 +44,7 @@ test('runs resource administration, audit, and session security workflows', asyn
     await expect(page.getByText('实时', { exact: true }).first()).toBeVisible()
     await navigateTo(page, '设置')
     await expect(page.getByLabel('轮询间隔（秒）')).toHaveValue('45')
+    await page.getByText('日志与保留', { exact: true }).click()
     await expect(page.getByLabel('日志级别')).toHaveValue('debug')
   })
 
@@ -56,6 +58,7 @@ test('runs resource administration, audit, and session security workflows', asyn
     await expect(page.getByText('安全变更摘要')).toBeVisible()
     expect(await page.locator('main').innerText()).not.toContain(harness.manifest.webhook_url)
     await assertAccessible(page)
+    await page.getByRole('button', { name: '关闭' }).click()
   })
 
   await test.step('invalidate every old session after a password change', async () => {
@@ -65,6 +68,7 @@ test('runs resource administration, audit, and session security workflows', asyn
     await loginAdministrator(secondPage)
 
     await navigateTo(page, '设置')
+    await page.getByText('修改管理员密码', { exact: true }).click()
     await page.getByLabel('当前密码').fill(ADMIN_PASSWORD)
     await page.getByLabel('新密码', { exact: true }).fill(REPLACEMENT_PASSWORD)
     await page.getByLabel('确认新密码').fill(REPLACEMENT_PASSWORD)

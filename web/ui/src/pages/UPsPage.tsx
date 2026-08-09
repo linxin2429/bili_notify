@@ -14,7 +14,15 @@ export function UPsPage() {
   const [editing, setEditing] = useState<UP | null | undefined>(undefined); const [removing, setRemoving] = useState<UP | null>(null)
   const finish = async () => { await client.invalidateQueries({ queryKey: queryKeys.ups }); void client.invalidateQueries({ queryKey: queryKeys.runtime }) }
   const save = useMutation({ mutationFn: (value: Pick<UP, 'uid' | 'name' | 'enabled'>) => editing ? resources.updateUP(csrf, value) : resources.createUP(csrf, value), onMutate: () => client.cancelQueries({ queryKey: queryKeys.ups }), onSuccess: async () => { await finish(); setEditing(undefined) }, onError: error => notify(apiErrorMessage(error), 'danger') })
-  const remove = useMutation({ mutationFn: (uid: string) => resources.deleteUP(csrf, uid), onMutate: () => client.cancelQueries({ queryKey: queryKeys.ups }), onSuccess: async () => { await finish(); setRemoving(null) }, onError: error => notify(apiErrorMessage(error), 'danger') })
+  const remove = useMutation({ mutationFn: (uid: string) => resources.deleteUP(csrf, uid), onMutate: () => client.cancelQueries({ queryKey: queryKeys.ups }), onSuccess: async () => {
+    await finish()
+    await Promise.all([
+      client.invalidateQueries({ queryKey: ['dynamics'] }),
+      client.invalidateQueries({ queryKey: ['comments'] }),
+      client.invalidateQueries({ queryKey: ['deliveries'] }),
+    ])
+    setRemoving(null)
+  }, onError: error => notify(apiErrorMessage(error), 'danger') })
   if (ups.isPending || runtime.isPending) return <LoadingState />
   if (ups.error || runtime.error) return <PageError error={ups.error || runtime.error} retry={() => { void ups.refetch(); void runtime.refetch() }} />
   return <div className="page-stack"><PageHeader title="UP 主" subtitle="管理需要轮询的公开账号；首次采集只建立基线。" action={<Button variant="primary" onPress={() => setEditing(null)}>＋ 添加 UP 主</Button>} />

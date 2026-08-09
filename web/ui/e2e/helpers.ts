@@ -56,7 +56,7 @@ export async function completeBilibiliLoginAndBaseline(page: Page, harness: Harn
   await navigateTo(page, '概览')
   await page.getByRole('button', { name: '生成登录二维码' }).click()
   await expect(page.getByText('已扫码，请确认')).toBeVisible()
-  await expect(page.getByText('E2E Account · UID 100')).toBeVisible()
+  await expect(page.getByText('E2E Account · UID 100').first()).toBeVisible()
   await expect(page.getByText('服务已就绪')).toBeVisible({ timeout: 25_000 })
   await expect.poll(async () => {
     const state = await harness.state()

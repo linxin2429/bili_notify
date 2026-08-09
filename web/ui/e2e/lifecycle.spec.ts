@@ -96,11 +96,13 @@ test('runs the collection, durable outbox, restart, and retry journey', async ({
 
   await test.step('discover a new UP reply immediately after a comment settings update', async () => {
     await navigateTo(page, '设置')
+    await page.getByText('评论监控', { exact: true }).click()
     await page.getByLabel('评论批次间隔（秒）').fill('30')
     await page.getByRole('button', { name: '保存运行设置' }).click()
     await expect.poll(async () => (await harness.state()).counts.comment_root || 0).toBeGreaterThan(0)
 
     await harness.setComments(true)
+    await page.getByText('评论监控', { exact: true }).click()
     await page.getByLabel('评论批次间隔（秒）').fill('31')
     await page.getByRole('button', { name: '保存运行设置' }).click()
     await expect.poll(async () => (await harness.state()).messages.length).toBe(4)
@@ -112,7 +114,7 @@ test('runs the collection, durable outbox, restart, and retry journey', async ({
     await commentsResponse
     await page.getByRole('button', { name: /查看评论对话/ }).click()
     await expect(page.getByText('E2E UP comment reply')).toBeVisible()
-    await page.getByRole('button', { name: '关闭' }).click()
+    await page.getByRole('button', { name: '关闭', exact: true }).click()
   })
 
   await test.step('remove the UP and clear its dynamic and comment history', async () => {
