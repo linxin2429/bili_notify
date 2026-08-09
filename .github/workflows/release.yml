@@ -247,7 +247,6 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Refuse to overwrite an immutable version
-        if: vars.RELEASE_OVERWRITE_VERSION != steps.build_env.outputs.version
         env:
           VERSION: ${{ steps.build_env.outputs.version }}
         shell: bash
