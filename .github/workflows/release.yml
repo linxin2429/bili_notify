@@ -1,22 +1,37 @@
-name: CI
+name: Release
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
+    tags: ['v*']
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Require a stable SemVer tag from main
+        shell: bash
+        run: |
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git merge-base --is-ancestor "${GITHUB_SHA}" refs/remotes/origin/main
+
   select-runner:
-    name: Select CI runner
+    name: Select release runner
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -58,7 +73,7 @@ jobs:
           echo "tool-workers=${tool_workers}" >> "${GITHUB_OUTPUT}"
 
   test:
-    needs: select-runner
+    needs: [validate-tag, select-runner]
     runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
     timeout-minutes: 30
     permissions:
@@ -69,15 +84,11 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
-          # Self-hosted runners retain their local Go caches. Restoring a
-          # setup-go archive over those shared directories causes collisions.
           cache: ${{ needs.select-runner.outputs.kind == 'github-hosted' }}
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
-          # Self-hosted runners already retain ~/.npm. Uploading that shared
-          # cache can exceed 1 GB and adds minutes to every first run.
           cache: ${{ needs.select-runner.outputs.kind == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: web/ui/package-lock.json
 
@@ -88,9 +99,7 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/ui/package-lock.json') }}
 
-      - name: Build and test
-        # A fresh GitHub-hosted Linux VM also needs Chromium's system packages.
-        # Both self-hosted machines already provide them.
+      - name: Revalidate release source
         env:
           CI_MAKE_JOBS: ${{ needs.select-runner.outputs.make-jobs }}
           CI_TOOL_WORKERS: ${{ needs.select-runner.outputs.tool-workers }}
@@ -100,76 +109,19 @@ jobs:
           PLAYWRIGHT_INSTALL_FLAGS: ${{ needs.select-runner.outputs.kind == 'github-hosted' && '--with-deps' || '' }}
         run: make -j"${CI_MAKE_JOBS}" ci-check
 
-      - name: Upload core Go coverage
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: core-go-coverage-${{ github.run_attempt }}
-          path: coverage.out
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Upload browser failure artifacts
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: playwright-results-${{ github.run_attempt }}
+          name: release-playwright-results-${{ github.run_attempt }}
           path: |
             web/ui/test-results
             web/ui/playwright-report
           if-no-files-found: ignore
           retention-days: 7
 
-  codecov:
-    needs: test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Download core Go coverage
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: core-go-coverage-${{ github.run_attempt }}
-
-      - name: Upload core Go coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
-        with:
-          files: coverage.out
-          flags: core-go
-          disable_search: true
-          use_oidc: true
-          fail_ci_if_error: true
-
-  codecov-policy:
-    name: Enforce Codecov patch coverage
-    needs: codecov
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      GH_TOKEN: ${{ github.token }}
-      REPORT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-    steps:
-      - name: Wait for the Codecov patch result
-        shell: bash
-        run: |
-          for attempt in {1..120}; do
-            state="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${REPORT_SHA}/status" \
-              --jq '[.statuses[] | select(.context == "codecov/patch")][0].state // "missing"')"
-            case "${state}" in
-              success) exit 0 ;;
-              failure|error) exit 1 ;;
-              pending|missing) sleep 5 ;;
-              *) echo "unexpected Codecov patch state: ${state}" >&2; exit 1 ;;
-            esac
-          done
-          echo 'Codecov did not report patch coverage within 10 minutes' >&2
-          exit 1
-
   observability-config:
-    needs: select-runner
+    needs: [validate-tag, select-runner]
     runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
     timeout-minutes: 15
     permissions:
@@ -195,15 +147,28 @@ jobs:
       - name: Validate observability configuration and alert behavior
         run: make observability-validate
 
-  image:
-    name: Build and smoke-test image
-    needs: [select-runner, test, observability-config]
+  release:
+    name: Publish verified image
+    needs: [validate-tag, select-runner, test, observability-config]
     runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
-    timeout-minutes: 30
+    timeout-minutes: 40
+    environment: dockerhub-production
     permissions:
       contents: read
+      id-token: write
+      attestations: write
+    env:
+      IMAGE_NAME: dengxinlin/bili-notify
+      QUALIFIED_IMAGE_NAME: index.docker.io/dengxinlin/bili-notify
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Prepare isolated Docker credentials
+        shell: bash
+        run: |
+          docker_config="${RUNNER_TEMP}/bili-notify-docker-config"
+          mkdir -p "${docker_config}"
+          echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
 
       - name: Start Docker Desktop
         if: runner.os == 'macOS'
@@ -223,23 +188,27 @@ jobs:
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
         if: runner.os != 'macOS'
 
-      - name: Compute build metadata
+      - name: Compute release metadata
         id: build_env
         shell: bash
         run: |
-          short_commit="${GITHUB_SHA:0:12}"
-          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
-            version="pr-${{ github.event.pull_request.number }}-${short_commit}"
-          else
-            version="main-${short_commit}"
-          fi
-
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "version=${GITHUB_REF_NAME#v}" >> "${GITHUB_OUTPUT}"
           echo "commit=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
           echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
-          echo "smoke_tag=bili-notify:smoke-${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "smoke_tag=bili-notify:release-${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
 
-      - name: Build image
+      - name: Compute image tags and labels
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Build release image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -247,6 +216,7 @@ jobs:
           push: false
           platforms: linux/amd64
           tags: ${{ steps.build_env.outputs.smoke_tag }}
+          labels: ${{ steps.metadata.outputs.labels }}
           build-args: |
             GOPROXY=https://proxy.golang.org,direct
             VERSION=${{ steps.build_env.outputs.version }}
@@ -256,33 +226,105 @@ jobs:
           cache-to: ${{ runner.os != 'macOS' && 'type=gha,mode=min,scope=bili-notify-linux-amd64,ignore-error=true' || '' }}
           provenance: false
 
-      - name: Smoke-test image
+      - name: Smoke-test release image
         env:
           DOCKER_IMAGE: ${{ steps.build_env.outputs.smoke_tag }}
         run: make docker-smoke-image
 
-  ci-gate:
-    name: CI Gate
-    if: always()
-    needs: [test, codecov, codecov-policy, observability-config, image]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    env:
-      TEST_RESULT: ${{ needs.test.result }}
-      CODECOV_RESULT: ${{ needs.codecov.result }}
-      CODECOV_POLICY_RESULT: ${{ needs.codecov-policy.result }}
-      OBSERVABILITY_RESULT: ${{ needs.observability-config.result }}
-      IMAGE_RESULT: ${{ needs.image.result }}
-    steps:
-      - name: Require every CI gate
+      - name: Login to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Refuse to overwrite an immutable version
+        env:
+          VERSION: ${{ steps.build_env.outputs.version }}
         shell: bash
         run: |
-          for result in \
-            "${TEST_RESULT}" \
-            "${CODECOV_RESULT}" \
-            "${CODECOV_POLICY_RESULT}" \
-            "${OBSERVABILITY_RESULT}" \
-            "${IMAGE_RESULT}"; do
-            [[ "${result}" == "success" ]] || exit 1
-          done
+          if docker manifest inspect "${IMAGE_NAME}:${VERSION}" >/dev/null 2>&1; then
+            echo "${IMAGE_NAME}:${VERSION} already exists and cannot be overwritten" >&2
+            exit 1
+          fi
+
+      - name: Tag and push the tested image
+        id: publish
+        env:
+          IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
+          SMOKE_TAG: ${{ steps.build_env.outputs.smoke_tag }}
+        shell: bash
+        run: |
+          image_id="$(docker image inspect --format '{{.Id}}' "${SMOKE_TAG}")"
+          pushed_digest=""
+
+          while IFS= read -r image_tag; do
+            [[ -n "${image_tag}" ]] || continue
+            docker tag "${image_id}" "${image_tag}"
+            push_output="$(docker push "${image_tag}")"
+            printf '%s\n' "${push_output}"
+
+            digest="$(sed -n 's/^.*digest: \(sha256:[0-9a-f]*\).*$/\1/p' <<<"${push_output}" | tail -1)"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+            if [[ -n "${pushed_digest}" && "${digest}" != "${pushed_digest}" ]]; then
+              echo "pushed tags do not reference one image: ${pushed_digest} != ${digest}" >&2
+              exit 1
+            fi
+            pushed_digest="${digest}"
+          done <<<"${IMAGE_TAGS}"
+
+          [[ -n "${pushed_digest}" ]]
+          echo "digest=${pushed_digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.build_env.outputs.smoke_tag }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: bili-notify-${{ steps.build_env.outputs.version }}-sbom.spdx.json
+          upload-artifact-retention: 30
+          upload-release-assets: false
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          cosign-release: v2.5.2
+
+      - name: Sign image and attach SBOM
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        shell: bash
+        run: |
+          cosign sign --yes "${QUALIFIED_IMAGE_NAME}@${DIGEST}"
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${QUALIFIED_IMAGE_NAME}@${DIGEST}"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.QUALIFIED_IMAGE_NAME }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summarize release
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
+        shell: bash
+        run: |
+          {
+            echo '### Published Docker image'
+            echo
+            echo "Digest: \`${DIGEST}\`"
+            echo
+            echo 'Tags:'
+            while IFS= read -r image_tag; do
+              [[ -n "${image_tag}" ]] && echo "- \`${image_tag}\`"
+            done <<<"${IMAGE_TAGS}"
+            echo
+            echo 'The digest is signed and has SPDX SBOM and build-provenance attestations.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Remove isolated Docker credentials
+        if: always()
+        shell: bash
+        run: docker logout docker.io >/dev/null 2>&1 || true

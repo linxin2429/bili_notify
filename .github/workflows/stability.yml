@@ -8,7 +8,8 @@ on:
       repeat_count:
         description: Number of times to repeat every Go test
         required: true
-        default: '10'
+        type: number
+        default: 10
 
 concurrency:
   group: stability-${{ github.ref }}
@@ -23,14 +24,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.26.5'
+          go-version-file: go.mod
           cache: true
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
           cache: npm
@@ -38,5 +39,5 @@ jobs:
 
       - name: Repeat shuffled race tests
         env:
-          GO_STABILITY_COUNT: ${{ github.event.inputs.repeat_count || '10' }}
+          GO_STABILITY_COUNT: ${{ inputs.repeat_count || 10 }}
         run: make test-stability

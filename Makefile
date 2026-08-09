@@ -15,6 +15,7 @@ BUILD_DATE ?= unknown
 PLAYWRIGHT_INSTALL_FLAGS ?=
 COVERAGE_FILE ?= coverage.out
 COVERAGE_MIN ?= 80.0
+ACTIONLINT_VERSION ?= v1.7.7
 ARGS ?= serve
 COMPOSE ?= docker compose
 COMPOSE_FLAGS ?=
@@ -25,7 +26,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/cmd.commit=$(COMMIT) \
 	-X $(MODULE)/cmd.date=$(BUILD_DATE)
 
-.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e go-check-ready check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck ci-check check run docker-build docker-smoke-image docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
+.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage frontend-audit playwright-install frontend-e2e go-check-ready check-diff check-fmt check-mod workflow-lint check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck ci-check check run docker-build docker-smoke-image docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
 
 help:
 	@printf '%s\n' \
@@ -52,6 +53,7 @@ help:
 		'  frontend-lint          run the TypeScript check' \
 		'  frontend-test          run frontend unit tests' \
 		'  frontend-coverage      run the frontend coverage gate' \
+		'  frontend-audit         fail on high-severity npm vulnerabilities' \
 		'  playwright-install     install Chromium' \
 		'  frontend-e2e           build the UI once and run Playwright tests' \
 		'' \
@@ -88,6 +90,9 @@ frontend-test: frontend-install
 frontend-coverage: frontend-install
 	npm --prefix web/ui run test:coverage
 
+frontend-audit: frontend-install
+	npm --prefix web/ui audit --audit-level=high
+
 playwright-install: frontend-install
 	cd web/ui && npx playwright install $(PLAYWRIGHT_INSTALL_FLAGS) chromium
 
@@ -98,11 +103,33 @@ frontend-e2e: frontend-build playwright-install
 # before `go ... ./...` walks the repository, then parallelize the Go checks.
 go-check-ready: frontend-e2e frontend-coverage
 
+check-diff:
+	git diff --check
+
+check-fmt:
+	@files="$$(gofmt -l $$(git ls-files '*.go'))"; \
+	if [ -n "$${files}" ]; then \
+		echo 'The following Go files are not formatted:'; \
+		printf '%s\n' "$${files}"; \
+		exit 1; \
+	fi
+
+check-mod:
+	@diff="$$(go mod tidy -diff)"; \
+	if [ -n "$${diff}" ]; then \
+		printf '%s\n' "$${diff}"; \
+		exit 1; \
+	fi
+	go mod verify
+
+workflow-lint:
+	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
+
 check-vet: go-check-ready
 	go vet $(GO_PACKAGES)
 
 check-vulncheck: go-check-ready
-	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go run golang.org/x/vuln/cmd/govulncheck@latest $(GO_PACKAGES)
+	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go tool govulncheck $(GO_PACKAGES)
 
 build: frontend-build
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "$(BINARY)" .
@@ -121,7 +148,19 @@ test-race: frontend-build
 	go test -race -shuffle=on $(GO_TEST_FLAGS) $(GO_PACKAGES)
 
 test-stability: frontend-build
-	go test -race -shuffle=on -count=$(GO_STABILITY_COUNT) $(GO_TEST_FLAGS) $(GO_PACKAGES)
+	@count="$${GO_STABILITY_COUNT:-10}"; \
+	case "$${count}" in *[!0-9]*|'') echo 'GO_STABILITY_COUNT must be an integer from 1 to 50' >&2; exit 2;; esac; \
+	if [ "$${count}" -lt 1 ] || [ "$${count}" -gt 50 ]; then \
+		echo 'GO_STABILITY_COUNT must be an integer from 1 to 50' >&2; \
+		exit 2; \
+	fi; \
+	iteration=1; \
+	while [ "$${iteration}" -le "$${count}" ]; do \
+		seed="$$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')"; \
+		echo "Stability iteration $${iteration}/$${count}, shuffle seed $${seed}"; \
+		go test -race -shuffle="$${seed}" -count=1 $(GO_TEST_FLAGS) $(GO_PACKAGES) || exit $$?; \
+		iteration=$$((iteration + 1)); \
+	done
 
 test-protocol: frontend-build
 	go test -race -shuffle=on -count=3 $(GO_TEST_FLAGS) ./notify ./telemetry
@@ -140,7 +179,7 @@ coverage: frontend-build
 coverage-race: frontend-build
 	@set -eu; \
 	core_packages="$$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"; \
-	go test -race $(GO_TEST_FLAGS) -covermode=atomic -coverpkg="$${core_packages}" -coverprofile="$(COVERAGE_FILE)" ./...; \
+	go test -race -shuffle=on $(GO_TEST_FLAGS) -covermode=atomic -coverpkg="$${core_packages}" -coverprofile="$(COVERAGE_FILE)" ./...; \
 	total="$$(go tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}')"; \
 	echo "Core Go coverage: $${total}%"; \
 	awk -v coverage="$${total}" -v minimum="$(COVERAGE_MIN)" 'BEGIN { if (coverage + 0 < minimum + 0) exit 1 }'
@@ -148,7 +187,7 @@ coverage-race: frontend-build
 check-coverage-race: go-check-ready
 	@set -eu; \
 	core_packages="$$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"; \
-	go test -race $(GO_TEST_FLAGS) -covermode=atomic -coverpkg="$${core_packages}" -coverprofile="$(COVERAGE_FILE)" ./...; \
+	go test -race -shuffle=on $(GO_TEST_FLAGS) -covermode=atomic -coverpkg="$${core_packages}" -coverprofile="$(COVERAGE_FILE)" ./...; \
 	total="$$(go tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}')"; \
 	echo "Core Go coverage: $${total}%"; \
 	awk -v coverage="$${total}" -v minimum="$(COVERAGE_MIN)" 'BEGIN { if (coverage + 0 < minimum + 0) exit 1 }'
@@ -157,9 +196,9 @@ vet: frontend-build
 	go vet $(GO_PACKAGES)
 
 vulncheck: frontend-build
-	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go run golang.org/x/vuln/cmd/govulncheck@latest $(GO_PACKAGES)
+	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go tool govulncheck $(GO_PACKAGES)
 
-ci-check: frontend-lint frontend-coverage frontend-e2e check-coverage-race check-vet check-vulncheck
+ci-check: check-diff check-fmt check-mod workflow-lint frontend-lint frontend-audit frontend-coverage frontend-e2e check-coverage-race check-vet check-vulncheck
 
 check: build ci-check
 

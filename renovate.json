@@ -1,27 +1,59 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["helpers:pinGitHubActionDigests"],
   "timezone": "Asia/Shanghai",
-  "enabledManagers": ["gomod", "dockerfile"],
+  "schedule": ["before 06:00 on monday"],
+  "enabledManagers": [
+    "gomod",
+    "dockerfile",
+    "docker-compose",
+    "npm",
+    "github-actions",
+    "custom.regex"
+  ],
   "semanticCommits": "enabled",
   "dependencyDashboard": false,
-  "packageRules": [
+  "automerge": false,
+  "minimumReleaseAge": "3 days",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"]
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 06:00 on the first day of the month"]
+  },
+  "customManagers": [
     {
-      "description": "Disable dependency updates outside the Go toolchain",
-      "matchManagers": ["gomod", "dockerfile"],
-      "enabled": false
+      "customType": "regex",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": [
+        "docker run[^\\n]* (?<depName>[a-z0-9][a-z0-9./_-]*):(?<currentValue>v?[0-9][^\\s]*)"
+      ],
+      "datasourceTemplate": "docker"
     },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": [
+        "ACTIONLINT_VERSION \\?= (?<currentValue>v?[0-9][^\\s]*)"
+      ],
+      "depNameTemplate": "github.com/rhysd/actionlint",
+      "datasourceTemplate": "go"
+    }
+  ],
+  "packageRules": [
     {
       "description": "Update the Go requirement and build image together",
       "matchManagers": ["gomod", "dockerfile"],
       "matchDepNames": ["go", "golang"],
-      "enabled": true,
       "groupName": "Go toolchain",
       "groupSlug": "go-toolchain",
       "minimumGroupSize": 2,
       "semanticCommitType": "build",
       "semanticCommitScope": "go",
       "commitMessageTopic": "Go toolchain",
-      "commitBody": "Update the module requirement and production build image together.\n\nKeep development, CI, and production on the same stable Go release."
+      "commitBody": "Update the module requirement and production build image together.\n\nKeep development, CI, Stability, and production on the same stable Go release."
     },
     {
       "description": "Allow the go directive to advance to every stable release",
@@ -29,6 +61,43 @@
       "matchDepNames": ["go"],
       "matchDepTypes": ["golang"],
       "rangeStrategy": "bump"
+    },
+    {
+      "description": "Pin npm ranges for reproducible dependency review",
+      "matchManagers": ["npm"],
+      "rangeStrategy": "pin"
+    },
+    {
+      "description": "Group frontend development dependencies monthly",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "groupName": "frontend development dependencies",
+      "groupSlug": "frontend-dev-dependencies"
+    },
+    {
+      "description": "Group GitHub Actions digest updates monthly",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "groupSlug": "github-actions",
+      "semanticCommitType": "ci"
+    },
+    {
+      "description": "Group observability container updates monthly",
+      "matchManagers": ["docker-compose", "custom.regex"],
+      "matchPackageNames": [
+        "otel/opentelemetry-collector-contrib",
+        "prom/prometheus",
+        "grafana/loki",
+        "grafana/tempo",
+        "grafana/grafana"
+      ],
+      "groupName": "observability stack",
+      "groupSlug": "observability-stack"
+    },
+    {
+      "description": "Never automerge breaking dependency updates",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
     }
   ]
 }
