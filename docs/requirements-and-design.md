@@ -119,7 +119,7 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 
 ## 7. 可观测性、运行与验证
 
-Makefile 是本地与 CI 的统一任务入口：`make check` 执行全部前端与 Go 检查，`make build` 生成本地二进制，`make docker-build` 生成生产镜像，细分目标通过 `make help` 查看。
+Makefile 是本地与 CI 的统一任务入口：`make check` 执行全部前端与 Go 检查，`make -jN check` 按依赖图并行执行互不冲突的检查，`make build` 生成本地二进制，`make docker-build` 生成生产镜像，细分目标通过 `make help` 查看。CI 根据 runner 类型分别限制 Make、Go、Vitest 和 Playwright 的并发数，避免嵌套 worker 过度争抢 CPU 与内存。
 
 私有观测服务默认监听 `:9090`：`/healthz` 表示进程存活，`/readyz` 要求有效 B站会话、启用的 UP 和渠道以及近期成功采集。应用通过 OTLP 导出 logs、metrics 和 traces，不再提供应用内 `/metrics`。Metrics 覆盖工作流、B 站请求、内容发现、投递、Outbox、媒体、认证/就绪/风控、UP/渠道/评论目标、关键配置阈值和审计失败；不使用 UID、渠道 ID、错误文本或正文作为属性。
 
@@ -139,8 +139,8 @@ Trace 用于关联管理 HTTP、采集/评论/关系/认证/投递/审计工作�
 - HTTP 管理 API、WebSocket 单向事件、空闲周期不推送、领域事件合并、重连快照和秘密读模型；
 - 操作日志追加、筛选、保留清理、拒绝/失败路径、请求 ID和秘密值回归；
 - React 单元、状态和组件测试覆盖 API、WebSocket、状态归约、异步请求竞态、历史坏行容错、结构化表单的全部字段连线、桌面/移动端以及明暗主题；四项全局覆盖率均以 80% 为门禁，设置页、控制台和操作日志页另设不低于当前薄弱面的文件级门禁，避免辅助函数掩盖关键页面回退；
-- Chromium 确定性端到端链路同时运行桌面浅色与 Pixel 7 触控深色项目：覆盖管理员初始化、二维码登录、关注关系与空间基线、综合流采集、历史归档、失败 Outbox、同目录重启、人工重试、无刷新 WebSocket 重连、资源编辑、设置持久化、操作日志安全摘要、秘密不回显和密码变更后的全会话失效；使用 axe 扫描登录、概览、操作日志和移动历史页面，并提交移动历史视觉基线；测试只连接本地 TLS 伪上游；
+- Chromium 确定性端到端链路把采集投递、管理安全和响应式验证拆为测试级隔离场景，每个场景使用独立临时目录、SQLite、随机端口和 Go harness，并同时运行桌面浅色与 Pixel 7 触控深色项目：覆盖管理员初始化、二维码登录、关注关系与空间基线、综合流采集、历史归档、失败 Outbox、同目录重启、人工重试、无刷新 WebSocket 重连、资源编辑、设置持久化、操作日志安全摘要、秘密不回显和密码变更后的全会话失效；使用 axe 扫描登录、概览、操作日志和移动历史页面，并提交移动历史视觉基线；测试只连接本地 TLS 伪上游；
 - `web/testdata/contracts/` 中提交 REST 与 WebSocket JSON 契约样例；Go 侧以真实 HTTP 处理器和生产 WebSocket 序列化类型校验，Vitest 读取同一文件并以集中式 Zod schema 解析，TypeScript API 类型由 schema 推导；
 - 生产 scratch 镜像的 nonroot/只读运行、健康检查、HTTPS 初始化、优雅停止和同卷重启。
 
-提交前执行前端类型检查、`npm run test:coverage` 和 `npm run test:e2e`，以及 `go build ./...`、`go test ./...`、`go test -race ./...` 和 `go vet ./...`。`web/dist` 是不纳入 Git 的构建产物；执行会编译 `web` 包的 Go 命令前必须先从 lockfile 构建前端。Vitest 使用 V8 统计除入口、纯类型和测试辅助代码之外的前端生产代码，statements、branches、functions、lines 任一低于 80% 时 CI 失败，并对关键页面执行额外文件级阈值。Playwright 使用锁定版本的 Chromium 分别模拟桌面浅色和触控手机深色；axe 严重违规或已提交视觉基线变化均使检查失败。Go 覆盖率门禁只统计 `bilibili`、`notify`、`service`、`state`、`web` 五个核心包，但以 `go test -covermode=atomic -coverpkg="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)" -coverprofile=coverage.out ./...` 运行仓库全部测试；总覆盖率低于 80% 时失败。Go 覆盖率报告通过 GitHub OIDC 上传 Codecov，不配置静态 Token，项目目标固定为 80% 且不启用 patch 门禁。CI 必须在 Go 检查前构建前端，并对最终 Docker 镜像运行冒烟测试。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像。
+提交前执行前端类型检查、`npm run test:coverage` 和 `npm run test:e2e`，以及 `go build ./...`、`go test ./...`、`go test -race ./...` 和 `go vet ./...`；完整本地门禁可通过 `make check` 运行，多核机器可使用 `make -jN check`。`web/dist` 是不纳入 Git 的构建产物；Make 在一次完整检查中只从 lockfile 安装并构建一次前端，所有会编译 `web` 包的 Go 目标和 Playwright 均依赖该产物。Vitest 使用 V8 统计除入口、纯类型和测试辅助代码之外的前端生产代码，statements、branches、functions、lines 任一低于 80% 时 CI 失败，并对关键页面执行额外文件级阈值。Playwright 使用锁定版本的 Chromium 分别模拟桌面浅色和触控手机深色；axe 严重违规或已提交视觉基线变化均使检查失败。Go 覆盖率门禁只统计 `bilibili`、`notify`、`service`、`state`、`web` 五个核心包；CI 以 `go test -race -covermode=atomic -coverpkg="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)" -coverprofile=coverage.out ./...` 一次运行仓库全部测试并同时完成 race 与覆盖率验证，总覆盖率低于 80% 时失败。Go 覆盖率报告通过 GitHub OIDC 上传 Codecov，不配置静态 Token，项目目标固定为 80% 且不启用 patch 门禁。CI 必须在 Go 检查前构建前端，并对最终 Docker 镜像运行冒烟测试。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像。

@@ -21,6 +21,8 @@ jobs:
     outputs:
       kind: ${{ steps.select.outputs.kind }}
       runs-on: ${{ steps.select.outputs.runs-on }}
+      make-jobs: ${{ steps.select.outputs.make-jobs }}
+      tool-workers: ${{ steps.select.outputs.tool-workers }}
     steps:
       - name: Prefer online self-hosted runners
         id: select
@@ -31,20 +33,28 @@ jobs:
         run: |
           kind=github-hosted
           runs_on='["ubuntu-latest"]'
+          make_jobs=2
+          tool_workers=2
 
           if [[ -n "${GH_TOKEN}" ]] && runners="$(gh api "repos/${GH_REPO}/actions/runners" 2>/dev/null)"; then
             if jq -e 'any(.runners[]; .status == "online" and any(.labels[]; .name == "bili-notify-primary"))' <<<"${runners}" >/dev/null; then
               kind=primary
               runs_on='["self-hosted","Linux","X64","bili-notify-primary"]'
+              make_jobs=2
+              tool_workers=8
             elif jq -e 'any(.runners[]; .status == "online" and any(.labels[]; .name == "bili-notify-ci"))' <<<"${runners}" >/dev/null; then
               kind=macmini
               runs_on='["self-hosted","macOS","ARM64","bili-notify-ci"]'
+              make_jobs=2
+              tool_workers=4
             fi
           fi
 
           echo "Selected ${kind} runner"
           echo "kind=${kind}" >> "${GITHUB_OUTPUT}"
           echo "runs-on=${runs_on}" >> "${GITHUB_OUTPUT}"
+          echo "make-jobs=${make_jobs}" >> "${GITHUB_OUTPUT}"
+          echo "tool-workers=${tool_workers}" >> "${GITHUB_OUTPUT}"
 
   test:
     needs: select-runner
@@ -81,8 +91,13 @@ jobs:
         # A fresh GitHub-hosted Linux VM also needs Chromium's system packages.
         # Both self-hosted machines already provide them.
         env:
+          CI_MAKE_JOBS: ${{ needs.select-runner.outputs.make-jobs }}
+          CI_TOOL_WORKERS: ${{ needs.select-runner.outputs.tool-workers }}
+          GOMAXPROCS: ${{ needs.select-runner.outputs.tool-workers }}
+          GOFLAGS: -p=${{ needs.select-runner.outputs.tool-workers }}
+          GO_TEST_FLAGS: -parallel=${{ needs.select-runner.outputs.tool-workers }}
           PLAYWRIGHT_INSTALL_FLAGS: ${{ needs.select-runner.outputs.kind == 'github-hosted' && '--with-deps' || '' }}
-        run: make check
+        run: make -j"${CI_MAKE_JOBS}" check
 
       - name: Install Codecov signature verifier
         if: runner.os == 'macOS'

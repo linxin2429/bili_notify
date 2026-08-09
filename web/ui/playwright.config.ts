@@ -1,9 +1,12 @@
 import { defineConfig, devices } from '@playwright/test'
+import { configuredWorkerCount } from './test-workers.ts'
+
+const workers = configuredWorkerCount() ?? 1
 
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: false,
-  workers: 1,
+  fullyParallel: true,
+  workers,
   timeout: 120_000,
   expect: { timeout: 10_000 },
   reporter: process.env.CI ? [['line'], ['html', { open: 'never' }]] : 'list',
