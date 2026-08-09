@@ -16,7 +16,7 @@ export const sessionAPI = {
   setup: (code: string, password: string) => requestJSON(`${root}/setup`, csrfSchema, { method: 'POST', body: JSON.stringify({ setup_code: code, password }) }),
   login: (password: string) => requestJSON(`${root}/session`, csrfSchema, { method: 'POST', body: JSON.stringify({ password }) }),
   logout: (csrf: string) => requestJSON(`${root}/session`, emptySchema, { method: 'DELETE', csrf }),
-  changePassword: (csrf: string, current: string, replacement: string) => requestJSON(`${root}/session/password`, emptySchema, { method: 'PUT', csrf, body: JSON.stringify({ current_password: current, new_password: replacement }) }),
+  changePassword: (csrf: string, current: string, replacement: string) => requestJSON(`${root}/session/password`, csrfSchema, { method: 'PUT', csrf, body: JSON.stringify({ current_password: current, new_password: replacement }) }),
 }
 export const sessionQuery = () => queryOptions({ queryKey: queryKeys.session, queryFn: ({ signal }) => sessionAPI.get(signal), staleTime: 15_000, retry: 1 })
 

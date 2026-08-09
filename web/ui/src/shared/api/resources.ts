@@ -27,7 +27,10 @@ export const resources = {
   updateUP: (csrf: string, input: Pick<UP, 'uid' | 'name' | 'enabled'>) => write(`${apiRoot}/ups/${encodeURIComponent(input.uid)}`, upSchema, 'PUT', csrf, { name: input.name, enabled: input.enabled }),
   deleteUP: (csrf: string, uid: string) => write(`${apiRoot}/ups/${encodeURIComponent(uid)}`, emptyResponseSchema, 'DELETE', csrf),
   createChannel: (csrf: string, input: ChannelDraft) => write(`${apiRoot}/channels`, channelSchema, 'POST', csrf, input),
-  updateChannel: (csrf: string, input: ChannelDraft & { id: string }) => write(`${apiRoot}/channels/${encodeURIComponent(input.id)}`, channelSchema, 'PUT', csrf, input),
+  updateChannel: (csrf: string, input: ChannelDraft & { id: string }) => {
+    const { id, ...body } = input
+    return write(`${apiRoot}/channels/${encodeURIComponent(id)}`, channelSchema, 'PUT', csrf, body)
+  },
   deleteChannel: (csrf: string, id: string) => write(`${apiRoot}/channels/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
   testChannel: (csrf: string, id: string) => write(`${apiRoot}/channels/${encodeURIComponent(id)}/test`, sentStatusSchema, 'POST', csrf),
   retryDelivery: (csrf: string, id: string) => write(`${apiRoot}/deliveries/${encodeURIComponent(id)}/retry`, queuedStatusSchema, 'POST', csrf),

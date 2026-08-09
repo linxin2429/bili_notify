@@ -35,7 +35,7 @@ describe('resource pages', () => {
     api.deliveries.mockResolvedValue({ items: [makeDelivery({ state: 'blocked' })], page: { next_cursor: '', has_more: false } }); api.biliLogin.mockResolvedValue(null); api.microsoftLogins.mockResolvedValue([])
     api.dynamics.mockResolvedValue({ items: [dynamic], page: { next_cursor: '', has_more: false } }); api.comments.mockResolvedValue({ items: [], page: { next_cursor: '', has_more: false } }); api.auditLogs.mockResolvedValue({ items: [makeAudit()], page: { next_cursor: '', has_more: false } })
     api.startBiliLogin.mockResolvedValue({ id: 'login', status: 'waiting', expires_at: '2026-08-09T10:05:00Z' }); api.createUP.mockResolvedValue(up); api.retryDelivery.mockResolvedValue({ status: 'queued' }); api.updateSettings.mockResolvedValue(settings)
-    api.updateUP.mockResolvedValue(up); api.deleteUP.mockResolvedValue(undefined); api.createChannel.mockResolvedValue(channel); api.updateChannel.mockResolvedValue(channel); api.deleteChannel.mockResolvedValue(undefined); api.testChannel.mockResolvedValue({ status: 'sent' }); session.changePassword.mockResolvedValue(undefined)
+    api.updateUP.mockResolvedValue(up); api.deleteUP.mockResolvedValue(undefined); api.createChannel.mockResolvedValue(channel); api.updateChannel.mockResolvedValue(channel); api.deleteChannel.mockResolvedValue(undefined); api.testChannel.mockResolvedValue({ status: 'sent' }); session.changePassword.mockResolvedValue({ csrf_token: 'replacement-csrf' })
   })
 
   it.each([
@@ -144,6 +144,8 @@ describe('resource pages', () => {
     await user.click(screen.getByRole('button', { name: '保存运行设置' })); await waitFor(() => expect(api.updateSettings).toHaveBeenCalled())
     await user.type(screen.getByLabelText('当前密码'), 'current'); await user.type(screen.getByLabelText(/^新密码/), 'replacement'); await user.type(screen.getByLabelText('确认新密码'), 'different'); await user.click(screen.getByRole('button', { name: '修改密码' })); expect(await screen.findByText('两次输入的新密码不一致')).toBeInTheDocument()
     await user.clear(screen.getByLabelText('确认新密码')); await user.type(screen.getByLabelText('确认新密码'), 'replacement'); await user.click(screen.getByRole('button', { name: '修改密码' })); await waitFor(() => expect(session.changePassword).toHaveBeenCalledWith('csrf', 'current', 'replacement'))
+    expect(await screen.findByText('管理员密码已修改，其他设备的会话已失效')).toBeInTheDocument()
+    expect(screen.getByLabelText('当前密码')).toHaveValue('')
   })
 })
 

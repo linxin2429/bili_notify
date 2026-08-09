@@ -1004,28 +1004,29 @@ components:
         - backlog_alert_age_sec
         - delivery_retry_delays_sec
       properties:
-        poll_interval_sec: {type: integer}
-        request_rate: {type: number}
-        request_concurrency: {type: integer}
+        poll_interval_sec: {type: integer, minimum: 10, maximum: 86400}
+        request_rate: {type: number, exclusiveMinimum: 0, maximum: 10}
+        request_concurrency: {type: integer, minimum: 1, maximum: 16}
         comment_enabled: {type: boolean}
-        comment_track_n: {type: integer}
-        comment_root_pages: {type: integer}
-        comment_reply_pages: {type: integer}
-        comment_batch_interval_sec: {type: integer}
+        comment_track_n: {type: integer, minimum: 1, maximum: 50}
+        comment_root_pages: {type: integer, minimum: 1, maximum: 10}
+        comment_reply_pages: {type: integer, minimum: 1, maximum: 20}
+        comment_batch_interval_sec: {type: integer, minimum: 30, maximum: 86400}
         log_level: {type: string, enum: [debug, info, warn, error]}
-        audit_log_retention_days: {type: integer}
-        relation_refresh_interval_sec: {type: integer}
-        space_reconcile_interval_sec: {type: integer}
-        max_dynamic_pages: {type: integer}
-        risk_pause_sec: {type: integer}
-        delivery_concurrency: {type: integer}
-        backlog_alert_count: {type: integer}
-        backlog_alert_age_sec: {type: integer}
+        audit_log_retention_days: {type: integer, minimum: 1, maximum: 3650}
+        relation_refresh_interval_sec: {type: integer, minimum: 60, maximum: 86400}
+        space_reconcile_interval_sec: {type: integer, minimum: 300, maximum: 604800}
+        max_dynamic_pages: {type: integer, minimum: 1, maximum: 20}
+        risk_pause_sec: {type: integer, minimum: 60, maximum: 3600}
+        delivery_concurrency: {type: integer, minimum: 1, maximum: 32}
+        backlog_alert_count: {type: integer, minimum: 1, maximum: 100000}
+        backlog_alert_age_sec: {type: integer, minimum: 60, maximum: 86400}
         delivery_retry_delays_sec:
           type: array
+          description: Five retry delays in nondecreasing order.
           minItems: 5
           maxItems: 5
-          items: {type: integer, minimum: 1}
+          items: {type: integer, minimum: 1, maximum: 86400}
     CreateUPRequest:
       type: object
       additionalProperties: false

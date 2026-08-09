@@ -350,6 +350,18 @@ func TestDynamicHistoryViewsBoundTextAndMedia(t *testing.T) {
 	assert.Less(t, len(raw), 64<<10)
 }
 
+func TestDynamicHistoryViewSerializesRequiredEmptyTextFields(t *testing.T) {
+	t.Parallel()
+	view := toDynamicHistoryView(state.DynamicRecord{
+		ID: "dyn", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD",
+		PublishedAt: time.Now(), DiscoveredAt: time.Now(),
+	})
+	raw, err := json.Marshal(view)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"summary":""`)
+	assert.Contains(t, string(raw), `"url":""`)
+}
+
 func TestAPIErrorClassification(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

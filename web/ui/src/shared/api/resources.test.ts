@@ -73,6 +73,10 @@ describe('resource transport', () => {
       '/api/v2/ups/4%2F2', '/api/v2/channels/c%2F1', '/api/v2/deliveries/d%2F1/retry', '/api/v2/bilibili-login/login%2F1',
     ]))
     expect(fetch.mock.calls[1]?.[1]).toMatchObject({ method: 'PUT', body: JSON.stringify({ name: '改名', enabled: false }) })
+    expect(fetch.mock.calls[4]?.[1]).toMatchObject({
+      method: 'PUT',
+      body: JSON.stringify(draft),
+    })
   })
 })
 

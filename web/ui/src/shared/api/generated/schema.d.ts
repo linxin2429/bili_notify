@@ -467,6 +467,7 @@ export interface components {
             delivery_concurrency: number;
             backlog_alert_count: number;
             backlog_alert_age_sec: number;
+            /** @description Five retry delays in nondecreasing order. */
             delivery_retry_delays_sec: number[];
         };
         CreateUPRequest: {

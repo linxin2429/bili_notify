@@ -106,8 +106,8 @@ type dynamicHistoryView struct {
 	DiscoveredAt time.Time             `json:"discovered_at"`
 	Baseline     bool                  `json:"baseline"`
 	Title        string                `json:"title,omitempty"`
-	Summary      string                `json:"summary,omitempty"`
-	URL          string                `json:"url,omitempty"`
+	Summary      string                `json:"summary"`
+	URL          string                `json:"url"`
 	TargetURL    string                `json:"target_url,omitempty"`
 	Badge        string                `json:"badge,omitempty"`
 	Description  string                `json:"description,omitempty"`
