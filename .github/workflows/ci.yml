@@ -15,8 +15,40 @@ permissions:
   contents: read
 
 jobs:
+  select-runner:
+    name: Select CI runner
+    runs-on: ubuntu-latest
+    outputs:
+      kind: ${{ steps.select.outputs.kind }}
+      runs-on: ${{ steps.select.outputs.runs-on }}
+    steps:
+      - name: Prefer online self-hosted runners
+        id: select
+        env:
+          GH_TOKEN: ${{ secrets.CI_RUNNER_STATUS_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          kind=github-hosted
+          runs_on='["ubuntu-latest"]'
+
+          if [[ -n "${GH_TOKEN}" ]] && runners="$(gh api "repos/${GH_REPO}/actions/runners" 2>/dev/null)"; then
+            if jq -e 'any(.runners[]; .status == "online" and any(.labels[]; .name == "bili-notify-primary"))' <<<"${runners}" >/dev/null; then
+              kind=primary
+              runs_on='["self-hosted","Linux","X64","bili-notify-primary"]'
+            elif jq -e 'any(.runners[]; .status == "online" and any(.labels[]; .name == "bili-notify-ci"))' <<<"${runners}" >/dev/null; then
+              kind=macmini
+              runs_on='["self-hosted","macOS","ARM64","bili-notify-ci"]'
+            fi
+          fi
+
+          echo "Selected ${kind} runner"
+          echo "kind=${kind}" >> "${GITHUB_OUTPUT}"
+          echo "runs-on=${runs_on}" >> "${GITHUB_OUTPUT}"
+
   test:
-    runs-on: [self-hosted, macOS, ARM64, bili-notify-ci]
+    needs: select-runner
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
     permissions:
       contents: read
       id-token: write
@@ -26,9 +58,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
-          # Self-hosted runners share a host GOMODCACHE; setup-go archive
-          # restore collides with existing files and emits tar warnings.
-          cache: false
+          # Self-hosted runners retain their local Go caches. Restoring a
+          # setup-go archive over those shared directories causes collisions.
+          cache: ${{ needs.select-runner.outputs.kind == 'github-hosted' }}
 
       - uses: actions/setup-node@v5
         with:
@@ -36,13 +68,23 @@ jobs:
           cache: npm
           cache-dependency-path: web/ui/package-lock.json
 
+      - name: Cache Playwright browsers
+        if: needs.select-runner.outputs.kind == 'github-hosted'
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/ui/package-lock.json') }}
+
       - name: Build and test
-        # Self-hosted runners already have Chromium system libs and cannot
-        # passwordless sudo for playwright install-deps. Install browser only.
+        # A fresh GitHub-hosted Linux VM also needs Chromium's system packages.
+        # Both self-hosted machines already provide them.
+        env:
+          PLAYWRIGHT_INSTALL_FLAGS: ${{ needs.select-runner.outputs.kind == 'github-hosted' && '--with-deps' || '' }}
         run: make check
 
       - name: Install Codecov signature verifier
-        run: brew install gnupg
+        if: runner.os == 'macOS'
+        run: command -v gpg >/dev/null || brew install gnupg
 
       - name: Upload core Go coverage to Codecov
         uses: codecov/codecov-action@v7
@@ -65,13 +107,27 @@ jobs:
           retention-days: 7
 
   docker-smoke:
-    needs: test
-    runs-on: [self-hosted, macOS, ARM64, bili-notify-ci]
+    needs: [select-runner, test]
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
     permissions:
       contents: read
       actions: write # GHA docker layer cache
     steps:
       - uses: actions/checkout@v5
+
+      - name: Start Docker Desktop
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            open -gj -a Docker
+          fi
+          for attempt in {1..60}; do
+            if docker info >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Docker Desktop did not become ready within 120 seconds" >&2
+          exit 1
 
       - uses: docker/setup-buildx-action@v4
 
@@ -87,14 +143,28 @@ jobs:
         run: make docker-smoke
 
   docker:
-    needs: [test, docker-smoke]
+    needs: [select-runner, test, docker-smoke]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: [self-hosted, macOS, ARM64, bili-notify-ci]
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
     permissions:
       contents: read
       actions: write # GHA docker layer cache
     steps:
       - uses: actions/checkout@v5
+
+      - name: Start Docker Desktop
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            open -gj -a Docker
+          fi
+          for attempt in {1..60}; do
+            if docker info >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Docker Desktop did not become ready within 120 seconds" >&2
+          exit 1
 
       - uses: docker/setup-buildx-action@v4
 
