@@ -1,4 +1,4 @@
-import type { RuntimeSettings } from '../types'
+import type { RuntimeSettings } from '../shared/api/types'
 
 export interface RuntimeSettingsForm {
   pollSec: string

@@ -1,73 +1,53 @@
-import { useEffect, useState } from 'react'
-import Add from '@mui/icons-material/Add'
-import Delete from '@mui/icons-material/Delete'
-import Edit from '@mui/icons-material/Edit'
-import Email from '@mui/icons-material/Email'
-import NotificationsActive from '@mui/icons-material/NotificationsActive'
-import Science from '@mui/icons-material/Science'
-import { Alert, Avatar, Box, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControl, FormControlLabel, InputLabel, MenuItem, Select, Stack, Switch, TextField, Typography, useMediaQuery } from '@mui/material'
-import type { AdminAPI } from '../api'
-import { applyChannelDeletion, applyChannelMutation, applyMicrosoftLoginDeletion, applyMicrosoftLoginMutation } from '../dashboard'
-import { channelTypeLabel, settingLabel } from '../presentation'
-import type { Channel, ChannelDraft, ChannelType, MicrosoftLogin } from '../types'
-import { EmptyState, PageHeader, type RunMutation } from '../app/shared'
-import { channelFields } from './channel-form'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import type { Channel, ChannelDraft, ChannelType } from '../shared/api/types'
+import { queries, queryKeys } from '../shared/api/query'
+import { resources } from '../shared/api/resources'
+import { useSession } from '../modules/session'
+import { apiErrorMessage } from '../shared/api/errors'
+import { Alert, Badge, Button, Card, EmptyState, LoadingState, PageError, PageHeader, SelectField, SwitchField, TextField, useNotify } from '../shared/ui'
+import { Dialog } from '../shared/ui/Dialog'
+import { channelTypeLabel, settingLabel } from '../shared/lib/presentation'
 
-export function ChannelsPage({ channels, logins, api, runMutation }: { channels: Channel[]; logins: MicrosoftLogin[]; api: AdminAPI; runMutation: RunMutation }) {
-  const [editing, setEditing] = useState<Channel | null | undefined>(undefined)
-  const mobile = useMediaQuery(theme => theme.breakpoints.down('sm'))
-  const save = async (draft: ChannelDraft) => {
-    await runMutation(() => draft.id ? api.updateChannel(draft as ChannelDraft & { id: string }) : api.createChannel(draft), applyChannelMutation)
-    setEditing(undefined)
-  }
-  const remove = async (id: string) => {
-    if (!confirm('存在待投递任务时不能删除渠道。继续？')) return
-    try { await runMutation(() => api.deleteChannel(id), current => applyChannelDeletion(current, id)) } catch { /* shared handler reports it */ }
-  }
-  const authorize = async (channelID: string) => {
-    try {
-      const login = await runMutation(() => api.startMicrosoftLogin(channelID), applyMicrosoftLoginMutation)
-      const url = login.verification_uri_complete || login.verification_uri
-      if (url) window.open(url, '_blank', 'noopener,noreferrer')
-    } catch { /* shared handler reports it */ }
-  }
-  const cancelAuthorization = async (channelID: string) => {
-    try { await runMutation(() => api.cancelMicrosoftLogin(channelID), current => applyMicrosoftLoginDeletion(current, channelID)) } catch { /* shared handler reports it */ }
-  }
-  const test = async (channelID: string) => {
-    try { await runMutation(() => api.testChannel(channelID)) } catch { /* shared handler reports it */ }
-  }
-  return <Stack spacing={3}><PageHeader title="通知渠道" subtitle="秘密字段仅写入，不会返回浏览器。" action={<Button variant="contained" startIcon={<Add />} onClick={() => setEditing(null)}>添加渠道</Button>} />
-    {channels.length === 0 ? <EmptyState icon={<NotificationsActive />} title="尚未配置通知渠道" action={<Button variant="contained" onClick={() => setEditing(null)}>添加第一个渠道</Button>} /> :
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', xl: 'repeat(2, 1fr)' }, gap: 2 }}>{channels.map(channel => { const login = logins.find(item => item.channel_id === channel.id); return <Card key={channel.id}><CardContent><Stack spacing={2}><Stack direction="row" justifyContent="space-between"><Stack direction="row" spacing={1.5} alignItems="center"><Avatar sx={{ bgcolor: 'secondary.main' }}><Email /></Avatar><Box><Typography variant="h6" fontWeight={800}>{channel.name}</Typography><Typography color="text.secondary">{channelTypeLabel(channel.type)}</Typography></Box></Stack><Chip label={channel.enabled ? '已启用' : '已停用'} color={channel.enabled ? 'success' : 'default'} /></Stack><Divider /><ChannelSummary channel={channel} />{channel.type === 'microsoft' && <MicrosoftAuthorization channel={channel} login={login} authorize={() => void authorize(channel.id)} cancel={() => void cancelAuthorization(channel.id)} />}<Stack direction="row" spacing={1} flexWrap="wrap"><Button startIcon={<Edit />} onClick={() => setEditing(channel)}>编辑</Button><Button startIcon={<Science />} onClick={() => void test(channel.id)}>发送测试</Button><Button color="error" startIcon={<Delete />} onClick={() => void remove(channel.id)}>删除</Button></Stack></Stack></CardContent></Card> })}</Box>}
-    <ChannelDialog open={editing !== undefined} channel={editing || undefined} fullScreen={mobile} onClose={() => setEditing(undefined)} onSave={save} />
-  </Stack>
+export function ChannelsPage() {
+  const channels = useQuery(queries.channels()); const logins = useQuery(queries.microsoftLogins()); const { csrf } = useSession(); const client = useQueryClient(); const notify = useNotify()
+  const [editing, setEditing] = useState<Channel | null | undefined>(undefined); const [removing, setRemoving] = useState<Channel | null>(null)
+  const refresh = async () => { await client.invalidateQueries({ queryKey: queryKeys.channels }); void client.invalidateQueries({ queryKey: queryKeys.runtime }) }
+  const save = useMutation({ mutationFn: (draft: ChannelDraft) => draft.id ? resources.updateChannel(csrf, draft as ChannelDraft & { id: string }) : resources.createChannel(csrf, draft), onMutate: () => client.cancelQueries({ queryKey: queryKeys.channels }), onSuccess: async () => { await refresh(); setEditing(undefined) }, onError: error => notify(apiErrorMessage(error), 'danger') })
+  const remove = useMutation({ mutationFn: (id: string) => resources.deleteChannel(csrf, id), onMutate: () => client.cancelQueries({ queryKey: queryKeys.channels }), onSuccess: async () => { await refresh(); setRemoving(null) }, onError: error => notify(apiErrorMessage(error), 'danger') })
+  const test = useMutation({ mutationFn: (id: string) => resources.testChannel(csrf, id), onSuccess: () => notify('测试通知已发送', 'success'), onError: error => notify(apiErrorMessage(error), 'danger') })
+  const authorize = useMutation({ mutationFn: (id: string) => resources.startMicrosoftLogin(csrf, id), onSuccess: login => { void client.invalidateQueries({ queryKey: queryKeys.microsoftLogins }); const url = login.verification_uri_complete || login.verification_uri; if (url) window.open(url, '_blank', 'noopener,noreferrer') }, onError: error => notify(apiErrorMessage(error), 'danger') })
+  const cancelAuthorization = useMutation({ mutationFn: (id: string) => resources.cancelMicrosoftLogin(csrf, id), onSuccess: () => void client.invalidateQueries({ queryKey: queryKeys.microsoftLogins }), onError: error => notify(apiErrorMessage(error), 'danger') })
+  if (channels.isPending || logins.isPending) return <LoadingState />
+  if (channels.error || logins.error) return <PageError error={channels.error || logins.error} retry={() => { void channels.refetch(); void logins.refetch() }} />
+  return <div className="page-stack"><PageHeader title="通知渠道" subtitle="秘密字段只写入服务端保险库，不会返回浏览器。" action={<Button variant="primary" onPress={() => setEditing(null)}>＋ 添加渠道</Button>} />
+    {channels.data.length === 0 ? <EmptyState icon="◉" title="尚未配置通知渠道" action={<Button variant="primary" onPress={() => setEditing(null)}>添加第一个渠道</Button>} /> : <div className="card-grid">{channels.data.map(channel => { const login = logins.data.find(item => item.channel_id === channel.id); const authorized = channel.settings.authorized === 'true'; return <Card key={channel.id}><div className="card-title"><div><h2>{channel.name}</h2><p>{channelTypeLabel(channel.type)}</p></div><Badge tone={channel.enabled ? 'success' : 'neutral'}>{channel.enabled ? '已启用' : '已停用'}</Badge></div><dl className="summary-list">{Object.entries(channel.settings).filter(([key]) => !['authorized', 'token_type', 'token_expiry'].includes(key)).map(([key, value]) => <div key={key}><dt>{settingLabel(key)}</dt><dd>{value}</dd></div>)}{channel.configured_secrets.map(key => <div key={key}><dt>{settingLabel(key)}</dt><dd><Badge>已安全保存</Badge></dd></div>)}</dl>{channel.type === 'microsoft' && <Alert tone={authorized ? 'success' : login?.status === 'pending' ? 'info' : 'warning'}>{login?.status === 'pending' ? <p>打开 Microsoft 登录页并输入代码 <strong>{login.user_code}</strong>。<Button onPress={() => cancelAuthorization.mutate(channel.id)}>取消</Button></p> : <p>{login?.error || (authorized ? 'Microsoft 账户已授权。' : '必须完成 Microsoft 授权后才能启用。')} <Button onPress={() => authorize.mutate(channel.id)}>{authorized ? '重新授权' : '开始授权'}</Button></p>}</Alert>}<div className="button-row"><Button onPress={() => setEditing(channel)}>✎ 编辑</Button><Button onPress={() => test.mutate(channel.id)}>⌁ 发送测试</Button><Button danger onPress={() => setRemoving(channel)}>⌫ 删除</Button></div></Card>})}</div>}
+    {editing !== undefined && <ChannelDialog key={editing?.id || 'new'} channel={editing || undefined} busy={save.isPending} error={save.error ? apiErrorMessage(save.error) : ''} onClose={() => setEditing(undefined)} onSave={draft => save.mutate(draft)} />}
+    <Dialog open={Boolean(removing)} title="删除通知渠道" onClose={() => setRemoving(null)} actions={<><Button onPress={() => setRemoving(null)}>取消</Button><Button variant="primary" danger busy={remove.isPending} onPress={() => removing && remove.mutate(removing.id)}>确认删除</Button></>}><p>存在待投递任务时服务端会拒绝删除“{removing?.name}”。</p></Dialog>
+  </div>
 }
 
-function ChannelSummary({ channel }: { channel: Channel }) {
-  const entries = Object.entries(channel.settings).filter(([key]) => !['authorized', 'token_type', 'token_expiry'].includes(key))
-  return <Stack spacing={.75}>{entries.map(([key, value]) => <Stack key={key} direction="row" justifyContent="space-between" gap={2}><Typography color="text.secondary" variant="body2">{settingLabel(key)}</Typography><Typography variant="body2" textAlign="right" sx={{ overflowWrap: 'anywhere' }}>{value}</Typography></Stack>)}{channel.configured_secrets.map(secret => <Stack key={secret} direction="row" justifyContent="space-between"><Typography color="text.secondary" variant="body2">{settingLabel(secret)}</Typography><Chip label="已安全保存" size="small" /></Stack>)}</Stack>
+function ChannelDialog({ channel, busy, error, onClose, onSave }: { channel?: Channel; busy: boolean; error: string; onClose: () => void; onSave: (draft: ChannelDraft) => void }) {
+  const [name, setName] = useState(channel?.name || ''); const [type, setType] = useState<ChannelType>(channel?.type || 'email'); const [enabled, setEnabled] = useState(channel?.enabled ?? true); const [fields, setFields] = useState<Record<string, string>>(channel?.settings || {}); const [secrets, setSecrets] = useState<Record<string, string>>({})
+  const field = (key: string, value: string) => setFields(current => ({ ...current, [key]: value })); const secret = (key: string, value: string) => setSecrets(current => ({ ...current, [key]: value }))
+  const submit = () => onSave(buildDraft(channel?.id, name, type, enabled, fields, secrets))
+  return <Dialog open onClose={onClose} title={channel ? '编辑通知渠道' : '添加通知渠道'} actions={<><Button onPress={onClose}>取消</Button><Button variant="primary" busy={busy} isDisabled={!name} onPress={submit}>保存</Button></>}><div className="form-stack">{error && <Alert tone="danger">{error}</Alert>}<TextField label="渠道名称" value={name} onChange={setName} required /><SelectField label="渠道类型" value={type} disabled={Boolean(channel)} onChange={value => { setType(value as ChannelType); setFields({}); setSecrets({}); if (value === 'microsoft') setEnabled(false) }} options={(['email', 'microsoft', 'dingtalk', 'feishu', 'wecom'] as ChannelType[]).map(value => ({ value, label: channelTypeLabel(value) }))} />
+    {type === 'email' && <EmailFields fields={fields} secrets={secrets} configured={channel?.configured_secrets || []} setField={field} setSecret={secret} />}{type === 'microsoft' && <MicrosoftFields fields={fields} setField={field} />}{type === 'dingtalk' && <DingTalkFields secrets={secrets} configured={channel?.configured_secrets || []} setSecret={secret} />}{type === 'feishu' && <FeishuFields fields={fields} secrets={secrets} configured={channel?.configured_secrets || []} setField={field} setSecret={secret} />}{type === 'wecom' && <SecretField label="Webhook URL" name="webhook" values={secrets} configured={channel?.configured_secrets || []} onChange={secret} />}
+    <SwitchField checked={enabled} onChange={setEnabled}>启用渠道</SwitchField>{type === 'microsoft' && <Alert>保存后需要完成 Microsoft 设备码授权，再启用渠道。</Alert>}</div></Dialog>
 }
 
-function MicrosoftAuthorization({ channel, login, authorize, cancel }: { channel: Channel; login?: MicrosoftLogin; authorize: () => void; cancel: () => void }) {
-  const authorized = channel.settings.authorized === 'true'
-  return <Alert severity={authorized ? 'success' : login?.status === 'pending' ? 'info' : 'warning'} action={login?.status === 'pending' ? <Button onClick={cancel}>取消</Button> : <Button onClick={authorize}>{authorized ? '重新授权' : '开始授权'}</Button>}>
-    {login?.status === 'pending' ? <>打开 Microsoft 登录页并输入代码 <strong>{login.user_code}</strong>，正在等待授权。</> : login?.error || (authorized ? 'Microsoft 账户已授权。' : '必须完成 Microsoft 授权后才能启用。')}
-  </Alert>
-}
+type FieldSetter = (key: string, value: string) => void
+function EmailFields({ fields, secrets, configured, setField, setSecret }: { fields: Record<string, string>; secrets: Record<string, string>; configured: string[]; setField: FieldSetter; setSecret: FieldSetter }) { return <><TextField label="SMTP 主机" value={fields.host || ''} onChange={value => setField('host', value)} required /><TextField label="端口" value={fields.port || '465'} onChange={value => setField('port', value)} required inputMode="numeric" /><SelectField label="TLS 模式" value={fields.tls || 'tls'} onChange={value => setField('tls', value)} options={[{ value: 'tls', label: 'TLS' }, { value: 'starttls', label: 'STARTTLS' }]} /><TextField label="用户名" value={fields.username || ''} onChange={value => setField('username', value)} /><SecretField label="密码" name="password" values={secrets} configured={configured} onChange={setSecret} /><TextField label="发件人" value={fields.from || ''} onChange={value => setField('from', value)} required /><TextField label="收件人" value={fields.to || ''} onChange={value => setField('to', value)} required description="多个地址使用英文逗号分隔" /></> }
+function MicrosoftFields({ fields, setField }: { fields: Record<string, string>; setField: FieldSetter }) { return <><TextField label="应用程序（客户端）ID" value={fields.client_id || ''} onChange={value => setField('client_id', value)} required /><TextField label="租户" value={fields.tenant || 'common'} onChange={value => setField('tenant', value)} /><TextField label="收件人" value={fields.to || ''} onChange={value => setField('to', value)} required /></> }
+function DingTalkFields({ secrets, configured, setSecret }: { secrets: Record<string, string>; configured: string[]; setSecret: FieldSetter }) { return <><SecretField label="Webhook URL" name="webhook" values={secrets} configured={configured} onChange={setSecret} /><SecretField label="签名密钥" name="secret" values={secrets} configured={configured} onChange={setSecret} /></> }
+function FeishuFields({ fields, secrets, configured, setField, setSecret }: { fields: Record<string, string>; secrets: Record<string, string>; configured: string[]; setField: FieldSetter; setSecret: FieldSetter }) { return <><SecretField label="Webhook URL" name="webhook" values={secrets} configured={configured} onChange={setSecret} /><SecretField label="签名密钥" name="secret" values={secrets} configured={configured} onChange={setSecret} /><TextField label="应用 App ID" value={fields.app_id || ''} onChange={value => setField('app_id', value)} /><SecretField label="应用 App Secret" name="app_secret" values={secrets} configured={configured} onChange={setSecret} /></> }
+function SecretField({ label, name, values, configured, onChange }: { label: string; name: string; values: Record<string, string>; configured: string[]; onChange: FieldSetter }) { return <TextField label={label} type="password" value={values[name] || ''} onChange={value => onChange(name, value)} required={!configured.includes(name)} description={configured.includes(name) ? '已安全保存；留空表示保留原值' : undefined} /> }
 
-function ChannelDialog({ open, channel, fullScreen, onClose, onSave }: { open: boolean; channel?: Channel; fullScreen: boolean; onClose: () => void; onSave: (draft: ChannelDraft) => Promise<void> }) {
-  const [name, setName] = useState(''); const [type, setType] = useState<ChannelType>('email'); const [enabled, setEnabled] = useState(true)
-  const [fields, setFields] = useState<Record<string, string>>({}); const [secrets, setSecrets] = useState<Record<string, string>>({}); const [busy, setBusy] = useState(false); const [error, setError] = useState('')
-  useEffect(() => { setName(channel?.name || ''); setType(channel?.type || 'email'); setEnabled(channel?.enabled ?? true); setFields(channel?.settings || {}); setSecrets({}); setError('') }, [channel, open])
-  useEffect(() => { if (!channel && type === 'microsoft') setEnabled(false) }, [type, channel])
-  const setField = (key: string, value: string) => setFields(current => ({ ...current, [key]: value }))
-  const setSecret = (key: string, value: string) => setSecrets(current => ({ ...current, [key]: value }))
-  const submit = async () => {
-    const settings = channelFields(type).filter(field => !field.secret).reduce<Record<string, string>>((result, field) => ({ ...result, [field.key]: fields[field.key] || field.defaultValue || '' }), {})
-    const changedSecrets = Object.fromEntries(Object.entries(secrets).filter(([, value]) => value !== ''))
-    setBusy(true); setError('')
-    try { await onSave({ id: channel?.id, name, type, enabled, settings, ...(Object.keys(changedSecrets).length ? { secrets: changedSecrets } : {}) }) } catch (err) { setError(err instanceof Error ? err.message : '发生未知错误') } finally { setBusy(false) }
-  }
-  return <Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm"><DialogTitle>{channel ? '编辑通知渠道' : '添加通知渠道'}</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}>{error && <Alert severity="error">{error}</Alert>}<TextField label="渠道名称" value={name} onChange={event => setName(event.target.value)} required /><FormControl><InputLabel id="channel-type-label">渠道类型</InputLabel><Select labelId="channel-type-label" label="渠道类型" value={type} onChange={event => { setType(event.target.value as ChannelType); setFields({}); setSecrets({}) }}>{(['email', 'microsoft', 'dingtalk', 'feishu', 'wecom'] as ChannelType[]).map(value => <MenuItem key={value} value={value}>{channelTypeLabel(value)}</MenuItem>)}</Select></FormControl>{channelFields(type).map(field => <TextField key={field.key} label={field.label} type={field.secret ? 'password' : 'text'} value={field.secret ? secrets[field.key] || '' : fields[field.key] || field.defaultValue || ''} onChange={event => field.secret ? setSecret(field.key, event.target.value) : setField(field.key, event.target.value)} required={field.required && !(channel?.configured_secrets.includes(field.key))} helperText={field.secret && channel?.configured_secrets.includes(field.key) ? '已安全保存；留空表示保留原值' : field.help} />)}<FormControlLabel control={<Switch checked={enabled} onChange={event => setEnabled(event.target.checked)} />} label="启用渠道" />{type === 'microsoft' && <Alert severity="info">保存后需要完成 Microsoft 设备码授权，再启用渠道。</Alert>}</Stack></DialogContent><DialogActions><Button onClick={onClose}>取消</Button><Button variant="contained" disabled={busy || !name} onClick={() => void submit()}>保存</Button></DialogActions></Dialog>
+function buildDraft(id: string | undefined, name: string, type: ChannelType, enabled: boolean, fields: Record<string, string>, secrets: Record<string, string>): ChannelDraft {
+  const changed = Object.fromEntries(Object.entries(secrets).filter(([, value]) => value))
+  if (type === 'email') return { id, name, type, enabled, settings: { host: fields.host || '', port: fields.port || '465', tls: fields.tls || 'tls', username: fields.username || '', from: fields.from || '', to: fields.to || '' }, ...(Object.keys(changed).length ? { secrets: changed } : {}) }
+  if (type === 'microsoft') return { id, name, type, enabled, settings: { client_id: fields.client_id || '', tenant: fields.tenant || 'common', to: fields.to || '' } }
+  if (type === 'dingtalk') return { id, name, type, enabled, settings: {}, ...(Object.keys(changed).length ? { secrets: changed } : {}) }
+  if (type === 'feishu') return { id, name, type, enabled, settings: { app_id: fields.app_id || '' }, ...(Object.keys(changed).length ? { secrets: changed } : {}) }
+  return { id, name, type, enabled, settings: {}, ...(Object.keys(changed).length ? { secrets: changed } : {}) }
 }

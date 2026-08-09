@@ -64,29 +64,34 @@ HTTP 承担认证生命周期和全部管理资源 API：
 
 | 方法与路径 | 用途 |
 | --- | --- |
-| `GET /api/v1/session` | 查询初始化和会话状态 |
-| `POST /api/v1/setup` | 使用日志初始化码设置首个管理员密码 |
-| `POST /api/v1/session` | 登录 |
-| `DELETE /api/v1/session` | 注销 |
-| `PUT /api/v1/session/password` | 验证当前密码并修改密码 |
-| `GET /api/v1/dashboard` | 获取完整管理台快照 |
-| `POST /api/v1/ups`、`PUT/DELETE /api/v1/ups/{uid}` | 创建、更新或删除 UP 主 |
-| `POST /api/v1/channels`、`PUT/DELETE /api/v1/channels/{id}` | 创建、更新或删除通知渠道 |
-| `POST /api/v1/channels/{id}/test` | 发送渠道测试通知 |
-| `POST /api/v1/deliveries/{id}/retry` | 将单个阻塞投递任务立即重新入队，返回 202，不同步等待发送 |
-| `POST/DELETE /api/v1/bilibili-login[/{id}]` | 启动或取消 B 站扫码登录 |
-| `POST/DELETE /api/v1/channels/{id}/microsoft-login` | 启动或取消 Microsoft 授权 |
-| `PUT /api/v1/settings` | 严格校验并完整更新 18 项运行设置 |
-| `GET /api/v1/dynamics[/{id}]`、`GET /api/v1/comments[/{rpid}]` | 查询历史列表或内容详情 |
-| `GET /api/v1/dynamics/{id}/media/{index}` | 读取已落盘的动态媒体（需会话） |
-| `GET /api/v1/audit-logs` | 按操作、结果、资源、时间和关键字分页查询管理员操作日志 |
-| `GET /api/v1/ws` | 校验会话并升级 WebSocket |
+| `GET /api/v2/session` | 查询初始化和会话状态 |
+| `POST /api/v2/setup` | 使用日志初始化码设置首个管理员密码 |
+| `POST /api/v2/session` | 登录 |
+| `DELETE /api/v2/session` | 注销 |
+| `PUT /api/v2/session/password` | 验证当前密码并修改密码 |
+| `GET /api/v2/runtime`、`GET /api/v2/settings` | 分别读取运行状态/时区和完整运行设置 |
+| `GET/POST /api/v2/ups`、`PUT/DELETE /api/v2/ups/{uid}` | 读取、创建、更新或删除 UP 主 |
+| `GET/POST /api/v2/channels`、`PUT/DELETE /api/v2/channels/{id}` | 读取、创建、更新或删除通知渠道 |
+| `POST /api/v2/channels/{id}/test` | 发送渠道测试通知 |
+| `GET /api/v2/deliveries` | 按稳定游标读取投递任务 |
+| `POST /api/v2/deliveries/{id}/retry` | 将单个阻塞投递任务立即重新入队，返回 202，不同步等待发送 |
+| `GET/POST /api/v2/bilibili-login`、`DELETE /api/v2/bilibili-login/{id}` | 读取、启动或取消 B 站扫码登录 |
+| `GET /api/v2/microsoft-logins`、`POST/DELETE /api/v2/channels/{id}/microsoft-login` | 读取、启动或取消 Microsoft 授权 |
+| `PUT /api/v2/settings` | 严格校验并完整更新 18 项运行设置 |
+| `GET /api/v2/dynamics[/{id}]`、`GET /api/v2/comments[/{rpid}]` | 查询历史列表或内容详情 |
+| `GET /api/v2/dynamics/{id}/media/{index}` | 读取已落盘的动态媒体（需会话） |
+| `GET /api/v2/audit-logs` | 按操作、结果、资源、时间和关键字分页查询管理员操作日志 |
+| `GET /api/v2/ws` | 校验会话并升级 WebSocket |
 
-HTTP 负责全部浏览器主动请求：资源写操作使用单个、合法 UTF-8 的 JSON body，硬上限为 1 MiB，写请求必须携带会话中的 CSRF Token；`PUT /api/v1/settings` 必须提交全部字段，缺失和未知字段均拒绝。历史查询使用 `uid?`、`q?`、`from?`、`to?`（RFC3339）、`limit?`（默认 20，最大 100）和 `offset?`，时间范围为半开区间 `[from, to)`。动态历史列表的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)`、互动统计 `stats(forwards/comments/likes)`、视频元数据 `video(duration/views/danmaku)` 和一层 `original` 引用预览（含原内容的视频元数据），前端无需逐条请求内容详情；若条目已有本地文件，列表中的 `media.url` 改写为同源 `/api/v1/dynamics/{id}/media/{index}`，否则保留 CDN URL。旧归档没有统计或视频字段时省略对应字段；列表不返回评论坐标与磁盘路径。WebSocket 仅承载服务端事件 `event/revision/data`，不接受业务命令；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、运行设置、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。重连后使用新快照修复断线期间遗漏的状态。
+HTTP 负责全部浏览器主动请求：资源写操作使用单个、合法 UTF-8 的 JSON body，硬上限为 1 MiB，写请求必须携带会话中的 CSRF Token；`PUT /api/v2/settings` 必须提交全部字段，缺失和未知字段均拒绝。成功响应直接返回资源，不增加通用 `data` 外壳；错误统一返回 `{error:{code,message}}`。`api/openapi.yaml` 是 v2 请求、响应、错误和实时消息的传输契约，旧 `/api/v1` 路由不注册，也不保留 dashboard 兼容适配。
+
+投递、动态、评论和审计列表统一返回 `{items,page:{next_cursor,has_more}}`，下一次请求只把非空 `next_cursor` 原样作为 `after` 传回。游标是服务端不透明值；投递按不可变的 `(created_at DESC,id DESC)`，动态和评论按 `(published_at DESC,id/rpid DESC)`，审计按 `(occurred_at DESC,id DESC)` 稳定排序。动态、评论与投递默认每页 20 条，审计默认 50 条，均最多 100 条且不再接受 offset；历史时间范围为半开区间 `[from,to)`。动态历史列表的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)`、互动统计 `stats(forwards/comments/likes)`、视频元数据 `video(duration/views/danmaku)` 和一层 `original` 引用预览（含原内容的视频元数据），前端无需逐条请求内容详情；若条目已有本地文件，列表中的 `media.url` 改写为同源 `/api/v2/dynamics/{id}/media/{index}`，否则保留 CDN URL。旧归档没有统计或视频字段时省略对应字段；列表不返回评论坐标与磁盘路径。
+
+WebSocket 只承载失效信号，不接受业务命令或资源数据。连接后先发送 `{event:"sync.required",revision,topics}`，客户端按需通过 REST 建立基线；后续将同一事件总线批次合并为 `{event:"resources.invalidated",revision,topics}`。topic 固定为 `runtime`、`settings`、`ups`、`channels`、`deliveries`、`bilibili-login`、`microsoft-logins`、`dynamics`、`comments` 和 `audit-logs`。客户端丢失连接或遇到未知消息后保留最后成功数据，通过资源 GET 重建事实，不在浏览器合成服务端领域状态。
 
 领域事件主要由实际状态写入驱动：空闲投递周期不发布事件，空闲采集不广播整份 UP 列表；关注关系刷新、采集路由改变、就绪状态或风控暂停等时间派生状态跨越边界时发布对应轻量事件。投递成功、失败、重试或阻塞只标记状态和投递主题；渠道授权信息只有在实际变化时才标记渠道主题。事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。WebSocket 消息限制为 1 MiB，并以独立的 30 秒 Ping 保活。
 
-管理员会话 Cookie 为 Secure、HttpOnly、SameSite=Strict，空闲 8 小时或创建 24 小时后失效。登录和初始化只按 TCP 对端来源地址（不信任客户端可伪造的代理转发头）与全局失败次数限流，窗口一分钟后恢复。WebSocket 必须通过会话 Cookie 和同源 Origin 校验；密码修改会清空所有会话并关闭全部连接。
+管理员会话 Cookie 为 Secure、HttpOnly、SameSite=Strict，空闲 8 小时或创建 24 小时后失效。登录和初始化只按 TCP 对端来源地址（不信任客户端可伪造的代理转发头）与全局失败次数限流，窗口一分钟后恢复。WebSocket 必须通过会话 Cookie 和同源 Origin 校验；密码修改会先清空所有旧会话并关闭全部连接，再为当前请求创建替代会话，响应返回该会话的新 CSRF token。
 
 所有管理 API 响应携带服务端生成的 `X-Request-ID`。认证和状态变更请求（含失败、未认证和 CSRF 拒绝）同步追加到 SQLite `audit_logs`，记录管理员/匿名来源、独立会话标识、远端地址、路由、目标、结果、耗时和白名单变更摘要；不记录普通读取、静态资源和 WebSocket 消息。操作日志默认保留 180 天，由管理台分页查询。审计写入失败不会篡改已经完成的业务结果，但会输出系统错误并增加指标。
 
@@ -111,11 +116,13 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 
 ## 6. 管理台设计
 
-前端使用 React、TypeScript、Vite、MUI、React Router 和 Zod，构建产物通过 Go `embed` 打入单一二进制。`App` 只负责主题与会话，`Console` 负责实时连接、导航和快照协调，各管理页面及历史富内容组件按领域独立；日期格式化显式接收服务端时区，不使用跨组件可变全局状态。页面采用实时运维工作台而不是等权卡片墙：概览首先显示整体就绪状态和阻塞原因，再显示当前 B站账号 UID/名称、UP、渠道与队列证据，最后提供操作；UP 列表显示关注状态、检查时间和当前综合流/空间采集路由。设置页将 18 项运行参数分为基础采集、高级采集、投递与告警、日志四组，一次提交完整设置；外观主题和管理员密码保持独立。历史页按需查询 `data.db` 中的内容档案，支持动态/UP 回复 Tab、UP 过滤、时间范围、关键字与分页；筛选进入 URL。动态历史使用接近 B 站网页动态流的直接阅读布局：正文可原生选择复制，图文采用单图或九宫格，视频等内容采用封面信息卡，转发内容嵌套展示，底部显示已有互动统计和独立的原内容外链；动态条目本身不打开详情弹窗。
+前端使用 React 19、React Compiler、TypeScript、Vite、React Router Data Mode、TanStack Query、React Aria、CSS Modules/CSS Variables 和从 OpenAPI 生成的传输类型，构建产物通过 Go `embed` 打入单一二进制。服务端是会话、运行状态、设置、UP、渠道、投递和历史数据的唯一权威；TanStack Query 是浏览器唯一远程状态缓存，页面不复制全局 dashboard，也不推导 `ready` 或服务端更新时间等领域事实。Router 负责 URL、路由懒加载和错误边界，筛选与游标进入 URL；表单草稿、Dialog、展开项和灯箱只保存在最近组件。代码依赖方向固定为 `app → pages → modules → shared`，跨模块只经过公共入口，完整约束见 `docs/frontend-architecture.md`。
+
+页面采用实时运维工作台而不是等权卡片墙：概览首先显示整体就绪状态和阻塞原因，再显示当前 B站账号 UID/名称、UP、渠道与队列证据，最后提供操作；UP 列表显示关注状态、检查时间和当前综合流/空间采集路由。设置页将运行参数按基础采集、高级采集、投递与告警、日志分组，一次提交完整设置；外观主题和管理员密码保持独立。历史页按需查询 `data.db` 中的内容档案，支持动态/UP 回复 Tab、UP 过滤、时间范围、关键字与游标分页。动态历史使用接近 B 站网页动态流的直接阅读布局：正文可原生选择复制，图文采用单图或九宫格，视频等内容采用封面信息卡，转发内容嵌套展示，底部显示已有互动统计和独立的原内容外链；动态条目本身不打开详情弹窗。
 
 后端没有指标历史时间序列，因此界面不制造无依据图表。数据使用 KPI、状态标签、卡片和明细列表；成功、警告、失败状态同时使用颜色、图标和文字。主题支持跟随系统、浅色和深色，偏好只存 localStorage；路由和筛选进入 URL，秘密和会话不进入浏览器持久化存储。
 
-桌面使用侧栏，360–430px 手机使用底部导航、卡片列表和全屏编辑对话框。每次点击侧栏或底部导航都主动重新读取 dashboard；再次点击当前页面时保留 URL 筛选条件，历史页还会按当前筛选重新查询内容列表。动态图片点击进入灯箱，组图支持按钮及键盘左右切换、Esc 或遮罩关闭，首尾不循环，灯箱始终使用未加缩略参数的原始媒体地址。投递队列只为阻塞任务提供逐条“立即重试”，提交后由后台异步发送。主要触控区域至少 44px，键盘焦点、屏幕阅读器标签和减少动画偏好必须可用。实时连接中断时保留最后成功数据、显示更新时间和过期警告，并按 1–30 秒指数退避重连。
+桌面使用侧栏，360–430px 手机使用底部导航、卡片列表和全屏编辑对话框。页面只读取自身依赖的资源 query；再次点击当前页面时使活跃资源失效并保留 URL 筛选条件，历史页按当前筛选重新查询内容列表。动态图片点击进入灯箱，组图支持按钮及键盘左右切换、Esc 或遮罩关闭，首尾不循环，灯箱始终使用未加缩略参数的原始媒体地址。投递队列只为阻塞任务提供逐条“立即重试”，提交后由后台异步发送。主要触控区域至少 44px，键盘焦点、屏幕阅读器标签和减少动画偏好必须可用。实时连接中断时保留最后成功数据、显示更新时间和过期警告，并按 1–30 秒指数退避重连。
 
 时间统一使用进程本地时区（`time.Local` / 环境变量 `TZ`，镜像内嵌 `tzdata`）：通知文案中的发布时间、管理台展示、结构化日志时间字段均按本地墙钟输出；相对时刻比较仍基于绝对时间点，不依赖时区。Compose 默认 `TZ=Asia/Shanghai`。
 
@@ -144,13 +151,13 @@ Trace 用于关联管理 HTTP、采集/评论/关系/认证/投递/审计工作�
 - 本地真实 SMTP 会话同时覆盖隐式 TLS、STARTTLS、证书验证、AUTH PLAIN、多收件人、multipart/alternative 与内联 CID，并注入认证、RCPT、DATA 断流和取消故障；Microsoft OAuth/Graph 与群机器人使用本地确定性 HTTP 合同覆盖刷新持久化、401/429/5xx、`Retry-After`、截断/超大/畸形响应、业务码 schema drift、取消和错误脱敏，飞书 token 缓存验证应用隔离、过期刷新与并发单飞；
 - 自动主密钥/TLS 生成、权限、损坏文件和旧 schema 拒绝；
 - Argon2id、一次性初始化、会话、限流、密码变更与连接失效；
-- 真实认证与 CSRF HTTP 管理 API（含 B站/Microsoft 登录和渠道测试的成功、取消、重复、上游失败与超时）、WebSocket 全主题与 revision、空闲周期不推送、会话过期、恶意 Origin、注销/密码变更连接失效、断开客户端隔离、重连快照和秘密读模型；
+- 真实认证与 CSRF HTTP 管理 API（含 B站/Microsoft 登录和渠道测试的成功、取消、重复、上游失败与超时）、WebSocket 全主题与 revision、空闲周期不推送、会话过期、恶意 Origin、注销/密码变更连接失效、断开客户端隔离、重连全资源同步要求和秘密读模型；
 - JSON 体积与 UTF-8 边界、安全响应头、登录限流窗口/来源隔离/伪造代理头、TLS 最低版本与私钥权限，以及媒体路径逃逸、父目录/文件符号链接、重定向、SSRF、非图片、取消和失败临时文件清理；
 - 操作日志追加、筛选、保留清理、拒绝/失败路径、请求 ID和秘密值回归；
-- React 单元、状态和组件测试覆盖 API、WebSocket、状态归约、异步请求竞态、历史坏行容错、结构化表单的全部字段连线、桌面/移动端以及明暗主题；四项全局覆盖率均以 80% 为门禁，设置页、控制台和操作日志页另设不低于当前薄弱面的文件级门禁，避免辅助函数掩盖关键页面回退；
-- Chromium 确定性端到端链路把采集投递、管理安全和响应式验证拆为测试级隔离场景，每个场景使用独立临时目录、SQLite、随机端口和 Go harness，并同时运行桌面浅色与 Pixel 7 触控深色项目：覆盖管理员初始化、二维码登录、关注关系与空间基线、综合流采集、历史归档、失败 Outbox、同目录重启、人工重试、无刷新 WebSocket 重连、资源编辑、设置持久化、操作日志安全摘要、秘密不回显和密码变更后的全会话失效；使用 axe 扫描登录、概览、操作日志和移动历史页面，并提交移动历史视觉基线；测试只连接本地 TLS 伪上游；
-- `web/testdata/contracts/` 中提交 REST 与 WebSocket JSON 契约样例；Go 侧以真实 HTTP 处理器和生产 WebSocket 序列化类型校验，Vitest 读取同一文件并以集中式 Zod schema 解析，TypeScript API 类型由 schema 推导；
+- React 单元、Query 集成和组件测试覆盖 API 运行时校验、WebSocket 失效通知与 REST 降级、会话 401 清理、mutation 后失效、异步请求竞态、结构化表单字段连线、桌面/移动端以及明暗主题；statements、branches、functions、lines 四项全局覆盖率均以 80% 为门禁，避免辅助函数掩盖关键页面回退；
+- Chromium 确定性端到端链路把采集投递、管理安全和响应式验证拆为测试级隔离场景，每个场景使用独立临时目录、SQLite、随机端口和 Go harness，并同时运行桌面浅色与 Pixel 7 触控深色项目：覆盖管理员初始化、二维码登录、关注关系与空间基线、综合流采集、历史归档、失败 Outbox、同目录重启、人工重试、无刷新 WebSocket 重连、资源编辑、设置持久化、操作日志安全摘要、秘密不回显，以及密码变更后当前设备获得替代会话、其他旧会话失效；使用 axe 扫描登录、概览、操作日志和移动历史页面，并提交移动历史视觉基线；测试只连接本地 TLS 伪上游；
+- `api/openapi.yaml` 是 REST DTO、错误和 WebSocket envelope 的传输契约源；TypeScript 类型由固定版本工具生成并接受 clean-tree 漂移检查，Go 侧以真实 HTTP 处理器和生产 WebSocket 序列化类型校验，Vitest 再通过与规范同形的 Zod 运行时边界拒绝非法响应；
 - 生产 scratch 镜像的 nonroot/只读运行、健康检查、HTTPS 初始化、优雅停止和同卷重启。
 - `telemetry.New` 通过本地 OTLP/HTTP protobuf 与 OTLP/gRPC 收集端真实导出 traces、metrics、logs，校验三类带前缀路径、资源属性、span/metric/log 字段和 Shutdown flush；不可达收集端验证记录路径不等待网络，导出失败仅在有界 Shutdown 返回。Prometheus 告警规则使用 `promtool test rules` 验证触发语义，Compose、Collector、Prometheus、Loki 与 Tempo 配置由独立 CI job 验证，不把 Docker 依赖加入普通单元测试。
 
-提交前执行非修改型 gofmt、`go mod tidy -diff`、`go mod verify`、actionlint、npm high-severity audit、前端类型/覆盖率/端到端检查，以及 `go build ./...`、`go test ./...`、`go test -race -shuffle=on ./...` 和 `go vet ./...`；完整本地门禁可通过 `make check` 运行，多核机器可使用 `make -jN check`。`web/dist` 是不纳入 Git 的构建产物；Make 在一次完整检查中只从 lockfile 安装并构建一次前端，所有会编译 `web` 包的 Go 目标和 Playwright 均依赖该产物。Vitest 使用 V8 统计除入口、纯类型和测试辅助代码之外的前端生产代码，statements、branches、functions、lines 任一低于 80% 时 CI 失败，并对关键页面执行额外文件级阈值。Playwright 使用锁定版本的 Chromium 分别模拟桌面浅色和触控手机深色；axe 严重违规或已提交视觉基线变化均使检查失败。Go 覆盖率门禁只统计 `bilibili`、`notify`、`service`、`state`、`web` 五个核心包；CI 以 `go test -race -shuffle=on -covermode=atomic -coverpkg="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)" -coverprofile=coverage.out ./...` 一次运行仓库全部测试并同时完成 race 与覆盖率验证，总覆盖率低于 80% 时失败。独立的每日/手动 Stability workflow 为每轮启动新的测试进程，在 race detector 下默认以 10 个随机顺序运行全部测试；重复次数限制为 1–50，由 `GO_STABILITY_COUNT` 覆盖，重型门禁不加入普通本地 `make check`。固定版本的 govulncheck 作为 Go tool dependency 管理。Go 覆盖率 artifact 由不执行仓库代码的独立 job 通过 GitHub OIDC 上传 Codecov，不配置静态 Token，项目与 patch 目标均固定为 80%。`make test-protocol` 在 race detector 下重复通知与遥测协议测试三次，`make benchmark` 提供通知序列化、投递消息和禁用遥测记录的无绝对耗时阈值 benchmark。CI 必须在 Go 检查前构建前端，对观测配置与告警规则运行独立门禁，并对最终 Docker 镜像运行冒烟测试；CodeQL 每周及在 PR/main 上分析 Go 与 TypeScript。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像；基础及完整 Compose 中应用保持镜像 UID 65532、只读根文件系统、无额外 capability，并使用命名卷实现重启持久化。
+提交前执行非修改型 gofmt、`go mod tidy -diff`、`go mod verify`、actionlint、npm high-severity audit、OpenAPI 生成漂移、前端 typecheck/typed lint/覆盖率/生产构建/gzip 预算/端到端检查，以及 `go build ./...`、`go test ./...`、`go test -race -shuffle=on ./...` 和 `go vet ./...`；完整本地门禁可通过 `make check` 运行，多核机器可使用 `make -jN check`。`web/dist` 是不纳入 Git 的构建产物；Make 在一次完整检查中只从 lockfile 安装并构建一次前端，所有会编译 `web` 包的 Go 目标和 Playwright 均依赖该产物。Vitest 使用 V8 统计除入口、纯类型和测试辅助代码之外的前端生产代码，statements、branches、functions、lines 任一低于 80% 时 CI 失败。Playwright 使用锁定版本的 Chromium 分别模拟桌面浅色和触控手机深色；axe 严重违规或已提交视觉基线变化均使检查失败。Go 覆盖率门禁只统计 `bilibili`、`notify`、`service`、`state`、`web` 五个核心包；CI 以 `go test -race -shuffle=on -covermode=atomic -coverpkg="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)" -coverprofile=coverage.out ./...` 一次运行仓库全部测试并同时完成 race 与覆盖率验证，总覆盖率低于 80% 时失败。独立的每日/手动 Stability workflow 为每轮启动新的测试进程，在 race detector 下默认以 10 个随机顺序运行全部测试；重复次数限制为 1–50，由 `GO_STABILITY_COUNT` 覆盖，重型门禁不加入普通本地 `make check`。固定版本的 govulncheck 作为 Go tool dependency 管理。Go 覆盖率 artifact 由不执行仓库代码的独立 job 通过 GitHub OIDC 上传 Codecov，不配置静态 Token，项目与 patch 目标均固定为 80%。`make test-protocol` 在 race detector 下重复通知与遥测协议测试三次，`make benchmark` 提供通知序列化、投递消息和禁用遥测记录的无绝对耗时阈值 benchmark。CI 必须在 Go 检查前构建前端，对观测配置与告警规则运行独立门禁，并对最终 Docker 镜像运行冒烟测试；CodeQL 每周及在 PR/main 上分析 Go 与 TypeScript。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像；基础及完整 Compose 中应用保持镜像 UID 65532、只读根文件系统、无额外 capability，并使用命名卷实现重启持久化。

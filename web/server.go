@@ -158,13 +158,13 @@ func (s *Server) observeHandler() http.Handler {
 
 func (s *Server) adminHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/session", s.sessionState)
-	mux.HandleFunc("POST /api/v1/setup", s.audit("auth.setup", "session", "", s.setup))
-	mux.HandleFunc("POST /api/v1/session", s.audit("auth.login", "session", "", s.login))
-	mux.HandleFunc("DELETE /api/v1/session", s.audit("auth.logout", "session", "", s.requireSession(true, s.logout)))
-	mux.HandleFunc("PUT /api/v1/session/password", s.audit("auth.password.change", "session", "", s.requireSession(true, s.changePassword)))
+	mux.HandleFunc("GET /api/v2/session", s.sessionState)
+	mux.HandleFunc("POST /api/v2/setup", s.audit("auth.setup", "session", "", s.setup))
+	mux.HandleFunc("POST /api/v2/session", s.audit("auth.login", "session", "", s.login))
+	mux.HandleFunc("DELETE /api/v2/session", s.audit("auth.logout", "session", "", s.requireSession(true, s.logout)))
+	mux.HandleFunc("PUT /api/v2/session/password", s.audit("auth.password.change", "session", "", s.requireSession(true, s.changePassword)))
 	s.registerAdminAPI(mux)
-	mux.HandleFunc("GET /api/v1/ws", s.webSocket)
+	mux.HandleFunc("GET /api/v2/ws", s.webSocket)
 	mux.Handle("GET /assets/", http.FileServer(http.FS(s.static)))
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /{path...}", s.index)
@@ -174,7 +174,7 @@ func (s *Server) adminHandler() http.Handler {
 		otelhttp.WithMeterProvider(s.meterProvider),
 		otelhttp.WithPropagators(s.propagator),
 		otelhttp.WithFilter(func(request *http.Request) bool {
-			return strings.HasPrefix(request.URL.Path, "/api/") && request.URL.Path != "/api/v1/ws"
+			return strings.HasPrefix(request.URL.Path, "/api/") && request.URL.Path != "/api/v2/ws"
 		}),
 	)
 }

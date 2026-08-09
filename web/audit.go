@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
 )
 
@@ -90,7 +91,7 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-ID", requestID)
 		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, requestID))
-		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/v1/ws" {
+		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/v2/ws" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -175,6 +176,9 @@ func (s *Server) audit(action, resourceType, resourceParam string, next http.Han
 				slog.Int("status_code", stored.StatusCode), slog.Int64("duration_ms", stored.DurationMS),
 				slog.Any("details", stored.Details),
 			)
+		}
+		if err == nil {
+			s.events.Publish(service.TopicAuditLogs)
 		}
 		buffer.flush(w)
 	}

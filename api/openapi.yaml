@@ -1,0 +1,1434 @@
+openapi: 3.1.0
+info:
+  title: bili-notify administration API
+  version: 2.0.0
+  description: |
+    Authoritative transport contract for the same-origin TLS administration UI.
+    Version 2 is intentionally incompatible with the former dashboard snapshot API.
+servers:
+  - url: /
+security:
+  - sessionCookie: []
+tags:
+  - name: session
+  - name: runtime
+  - name: ups
+  - name: channels
+  - name: deliveries
+  - name: login
+  - name: history
+  - name: audit
+paths:
+  /api/v2/session:
+    get:
+      tags: [session]
+      security: []
+      operationId: getSession
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [session]
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/CSRFResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [session]
+      operationId: logout
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Session deleted.
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+  /api/v2/setup:
+    post:
+      tags: [session]
+      security: []
+      operationId: setupAdministrator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetupRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/CSRFResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/session/password:
+    put:
+      tags: [session]
+      operationId: changePassword
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/CSRFResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/runtime:
+    get:
+      tags: [runtime]
+      operationId: getRuntime
+      responses:
+        '200':
+          description: Current server-owned runtime state.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Runtime'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/settings:
+    get:
+      tags: [runtime]
+      operationId: getSettings
+      responses:
+        '200':
+          $ref: '#/components/responses/SettingsResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+    put:
+      tags: [runtime]
+      operationId: updateSettings
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeSettings'
+      responses:
+        '200':
+          $ref: '#/components/responses/SettingsResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/ups:
+    get:
+      tags: [ups]
+      operationId: listUPs
+      responses:
+        '200':
+          description: All monitored UPs.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UP'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [ups]
+      operationId: createUP
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUPRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/UPResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/ups/{uid}:
+    parameters:
+      - $ref: '#/components/parameters/UPUID'
+    put:
+      tags: [ups]
+      operationId: updateUP
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUPRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/UPResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [ups]
+      operationId: deleteUP
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: UP deleted.
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/channels:
+    get:
+      tags: [channels]
+      operationId: listChannels
+      responses:
+        '200':
+          description: Secret-free channel read models.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Channel'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [channels]
+      operationId: createChannel
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChannelInput'
+      responses:
+        '201':
+          $ref: '#/components/responses/ChannelResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/channels/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    put:
+      tags: [channels]
+      operationId: updateChannel
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChannelInput'
+      responses:
+        '200':
+          $ref: '#/components/responses/ChannelResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [channels]
+      operationId: deleteChannel
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Channel deleted.
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/channels/{id}/test:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [channels]
+      operationId: testChannel
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Test notification accepted by the channel.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SentStatus'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '502':
+          $ref: '#/components/responses/UpstreamError'
+  /api/v2/channels/{id}/microsoft-login:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [login]
+      operationId: startMicrosoftLogin
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '201':
+          description: Device authorization session created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicrosoftLogin'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [login]
+      operationId: cancelMicrosoftLogin
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Device authorization session cancelled.
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+  /api/v2/deliveries:
+    get:
+      tags: [deliveries]
+      operationId: listDeliveries
+      parameters:
+        - $ref: '#/components/parameters/DeliveryLimit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: Stable immutable created-at/id descending delivery page.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/deliveries/{id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/DeliveryID'
+    post:
+      tags: [deliveries]
+      operationId: retryDelivery
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '202':
+          description: Delivery requeued.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueuedStatus'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/bilibili-login:
+    get:
+      tags: [login]
+      operationId: getBilibiliLogin
+      responses:
+        '200':
+          description: Current login session or null.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/BilibiliLogin'
+                  - type: 'null'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [login]
+      operationId: startBilibiliLogin
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '201':
+          description: QR login session created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BilibiliLogin'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/bilibili-login/{id}:
+    parameters:
+      - $ref: '#/components/parameters/LoginID'
+    delete:
+      tags: [login]
+      operationId: cancelBilibiliLogin
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: QR login session cancelled.
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+  /api/v2/microsoft-logins:
+    get:
+      tags: [login]
+      operationId: listMicrosoftLogins
+      responses:
+        '200':
+          description: Active Microsoft device authorization sessions.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MicrosoftLogin'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+  /api/v2/dynamics:
+    get:
+      tags: [history]
+      operationId: listDynamics
+      parameters:
+        - $ref: '#/components/parameters/UIDFilter'
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/ContentLimit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: Stable published-at/id descending dynamic page.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DynamicPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/dynamics/{id}:
+    parameters:
+      - $ref: '#/components/parameters/DynamicID'
+    get:
+      tags: [history]
+      operationId: getDynamic
+      responses:
+        '200':
+          description: Full archived dynamic.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dynamic'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/dynamics/{id}/media/{index}:
+    parameters:
+      - $ref: '#/components/parameters/DynamicID'
+      - $ref: '#/components/parameters/MediaIndex'
+    get:
+      tags: [history]
+      operationId: getDynamicMedia
+      responses:
+        '200':
+          description: Archived media bytes. Content-Type is the detected image media type.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            image/*:
+              schema:
+                type: string
+                contentEncoding: binary
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/comments:
+    get:
+      tags: [history]
+      operationId: listComments
+      parameters:
+        - $ref: '#/components/parameters/UIDFilter'
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/ContentLimit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: Stable published-at/rpid descending comment page.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/comments/{rpid}:
+    parameters:
+      - $ref: '#/components/parameters/CommentID'
+    get:
+      tags: [history]
+      operationId: getComment
+      responses:
+        '200':
+          description: Full archived UP reply thread.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentNotification'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/audit-logs:
+    get:
+      tags: [audit]
+      operationId: listAuditLogs
+      parameters:
+        - name: action
+          in: query
+          schema: {type: string}
+        - name: outcome
+          in: query
+          schema:
+            type: string
+            enum: [success, failure, denied]
+        - name: resource_type
+          in: query
+          schema: {type: string}
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/AuditLimit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: Stable occurred-at/id descending audit page.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v2/ws:
+    get:
+      tags: [runtime]
+      operationId: connectRealtime
+      description: |
+        WebSocket upgrade endpoint. The server first sends `sync.required` and
+        subsequently sends `resources.invalidated`. Messages never contain resource data.
+      responses:
+        '101':
+          description: WebSocket upgraded. Messages conform to RealtimeEvent.
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+        '403':
+          $ref: '#/components/responses/CSRFError'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: bili_notify_session
+  headers:
+    RequestID:
+      description: Server-generated request correlation identifier.
+      schema:
+        type: string
+  parameters:
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: {type: string, minLength: 1}
+    UPUID:
+      name: uid
+      in: path
+      required: true
+      schema: {type: string, pattern: '^[1-9][0-9]*$'}
+    ChannelID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, minLength: 1}
+    DeliveryID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, minLength: 1}
+    LoginID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, minLength: 1}
+    DynamicID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, minLength: 1}
+    CommentID:
+      name: rpid
+      in: path
+      required: true
+      schema: {type: string, minLength: 1}
+    MediaIndex:
+      name: index
+      in: path
+      required: true
+      schema: {type: integer, minimum: 0}
+    UIDFilter:
+      name: uid
+      in: query
+      schema: {type: string}
+    Search:
+      name: q
+      in: query
+      schema: {type: string}
+    From:
+      name: from
+      in: query
+      description: Inclusive RFC3339 lower bound.
+      schema: {type: string, format: date-time}
+    To:
+      name: to
+      in: query
+      description: Exclusive RFC3339 upper bound.
+      schema: {type: string, format: date-time}
+    After:
+      name: after
+      in: query
+      description: Opaque next_cursor returned by the preceding page.
+      schema: {type: string, maxLength: 1024}
+    ContentLimit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+    DeliveryLimit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+    AuditLimit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+  responses:
+    SessionResponse:
+      description: Current initialization and authentication state.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Session'
+    CSRFResponse:
+      description: Authenticated session created or replaced.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+        Set-Cookie:
+          schema: {type: string}
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CSRFToken'
+    SettingsResponse:
+      description: Complete runtime settings.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RuntimeSettings'
+    UPResponse:
+      description: UP resource.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UP'
+    ChannelResponse:
+      description: Secret-free channel read model.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Channel'
+    InvalidRequest:
+      description: Invalid JSON, query, cursor, or validation failure.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    AuthenticationError:
+      description: Authentication required or credentials invalid.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    CSRFError:
+      description: CSRF token or WebSocket origin rejected.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFoundError:
+      description: Resource not found.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ConflictError:
+      description: Resource state conflicts with the operation.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    RateLimitError:
+      description: Authentication attempts are rate limited.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    UpstreamError:
+      description: Upstream notification provider failed.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    InternalError:
+      description: Internal server failure.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+    Session:
+      type: object
+      additionalProperties: false
+      required: [setup_required, authenticated]
+      properties:
+        setup_required: {type: boolean}
+        authenticated: {type: boolean}
+        csrf_token: {type: string}
+    CSRFToken:
+      type: object
+      additionalProperties: false
+      required: [csrf_token]
+      properties:
+        csrf_token: {type: string, minLength: 1}
+    SetupRequest:
+      type: object
+      additionalProperties: false
+      required: [setup_code, password]
+      properties:
+        setup_code: {type: string, minLength: 1}
+        password: {type: string, minLength: 12}
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties:
+        password: {type: string}
+    ChangePasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [current_password, new_password]
+      properties:
+        current_password: {type: string}
+        new_password: {type: string, minLength: 12}
+    Runtime:
+      type: object
+      additionalProperties: false
+      required: [status, timezone, updated_at]
+      properties:
+        status:
+          $ref: '#/components/schemas/Status'
+        timezone: {type: string, minLength: 1}
+        updated_at: {type: string, format: date-time}
+    Status:
+      type: object
+      additionalProperties: false
+      required: [auth_valid, up_count, channel_count, outbox_depth, ready]
+      properties:
+        auth_valid: {type: boolean}
+        bili_account:
+          $ref: '#/components/schemas/BiliAccount'
+        last_success_at: {type: string, format: date-time}
+        up_count: {type: integer, minimum: 0}
+        channel_count: {type: integer, minimum: 0}
+        outbox_depth: {type: integer, minimum: 0}
+        oldest_delivery: {type: string, format: date-time}
+        ready: {type: boolean}
+        risk_paused_until: {type: string, format: date-time}
+    BiliAccount:
+      type: object
+      additionalProperties: false
+      required: [uid, name]
+      properties:
+        uid: {type: string}
+        name: {type: string}
+    RuntimeSettings:
+      type: object
+      additionalProperties: false
+      required:
+        - poll_interval_sec
+        - request_rate
+        - request_concurrency
+        - comment_enabled
+        - comment_track_n
+        - comment_root_pages
+        - comment_reply_pages
+        - comment_batch_interval_sec
+        - log_level
+        - audit_log_retention_days
+        - relation_refresh_interval_sec
+        - space_reconcile_interval_sec
+        - max_dynamic_pages
+        - risk_pause_sec
+        - delivery_concurrency
+        - backlog_alert_count
+        - backlog_alert_age_sec
+        - delivery_retry_delays_sec
+      properties:
+        poll_interval_sec: {type: integer, minimum: 10, maximum: 86400}
+        request_rate: {type: number, exclusiveMinimum: 0, maximum: 10}
+        request_concurrency: {type: integer, minimum: 1, maximum: 16}
+        comment_enabled: {type: boolean}
+        comment_track_n: {type: integer, minimum: 1, maximum: 50}
+        comment_root_pages: {type: integer, minimum: 1, maximum: 10}
+        comment_reply_pages: {type: integer, minimum: 1, maximum: 20}
+        comment_batch_interval_sec: {type: integer, minimum: 30, maximum: 86400}
+        log_level: {type: string, enum: [debug, info, warn, error]}
+        audit_log_retention_days: {type: integer, minimum: 1, maximum: 3650}
+        relation_refresh_interval_sec: {type: integer, minimum: 60, maximum: 86400}
+        space_reconcile_interval_sec: {type: integer, minimum: 300, maximum: 604800}
+        max_dynamic_pages: {type: integer, minimum: 1, maximum: 20}
+        risk_pause_sec: {type: integer, minimum: 60, maximum: 3600}
+        delivery_concurrency: {type: integer, minimum: 1, maximum: 32}
+        backlog_alert_count: {type: integer, minimum: 1, maximum: 100000}
+        backlog_alert_age_sec: {type: integer, minimum: 60, maximum: 86400}
+        delivery_retry_delays_sec:
+          type: array
+          description: Five retry delays in nondecreasing order.
+          minItems: 5
+          maxItems: 5
+          items: {type: integer, minimum: 1, maximum: 86400}
+    CreateUPRequest:
+      type: object
+      additionalProperties: false
+      required: [uid, name, enabled]
+      properties:
+        uid: {type: string, pattern: '^[1-9][0-9]*$'}
+        name: {type: string}
+        enabled: {type: boolean}
+    UpdateUPRequest:
+      type: object
+      additionalProperties: false
+      required: [name, enabled]
+      properties:
+        name: {type: string}
+        enabled: {type: boolean}
+    UP:
+      type: object
+      additionalProperties: false
+      required: [uid, name, enabled, baseline_ready, follow_state, collection_route, consecutive_fail]
+      properties:
+        uid: {type: string, pattern: '^[1-9][0-9]*$'}
+        name: {type: string}
+        enabled: {type: boolean}
+        baseline_ready: {type: boolean}
+        follow_state: {type: string, enum: [unknown, followed, unfollowed]}
+        follow_checked_at: {type: string, format: date-time}
+        collection_route: {type: string, enum: [space, feed_all]}
+        last_poll_at: {type: string, format: date-time}
+        last_success_at: {type: string, format: date-time}
+        last_error: {type: string}
+        consecutive_fail: {type: integer, minimum: 0}
+    ChannelInput:
+      type: object
+      additionalProperties: false
+      required: [name, type, enabled, settings]
+      properties:
+        name: {type: string, minLength: 1}
+        type: {type: string, enum: [email, microsoft, dingtalk, feishu, wecom]}
+        enabled: {type: boolean}
+        settings:
+          type: object
+          additionalProperties: {type: string}
+        secrets:
+          type: object
+          additionalProperties: {type: string}
+    Channel:
+      type: object
+      additionalProperties: false
+      required: [id, name, type, enabled, settings, configured_secrets, created_at, updated_at]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        type: {type: string, enum: [email, microsoft, dingtalk, feishu, wecom]}
+        enabled: {type: boolean}
+        settings:
+          type: object
+          additionalProperties: {type: string}
+        configured_secrets:
+          type: array
+          items: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    PageMetadata:
+      type: object
+      additionalProperties: false
+      required: [next_cursor, has_more]
+      properties:
+        next_cursor:
+          type: string
+          description: Empty when has_more is false; otherwise pass unchanged as after.
+        has_more: {type: boolean}
+    DeliveryPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Delivery'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+    Delivery:
+      type: object
+      additionalProperties: false
+      required: [id, kind, channel_id, state, attempts, next_at, created_at]
+      properties:
+        id: {type: string}
+        kind: {type: string, enum: [dynamic, comment]}
+        dynamic:
+          $ref: '#/components/schemas/DynamicPreview'
+        comment:
+          $ref: '#/components/schemas/CommentPreview'
+        channel_id: {type: string}
+        state: {type: string, enum: [pending, blocked]}
+        attempts: {type: integer, minimum: 0}
+        next_at: {type: string, format: date-time}
+        last_error: {type: string}
+        created_at: {type: string, format: date-time}
+    DynamicPreview:
+      type: object
+      additionalProperties: false
+      required: [id, uid, up_name, type, published_at, summary, url]
+      properties:
+        id: {type: string}
+        uid: {type: string}
+        up_name: {type: string}
+        type: {type: string}
+        published_at: {type: string, format: date-time}
+        summary: {type: string}
+        url: {type: string}
+    CommentPreview:
+      type: object
+      additionalProperties: false
+      required: [rpid, up_uid, up_name, content_type, content_id, content_url, published_at]
+      properties:
+        rpid: {type: string}
+        up_uid: {type: string}
+        up_name: {type: string}
+        content_type: {type: string}
+        content_id: {type: string}
+        content_title: {type: string}
+        content_url: {type: string}
+        published_at: {type: string, format: date-time}
+    SentStatus:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {const: sent}
+    QueuedStatus:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {const: queued}
+    BilibiliLogin:
+      type: object
+      additionalProperties: false
+      required: [id, status, expires_at]
+      properties:
+        id: {type: string}
+        status: {type: string}
+        expires_at: {type: string, format: date-time}
+        qr_data_url: {type: string}
+    MicrosoftLogin:
+      type: object
+      additionalProperties: false
+      required: [channel_id, status]
+      properties:
+        channel_id: {type: string}
+        status: {type: string}
+        user_code: {type: string}
+        verification_uri: {type: string}
+        verification_uri_complete: {type: string}
+        expires_at: {type: string, format: date-time}
+        error: {type: string}
+    DynamicPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DynamicHistory'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+    DynamicHistory:
+      allOf:
+        - $ref: '#/components/schemas/Dynamic'
+        - type: object
+          required: [discovered_at, baseline]
+          properties:
+            discovered_at: {type: string, format: date-time}
+            baseline: {type: boolean}
+    Dynamic:
+      type: object
+      required: [id, uid, up_name, type, published_at, summary, url]
+      properties:
+        id: {type: string}
+        uid: {type: string}
+        up_name: {type: string}
+        type: {type: string}
+        published_at: {type: string, format: date-time}
+        title: {type: string}
+        summary: {type: string}
+        description: {type: string}
+        url: {type: string}
+        target_url: {type: string}
+        badge: {type: string}
+        links:
+          type: array
+          items:
+            $ref: '#/components/schemas/DynamicLink'
+        media:
+          type: array
+          items:
+            $ref: '#/components/schemas/DynamicMedia'
+        stats:
+          $ref: '#/components/schemas/DynamicStats'
+        video:
+          $ref: '#/components/schemas/DynamicVideo'
+        original:
+          $ref: '#/components/schemas/DynamicOriginal'
+        commentable: {type: boolean}
+        comment_type: {type: integer}
+        comment_oid: {type: string}
+        comment_count: {type: integer}
+    DynamicOriginal:
+      type: object
+      properties:
+        id: {type: string}
+        uid: {type: string}
+        up_name: {type: string}
+        type: {type: string}
+        published_at: {type: string, format: date-time}
+        title: {type: string}
+        summary: {type: string}
+        description: {type: string}
+        url: {type: string}
+        target_url: {type: string}
+        badge: {type: string}
+        links:
+          type: array
+          items:
+            $ref: '#/components/schemas/DynamicLink'
+        media:
+          type: array
+          items:
+            $ref: '#/components/schemas/DynamicMedia'
+        stats:
+          $ref: '#/components/schemas/DynamicStats'
+        video:
+          $ref: '#/components/schemas/DynamicVideo'
+        original:
+          $ref: '#/components/schemas/DynamicOriginal'
+    DynamicLink:
+      type: object
+      additionalProperties: false
+      required: [text, url]
+      properties:
+        text: {type: string}
+        url: {type: string}
+    DynamicMedia:
+      type: object
+      additionalProperties: false
+      required: [kind, url]
+      properties:
+        kind: {type: string, enum: [cover, image]}
+        url: {type: string}
+        width: {type: integer}
+        height: {type: integer}
+    DynamicStats:
+      type: object
+      additionalProperties: false
+      required: [forwards, comments, likes]
+      properties:
+        forwards: {type: integer}
+        comments: {type: integer}
+        likes: {type: integer}
+    DynamicVideo:
+      type: object
+      additionalProperties: false
+      properties:
+        duration: {type: string}
+        views: {type: string}
+        danmaku: {type: string}
+    CommentPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CommentHistory'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+    CommentHistory:
+      type: object
+      additionalProperties: false
+      required: [rpid, up_uid, up_name, published_at, discovered_at, baseline]
+      properties:
+        rpid: {type: string}
+        up_uid: {type: string}
+        up_name: {type: string}
+        content_type: {type: string}
+        content_id: {type: string}
+        content_title: {type: string}
+        content_url: {type: string}
+        published_at: {type: string, format: date-time}
+        discovered_at: {type: string, format: date-time}
+        baseline: {type: boolean}
+        incomplete: {type: boolean}
+    CommentNotification:
+      type: object
+      additionalProperties: false
+      required: [rpid, up_uid, up_name, content_type, content_id, content_url, published_at, thread]
+      properties:
+        rpid: {type: string}
+        up_uid: {type: string}
+        up_name: {type: string}
+        content_type: {type: string}
+        content_id: {type: string}
+        content_title: {type: string}
+        content_url: {type: string}
+        published_at: {type: string, format: date-time}
+        incomplete: {type: boolean}
+        thread:
+          type: array
+          items:
+            $ref: '#/components/schemas/CommentNode'
+    CommentNode:
+      type: object
+      additionalProperties: false
+      required: [rpid, mid, name, message, time]
+      properties:
+        rpid: {type: string}
+        parent: {type: string}
+        mid: {type: string}
+        name: {type: string}
+        message: {type: string}
+        time: {type: string, format: date-time}
+        is_up: {type: boolean}
+        is_trigger: {type: boolean}
+    AuditPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLog'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+    AuditLog:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - occurred_at
+        - request_id
+        - actor
+        - session_id
+        - remote_ip
+        - user_agent
+        - action
+        - resource_type
+        - resource_id
+        - outcome
+        - http_method
+        - route
+        - status_code
+        - duration_ms
+        - details
+      properties:
+        id: {type: integer, format: int64}
+        occurred_at: {type: string, format: date-time}
+        request_id: {type: string}
+        actor: {type: string}
+        session_id: {type: string}
+        remote_ip: {type: string}
+        user_agent: {type: string}
+        action: {type: string}
+        resource_type: {type: string}
+        resource_id: {type: string}
+        outcome: {type: string, enum: [success, failure, denied]}
+        http_method: {type: string}
+        route: {type: string}
+        status_code: {type: integer}
+        error_code: {type: string}
+        duration_ms: {type: integer, format: int64}
+        details:
+          type: object
+          additionalProperties: true
+    RealtimeEvent:
+      type: object
+      additionalProperties: false
+      required: [event, revision, topics]
+      properties:
+        event:
+          type: string
+          enum: [sync.required, resources.invalidated]
+        revision:
+          type: integer
+          format: int64
+          minimum: 0
+        topics:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - runtime
+              - settings
+              - ups
+              - channels
+              - deliveries
+              - bilibili-login
+              - microsoft-logins
+              - dynamics
+              - comments
+              - audit-logs

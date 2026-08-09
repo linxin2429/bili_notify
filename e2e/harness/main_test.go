@@ -51,7 +51,7 @@ func TestApplicationHTTPIntegration(t *testing.T) {
 	assert.Equal(t, http.StatusOK, response.StatusCode)
 	closeIntegrationResponse(t, response)
 
-	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v1/session", "", nil)
+	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v2/session", "", nil)
 	assert.Equal(t, http.StatusOK, response.StatusCode)
 	var initial map[string]any
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&initial))
@@ -59,7 +59,7 @@ func TestApplicationHTTPIntegration(t *testing.T) {
 	assert.Equal(t, true, initial["setup_required"])
 	assert.Equal(t, false, initial["authenticated"])
 
-	response = integrationRequest(t, client, http.MethodPost, adminURL+"/api/v1/setup", "", map[string]any{
+	response = integrationRequest(t, client, http.MethodPost, adminURL+"/api/v2/setup", "", map[string]any{
 		"setup_code": setupCode,
 		"password":   "correct horse battery staple",
 	})
@@ -70,7 +70,7 @@ func TestApplicationHTTPIntegration(t *testing.T) {
 	csrf := session["csrf_token"]
 	require.NotEmpty(t, csrf)
 
-	response = integrationRequest(t, client, http.MethodPost, adminURL+"/api/v1/channels", csrf, map[string]any{
+	response = integrationRequest(t, client, http.MethodPost, adminURL+"/api/v2/channels", csrf, map[string]any{
 		"name": "integration robot", "type": "wecom", "enabled": true,
 		"settings": map[string]string{}, "secrets": map[string]string{"webhook": upstream.server.URL + "/webhook"},
 	})
@@ -81,36 +81,37 @@ func TestApplicationHTTPIntegration(t *testing.T) {
 	assert.NotEmpty(t, channel["id"])
 	assert.NotContains(t, channel, "secrets")
 
-	response = integrationRequest(t, client, http.MethodPost, adminURL+"/api/v1/ups", csrf, map[string]any{
+	response = integrationRequest(t, client, http.MethodPost, adminURL+"/api/v2/ups", csrf, map[string]any{
 		"uid": "42", "name": "integration UP", "enabled": true,
 	})
 	assert.Equal(t, http.StatusCreated, response.StatusCode)
 	closeIntegrationResponse(t, response)
 
-	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v1/dashboard", "", nil)
+	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v2/ups", "", nil)
 	assert.Equal(t, http.StatusOK, response.StatusCode)
-	var dashboard struct {
-		UPs      []map[string]any `json:"ups"`
-		Channels []map[string]any `json:"channels"`
-	}
-	require.NoError(t, json.NewDecoder(response.Body).Decode(&dashboard))
+	var ups []map[string]any
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&ups))
 	closeIntegrationResponse(t, response)
-	assert.Len(t, dashboard.UPs, 1)
-	assert.Len(t, dashboard.Channels, 1)
+	assert.Len(t, ups, 1)
 
-	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v1/audit-logs?limit=100", "", nil)
+	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v2/channels", "", nil)
+	assert.Equal(t, http.StatusOK, response.StatusCode)
+	var channels []map[string]any
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&channels))
+	closeIntegrationResponse(t, response)
+	assert.Len(t, channels, 1)
+
+	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v2/audit-logs?limit=100", "", nil)
 	assert.Equal(t, http.StatusOK, response.StatusCode)
 	var auditPage struct {
 		Items []map[string]any `json:"items"`
-		Total int              `json:"total"`
 	}
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&auditPage))
 	closeIntegrationResponse(t, response)
-	assert.GreaterOrEqual(t, auditPage.Total, 3)
-	assert.NotEmpty(t, auditPage.Items)
+	assert.GreaterOrEqual(t, len(auditPage.Items), 3)
 
 	require.NoError(t, manager.Restart())
-	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v1/session", "", nil)
+	response = integrationRequest(t, client, http.MethodGet, adminURL+"/api/v2/session", "", nil)
 	assert.Equal(t, http.StatusOK, response.StatusCode)
 	var restarted map[string]any
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&restarted))

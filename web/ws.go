@@ -28,9 +28,9 @@ import (
 )
 
 type wsEvent struct {
-	Event    string `json:"event"`
-	Revision uint64 `json:"revision"`
-	Data     any    `json:"data"`
+	Event    string   `json:"event"`
+	Revision uint64   `json:"revision"`
+	Topics   []string `json:"topics"`
 }
 
 type wsAPIError struct {
@@ -52,18 +52,6 @@ func validationFailure(err error) error {
 
 func conflictFailure(err error) error {
 	return &classifiedAPIError{code: "conflict", err: err}
-}
-
-type dashboardSnapshot struct {
-	Status          service.Status                  `json:"status"`
-	Settings        model.RuntimeSettings           `json:"settings"`
-	UPs             []model.UP                      `json:"ups"`
-	Channels        []channelView                   `json:"channels"`
-	Deliveries      []deliveryView                  `json:"deliveries"`
-	BiliLogin       *biliLoginView                  `json:"bili_login,omitempty"`
-	MicrosoftLogins []service.MicrosoftLoginSession `json:"microsoft_logins"`
-	Timezone        string                          `json:"timezone"`
-	UpdatedAt       time.Time                       `json:"updated_at"`
 }
 
 type deliveryView struct {
@@ -109,13 +97,6 @@ type contentQueryInput struct {
 	Offset int    `json:"offset,omitempty"`
 }
 
-type contentPage struct {
-	Items  any `json:"items"`
-	Total  int `json:"total"`
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
-}
-
 type dynamicHistoryView struct {
 	ID           string                `json:"id"`
 	UID          string                `json:"uid"`
@@ -125,8 +106,8 @@ type dynamicHistoryView struct {
 	DiscoveredAt time.Time             `json:"discovered_at"`
 	Baseline     bool                  `json:"baseline"`
 	Title        string                `json:"title,omitempty"`
-	Summary      string                `json:"summary,omitempty"`
-	URL          string                `json:"url,omitempty"`
+	Summary      string                `json:"summary"`
+	URL          string                `json:"url"`
 	TargetURL    string                `json:"target_url,omitempty"`
 	Badge        string                `json:"badge,omitempty"`
 	Description  string                `json:"description,omitempty"`
@@ -169,7 +150,6 @@ type channelView struct {
 }
 
 type channelInput struct {
-	ID       string            `json:"id,omitempty"`
 	Name     string            `json:"name"`
 	Type     model.ChannelType `json:"type"`
 	Enabled  bool              `json:"enabled"`
@@ -227,7 +207,7 @@ func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
 		if s.propagator != nil {
 			ctx = s.propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
 		}
-		_, span := s.tracer.Start(ctx, "GET /api/v1/ws", trace.WithSpanKind(trace.SpanKindServer))
+		_, span := s.tracer.Start(ctx, "GET /api/v2/ws", trace.WithSpanKind(trace.SpanKindServer))
 		endHandshake = func() { span.End() }
 	}
 	token, _, ok := s.auth.validate(r)
@@ -250,12 +230,7 @@ func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
 	subscription := s.events.Subscribe()
 	defer subscription.Close()
 	writer := &wsWriter{connection: connection, timeout: s.websocketPingTimeout()}
-	snapshot, err := s.snapshot()
-	if err != nil {
-		_ = connection.Close(websocket.StatusInternalError, "unable to load dashboard")
-		return
-	}
-	if err := writer.write(r.Context(), wsEvent{Event: "snapshot", Revision: s.events.Revision(), Data: snapshot}); err != nil {
+	if err := writer.write(r.Context(), wsEvent{Event: "sync.required", Revision: s.events.Revision(), Topics: allResourceTopics()}); err != nil {
 		return
 	}
 
@@ -302,89 +277,42 @@ func (s *Server) pushEvents(ctx context.Context, subscription *service.Subscript
 }
 
 func (s *Server) writeTopicEvents(ctx context.Context, writer *wsWriter, topics service.Topic, revision uint64) error {
-	if topics&service.TopicStatus != 0 {
-		status, err := s.engine.Status()
-		if err != nil {
-			return err
-		}
-		if err := writer.write(ctx, wsEvent{Event: "status.updated", Revision: revision, Data: status}); err != nil {
-			return err
-		}
+	resources := resourceTopics(topics)
+	if len(resources) == 0 {
+		return nil
 	}
-	if topics&service.TopicUPs != 0 {
-		ups, err := s.store.ListUPs()
-		if err != nil {
-			return err
-		}
-		if err := writer.write(ctx, wsEvent{Event: "ups.updated", Revision: revision, Data: ups}); err != nil {
-			return err
-		}
-	}
-	if topics&service.TopicChannels != 0 {
-		channels, err := s.channelViews()
-		if err != nil {
-			return err
-		}
-		if err := writer.write(ctx, wsEvent{Event: "channels.updated", Revision: revision, Data: channels}); err != nil {
-			return err
-		}
-	}
-	if topics&service.TopicDeliveries != 0 {
-		deliveries, err := s.store.ListDeliveries(100)
-		if err != nil {
-			return err
-		}
-		if err := writer.write(ctx, wsEvent{Event: "deliveries.updated", Revision: revision, Data: deliveryViews(deliveries)}); err != nil {
-			return err
-		}
-	}
-	if topics&service.TopicBiliLogin != 0 {
-		login, err := s.biliLoginView()
-		if err != nil {
-			return err
-		}
-		if err := writer.write(ctx, wsEvent{Event: "bilibili.login.updated", Revision: revision, Data: login}); err != nil {
-			return err
-		}
-	}
-	if topics&service.TopicMicrosoftLogin != 0 {
-		if err := writer.write(ctx, wsEvent{Event: "microsoft.login.updated", Revision: revision, Data: s.engine.MicrosoftLogins()}); err != nil {
-			return err
-		}
-	}
-	if topics&service.TopicSettings != 0 {
-		if err := writer.write(ctx, wsEvent{Event: "settings.updated", Revision: revision, Data: s.settings.Settings()}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return writer.write(ctx, wsEvent{Event: "resources.invalidated", Revision: revision, Topics: resources})
 }
 
-func (s *Server) snapshot() (dashboardSnapshot, error) {
-	status, err := s.engine.Status()
-	if err != nil {
-		return dashboardSnapshot{}, err
+func allResourceTopics() []string {
+	return []string{
+		"runtime", "settings", "ups", "channels", "deliveries",
+		"bilibili-login", "microsoft-logins", "dynamics", "comments", "audit-logs",
 	}
-	ups, err := s.store.ListUPs()
-	if err != nil {
-		return dashboardSnapshot{}, err
+}
+
+func resourceTopics(topics service.Topic) []string {
+	resources := make([]string, 0, 10)
+	for _, topic := range []struct {
+		mask service.Topic
+		name string
+	}{
+		{service.TopicStatus, "runtime"},
+		{service.TopicSettings, "settings"},
+		{service.TopicUPs, "ups"},
+		{service.TopicChannels, "channels"},
+		{service.TopicDeliveries, "deliveries"},
+		{service.TopicBiliLogin, "bilibili-login"},
+		{service.TopicMicrosoftLogin, "microsoft-logins"},
+		{service.TopicDynamics, "dynamics"},
+		{service.TopicComments, "comments"},
+		{service.TopicAuditLogs, "audit-logs"},
+	} {
+		if topics&topic.mask != 0 {
+			resources = append(resources, topic.name)
+		}
 	}
-	channels, err := s.channelViews()
-	if err != nil {
-		return dashboardSnapshot{}, err
-	}
-	deliveries, err := s.store.ListDeliveries(100)
-	if err != nil {
-		return dashboardSnapshot{}, err
-	}
-	login, err := s.biliLoginView()
-	if err != nil {
-		return dashboardSnapshot{}, err
-	}
-	return dashboardSnapshot{
-		Status: status, Settings: s.settings.Settings(), UPs: ups, Channels: channels, Deliveries: deliveryViews(deliveries), BiliLogin: login,
-		MicrosoftLogins: s.engine.MicrosoftLogins(), Timezone: localTimezoneName(), UpdatedAt: time.Now(),
-	}, nil
+	return resources
 }
 
 func deliveryViews(deliveries []model.Delivery) []deliveryView {
@@ -436,19 +364,6 @@ func parseContentQuery(input contentQueryInput) (state.ContentQuery, error) {
 	return q, nil
 }
 
-func normalizeQueryPage(limit, offset int) (int, int) {
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	return limit, offset
-}
-
 const (
 	historyPreviewTextLimit  = 2000
 	historyPreviewMediaLimit = 9
@@ -479,7 +394,7 @@ func boundHistoryMedia(dynamicID string, mediaItems []model.DynamicMedia, limit 
 	for index, item := range mediaItems {
 		item.URL = strings.TrimSpace(item.URL)
 		if item.LocalPath != "" && dynamicID != "" {
-			item.URL = "/api/v1/dynamics/" + url.PathEscape(dynamicID) + "/media/" + strconv.Itoa(index)
+			item.URL = "/api/v2/dynamics/" + url.PathEscape(dynamicID) + "/media/" + strconv.Itoa(index)
 			item.LocalPath = ""
 			item.ContentType = ""
 			item.Size = 0
@@ -563,18 +478,13 @@ func toChannelView(channel model.Channel) channelView {
 	}
 }
 
-func (s *Server) saveChannel(input channelInput, update bool) (model.Channel, error) {
+func (s *Server) saveChannel(input channelInput, id string) (model.Channel, error) {
 	settings := make(map[string]string)
 	var current model.Channel
-	if !update && input.ID != "" {
-		return model.Channel{}, validationFailure(errors.New("channel id must be empty when creating a channel"))
-	}
+	update := id != ""
 	if update {
-		if input.ID == "" {
-			return model.Channel{}, validationFailure(errors.New("channel id is required"))
-		}
 		var err error
-		current, err = s.store.Channel(input.ID)
+		current, err = s.store.Channel(id)
 		if err != nil {
 			return model.Channel{}, err
 		}
@@ -606,7 +516,7 @@ func (s *Server) saveChannel(input channelInput, update bool) (model.Channel, er
 			delete(settings, key)
 		}
 	}
-	channel := model.Channel{ID: input.ID, Name: strings.TrimSpace(input.Name), Type: input.Type, Enabled: input.Enabled, Settings: settings}
+	channel := model.Channel{ID: id, Name: strings.TrimSpace(input.Name), Type: input.Type, Enabled: input.Enabled, Settings: settings}
 	if update {
 		channel.CreatedAt = current.CreatedAt
 	}
@@ -615,7 +525,7 @@ func (s *Server) saveChannel(input channelInput, update bool) (model.Channel, er
 	}
 	updated, err := s.store.PutChannel(channel)
 	if err == nil && update {
-		_ = s.store.UnblockChannel(input.ID)
+		_ = s.store.UnblockChannel(id)
 	}
 	return updated, err
 }

@@ -28,10 +28,9 @@ export async function createNotificationChannel(page: Page, harness: Harness, se
   await page.getByRole('button', { name: '添加渠道' }).click()
   await expect(page.getByRole('dialog', { name: '添加通知渠道' })).toBeVisible()
   await page.getByLabel('渠道名称').fill('E2E 企业微信')
-  await page.getByLabel('渠道类型').click()
-  await page.getByRole('option', { name: '企业微信机器人' }).click()
+  await page.getByLabel('渠道类型').selectOption({ label: '企业微信机器人' })
   await page.getByLabel('Webhook URL').fill(harness.manifest.webhook_url)
-  const createResponse = page.waitForResponse(response => response.url().endsWith('/api/v1/channels') && response.request().method() === 'POST')
+  const createResponse = page.waitForResponse(response => response.url().endsWith('/api/v2/channels') && response.request().method() === 'POST')
   await page.getByRole('button', { name: '保存' }).click()
   expect(JSON.stringify(await (await createResponse).json())).not.toContain(harness.manifest.webhook_url)
   await expect(page.getByText('E2E 企业微信')).toBeVisible()
@@ -57,7 +56,7 @@ export async function completeBilibiliLoginAndBaseline(page: Page, harness: Harn
   await navigateTo(page, '概览')
   await page.getByRole('button', { name: '生成登录二维码' }).click()
   await expect(page.getByText('已扫码，请确认')).toBeVisible()
-  await expect(page.getByText('E2E Account · UID 100')).toBeVisible()
+  await expect(page.getByText('E2E Account · UID 100').first()).toBeVisible()
   await expect(page.getByText('服务已就绪')).toBeVisible({ timeout: 25_000 })
   await expect.poll(async () => {
     const state = await harness.state()
@@ -100,26 +99,12 @@ export async function assertAccessible(page: Page) {
 }
 
 export async function navigateTo(page: Page, name: string) {
-  const buttons = page.getByRole('button', { name, exact: true })
-  const opener = page.getByLabel('打开导航')
-  if (await buttons.count() === 0 && await opener.isVisible()) await opener.click()
-  else await expect.poll(() => buttons.count()).toBeGreaterThan(0)
-  for (let index = 0; index < await buttons.count(); index += 1) {
-    const button = buttons.nth(index)
-    if (await button.isVisible()) {
-      await button.click()
-      return
-    }
-  }
-  await opener.click()
-  await expect.poll(async () => {
-    for (let index = 0; index < await buttons.count(); index += 1) if (await buttons.nth(index).isVisible()) return true
-    return false
-  }).toBe(true)
-  for (let index = 0; index < await buttons.count(); index += 1) {
-    const button = buttons.nth(index)
-    if (await button.isVisible()) {
-      await button.click()
+  const links = page.getByRole('link', { name, exact: true })
+  await expect.poll(() => links.count()).toBeGreaterThan(0)
+  for (let index = 0; index < await links.count(); index += 1) {
+    const link = links.nth(index)
+    if (await link.isVisible()) {
+      await link.click()
       return
     }
   }

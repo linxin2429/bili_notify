@@ -37,14 +37,16 @@ type AuditLog struct {
 
 // AuditQuery filters administrator operation records.
 type AuditQuery struct {
-	Action       string
-	Outcome      string
-	ResourceType string
-	Q            string
-	From         time.Time
-	To           time.Time
-	Limit        int
-	Offset       int
+	Action          string
+	Outcome         string
+	ResourceType    string
+	Q               string
+	From            time.Time
+	To              time.Time
+	AfterOccurredAt time.Time
+	AfterID         int64
+	Limit           int
+	Offset          int
 }
 
 type auditLogRow struct {
@@ -123,6 +125,9 @@ func (s *Store) QueryAuditLogs(query AuditQuery) ([]AuditLog, int, error) {
 	if value := strings.TrimSpace(query.Q); value != "" {
 		like := "%" + value + "%"
 		db = db.Where("action LIKE ? OR resource_id LIKE ? OR remote_ip LIKE ? OR request_id LIKE ?", like, like, like, like)
+	}
+	if !query.AfterOccurredAt.IsZero() && query.AfterID > 0 {
+		db = db.Where("occurred_at < ? OR (occurred_at = ? AND id < ?)", query.AfterOccurredAt.UnixMilli(), query.AfterOccurredAt.UnixMilli(), query.AfterID)
 	}
 	var total int64
 	if err := db.Count(&total).Error; err != nil {
