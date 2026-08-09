@@ -2,12 +2,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { queryKeys } from '../api/query-keys'
+import { duringSessionReplacement } from '../api/session-cache'
 import { RealtimeSync, parseEnvelope, useConnectionState } from './RealtimeSync'
 
 class FakeWebSocket {
   static latest: FakeWebSocket
   onopen: (() => void) | null = null; onmessage: ((event: { data: string }) => void) | null = null
-  onerror: (() => void) | null = null; onclose: (() => void) | null = null
+  onerror: (() => void) | null = null; onclose: (() => void | Promise<void>) | null = null
   close = vi.fn()
   constructor(readonly url: string) { FakeWebSocket.latest = this }
 }
@@ -35,7 +36,7 @@ describe('RealtimeSync', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={client}><RealtimeSync onAuthenticationLost={vi.fn()} onProtocolError={vi.fn()}><ConnectionProbe /></RealtimeSync></QueryClientProvider>)
     expect(FakeWebSocket.latest.url).toContain('/api/v2/ws')
-    FakeWebSocket.latest.onclose?.()
+    act(() => { void FakeWebSocket.latest.onclose?.() })
     expect(await screen.findByText('polling')).toBeInTheDocument()
   })
 
@@ -70,12 +71,39 @@ describe('RealtimeSync', () => {
     const onAuthenticationLost = vi.fn()
     const view = render(<QueryClientProvider client={client}><RealtimeSync onAuthenticationLost={onAuthenticationLost} onProtocolError={vi.fn()}><ConnectionProbe /></RealtimeSync></QueryClientProvider>)
 
-    act(() => FakeWebSocket.latest.onclose?.())
+    act(() => { void FakeWebSocket.latest.onclose?.() })
     await waitFor(() => expect(onAuthenticationLost).toHaveBeenCalledOnce())
     expect(client.getQueryData(queryKeys.session)).toMatchObject({ authenticated: false })
     const socket = FakeWebSocket.latest
     view.unmount()
     expect(socket.close).toHaveBeenCalledWith(1000, 'client closed')
+  })
+
+  it('discards an anonymous session response started during password replacement', async () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    let resolveSession!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { resolveSession = resolve })))
+    let finishReplacement!: () => void
+    const replacement = duringSessionReplacement(() => new Promise<void>(resolve => { finishReplacement = resolve }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const onAuthenticationLost = vi.fn()
+    const previousSocket = FakeWebSocket.latest
+    render(<QueryClientProvider client={client}><RealtimeSync onAuthenticationLost={onAuthenticationLost} onProtocolError={vi.fn()}><ConnectionProbe /></RealtimeSync></QueryClientProvider>)
+
+    await waitFor(() => expect(FakeWebSocket.latest).not.toBe(previousSocket))
+    let closePromise!: Promise<void>
+    act(() => { closePromise = Promise.resolve(FakeWebSocket.latest.onclose?.()) })
+    await waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+    expect(screen.getByText('polling')).toBeInTheDocument()
+    finishReplacement()
+    await replacement
+    await act(async () => {
+      resolveSession(new Response(JSON.stringify({ setup_required: false, authenticated: false }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      await closePromise
+    })
+
+    expect(onAuthenticationLost).not.toHaveBeenCalled()
+    expect(client.getQueryData(queryKeys.session)).toBeUndefined()
   })
 })
 

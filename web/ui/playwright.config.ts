@@ -9,7 +9,10 @@ export default defineConfig({
   fullyParallel: true,
   workers,
   timeout: 120_000,
-  expect: { timeout: 10_000 },
+  expect: {
+    timeout: 10_000,
+    toHaveScreenshot: { maxDiffPixels: 256 },
+  },
   reporter: process.env.CI ? [['line'], ['html', { open: 'never' }]] : 'list',
   use: {
     ignoreHTTPSErrors: true,

@@ -47,10 +47,11 @@ export function RealtimeSync({ children, onAuthenticationLost, onProtocolError }
       socket.onclose = async () => {
         if (stopped) return
         transition('polling')
+        const replacementWasPending = isSessionReplacementPending()
         try {
           const session = await sessionAPI.get()
           if (stopped) return
-          if (!session.authenticated && isSessionReplacementPending()) { schedule(); return }
+          if (!session.authenticated && (replacementWasPending || isSessionReplacementPending())) { schedule(); return }
           queryClient.setQueryData(queryKeys.session, session)
           if (!session.authenticated) { onAuthenticationLost(); return }
         } catch { /* a restart is indistinguishable from a temporary network loss */ }
