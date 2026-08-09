@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { auditLogPageSchema, dynamicHistoryPageSchema, runtimeSchema, runtimeSettingsSchema, websocketEnvelopeSchema } from './contracts'
-import { makeAudit, settings } from './test/fixtures'
+import { makeAudit, settings } from '../../test/fixtures'
 
 describe('v2 transport contracts', () => {
   it('accepts authoritative runtime state without deriving readiness in the browser', () => {

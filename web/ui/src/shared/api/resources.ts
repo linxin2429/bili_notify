@@ -3,8 +3,8 @@ import {
   auditLogPageSchema, biliLoginSchema, channelSchema, commentDetailSchema, commentHistoryPageSchema,
   deliveryPageSchema, dynamicHistoryPageSchema, emptyResponseSchema, microsoftLoginSchema, queuedStatusSchema,
   runtimeSchema, runtimeSettingsSchema, sentStatusSchema, upSchema,
-} from '../../contracts'
-import type { AuditQuery, ChannelDraft, ContentQuery, RuntimeSettings, UP } from '../../types'
+} from './contracts'
+import type { AuditQuery, ChannelDraft, ContentQuery, RuntimeSettings, UP } from './types'
 import { queryString, requestJSON } from './client'
 
 const apiRoot = '/api/v2'

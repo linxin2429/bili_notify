@@ -58,7 +58,7 @@ help:
 		'  frontend-coverage      run the frontend coverage gate' \
 		'  frontend-audit         fail on high-severity npm vulnerabilities' \
 		'  frontend-bundle-check  build and enforce gzip bundle budgets' \
-		'  frontend-quality       run the ordered future frontend quality gate' \
+		'  frontend-quality       run the ordered frontend quality gate' \
 		'  playwright-install     install Chromium' \
 		'  frontend-e2e           build the UI once and run Playwright tests' \
 		'' \
@@ -107,11 +107,10 @@ frontend-coverage: frontend-install
 frontend-audit: frontend-install
 	npm --prefix web/ui audit --audit-level=high
 
-# Activation point: once api:generate exists and the modernized UI satisfies
-# the bundle budgets, replace the independent frontend targets in ci-check with
-# frontend-quality. Keeping this ordered recipe prevents parallel Make from
-# checking stale generated files or a stale Vite manifest.
+# Keep generation, static analysis, tests, build and the manifest budget in this
+# order so no check observes stale generated code or stale production assets.
 frontend-quality: frontend-install
+	npm --prefix web/ui audit --audit-level=high
 	OPENAPI_GENERATED_PATHS="$(OPENAPI_GENERATED_PATHS)" npm --prefix web/ui run api:check
 	npm --prefix web/ui run typecheck
 	npm --prefix web/ui run lint
@@ -122,12 +121,12 @@ frontend-quality: frontend-install
 playwright-install: frontend-install
 	cd web/ui && npx playwright install $(PLAYWRIGHT_INSTALL_FLAGS) chromium
 
-frontend-e2e: frontend-build playwright-install
+frontend-e2e: frontend-quality playwright-install
 	npm --prefix web/ui run test:e2e:run
 
-# Playwright and Vitest replace transient directories below web/ui. Finish them
-# before `go ... ./...` walks the repository, then parallelize the Go checks.
-go-check-ready: frontend-e2e frontend-coverage
+# Playwright and Vitest replace transient directories below web/ui. Finish the
+# ordered frontend gate before `go ... ./...` walks the repository.
+go-check-ready: frontend-e2e
 
 check-diff:
 	git diff --check
@@ -224,7 +223,7 @@ vet: frontend-build
 vulncheck: frontend-build
 	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go tool govulncheck $(GO_PACKAGES)
 
-ci-check: check-diff check-fmt check-mod workflow-lint frontend-lint frontend-audit frontend-coverage frontend-e2e check-coverage-race check-vet check-vulncheck
+ci-check: check-diff check-fmt check-mod workflow-lint go-check-ready check-coverage-race check-vet check-vulncheck
 
 check: build ci-check
 

@@ -18,8 +18,8 @@
 - Vite：生产静态资源构建和路由级拆包，产物继续由 Go `embed` 嵌入。
 - React Router Data Mode：拥有 URL、路由匹配、懒加载和路由错误边界。
 - TanStack Query：唯一的远程状态缓存，负责去重、取消、失效、重试和过期策略。
-- OpenAPI：HTTP DTO、错误和 WebSocket envelope 的唯一传输契约来源；生成 Fetch client 和 TypeScript 类型。
-- React Hook Form + Zod：只管理表单草稿、转换和客户端即时反馈；服务端仍重复执行所有安全校验。
+- OpenAPI：HTTP DTO、错误和 WebSocket envelope 的唯一传输契约来源；生成 TypeScript 传输类型，轻量 Fetch adapter 负责发起请求。
+- 语义化受控表单 + Zod：只管理表单草稿、转换、运行时响应校验和客户端即时反馈；服务端仍重复执行所有安全校验。
 - React Aria Components + CSS Modules + CSS Variables：提供可访问交互语义和零运行时样式系统。
 - Vitest、Testing Library、Playwright：分别覆盖纯逻辑、组件集成和真实浏览器工作流。
 - ESLint flat config、typescript-eslint、React Hooks `recommended-latest` 和 boundaries：在提交前阻止 Hooks、Compiler 和依赖方向回退。
@@ -48,7 +48,7 @@
 ```text
 src/
   app/                 # providers、router、shell、根错误边界、主题装配
-  pages/<route>/       # 路由入口和跨模块页面组合
+  pages/*Page.tsx      # 懒加载路由入口和跨模块页面组合
   modules/<domain>/    # query、mutation、表单和领域 UI
   shared/
     api/               # HTTP client、错误、query client、生成代码
@@ -168,7 +168,7 @@ interface ApiError {
 OpenAPI 是传输层唯一事实来源。Go 领域模型、数据库模型和浏览器展示模型都不能冒充 HTTP DTO。
 
 - 规范定义请求、响应、分页、错误和 WebSocket envelope。
-- TypeScript 类型和 Fetch client 从规范生成，生成目录禁止手工编辑。
+- TypeScript 传输类型从规范生成，生成目录禁止手工编辑；手写 Fetch adapter 只能消费这些类型，不能再声明一份 DTO。
 - 运行时在不可信边界执行 schema 校验，TypeScript 编译期类型不能代替运行时验证。
 - `npm run api:generate` 必须是确定性的；`make frontend-contract-check` 在生成后检查工作树，任何 diff 或未跟踪生成文件都失败。
 - API 破坏性更新采用一次性切换，删除旧 DTO、旧 client 和兼容 adapter。

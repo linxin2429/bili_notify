@@ -1,5 +1,5 @@
 import { queryOptions } from '@tanstack/react-query'
-import type { AuditQuery, ContentQuery } from '../../types'
+import type { AuditQuery, ContentQuery } from './types'
 import { resources } from './resources'
 import { queryKeys } from './query-keys'
 export { queryKeys } from './query-keys'

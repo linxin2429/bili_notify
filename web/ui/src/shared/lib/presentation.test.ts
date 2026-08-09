@@ -5,7 +5,7 @@ import {
   formatRelativeDate, historyMediaURL, localInputToRFC3339, loginLabel, nextTheme, normalizePreviewText,
   safeBilibiliURL, safeHTTPURL, settingLabel, themeLabel, usableTimeZone,
 } from './presentation'
-import { makeAudit, makeDelivery } from './test/fixtures'
+import { makeAudit, makeDelivery } from '../../test/fixtures'
 
 describe('presentation helpers', () => {
   it.each([

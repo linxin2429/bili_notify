@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import type { ThemePreference } from '../types'
+import type { ThemePreference } from '../api/types'
 
 const ThemeContext = createContext<{ preference: ThemePreference; setPreference: (value: ThemePreference) => void } | null>(null)
 export function ThemeProvider({ children }: { children: React.ReactNode }) {

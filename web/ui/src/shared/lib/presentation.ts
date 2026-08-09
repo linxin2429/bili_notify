@@ -1,4 +1,4 @@
-import type { AuditLog, ChannelType, ConnectionState, Delivery, ThemePreference } from './types'
+import type { AuditLog, ChannelType, ConnectionState, Delivery, ThemePreference } from '../api/types'
 
 export function followStateLabel(state: 'unknown' | 'followed' | 'unfollowed') {
   if (state === 'followed') return '当前账号已关注'

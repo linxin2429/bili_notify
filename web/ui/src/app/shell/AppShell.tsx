@@ -1,12 +1,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { NavLink, Outlet } from 'react-router-dom'
-import { useThemePreference } from '../theme'
-import { useSession } from '../../modules/session/session'
+import { useThemePreference } from '../../shared/ui/theme'
+import { useSession } from '../../modules/session'
 import { sessionAPI } from '../../shared/api/session'
 import { queryKeys } from '../../shared/api/query-keys'
 import { useConnectionState } from '../../shared/realtime/RealtimeSync'
 import { Badge, IconButton } from '../../shared/ui'
-import type { ThemePreference } from '../../types'
+import type { ThemePreference } from '../../shared/api/types'
 
 const navigation = [
   { path: '/overview', label: '概览', icon: '◫' }, { path: '/ups', label: 'UP 主', icon: '♟' },

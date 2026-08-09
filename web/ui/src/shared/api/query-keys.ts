@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import type { AuditQuery, ContentQuery, RealtimeTopic } from '../../types'
+import type { AuditQuery, ContentQuery, RealtimeTopic } from './types'
 
 export const queryKeys = {
   session: ['session'] as const, runtime: ['runtime'] as const, settings: ['settings'] as const, ups: ['ups'] as const,

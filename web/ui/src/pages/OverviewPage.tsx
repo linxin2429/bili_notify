@@ -3,8 +3,8 @@ import { resources } from '../shared/api/resources'
 import { queries, queryKeys } from '../shared/api/query'
 import { apiErrorMessage } from '../shared/api/errors'
 import { Alert, Badge, Button, Card, LoadingState, PageError, PageHeader, useNotify } from '../shared/ui'
-import { formatDate, loginLabel } from '../presentation'
-import { useSession } from '../modules/session/session'
+import { formatDate, loginLabel } from '../shared/lib/presentation'
+import { useSession } from '../modules/session'
 
 export function OverviewPage() {
   const runtime = useQuery(queries.runtime()); const settings = useQuery(queries.settings()); const ups = useQuery(queries.ups())

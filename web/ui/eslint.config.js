@@ -58,8 +58,8 @@ export default tseslint.config(
       'boundaries/include': ['src/**/*'],
       'boundaries/elements': [
         { type: 'app', pattern: 'src/app' },
-        { type: 'page', pattern: 'src/pages/(*)', capture: ['page'] },
-        { type: 'module', pattern: 'src/modules/(*)', capture: ['module'] },
+        { type: 'page', pattern: 'src/pages' },
+        { type: 'module', pattern: 'src/modules/*' },
         { type: 'shared', pattern: 'src/shared' },
       ],
     },
@@ -77,23 +77,32 @@ export default tseslint.config(
         'error',
         {
           patterns: [{
-            group: ['../pages/*', '../../pages/*'],
-            message: 'modules/shared 不得依赖 pages',
+            group: ['../pages/*', '../../pages/*', '**/modules/*/*'],
+            message: '依赖必须遵守分层方向，跨模块导入必须经过模块公共入口',
           }],
         },
       ],
-      'boundaries/element-types': [
+      'boundaries/dependencies': [
         'error',
         {
           default: 'disallow',
-          rules: [
-            { from: 'app', allow: ['app', 'page', 'module', 'shared'] },
-            { from: 'page', allow: ['module', 'shared'] },
+          policies: [
             {
-              from: 'module',
-              allow: ['module', 'shared'],
+              from: { element: { type: 'app' } },
+              allow: { to: { element: { types: { anyOf: ['app', 'page', 'module', 'shared'] } } } },
             },
-            { from: 'shared', allow: ['shared'] },
+            {
+              from: { element: { type: 'page' } },
+              allow: { to: { element: { types: { anyOf: ['module', 'shared'] } } } },
+            },
+            {
+              from: { element: { type: 'module' } },
+              allow: { to: { element: { types: { anyOf: ['module', 'shared'] } } } },
+            },
+            {
+              from: { element: { type: 'shared' } },
+              allow: { to: { element: { type: 'shared' } } },
+            },
           ],
         },
       ],

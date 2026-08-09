@@ -3,9 +3,9 @@ import { useSearchParams } from 'react-router-dom'
 import { queries } from '../shared/api/query'
 import { resources } from '../shared/api/resources'
 import { apiErrorMessage } from '../shared/api/errors'
-import { useSession } from '../modules/session/session'
+import { useSession } from '../modules/session'
 import { Badge, Button, Card, EmptyState, LoadingState, PageError, PageHeader, useNotify } from '../shared/ui'
-import { deliverySummary, deliveryTitle, formatDate } from '../presentation'
+import { deliverySummary, deliveryTitle, formatDate } from '../shared/lib/presentation'
 
 export function DeliveriesPage() {
   const [params, setParams] = useSearchParams(); const after = params.get('after') || ''; const requested = params.get('state'); const state = requested === 'pending' || requested === 'blocked' ? requested : 'all'

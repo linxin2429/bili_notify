@@ -1,8 +1,9 @@
 import { queryOptions } from '@tanstack/react-query'
 import { requestJSON } from './client'
+import type { components } from './generated/schema'
 import { queryKeys } from './query-keys'
 
-interface Session { setup_required: boolean; authenticated: boolean; csrf_token?: string }
+type Session = components['schemas']['Session']
 const sessionSchema = simpleSchema<Session>(value => {
   if (!record(value) || !onlyKeys(value, ['setup_required', 'authenticated', 'csrf_token']) || typeof value.setup_required !== 'boolean' || typeof value.authenticated !== 'boolean' || (value.csrf_token !== undefined && typeof value.csrf_token !== 'string')) return null
   return { setup_required: value.setup_required, authenticated: value.authenticated, ...(typeof value.csrf_token === 'string' && { csrf_token: value.csrf_token }) }

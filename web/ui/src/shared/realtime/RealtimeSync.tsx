@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { createContext, useContext, useEffect, useState } from 'react'
-import type { ConnectionState, RealtimeTopic } from '../../types'
+import type { ConnectionState, RealtimeTopic } from '../api/types'
 import { sessionAPI } from '../api/session'
 import { invalidateTopics, queryKeys } from '../api/query-keys'
 

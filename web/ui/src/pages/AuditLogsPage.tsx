@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import type { AuditLog, AuditQuery } from '../types'
+import type { AuditLog, AuditQuery } from '../shared/api/types'
 import { queries } from '../shared/api/query'
 import { Badge, Button, Card, EmptyState, LoadingState, NativeDateTimeField, PageError, PageHeader, SelectField, TextField } from '../shared/ui'
 import { Dialog } from '../shared/ui/Dialog'
-import { auditActionLabel, auditResult, formatDate, localInputToRFC3339 } from '../presentation'
+import { auditActionLabel, auditResult, formatDate, localInputToRFC3339 } from '../shared/lib/presentation'
 
 export function AuditLogsPage() {
   const [params, setParams] = useSearchParams(); const action = params.get('action') || ''; const outcome = params.get('outcome') || ''; const resourceType = params.get('resource_type') || ''; const q = params.get('q') || ''; const from = params.get('from') || ''; const to = params.get('to') || ''; const after = params.get('after') || ''; const [draftQ, setDraftQ] = useState(q)

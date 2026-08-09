@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import type { UP } from '../types'
+import type { UP } from '../shared/api/types'
 import { queries, queryKeys } from '../shared/api/query'
 import { resources } from '../shared/api/resources'
-import { useSession } from '../modules/session/session'
+import { useSession } from '../modules/session'
 import { apiErrorMessage } from '../shared/api/errors'
 import { Alert, Badge, Button, Card, EmptyState, LoadingState, PageError, PageHeader, SwitchField, TextField, useNotify } from '../shared/ui'
 import { Dialog } from '../shared/ui/Dialog'
-import { followStateLabel, formatDate } from '../presentation'
+import { followStateLabel, formatDate } from '../shared/lib/presentation'
 
 export function UPsPage() {
   const ups = useQuery(queries.ups()); const runtime = useQuery(queries.runtime()); const { csrf } = useSession(); const client = useQueryClient(); const notify = useNotify()

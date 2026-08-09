@@ -1,12 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import type { CommentHistoryItem, ContentQuery } from '../types'
+import type { CommentHistoryItem, ContentQuery } from '../shared/api/types'
 import { queries } from '../shared/api/query'
 import { Alert, Badge, Button, Card, EmptyState, LoadingState, NativeDateTimeField, PageError, PageHeader, SelectField, TextField } from '../shared/ui'
 import { Dialog } from '../shared/ui/Dialog'
-import { DynamicHistoryCard } from '../history/DynamicHistoryCard'
-import { dynamicTypeLabel, formatDate, localInputToRFC3339, safeBilibiliURL } from '../presentation'
+import { DynamicHistoryCard } from '../modules/history'
+import { dynamicTypeLabel, formatDate, localInputToRFC3339, safeBilibiliURL } from '../shared/lib/presentation'
 
 export function HistoryPage() {
   const [params, setParams] = useSearchParams(); const tab = params.get('tab') === 'comments' ? 'comments' : 'dynamics'; const uid = params.get('uid') || ''; const q = params.get('q') || ''; const from = params.get('from') || ''; const to = params.get('to') || ''; const after = params.get('after') || ''

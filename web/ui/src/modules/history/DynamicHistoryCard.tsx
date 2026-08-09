@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import type { DynamicHistoryItem, DynamicMedia, DynamicPreview } from '../types'
-import { Badge, Button, Card, IconButton } from '../shared/ui'
-import { Dialog } from '../shared/ui/Dialog'
-import { bilibiliPlayerEmbedURL, composePreviewBody, dynamicTypeLabel, formatDate, formatInteractionCount, formatRelativeDate, historyMediaURL, normalizePreviewText, safeBilibiliURL } from '../presentation'
+import type { DynamicHistoryItem, DynamicMedia, DynamicPreview } from '../../shared/api/types'
+import { Badge, Button, Card, IconButton } from '../../shared/ui'
+import { Dialog } from '../../shared/ui/Dialog'
+import { bilibiliPlayerEmbedURL, composePreviewBody, dynamicTypeLabel, formatDate, formatInteractionCount, formatRelativeDate, historyMediaURL, normalizePreviewText, safeBilibiliURL } from '../../shared/lib/presentation'
 
 type HistoryContent = DynamicHistoryItem | DynamicPreview
 

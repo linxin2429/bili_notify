@@ -1,4 +1,4 @@
-import type { AuditLog, Delivery, RuntimeSettings } from '../types'
+import type { AuditLog, Delivery, RuntimeSettings } from '../shared/api/types'
 
 export const settings: RuntimeSettings = {
   poll_interval_sec: 30, request_rate: 1, request_concurrency: 2, comment_enabled: true, comment_track_n: 10,
@@ -8,7 +8,7 @@ export const settings: RuntimeSettings = {
 }
 
 export function makeDelivery(overrides: Partial<Delivery> = {}): Delivery {
-  return { id: 'delivery', channel_id: 'channel', state: 'pending', attempts: 0, next_at: '2026-08-06T00:00:00Z', created_at: '2026-08-06T00:00:00Z', ...overrides }
+  return { id: 'delivery', kind: 'dynamic', channel_id: 'channel', state: 'pending', attempts: 0, next_at: '2026-08-06T00:00:00Z', created_at: '2026-08-06T00:00:00Z', ...overrides }
 }
 
 export function makeAudit(overrides: Partial<AuditLog> = {}): AuditLog {
