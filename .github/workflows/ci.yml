@@ -127,6 +127,11 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
       - name: Download core Go coverage
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -140,6 +145,9 @@ jobs:
           disable_search: true
           use_oidc: true
           fail_ci_if_error: true
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          override_pr: ${{ github.event.pull_request.number || '' }}
+          override_branch: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
   codecov-policy:
     name: Enforce Codecov patch coverage
