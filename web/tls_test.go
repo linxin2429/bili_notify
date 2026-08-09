@@ -34,3 +34,14 @@ func TestInvalidTLSBundleRejected(t *testing.T) {
 	_, err := loadOrCreateTLSConfig(path)
 	require.Error(t, err)
 }
+
+func TestTLSBundleWithBroadPermissionsRejected(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "tls.pem")
+	_, err := loadOrCreateTLSConfig(path)
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(path, 0o644))
+	_, err = loadOrCreateTLSConfig(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "want 600")
+}

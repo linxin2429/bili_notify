@@ -744,13 +744,13 @@ func TestEngineErrorAndMediaHelpers(t *testing.T) {
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Name: "UP", Enabled: true}))
 	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write([]byte("contract-image"))
+		_, _ = w.Write([]byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a})
 	}))
 	t.Cleanup(imageServer.Close)
 	engine := NewEngine(
 		store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)),
 		NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), NewEventBus(),
-		&media.Downloader{DataDir: t.TempDir(), Client: imageServer.Client(), UserAgent: "test"},
+		&media.Downloader{DataDir: t.TempDir(), Client: imageServer.Client(), UserAgent: "test", AllowPrivateNetwork: true},
 	)
 
 	engine.handleBiliAPIError(&bilibili.APIError{Kind: bilibili.ErrorRiskControl, Message: "blocked"})

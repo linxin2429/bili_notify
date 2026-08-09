@@ -180,12 +180,20 @@ type channelInput struct {
 type wsWriter struct {
 	mu         sync.Mutex
 	connection *websocket.Conn
+	timeout    time.Duration
+}
+
+func (w *wsWriter) operationTimeout() time.Duration {
+	if w.timeout > 0 {
+		return w.timeout
+	}
+	return 10 * time.Second
 }
 
 func (w *wsWriter) write(ctx context.Context, value any) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	writeCtx, cancel := context.WithTimeout(ctx, w.operationTimeout())
 	defer cancel()
 	return wsjson.Write(writeCtx, w.connection, value)
 }
@@ -193,9 +201,23 @@ func (w *wsWriter) write(ctx context.Context, value any) error {
 func (w *wsWriter) ping(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, w.operationTimeout())
 	defer cancel()
 	return w.connection.Ping(pingCtx)
+}
+
+func (s *Server) websocketHeartbeat() time.Duration {
+	if s.wsHeartbeat > 0 {
+		return s.wsHeartbeat
+	}
+	return 30 * time.Second
+}
+
+func (s *Server) websocketPingTimeout() time.Duration {
+	if s.wsPingTimeout > 0 {
+		return s.wsPingTimeout
+	}
+	return 10 * time.Second
 }
 
 func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +249,7 @@ func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
 
 	subscription := s.events.Subscribe()
 	defer subscription.Close()
-	writer := &wsWriter{connection: connection}
+	writer := &wsWriter{connection: connection, timeout: s.websocketPingTimeout()}
 	snapshot, err := s.snapshot()
 	if err != nil {
 		_ = connection.Close(websocket.StatusInternalError, "unable to load dashboard")
@@ -247,7 +269,7 @@ func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
 	})
 	g.Go(func() error { return s.pushEvents(ctx, subscription, writer) })
 	g.Go(func() error {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(s.websocketHeartbeat())
 		defer ticker.Stop()
 		for {
 			select {
@@ -255,6 +277,7 @@ func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
 				return nil
 			case <-ticker.C:
 				if _, ok := s.auth.validateToken(token, false); !ok {
+					_ = connection.Close(websocket.StatusPolicyViolation, "session expired")
 					return errors.New("session expired")
 				}
 				if err := writer.ping(ctx); err != nil {

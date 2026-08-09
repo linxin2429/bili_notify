@@ -181,7 +181,7 @@ func (s *Server) testChannelAPI(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withAPITimeout(r)
 	defer cancel()
 	if err := s.engine.TestChannel(ctx, r.PathValue("id")); err != nil {
-		writeAPIError(w, http.StatusBadGateway, "upstream_failure", err.Error())
+		writeAPIError(w, http.StatusBadGateway, "upstream_failure", "notification channel test failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})

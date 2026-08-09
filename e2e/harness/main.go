@@ -35,6 +35,7 @@ type upstreamState struct {
 	messages       []map[string]any
 	unexpected     []string
 	newDynamic     bool
+	newComment     bool
 	webhookMode    string
 	application    *applicationManager
 	controlToken   string
@@ -155,6 +156,7 @@ func (s *upstreamState) handler() http.Handler {
 	mux.HandleFunc("POST /webhook", s.webhook)
 	mux.HandleFunc("GET /__e2e/state", s.authorizeControl(s.controlState))
 	mux.HandleFunc("PUT /__e2e/feed", s.authorizeControl(s.setFeed))
+	mux.HandleFunc("PUT /__e2e/comments", s.authorizeControl(s.setComments))
 	mux.HandleFunc("PUT /__e2e/webhook", s.authorizeControl(s.setWebhook))
 	mux.HandleFunc("POST /__e2e/restart", s.authorizeControl(s.restartApplication))
 	return mux
@@ -304,6 +306,18 @@ func (s *upstreamState) rootReplies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.increment("comment_root")
+	s.mu.Lock()
+	newComment := s.newComment
+	s.mu.Unlock()
+	if newComment {
+		writeJSON(w, http.StatusOK, map[string]any{"code": 0, "message": "0", "data": map[string]any{
+			"page": map[string]any{"num": 1, "size": 20, "count": 1}, "replies": []any{map[string]any{
+				"rpid_str": "e2e-up-reply", "root_str": "0", "parent_str": "0", "ctime": 1700000002,
+				"member": map[string]any{"mid": e2eUPUID, "uname": "E2E UP"}, "content": map[string]any{"message": "E2E UP comment reply"},
+			}},
+		}})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "message": "0", "data": map[string]any{
 		"page": map[string]any{"num": 1, "size": 20, "count": 0}, "replies": []any{},
 	}})
@@ -327,11 +341,12 @@ func (s *upstreamState) controlState(w http.ResponseWriter, _ *http.Request) {
 	messages := append([]map[string]any(nil), s.messages...)
 	unexpected := append([]string(nil), s.unexpected...)
 	newDynamic := s.newDynamic
+	newComment := s.newComment
 	webhookMode := s.webhookMode
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"counts": counts, "messages": messages, "unexpected": unexpected,
-		"new_dynamic": newDynamic, "webhook_mode": webhookMode, "generation": s.application.Generation(),
+		"new_dynamic": newDynamic, "new_comment": newComment, "webhook_mode": webhookMode, "generation": s.application.Generation(),
 	})
 }
 
@@ -345,6 +360,20 @@ func (s *upstreamState) setFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	s.newDynamic = input.NewDynamic
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *upstreamState) setComments(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		NewComment bool `json:"new_comment"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	s.newComment = input.NewComment
 	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -393,6 +422,7 @@ func (s *upstreamState) unexpectedRequest(w http.ResponseWriter, r *http.Request
 func dynamicFixture(id, summary string, timestamp int64) map[string]any {
 	return map[string]any{
 		"id_str": id, "type": "DYNAMIC_TYPE_WORD",
+		"basic": map[string]any{"comment_type": 11, "comment_id_str": id},
 		"modules": map[string]any{
 			"module_author":  map[string]any{"mid": 42, "name": "E2E UP", "pub_ts": timestamp},
 			"module_dynamic": map[string]any{"desc": map[string]any{"text": summary}, "major": nil},

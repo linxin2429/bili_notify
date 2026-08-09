@@ -6,7 +6,9 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/linxin2429/bili_notify/service"
@@ -98,6 +100,115 @@ func TestAuthenticationRateLimit(t *testing.T) {
 	}
 	response := authenticationRequest(t, handler, http.MethodPost, "/api/v1/session", map[string]string{"password": "correct horse battery staple"}, "", "")
 	assertAPIError(t, response, http.StatusTooManyRequests, "rate_limited")
+}
+
+func TestAuthenticationRateLimitIsolationRecoveryAndProxyHeaders(t *testing.T) {
+	t.Parallel()
+	store := openWebTestStore(t)
+	auth, setupCode, err := newAuthenticator(store)
+	require.NoError(t, err)
+	require.NoError(t, auth.initialize(setupCode, "correct horse battery staple"))
+	now := time.Date(2026, time.August, 9, 1, 2, 3, 0, time.UTC)
+	auth.now = func() time.Time { return now }
+	server := &Server{auth: auth, store: store, events: service.NewEventBus(), connections: make(map[string]map[*websocket.Conn]struct{})}
+	handler := server.adminHandler()
+
+	requestLogin := func(remote, forwardedFor, password string) *httptest.ResponseRecorder {
+		body := strings.NewReader(`{"password":"` + password + `"}`)
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/session", body)
+		request.RemoteAddr = remote
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Forwarded-For", forwardedFor)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	for range 5 {
+		assert.Equal(t, http.StatusUnauthorized, requestLogin("192.0.2.1:1000", "198.51.100.99", "wrong").Code)
+	}
+	assert.Equal(t, http.StatusTooManyRequests, requestLogin("192.0.2.1:1001", "203.0.113.7", "correct horse battery staple").Code)
+	assert.Equal(t, http.StatusOK, requestLogin("192.0.2.2:1000", "192.0.2.1", "correct horse battery staple").Code,
+		"rate limiting must use the peer address and ignore spoofable forwarding headers")
+	now = now.Add(time.Minute)
+	assert.Equal(t, http.StatusOK, requestLogin("192.0.2.1:1002", "203.0.113.7", "correct horse battery staple").Code)
+}
+
+func TestAdminSecurityHeaders(t *testing.T) {
+	t.Parallel()
+	fixture := newAdminAPIFixture(t, nil)
+	static, err := fs.Sub(assets, "dist")
+	require.NoError(t, err)
+	fixture.server.static = static
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "HTML", path: "/"},
+		{name: "API", path: "/api/v1/session"},
+		{name: "missing API", path: "/api/v1/missing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			response := httptest.NewRecorder()
+			fixture.server.adminHandler().ServeHTTP(response, request)
+			assert.Equal(t, "max-age=31536000", response.Header().Get("Strict-Transport-Security"))
+			assert.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
+			assert.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
+			csp := response.Header().Get("Content-Security-Policy")
+			assert.Contains(t, csp, "default-src 'self'")
+			assert.Contains(t, csp, "frame-ancestors 'none'")
+			assert.Contains(t, csp, "form-action 'self'")
+		})
+	}
+}
+
+func TestJSONBodySizeAndEncodingBoundaries(t *testing.T) {
+	t.Parallel()
+	fixture := newAdminAPIFixture(t, nil)
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{name: "body larger than one MiB", body: append([]byte(`{"uid":"42","name":"up","enabled":true}`), []byte(strings.Repeat(" ", 1<<20))...)},
+		{name: "invalid UTF-8", body: []byte{'{', '"', 'u', 'i', 'd', '"', ':', '"', 0xff, '"', '}'}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/ups", bytes.NewReader(tt.body))
+			request.AddCookie(&http.Cookie{Name: sessionCookie, Value: fixture.token})
+			request.Header.Set("X-CSRF-Token", fixture.csrf)
+			response := httptest.NewRecorder()
+			fixture.server.adminHandler().ServeHTTP(response, request)
+			assertAPIError(t, response, http.StatusBadRequest, "invalid_request")
+		})
+	}
+}
+
+func TestEncodedAPIPathsCannotEscapeTheirRoute(t *testing.T) {
+	t.Parallel()
+	fixture := newAdminAPIFixture(t, nil)
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "encoded traversal", path: "/api/v1/dynamics/%2e%2e%2fsession"},
+		{name: "encoded NUL", path: "/api/v1/dynamics/%00"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			request.AddCookie(&http.Cookie{Name: sessionCookie, Value: fixture.token})
+			response := httptest.NewRecorder()
+			fixture.server.adminHandler().ServeHTTP(response, request)
+			assert.Equal(t, http.StatusNotFound, response.Code)
+			assert.NotContains(t, response.Body.String(), "csrf_token")
+			assert.NotContains(t, response.Body.String(), fixture.csrf)
+		})
+	}
 }
 
 func TestIndexAndUnknownAPIRoutes(t *testing.T) {

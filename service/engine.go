@@ -242,6 +242,15 @@ func (e *Engine) Run(ctx context.Context) error {
 	return g.Wait()
 }
 
+// Running reports whether Run has installed its lifecycle context. It is used
+// by embedding applications to avoid accepting interactive login work before
+// the engine is ready.
+func (e *Engine) Running() bool {
+	e.loginMu.Lock()
+	defer e.loginMu.Unlock()
+	return e.runCtx != nil
+}
+
 func (e *Engine) collectLoop(ctx context.Context) error {
 	settings, settingsChanged := e.settingsSnapshot()
 	interval := settings.PollInterval()
@@ -869,6 +878,12 @@ func (e *Engine) commentLoop(ctx context.Context) error {
 			if next != interval {
 				ticker.Reset(next)
 				interval = next
+			}
+			// Apply comment-monitoring changes immediately. Waiting for the old
+			// batch boundary makes enabling monitoring or narrowing its window
+			// appear ineffective for up to an entire previous interval.
+			if err := e.commentOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				e.logger.Error("comment cycle failed", "event", "comment.cycle.failed", "phase", "settings_changed", "error", err)
 			}
 		case <-ticker.C:
 			if err := e.commentOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {

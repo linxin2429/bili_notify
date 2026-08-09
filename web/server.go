@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/linxin2429/bili_notify/model"
@@ -56,6 +57,8 @@ type Server struct {
 	static         fs.FS
 	connectionsMu  sync.Mutex
 	connections    map[string]map[*websocket.Conn]struct{}
+	wsHeartbeat    time.Duration
+	wsPingTimeout  time.Duration
 }
 
 func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, settings SettingsService, store *state.Store, events *service.EventBus, logger, auditLogger *slog.Logger, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, propagator propagation.TextMapPropagator, dataDir string) (*Server, error) {
@@ -332,7 +335,12 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 
 func decodeJSON(r *http.Request, dst any) error {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	const maxJSONBody = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxJSONBody+1))
+	if err != nil || len(body) > maxJSONBody || !utf8.Valid(body) {
+		return errors.New("invalid JSON request")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
 		return errors.New("invalid JSON request")
@@ -384,7 +392,7 @@ func (s *Server) closeTokenConnections(token string, status websocket.StatusCode
 	delete(s.connections, token)
 	s.connectionsMu.Unlock()
 	for _, connection := range connections {
-		_ = connection.Close(status, reason)
+		go func() { _ = connection.Close(status, reason) }()
 	}
 }
 
@@ -399,6 +407,6 @@ func (s *Server) closeAllConnections(status websocket.StatusCode, reason string)
 	clear(s.connections)
 	s.connectionsMu.Unlock()
 	for _, connection := range connections {
-		_ = connection.Close(status, reason)
+		go func() { _ = connection.Close(status, reason) }()
 	}
 }

@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -9,6 +10,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +24,10 @@ import (
 	"github.com/stretchr/testify/require"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
 
 func TestAdminAPILifecycle(t *testing.T) {
 	t.Parallel()
@@ -109,6 +116,284 @@ func TestAdminAPILifecycle(t *testing.T) {
 	response = fixture.request(t, http.MethodDelete, "/api/v1/ups/42", nil, true)
 	assert.Equal(t, http.StatusNoContent, response.Code)
 	assert.Greater(t, fixture.events.Revision(), uint64(0))
+}
+
+func TestBilibiliLoginHTTPAPIAndAuditLifecycle(t *testing.T) {
+	t.Parallel()
+	var generated int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/x/passport-login/web/qrcode/generate" {
+			http.NotFound(w, r)
+			return
+		}
+		generated++
+		writeJSON(w, http.StatusOK, map[string]any{"code": 0, "data": map[string]string{
+			"url": "https://example.invalid/login?secret=raw-qr-value", "qrcode_key": "login-" + strconv.Itoa(generated),
+		}})
+	}))
+	t.Cleanup(upstream.Close)
+	fixture := newAdminAPIFixtureWithBilibili(t, upstream.Client(), upstream.URL)
+	stopEngine := runWebTestEngine(t, fixture.engine)
+	t.Cleanup(stopEngine)
+
+	first := fixture.request(t, http.MethodPost, "/api/v1/bilibili-login", nil, true)
+	assert.Equal(t, http.StatusCreated, first.Code)
+	assert.NotContains(t, first.Body.String(), "raw-qr-value")
+	var firstLogin biliLoginView
+	require.NoError(t, json.Unmarshal(first.Body.Bytes(), &firstLogin))
+	assert.Equal(t, "login-1", firstLogin.ID)
+	assert.True(t, strings.HasPrefix(firstLogin.QRDataURL, "data:image/png;base64,"))
+
+	second := fixture.request(t, http.MethodPost, "/api/v1/bilibili-login", nil, true)
+	assert.Equal(t, http.StatusCreated, second.Code)
+	var secondLogin biliLoginView
+	require.NoError(t, json.Unmarshal(second.Body.Bytes(), &secondLogin))
+	assert.Equal(t, "login-2", secondLogin.ID)
+	_, err := fixture.engine.LoginURL(firstLogin.ID)
+	require.Error(t, err)
+
+	canceled := fixture.request(t, http.MethodDelete, "/api/v1/bilibili-login/"+secondLogin.ID, nil, true)
+	assert.Equal(t, http.StatusNoContent, canceled.Code)
+	_, ok := fixture.engine.Login()
+	assert.False(t, ok)
+
+	for _, expected := range []struct {
+		action     string
+		resourceID string
+		count      int
+	}{
+		{action: "bilibili.login.start", resourceID: secondLogin.ID, count: 2},
+		{action: "bilibili.login.cancel", resourceID: secondLogin.ID, count: 1},
+	} {
+		entries, total, queryErr := fixture.store.QueryAuditLogs(state.AuditQuery{Action: expected.action, Outcome: state.AuditSuccess})
+		require.NoError(t, queryErr)
+		assert.Equal(t, expected.count, total)
+		require.NotEmpty(t, entries)
+		assert.Equal(t, expected.resourceID, entries[0].ResourceID)
+		assert.Equal(t, "administrator", entries[0].Actor)
+	}
+}
+
+func TestBilibiliLoginHTTPUpstreamFailuresAreBoundedAndRedacted(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		client  func(*httptest.Server) *http.Client
+	}{
+		{
+			name: "upstream error",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "upstream-secret-body", http.StatusInternalServerError)
+			},
+			client: func(server *httptest.Server) *http.Client { return server.Client() },
+		},
+		{
+			name: "upstream timeout",
+			handler: func(_ http.ResponseWriter, r *http.Request) {
+				timer := time.NewTimer(100 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-r.Context().Done():
+				case <-timer.C:
+				}
+			},
+			client: func(server *httptest.Server) *http.Client {
+				client := server.Client()
+				client.Timeout = 25 * time.Millisecond
+				return client
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := httptest.NewServer(tt.handler)
+			t.Cleanup(upstream.Close)
+			fixture := newAdminAPIFixtureWithBilibili(t, tt.client(upstream), upstream.URL)
+			stopEngine := runWebTestEngine(t, fixture.engine)
+			t.Cleanup(stopEngine)
+			response := fixture.request(t, http.MethodPost, "/api/v1/bilibili-login", nil, true)
+			assert.Equal(t, http.StatusInternalServerError, response.Code)
+			assert.NotContains(t, response.Body.String(), "upstream-secret-body")
+			assert.NotContains(t, response.Body.String(), upstream.URL)
+			entries, total, err := fixture.store.QueryAuditLogs(state.AuditQuery{Action: "bilibili.login.start"})
+			require.NoError(t, err)
+			assert.Equal(t, 1, total)
+			require.Len(t, entries, 1)
+			assert.Equal(t, state.AuditFailure, entries[0].Outcome)
+			assert.Equal(t, "internal", entries[0].ErrorCode)
+		})
+	}
+}
+
+func TestMicrosoftLoginHTTPAPIAndAuditLifecycle(t *testing.T) {
+	t.Parallel()
+	deviceRequests := make(chan struct{}, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/devicecode"):
+			deviceRequests <- struct{}{}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"device_code": "device-secret", "user_code": "ABCD-EFGH",
+				"verification_uri": "https://microsoft.example/device", "expires_in": 900, "interval": 60,
+			})
+		case strings.HasSuffix(r.URL.Path, "/token"):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "authorization_pending"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	client := rewriteHTTPClient(upstream)
+	fixture := newAdminAPIFixture(t, client)
+	channel, err := fixture.store.PutChannel(model.Channel{
+		Name: "Microsoft", Type: model.ChannelMicrosoft, Enabled: false,
+		Settings: map[string]string{"client_id": "11111111-2222-3333-4444-555555555555", "tenant": "common", "to": "admin@example.com"},
+	})
+	require.NoError(t, err)
+	stopEngine := runWebTestEngine(t, fixture.engine)
+	t.Cleanup(stopEngine)
+
+	for range 2 {
+		response := fixture.request(t, http.MethodPost, "/api/v1/channels/"+channel.ID+"/microsoft-login", nil, true)
+		assert.Equal(t, http.StatusCreated, response.Code)
+		assert.Contains(t, response.Body.String(), "ABCD-EFGH")
+		assert.NotContains(t, response.Body.String(), "device-secret")
+		select {
+		case <-deviceRequests:
+		case <-time.After(time.Second):
+			require.FailNow(t, "Microsoft device request was not observed")
+		}
+	}
+	canceled := fixture.request(t, http.MethodDelete, "/api/v1/channels/"+channel.ID+"/microsoft-login", nil, true)
+	assert.Equal(t, http.StatusNoContent, canceled.Code)
+	login, err := fixture.engine.MicrosoftLogin(channel.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "canceled", login.Status)
+
+	for _, expected := range []struct {
+		action string
+		count  int
+	}{{action: "microsoft.login.start", count: 2}, {action: "microsoft.login.cancel", count: 1}} {
+		entries, total, queryErr := fixture.store.QueryAuditLogs(state.AuditQuery{Action: expected.action, Outcome: state.AuditSuccess})
+		require.NoError(t, queryErr)
+		assert.Equal(t, expected.count, total)
+		require.NotEmpty(t, entries)
+		assert.Equal(t, channel.ID, entries[0].ResourceID)
+	}
+}
+
+func TestMicrosoftLoginHTTPUpstreamFailuresAreBoundedAndRedacted(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		timeout time.Duration
+	}{
+		{
+			name: "identity provider error",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "identity-secret-body", http.StatusInternalServerError)
+			},
+		},
+		{
+			name: "identity provider timeout",
+			handler: func(_ http.ResponseWriter, r *http.Request) {
+				timer := time.NewTimer(100 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-r.Context().Done():
+				case <-timer.C:
+				}
+			},
+			timeout: 25 * time.Millisecond,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := httptest.NewServer(tt.handler)
+			t.Cleanup(upstream.Close)
+			client := rewriteHTTPClient(upstream)
+			client.Timeout = tt.timeout
+			fixture := newAdminAPIFixture(t, client)
+			channel, err := fixture.store.PutChannel(model.Channel{
+				Name: "Microsoft", Type: model.ChannelMicrosoft,
+				Settings: map[string]string{"client_id": "11111111-2222-3333-4444-555555555555", "tenant": "common", "to": "admin@example.com"},
+			})
+			require.NoError(t, err)
+			stopEngine := runWebTestEngine(t, fixture.engine)
+			t.Cleanup(stopEngine)
+			response := fixture.request(t, http.MethodPost, "/api/v1/channels/"+channel.ID+"/microsoft-login", nil, true)
+			assert.Equal(t, http.StatusInternalServerError, response.Code)
+			assert.NotContains(t, response.Body.String(), "identity-secret-body")
+			assert.NotContains(t, response.Body.String(), upstream.URL)
+			entries, total, queryErr := fixture.store.QueryAuditLogs(state.AuditQuery{Action: "microsoft.login.start"})
+			require.NoError(t, queryErr)
+			assert.Equal(t, 1, total)
+			require.Len(t, entries, 1)
+			assert.Equal(t, channel.ID, entries[0].ResourceID)
+			assert.Equal(t, state.AuditFailure, entries[0].Outcome)
+		})
+	}
+}
+
+func TestChannelTestHTTPFailureTimeoutAndAuditRedaction(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		client  func(*httptest.Server) *http.Client
+	}{
+		{
+			name: "channel rejects request",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(w, http.StatusOK, map[string]any{"errcode": 40001, "errmsg": "webhook-secret-detail"})
+			},
+			client: func(server *httptest.Server) *http.Client { return server.Client() },
+		},
+		{
+			name: "channel times out",
+			handler: func(_ http.ResponseWriter, r *http.Request) {
+				timer := time.NewTimer(100 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-r.Context().Done():
+				case <-timer.C:
+				}
+			},
+			client: func(server *httptest.Server) *http.Client {
+				client := server.Client()
+				client.Timeout = 25 * time.Millisecond
+				return client
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := httptest.NewTLSServer(tt.handler)
+			t.Cleanup(upstream.Close)
+			fixture := newAdminAPIFixture(t, tt.client(upstream))
+			channel, err := fixture.store.PutChannel(model.Channel{
+				Name: "robot", Type: model.ChannelWeCom, Enabled: true,
+				Settings: map[string]string{"webhook": upstream.URL + "/send?key=webhook-secret-query"},
+			})
+			require.NoError(t, err)
+			response := fixture.request(t, http.MethodPost, "/api/v1/channels/"+channel.ID+"/test", nil, true)
+			assert.Equal(t, http.StatusBadGateway, response.Code)
+			assert.NotContains(t, response.Body.String(), "webhook-secret")
+			assert.NotContains(t, response.Body.String(), upstream.URL)
+			entries, total, queryErr := fixture.store.QueryAuditLogs(state.AuditQuery{Action: "channel.test"})
+			require.NoError(t, queryErr)
+			assert.Equal(t, 1, total)
+			require.Len(t, entries, 1)
+			assert.Equal(t, channel.ID, entries[0].ResourceID)
+			assert.Equal(t, state.AuditFailure, entries[0].Outcome)
+			assert.Equal(t, "upstream_failure", entries[0].ErrorCode)
+		})
+	}
 }
 
 func TestContentAPIs(t *testing.T) {
@@ -280,6 +565,7 @@ func TestAdminAPIWriteAuthorization(t *testing.T) {
 
 type adminAPIFixture struct {
 	server  *Server
+	engine  *service.Engine
 	store   *state.Store
 	events  *service.EventBus
 	token   string
@@ -337,7 +623,53 @@ func newAdminAPIFixture(t *testing.T, client *http.Client) *adminAPIFixture {
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), metrics: metrics,
 		dataDir: dataDir, connections: make(map[string]map[*websocket.Conn]struct{}),
 	}
-	return &adminAPIFixture{server: server, store: store, events: events, token: token, csrf: csrf, dataDir: dataDir, webhook: webhook}
+	return &adminAPIFixture{server: server, engine: engine, store: store, events: events, token: token, csrf: csrf, dataDir: dataDir, webhook: webhook}
+}
+
+func newAdminAPIFixtureWithBilibili(t *testing.T, client *http.Client, baseURL string) *adminAPIFixture {
+	t.Helper()
+	fixture := newAdminAPIFixture(t, client)
+	metrics := service.NewMetrics(metricnoop.NewMeterProvider())
+	engine := service.NewEngine(
+		fixture.store,
+		bilibili.New(client, "web-api-test", bilibili.WithBaseURLs(baseURL, baseURL)),
+		slog.New(slog.NewTextHandler(io.Discard, nil)), metrics, webTestSettings(), fixture.events, nil,
+		service.WithNotificationHTTPClient(client),
+	)
+	settingsManager := &webTestSettingsManager{engine: engine, store: fixture.store, events: fixture.events}
+	fixture.engine = engine
+	fixture.server.engine = engine
+	fixture.server.settings = settingsManager
+	fixture.server.metrics = metrics
+	return fixture
+}
+
+func runWebTestEngine(t *testing.T, engine *service.Engine) func() {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- engine.Run(ctx) }()
+	require.Eventually(t, engine.Running, time.Second, time.Millisecond)
+	return func() {
+		cancel()
+		select {
+		case err := <-done:
+			assert.NoError(t, err)
+		case <-time.After(3 * time.Second):
+			assert.Fail(t, "engine did not stop")
+		}
+	}
+}
+
+func rewriteHTTPClient(server *httptest.Server) *http.Client {
+	baseTransport := server.Client().Transport
+	return &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = strings.TrimPrefix(server.URL, "http://")
+		clone.Host = clone.URL.Host
+		return baseTransport.RoundTrip(clone)
+	})}
 }
 
 func (f *adminAPIFixture) request(t *testing.T, method, path string, body any, csrf bool) *httptest.ResponseRecorder {

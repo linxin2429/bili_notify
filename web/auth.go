@@ -29,13 +29,14 @@ type authSession struct {
 type authenticator struct {
 	store     *state.Store
 	setupCode string
+	now       func() time.Time
 	mu        sync.Mutex
 	sessions  map[string]authSession
 	failures  map[string][]time.Time
 }
 
 func newAuthenticator(store *state.Store) (*authenticator, string, error) {
-	a := &authenticator{store: store, sessions: make(map[string]authSession), failures: make(map[string][]time.Time)}
+	a := &authenticator{store: store, now: time.Now, sessions: make(map[string]authSession), failures: make(map[string][]time.Time)}
 	hash, err := store.AdminPasswordHash()
 	if err == nil {
 		if _, err := parsePasswordHash(hash); err != nil {
@@ -158,7 +159,7 @@ func (a *authenticator) changePassword(current, replacement string) error {
 
 func (a *authenticator) loginAllowed(remoteAddr string) bool {
 	host := remoteHost(remoteAddr)
-	now := time.Now()
+	now := a.now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, key := range []string{host, "*"} {
@@ -176,8 +177,9 @@ func (a *authenticator) loginAllowed(remoteAddr string) bool {
 func (a *authenticator) recordFailure(remoteAddr string) {
 	host := remoteHost(remoteAddr)
 	a.mu.Lock()
-	a.failures[host] = append(a.failures[host], time.Now())
-	a.failures["*"] = append(a.failures["*"], time.Now())
+	now := a.now()
+	a.failures[host] = append(a.failures[host], now)
+	a.failures["*"] = append(a.failures["*"], now)
 	a.mu.Unlock()
 }
 
@@ -202,7 +204,7 @@ func (a *authenticator) createSession() (token, csrf, sessionID string, err erro
 	if err != nil {
 		return "", "", "", err
 	}
-	now := time.Now()
+	now := a.now()
 	a.mu.Lock()
 	a.sessions[token] = authSession{ID: sessionID, CSRF: csrf, CreatedAt: now, LastSeenAt: now}
 	a.mu.Unlock()
@@ -219,7 +221,7 @@ func (a *authenticator) validate(r *http.Request) (string, authSession, bool) {
 }
 
 func (a *authenticator) validateToken(token string, touch bool) (authSession, bool) {
-	now := time.Now()
+	now := a.now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	session, ok := a.sessions[token]
