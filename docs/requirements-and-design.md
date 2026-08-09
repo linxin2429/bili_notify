@@ -121,7 +121,9 @@ Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名�
 
 ## 7. 可观测性、运行与验证
 
-Makefile 是本地与 CI 的统一任务入口：`make check` 执行全部前端与 Go 检查，`make -jN check` 按依赖图并行执行互不冲突的检查，`make build` 生成本地二进制，`make docker-build` 生成生产镜像，细分目标通过 `make help` 查看。CI 根据 runner 类型分别限制 Make、Go、Vitest 和 Playwright 的并发数，避免嵌套 worker 过度争抢 CPU 与内存。
+Makefile 是本地与 CI 的统一任务入口：`make check` 执行生产二进制构建以及全部前端与 Go 检查，`make ci-check` 只执行由 CI 测试 job 负责的检查、把生产构建交给后续镜像 job，`make -jN check` 按依赖图并行执行互不冲突的检查，`make build` 生成本地二进制，`make docker-build` 生成生产镜像，`make docker-smoke-image` 验证已有镜像，细分目标通过 `make help` 查看。CI 根据 runner 类型分别限制 Make、Go、Vitest 和 Playwright 的并发数，避免嵌套 worker 过度争抢 CPU 与内存。
+
+PR、main push 与版本 tag 使用同一条 `linux/amd64` 生产镜像构建和冒烟测试路径：普通测试与观测配置验证并行完成后，镜像 job 使用最终版本元数据构建并加载一次镜像，再验证 nonroot/只读运行、初始化、健康检查、优雅停止和持久化重启。PR 与 main 不登录仓库、不发布镜像；版本 tag 只在冒烟测试成功后登录 Docker Hub，把已经测试的本地镜像添加 SemVer 与 `latest` 标签并逐一推送，不重新构建发布物。BuildKit 的 GHA layer cache 只用于跨运行加速，不作为发布物传递或正确性依据。
 
 私有观测服务默认监听 `:9090`：`/healthz` 表示进程存活，`/readyz` 要求有效 B站会话、启用的 UP 和渠道以及近期成功采集。应用通过 OTLP 导出 logs、metrics 和 traces，不再提供应用内 `/metrics`。Metrics 覆盖工作流、B 站请求、内容发现、投递、Outbox、媒体、认证/就绪/风控、UP/渠道/评论目标、关键配置阈值和审计失败；不使用 UID、渠道 ID、错误文本或正文作为属性。
 

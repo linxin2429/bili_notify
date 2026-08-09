@@ -25,7 +25,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/cmd.commit=$(COMMIT) \
 	-X $(MODULE)/cmd.date=$(BUILD_DATE)
 
-.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e go-check-ready check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck check run docker-build docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
+.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e go-check-ready check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck ci-check check run docker-build docker-smoke-image docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
 
 help:
 	@printf '%s\n' \
@@ -44,6 +44,7 @@ help:
 		'  coverage-race          run the race detector and core Go coverage gate together' \
 		'  vet                    run go vet' \
 		'  vulncheck              run govulncheck' \
+		'  ci-check               run CI checks; the image job performs the production build' \
 		'  check                  run the complete local CI check suite' \
 		'' \
 		'Frontend:' \
@@ -56,6 +57,7 @@ help:
 		'' \
 		'Docker:' \
 		'  docker-build           build DOCKER_IMAGE (default: bili-notify:local)' \
+		'  docker-smoke-image     smoke-test an existing DOCKER_IMAGE' \
 		'  docker-smoke           build and smoke-test DOCKER_IMAGE' \
 		'  observability-validate validate Compose, Collector, Prometheus, Loki, and Tempo configs' \
 		'  observability-smoke    query a running full observability stack' \
@@ -157,7 +159,9 @@ vet: frontend-build
 vulncheck: frontend-build
 	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go run golang.org/x/vuln/cmd/govulncheck@latest $(GO_PACKAGES)
 
-check: build frontend-lint frontend-coverage frontend-e2e check-coverage-race check-vet check-vulncheck
+ci-check: frontend-lint frontend-coverage frontend-e2e check-coverage-race check-vet check-vulncheck
+
+check: build ci-check
 
 run: frontend-build
 	go run . $(ARGS)
@@ -170,8 +174,11 @@ docker-build:
 		--build-arg "BUILD_DATE=$(BUILD_DATE)" \
 		--tag "$(DOCKER_IMAGE)" .
 
-docker-smoke: docker-build
+docker-smoke-image:
 	./e2e/docker-smoke.sh "$(DOCKER_IMAGE)"
+
+docker-smoke: docker-build
+	$(MAKE) docker-smoke-image DOCKER_IMAGE="$(DOCKER_IMAGE)"
 
 observability-validate:
 	GRAFANA_ADMIN_PASSWORD=validation $(COMPOSE) -f compose.yaml -f compose.observability.yaml --profile observability config >/dev/null
