@@ -233,6 +233,11 @@ jobs:
 
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
         if: runner.os != 'macOS'
+        with:
+          name: bili-notify-ci
+          # Persistent self-hosted runners reuse BuildKit's local state. This
+          # avoids downloading remote GHA cache blobs over the runner's WAN.
+          keep-state: ${{ needs.select-runner.outputs.kind != 'github-hosted' }}
 
       - name: Compute build metadata
         id: build_env
@@ -263,8 +268,8 @@ jobs:
             VERSION=${{ steps.build_env.outputs.version }}
             COMMIT=${{ steps.build_env.outputs.commit }}
             BUILD_DATE=${{ steps.build_env.outputs.build_date }}
-          cache-from: ${{ runner.os != 'macOS' && 'type=gha,scope=bili-notify-linux-amd64' || '' }}
-          cache-to: ${{ runner.os != 'macOS' && 'type=gha,mode=min,scope=bili-notify-linux-amd64,ignore-error=true' || '' }}
+          cache-from: ${{ needs.select-runner.outputs.kind == 'github-hosted' && 'type=gha,scope=bili-notify-linux-amd64' || '' }}
+          cache-to: ${{ needs.select-runner.outputs.kind == 'github-hosted' && 'type=gha,mode=min,scope=bili-notify-linux-amd64,ignore-error=true' || '' }}
           provenance: false
 
       - name: Smoke-test image
