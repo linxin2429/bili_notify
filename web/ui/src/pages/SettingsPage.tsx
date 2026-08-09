@@ -8,7 +8,7 @@ import Password from '@mui/icons-material/Password'
 import { Alert, Box, Button, Card, CardContent, Collapse, FormControlLabel, IconButton, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material'
 import type { AdminAPI } from '../api'
 import { httpJSON } from '../api'
-import { emptyResponseSchema } from '../contracts'
+import { csrfStateSchema } from '../contracts'
 import { applySettingsMutation } from '../dashboard'
 import { errorMessage, themeLabel } from '../presentation'
 import type { RuntimeSettings, ThemePreference } from '../types'
@@ -87,7 +87,7 @@ export function SettingsPage({ csrf, preference, setPreference, settings, api, r
     if (replacement !== confirm) { setMessage('两次输入的新密码不一致'); return }
     setBusy(true)
     try {
-      await httpJSON('/api/v1/session/password', emptyResponseSchema, { method: 'PUT', body: JSON.stringify({ current_password: current, new_password: replacement }) }, csrf)
+      await httpJSON('/api/v1/session/password', csrfStateSchema, { method: 'PUT', body: JSON.stringify({ current_password: current, new_password: replacement }) }, csrf)
       await onChanged()
     } catch (error) { setMessage(errorMessage(error)) } finally { setBusy(false) }
   }

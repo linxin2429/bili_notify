@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AdminAPI, httpJSON } from './api'
+import { AdminAPI, httpJSON, parseDynamicHistoryPage } from './api'
 import { dashboardSnapshotSchema, emptyResponseSchema } from './contracts'
 import { makeChannel, makeSnapshot, makeUP, settings } from './test/fixtures'
 
@@ -11,6 +11,18 @@ beforeEach(() => {
 })
 
 describe('AdminAPI', () => {
+  it('keeps valid dynamic rows when neighboring archived payloads are malformed', () => {
+    const valid = { id: 'valid', uid: '42', up_name: 'UP', type: 'DYNAMIC_TYPE_WORD', published_at: '2026-08-06T00:00:00Z', discovered_at: '2026-08-06T00:00:01Z', baseline: false }
+    expect(parseDynamicHistoryPage({ items: [{ id: 42 }, valid, null], total: 3, limit: 20, offset: 0 })).toEqual({ items: [valid], total: 3, limit: 20, offset: 0 })
+  })
+
+  it.each([
+    { name: 'missing items', input: { total: 0, limit: 20, offset: 0 } },
+    { name: 'non-integer page offset', input: { items: [], total: 0, limit: 20, offset: 0.5 } },
+  ])('rejects a dynamic history envelope with $name', ({ input }) => {
+    expect(() => parseDynamicHistoryPage(input)).toThrow()
+  })
+
   it.each([
     { name: 'dashboard', call: (api: AdminAPI) => api.dashboard(), path: '/api/v1/dashboard', method: undefined, body: makeSnapshot(), status: 200 },
     { name: 'create UP', call: (api: AdminAPI) => api.createUP({ uid: '42', name: 'UP', enabled: true }), path: '/api/v1/ups', method: 'POST', body: makeUP(), status: 200 },

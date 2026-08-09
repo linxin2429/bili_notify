@@ -33,7 +33,7 @@ export function DynamicHistoryCard({ item, timeZone }: { item: DynamicHistoryIte
       <Avatar className="history-author-avatar" aria-hidden="true">{historyAvatarText(item.up_name || item.uid)}</Avatar>
       <Box minWidth={0} flex={1}>
         <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={1}>
-          <Box minWidth={0}><Typography className="history-author-name" fontWeight={750}>{item.up_name || item.uid}</Typography><Typography variant="body2" color="text.secondary" title={formatDate(item.published_at, timeZone)}>{formatRelativeDate(item.published_at, Date.now(), timeZone)} · {dynamicTypeLabel(item.type)}</Typography></Box>
+          <Box minWidth={0}><Typography className="history-author-name" color="primary.main" fontWeight={750}>{item.up_name || item.uid}</Typography><Typography variant="body2" color="text.secondary" title={formatDate(item.published_at, timeZone)}>{formatRelativeDate(item.published_at, Date.now(), timeZone)} · {dynamicTypeLabel(item.type)}</Typography></Box>
           <Stack direction="row" spacing={.75} flexWrap="wrap" justifyContent="flex-end">{item.badge && <Chip size="small" label={item.badge} />}{item.baseline && <Chip size="small" label="基线" variant="outlined" />}</Stack>
         </Stack>
         <Box className="history-copyable">

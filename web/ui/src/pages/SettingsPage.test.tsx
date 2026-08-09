@@ -17,6 +17,42 @@ function fillPasswordFields(current: string, next: string, confirm = next) {
 }
 
 describe('SettingsPage', () => {
+  it('wires every runtime settings section to the submitted object', async () => {
+    const user = userEvent.setup(); const api = new AdminAPI('csrf'); const update = vi.spyOn(api, 'updateSettings').mockResolvedValue(settings)
+    renderRoute(<SettingsPage csrf="csrf" preference="system" setPreference={vi.fn()} settings={settings} api={api} runMutation={request => request()} onChanged={vi.fn()} />)
+    const values: Array<{ label: string; value: string }> = [
+      { label: '请求速率（次/秒）', value: '3.5' }, { label: '请求并发数', value: '5' },
+      { label: '每 UP 跟踪内容数 N', value: '12' }, { label: '根评论最大页数', value: '3' },
+      { label: '子评论最大页数', value: '6' }, { label: '评论批次间隔（秒）', value: '180' },
+    ]
+    for (const item of values) fireEvent.change(screen.getByLabelText(item.label), { target: { value: item.value } })
+    for (const item of [
+      { label: '关注关系刷新间隔（秒）', value: '900' }, { label: '空间完整性校验间隔（秒）', value: '2400' },
+      { label: '动态最大翻页数', value: '12' }, { label: '风控暂停时长（秒）', value: '420' },
+    ]) fireEvent.change(await screen.findByLabelText(item.label), { target: { value: item.value } })
+    for (const item of [
+      { label: '投递并发数', value: '9' }, { label: '积压条数告警阈值', value: '150' }, { label: '积压时长告警阈值（秒）', value: '450' },
+      { label: '第 1 段', value: '6' }, { label: '第 2 段', value: '36' }, { label: '第 3 段', value: '180' }, { label: '第 4 段', value: '900' }, { label: '第 5 段', value: '4000' },
+    ]) fireEvent.change(await screen.findByLabelText(item.label), { target: { value: item.value } })
+    await user.click(await screen.findByLabelText('日志级别')); await user.click(screen.getByRole('option', { name: 'warn' }))
+    fireEvent.change(screen.getByLabelText('审计日志保留天数'), { target: { value: '365' } })
+    await user.click(screen.getByRole('button', { name: '保存运行设置' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      request_rate: 3.5, request_concurrency: 5, comment_track_n: 12, comment_root_pages: 3, comment_reply_pages: 6,
+      comment_batch_interval_sec: 180, relation_refresh_interval_sec: 900, space_reconcile_interval_sec: 2400,
+      max_dynamic_pages: 12, risk_pause_sec: 420, delivery_concurrency: 9, backlog_alert_count: 150,
+      backlog_alert_age_sec: 450, delivery_retry_delays_sec: [6, 36, 180, 900, 4000], log_level: 'warn', audit_log_retention_days: 365,
+    })))
+  }, 15_000)
+
+  it('reports a settings mutation failure and restores the save action', async () => {
+    const user = userEvent.setup(); const api = new AdminAPI('csrf'); vi.spyOn(api, 'updateSettings').mockRejectedValue(new Error('settings unavailable'))
+    renderRoute(<SettingsPage csrf="csrf" preference="system" setPreference={vi.fn()} settings={settings} api={api} runMutation={request => request()} onChanged={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: '保存运行设置' }))
+    expect(await screen.findByText('settings unavailable')).toBeVisible()
+    expect(screen.getByRole('button', { name: '保存运行设置' })).toBeEnabled()
+  })
+
   it('validates and submits complete runtime settings', async () => {
     const user = userEvent.setup(); const api = new AdminAPI('csrf'); const update = vi.spyOn(api, 'updateSettings').mockResolvedValue({ ...settings, poll_interval_sec: 45 })
     renderRoute(<SettingsPage csrf="csrf" preference="system" setPreference={vi.fn()} settings={settings} api={api} runMutation={request => request()} onChanged={vi.fn()} />)
@@ -67,7 +103,7 @@ describe('SettingsPage', () => {
   })
 
   it.each([
-    { name: 'success', response: new Response(null, { status: 204 }), changed: 1, message: undefined },
+    { name: 'success', response: new Response(JSON.stringify({ csrf_token: 'replacement-csrf' }), { status: 200 }), changed: 1, message: undefined },
     { name: 'failure', response: new Response(JSON.stringify({ error: { message: 'wrong password' } }), { status: 400 }), changed: 0, message: 'wrong password' },
   ])('handles password $name', async ({ response, changed, message }) => {
     const user = userEvent.setup(); vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response)); const onChanged = vi.fn(); const api = new AdminAPI('csrf')

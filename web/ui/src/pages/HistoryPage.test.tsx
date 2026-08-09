@@ -1,3 +1,4 @@
+import React from 'react'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
@@ -6,6 +7,21 @@ import { makeDynamic, makeUP, renderRoute } from '../test/fixtures'
 import { HistoryPage } from './HistoryPage'
 
 describe('HistoryPage', () => {
+  it('keeps the newest result when an older request resolves last', async () => {
+    const api = new AdminAPI('csrf')
+    let resolveOld!: (value: Awaited<ReturnType<AdminAPI['queryDynamics']>>) => void
+    const old = new Promise<Awaited<ReturnType<AdminAPI['queryDynamics']>>>(resolve => { resolveOld = resolve })
+    const query = vi.spyOn(api, 'queryDynamics').mockReturnValueOnce(old).mockResolvedValueOnce({ items: [makeDynamic({ id: 'new', summary: 'new result' })], total: 1, limit: 20, offset: 0 })
+    function Harness() { const [refresh, setRefresh] = React.useState(0); return <><button onClick={() => setRefresh(1)}>refresh</button><HistoryPage ups={[]} timeZone="" api={api} refresh={refresh} /></> }
+    renderRoute(<Harness />, '/history')
+    await waitFor(() => expect(query).toHaveBeenCalledOnce())
+    await userEvent.click(screen.getByRole('button', { name: 'refresh' }))
+    expect(await screen.findByText('new result')).toBeVisible()
+    resolveOld({ items: [makeDynamic({ id: 'old', summary: 'old result' })], total: 1, limit: 20, offset: 0 })
+    await waitFor(() => expect(screen.queryByText('old result')).not.toBeInTheDocument())
+    expect(screen.getByText('new result')).toBeVisible()
+  })
+
   it('queries dynamics from URL filters and paginates', async () => {
     const user = userEvent.setup(); const api = new AdminAPI('csrf'); const query = vi.spyOn(api, 'queryDynamics').mockResolvedValue({ items: [makeDynamic({ summary: 'archived' })], total: 21, limit: 20, offset: 0 })
     renderRoute(<HistoryPage ups={[makeUP()]} timeZone="Asia/Shanghai" api={api} refresh={0} />, '/history?uid=42')
@@ -25,7 +41,8 @@ describe('HistoryPage', () => {
   it('loads comment history and opens the thread detail', async () => {
     const user = userEvent.setup(); const api = new AdminAPI('csrf'); vi.spyOn(api, 'queryComments').mockResolvedValue({ items: [{ rpid: '1', up_uid: '42', up_name: 'UP', content_title: '回复目标', published_at: '2026-08-06T00:00:00Z', discovered_at: '2026-08-06T00:00:01Z', baseline: false, incomplete: true }], total: 1, limit: 20, offset: 0 }); const detail = vi.spyOn(api, 'getComment').mockResolvedValue({ rpid: '1', up_uid: '42', up_name: 'UP', content_type: 'video', content_id: 'BV', content_title: '回复目标', content_url: 'https://example.com', published_at: '2026-08-06T00:00:00Z', incomplete: true, thread: [{ rpid: '1', mid: '1', name: 'UP', message: '回复正文', time: '2026-08-06T00:00:00Z', is_up: true, is_trigger: true }] })
     renderRoute(<HistoryPage ups={[]} timeZone="" api={api} refresh={0} />, '/history?tab=comments')
-    await user.click(await screen.findByText('回复目标')); await waitFor(() => expect(detail).toHaveBeenCalledWith('1')); expect(screen.getByText('回复正文')).toBeVisible(); expect(screen.getByText('对话串可能不完整（翻页窗口外）。')).toBeVisible(); await user.click(screen.getByRole('button', { name: '关闭' })); expect(screen.queryByText('回复正文')).not.toBeInTheDocument()
+    const open = await screen.findByRole('button', { name: '查看评论对话：回复目标' })
+    open.focus(); await user.keyboard('{Enter}'); await waitFor(() => expect(detail).toHaveBeenCalledWith('1')); expect(screen.getByText('回复正文')).toBeVisible(); expect(screen.getByText('对话串可能不完整（翻页窗口外）。')).toBeVisible(); await user.keyboard('{Escape}'); await waitFor(() => expect(screen.queryByText('回复正文')).not.toBeInTheDocument()); expect(open).toHaveFocus()
   })
 
   it.each([

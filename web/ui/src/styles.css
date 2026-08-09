@@ -10,8 +10,8 @@ button, input, textarea, select { font: inherit; }
 .qr-image { display: block; width: min(260px, 100%); margin: 16px auto; border-radius: 16px; }
 .summary-clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .history-card-content:last-child { padding-bottom: 8px; }
-.history-author-avatar { width: 48px !important; height: 48px !important; flex: 0 0 auto; color: #fff !important; background: linear-gradient(145deg, #23ade5, #fb7299) !important; font-weight: 800; }
-.history-author-name { color: #fb7299; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-author-avatar { width: 48px !important; height: 48px !important; flex: 0 0 auto; color: #fff !important; background: linear-gradient(145deg, #0277bd, #c2185b) !important; font-weight: 800; }
+.history-author-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-copyable, .history-copyable * { user-select: text; }
 .history-copyable button, .history-copyable img { user-select: none; }
 .history-post-title { font-size: 1.05rem; }
@@ -21,7 +21,7 @@ button, input, textarea, select { font: inherit; }
 .history-media-grid.history-media-single { grid-template-columns: minmax(0, min(100%, 520px)); }
 .history-media-tile { position: relative; min-height: 120px; max-height: 520px; overflow: hidden; border-radius: 10px; background: rgba(127, 127, 127, .12); aspect-ratio: 1; }
 .history-media-button { position: relative; display: block; width: 100%; height: 100%; min-height: inherit; margin: 0; padding: 0; overflow: hidden; border: 0; color: inherit; background: transparent; cursor: zoom-in; }
-.history-media-button:focus-visible { outline: 3px solid #23ade5; outline-offset: -3px; }
+.history-media-button:focus-visible { outline: 3px solid #0277bd; outline-offset: -3px; }
 .history-media-button img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .history-media-single .history-media-button img { object-fit: contain; }
 .history-media-fallback { width: 100%; height: 100%; min-height: 120px; color: rgba(127, 127, 127, .9); }

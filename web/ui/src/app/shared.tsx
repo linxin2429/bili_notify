@@ -7,7 +7,7 @@ export type RunMutation = <T>(request: () => Promise<T>, update?: SnapshotMutati
 
 export function PageHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: React.ReactNode }) {
   return <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={2}>
-    <Box><Typography variant="h4" fontWeight={850}>{title}</Typography><Typography color="text.secondary">{subtitle}</Typography></Box>
+    <Box><Typography component="h1" variant="h4" fontWeight={850}>{title}</Typography><Typography color="text.secondary">{subtitle}</Typography></Box>
     {action}
   </Stack>
 }
