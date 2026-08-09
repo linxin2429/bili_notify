@@ -1,0 +1,98 @@
+import { expect, test } from './fixtures'
+import {
+  ADMIN_PASSWORD,
+  REPLACEMENT_PASSWORD,
+  assertAccessible,
+  createFollowedUP,
+  createNotificationChannel,
+  initializeAdministrator,
+  loginAdministrator,
+  navigateTo,
+} from './helpers'
+
+test('runs resource administration, audit, and session security workflows', async ({ page, browser, harness }) => {
+  await test.step('initialize isolated administration state', async () => {
+    await initializeAdministrator(page, harness)
+    await createNotificationChannel(page, harness, false)
+    await createFollowedUP(page)
+  })
+
+  await test.step('edit resources and persist runtime settings', async () => {
+    await navigateTo(page, 'UP 主')
+    await page.getByRole('button', { name: '编辑' }).click()
+    await page.getByLabel('备注名').fill('E2E UP 已修改')
+    await page.getByRole('button', { name: '保存' }).click()
+    await expect(page.getByText('E2E UP 已修改')).toBeVisible()
+
+    await navigateTo(page, '通知渠道')
+    await page.getByRole('button', { name: '编辑' }).click()
+    await page.getByLabel('渠道名称').fill('E2E 企业微信 已修改')
+    const updateResponse = page.waitForResponse(response => response.url().includes('/api/v1/channels/') && response.request().method() === 'PUT')
+    await page.getByRole('button', { name: '保存' }).click()
+    expect(JSON.stringify(await (await updateResponse).json())).not.toContain(harness.manifest.webhook_url)
+    await expect(page.getByText('E2E 企业微信 已修改')).toBeVisible()
+
+    await navigateTo(page, '设置')
+    await page.getByLabel('轮询间隔（秒）').fill('45')
+    await page.getByLabel('日志级别').click()
+    await page.getByRole('option', { name: 'debug' }).click()
+    const settingsResponse = page.waitForResponse(response => response.url().endsWith('/api/v1/settings') && response.request().method() === 'PUT')
+    await page.getByRole('button', { name: '保存运行设置' }).click()
+    expect((await (await settingsResponse).json()).poll_interval_sec).toBe(45)
+
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await expect(page.getByText('实时', { exact: true }).first()).toBeVisible()
+    await navigateTo(page, '设置')
+    await expect(page.getByLabel('轮询间隔（秒）')).toHaveValue('45')
+    await expect(page.getByLabel('日志级别')).toHaveText('debug')
+  })
+
+  await test.step('expose safe audit evidence for real mutations', async () => {
+    await navigateTo(page, '操作日志')
+    await page.getByLabel('操作').click()
+    const auditResponse = page.waitForResponse(response => response.url().includes('/api/v1/audit-logs?action=settings.update'))
+    await page.getByRole('option', { name: '修改采集参数' }).click()
+    await auditResponse
+    await expect(page.getByRole('button', { name: '查看详情' })).toHaveCount(1)
+    await page.getByRole('button', { name: '查看详情' }).click()
+    await expect(page.getByText('安全变更摘要')).toBeVisible()
+    expect(await page.locator('main').innerText()).not.toContain(harness.manifest.webhook_url)
+    await assertAccessible(page)
+  })
+
+  await test.step('invalidate every old session after a password change', async () => {
+    const secondContext = await browser.newContext({ ignoreHTTPSErrors: true, locale: 'zh-CN' })
+    const secondPage = await secondContext.newPage()
+    await secondPage.goto(harness.manifest.admin_url)
+    await loginAdministrator(secondPage)
+
+    await navigateTo(page, '设置')
+    await page.getByLabel('当前密码').fill(ADMIN_PASSWORD)
+    await page.getByLabel('新密码', { exact: true }).fill(REPLACEMENT_PASSWORD)
+    await page.getByLabel('确认新密码').fill(REPLACEMENT_PASSWORD)
+    await page.getByRole('button', { name: '修改密码' }).click()
+    await expect(page.getByText('实时', { exact: true }).first()).toBeVisible()
+    await expect(secondPage.getByLabel('管理员密码')).toBeVisible()
+
+    await secondPage.getByLabel('管理员密码').fill(ADMIN_PASSWORD)
+    await secondPage.getByRole('button', { name: '登录', exact: true }).click()
+    await expect(secondPage.getByText('invalid credentials')).toBeVisible()
+    await secondPage.getByLabel('管理员密码').fill(REPLACEMENT_PASSWORD)
+    await secondPage.getByRole('button', { name: '登录', exact: true }).click()
+    await expect(secondPage.getByText('实时', { exact: true }).first()).toBeVisible()
+    await secondContext.close()
+  })
+
+  await test.step('delete managed resources through the real API', async () => {
+    await navigateTo(page, '通知渠道')
+    page.once('dialog', dialog => dialog.accept())
+    await page.getByRole('button', { name: '删除' }).click()
+    await expect(page.getByText('尚未配置通知渠道')).toBeVisible()
+
+    await navigateTo(page, 'UP 主')
+    page.once('dialog', dialog => dialog.accept())
+    await page.getByRole('button', { name: '删除' }).click()
+    await expect(page.getByText('尚未添加 UP 主')).toBeVisible()
+    expect((await harness.state()).unexpected || []).toEqual([])
+  })
+})

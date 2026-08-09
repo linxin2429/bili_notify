@@ -9,6 +9,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "npm run build && playwright test",
+    "test:e2e:run": "playwright test",
     "build": "tsc -b && vite build"
   },
   "dependencies": {

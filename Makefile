@@ -23,9 +23,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/cmd.commit=$(COMMIT) \
 	-X $(MODULE)/cmd.date=$(BUILD_DATE)
 
-.NOTPARALLEL: check
-
-.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e build clean fmt test test-race coverage vet vulncheck check run docker-build docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
+.PHONY: help setup frontend-install frontend-build frontend-lint frontend-test frontend-coverage playwright-install frontend-e2e go-check-ready check-coverage-race check-vet check-vulncheck build clean fmt test test-race coverage coverage-race vet vulncheck check run docker-build docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
 
 help:
 	@printf '%s\n' \
@@ -38,6 +36,7 @@ help:
 		'  test                   run Go tests' \
 		'  test-race              run Go tests with the race detector' \
 		'  coverage               run the core Go coverage gate' \
+		'  coverage-race          run the race detector and core Go coverage gate together' \
 		'  vet                    run go vet' \
 		'  vulncheck              run govulncheck' \
 		'  check                  run the complete local CI check suite' \
@@ -48,7 +47,7 @@ help:
 		'  frontend-test          run frontend unit tests' \
 		'  frontend-coverage      run the frontend coverage gate' \
 		'  playwright-install     install Chromium' \
-		'  frontend-e2e           build the UI and run Playwright tests' \
+		'  frontend-e2e           build the UI once and run Playwright tests' \
 		'' \
 		'Docker:' \
 		'  docker-build           build DOCKER_IMAGE (default: bili-notify:local)' \
@@ -85,8 +84,18 @@ frontend-coverage: frontend-install
 playwright-install: frontend-install
 	cd web/ui && npx playwright install $(PLAYWRIGHT_INSTALL_FLAGS) chromium
 
-frontend-e2e: playwright-install
-	npm --prefix web/ui run test:e2e
+frontend-e2e: frontend-build playwright-install
+	npm --prefix web/ui run test:e2e:run
+
+# Playwright and Vitest replace transient directories below web/ui. Finish them
+# before `go ... ./...` walks the repository, then parallelize the Go checks.
+go-check-ready: frontend-e2e frontend-coverage
+
+check-vet: go-check-ready
+	go vet $(GO_PACKAGES)
+
+check-vulncheck: go-check-ready
+	go run golang.org/x/vuln/cmd/govulncheck@latest $(GO_PACKAGES)
 
 build: frontend-build
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "$(BINARY)" .
@@ -107,7 +116,23 @@ test-race: frontend-build
 coverage: frontend-build
 	@set -eu; \
 	core_packages="$$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"; \
-	go test -covermode=atomic -coverpkg="$${core_packages}" -coverprofile="$(COVERAGE_FILE)" ./...; \
+	go test $(GO_TEST_FLAGS) -covermode=atomic -coverpkg="$${core_packages}" -coverprofile="$(COVERAGE_FILE)" ./...; \
+	total="$$(go tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}')"; \
+	echo "Core Go coverage: $${total}%"; \
+	awk -v coverage="$${total}" -v minimum="$(COVERAGE_MIN)" 'BEGIN { if (coverage + 0 < minimum + 0) exit 1 }'
+
+coverage-race: frontend-build
+	@set -eu; \
+	core_packages="$$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"; \
+	go test -race $(GO_TEST_FLAGS) -covermode=atomic -coverpkg="$${core_packages}" -coverprofile="$(COVERAGE_FILE)" ./...; \
+	total="$$(go tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}')"; \
+	echo "Core Go coverage: $${total}%"; \
+	awk -v coverage="$${total}" -v minimum="$(COVERAGE_MIN)" 'BEGIN { if (coverage + 0 < minimum + 0) exit 1 }'
+
+check-coverage-race: go-check-ready
+	@set -eu; \
+	core_packages="$$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)"; \
+	go test -race $(GO_TEST_FLAGS) -covermode=atomic -coverpkg="$${core_packages}" -coverprofile="$(COVERAGE_FILE)" ./...; \
 	total="$$(go tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}')"; \
 	echo "Core Go coverage: $${total}%"; \
 	awk -v coverage="$${total}" -v minimum="$(COVERAGE_MIN)" 'BEGIN { if (coverage + 0 < minimum + 0) exit 1 }'
@@ -118,7 +143,7 @@ vet: frontend-build
 vulncheck: frontend-build
 	go run golang.org/x/vuln/cmd/govulncheck@latest $(GO_PACKAGES)
 
-check: build frontend-lint frontend-coverage frontend-e2e coverage test-race vet vulncheck
+check: build frontend-lint frontend-coverage frontend-e2e check-coverage-race check-vet check-vulncheck
 
 run: frontend-build
 	go run . $(ARGS)
