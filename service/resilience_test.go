@@ -453,15 +453,16 @@ func TestPollUPHonorsRequestTimeoutAndCancellation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			requestCanceled := make(chan struct{}, 1)
-			server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-				<-r.Context().Done()
+			client := &http.Client{Transport: serviceRoundTripper(func(request *http.Request) (*http.Response, error) {
+				<-request.Context().Done()
 				requestCanceled <- struct{}{}
-			}))
-			t.Cleanup(server.Close)
+				return nil, request.Context().Err()
+			})}
+			t.Cleanup(client.CloseIdleConnections)
 			store := openServiceTestStore(t)
 			up := model.UP{UID: "42", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}
 			require.NoError(t, store.PutUP(up))
-			engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 1000, 1), nil, nil)
+			engine := NewEngine(store, bilibili.New(client, "test", bilibili.WithBaseURLs("https://api.invalid", "https://passport.invalid")), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 1000, 1), nil, nil)
 			engine.httpTimeout = tt.timeout
 			ctx, cancel := context.WithCancel(t.Context())
 			t.Cleanup(cancel)
