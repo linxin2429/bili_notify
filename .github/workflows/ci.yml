@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, macOS, ARM64, bili-notify-ci]
     permissions:
       contents: read
       id-token: write
@@ -41,6 +41,9 @@ jobs:
         # passwordless sudo for playwright install-deps. Install browser only.
         run: make check
 
+      - name: Install Codecov signature verifier
+        run: brew install gnupg
+
       - name: Upload core Go coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
@@ -63,19 +66,30 @@ jobs:
 
   docker-smoke:
     needs: test
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, macOS, ARM64, bili-notify-ci]
     permissions:
       contents: read
-      actions: write # GHA docker layer cache
     steps:
       - uses: actions/checkout@v5
 
-      - uses: docker/setup-buildx-action@v4
+      - name: Start Docker Desktop
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            open -gj -a Docker
+          fi
+          for attempt in {1..60}; do
+            if docker info >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Docker Desktop did not become ready within 120 seconds" >&2
+          exit 1
 
       - name: Build and smoke-test image
         env:
           DOCKER_BUILD: docker buildx build
-          DOCKER_BUILD_FLAGS: --load --cache-from=type=gha --cache-to=type=gha,mode=max
+          DOCKER_BUILD_FLAGS: --load
           DOCKER_IMAGE: bili-notify:e2e
           GOPROXY: https://proxy.golang.org,direct
           VERSION: e2e
@@ -86,14 +100,25 @@ jobs:
   docker:
     needs: [test, docker-smoke]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, macOS, ARM64, bili-notify-ci]
     permissions:
       contents: read
-      actions: write # GHA docker layer cache
     steps:
       - uses: actions/checkout@v5
 
-      - uses: docker/setup-buildx-action@v4
+      - name: Start Docker Desktop
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            open -gj -a Docker
+          fi
+          for attempt in {1..60}; do
+            if docker info >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Docker Desktop did not become ready within 120 seconds" >&2
+          exit 1
 
       - name: Compute build metadata
         id: meta_env
@@ -133,5 +158,3 @@ jobs:
             VERSION=${{ steps.meta_env.outputs.version }}
             COMMIT=${{ steps.meta_env.outputs.commit }}
             BUILD_DATE=${{ steps.meta_env.outputs.build_date }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
