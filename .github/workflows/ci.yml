@@ -38,12 +38,12 @@ jobs:
           tool_workers=2
 
           if [[ -n "${GH_TOKEN}" ]] && runners="$(gh api "repos/${GH_REPO}/actions/runners" 2>/dev/null)"; then
-            if jq -e 'any(.runners[]; .status == "online" and any(.labels[]; .name == "bili-notify-primary"))' <<<"${runners}" >/dev/null; then
+            if jq -e 'any(.runners[]; .status == "online" and (.busy | not) and any(.labels[]; .name == "bili-notify-primary"))' <<<"${runners}" >/dev/null; then
               kind=primary
               runs_on='["self-hosted","Linux","X64","bili-notify-primary"]'
               make_jobs=2
               tool_workers=8
-            elif jq -e 'any(.runners[]; .status == "online" and any(.labels[]; .name == "bili-notify-ci"))' <<<"${runners}" >/dev/null; then
+            elif jq -e 'any(.runners[]; .status == "online" and (.busy | not) and any(.labels[]; .name == "bili-notify-ci"))' <<<"${runners}" >/dev/null; then
               kind=macmini
               runs_on='["self-hosted","macOS","ARM64","bili-notify-ci"]'
               make_jobs=2
@@ -52,10 +52,12 @@ jobs:
           fi
 
           echo "Selected ${kind} runner"
-          echo "kind=${kind}" >> "${GITHUB_OUTPUT}"
-          echo "runs-on=${runs_on}" >> "${GITHUB_OUTPUT}"
-          echo "make-jobs=${make_jobs}" >> "${GITHUB_OUTPUT}"
-          echo "tool-workers=${tool_workers}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "kind=${kind}"
+            echo "runs-on=${runs_on}"
+            echo "make-jobs=${make_jobs}"
+            echo "tool-workers=${tool_workers}"
+          } >> "${GITHUB_OUTPUT}"
 
   test:
     needs: select-runner
@@ -164,7 +166,12 @@ jobs:
       - name: Wait for the Codecov patch result
         shell: bash
         run: |
-          for attempt in {1..120}; do
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            echo 'Patch coverage applies only to pull requests'
+            exit 0
+          fi
+
+          for _ in {1..120}; do
             result="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${REPORT_SHA}/check-runs" \
               --jq '[.check_runs[] | select(.name == "codecov/patch" and .app.slug == "codecov")][0] |
                 if . == null then "missing"
@@ -194,7 +201,7 @@ jobs:
           if ! docker info >/dev/null 2>&1; then
             open -gj -a Docker
           fi
-          for attempt in {1..60}; do
+          for _ in {1..60}; do
             if docker info >/dev/null 2>&1; then
               exit 0
             fi
@@ -222,7 +229,7 @@ jobs:
           if ! docker info >/dev/null 2>&1; then
             open -gj -a Docker
           fi
-          for attempt in {1..60}; do
+          for _ in {1..60}; do
             if docker info >/dev/null 2>&1; then
               exit 0
             fi
@@ -250,10 +257,12 @@ jobs:
             version="main-${short_commit}"
           fi
 
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "commit=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
-          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
-          echo "smoke_tag=bili-notify:smoke-${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "version=${version}"
+            echo "commit=${GITHUB_SHA}"
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "smoke_tag=bili-notify:smoke-${GITHUB_SHA}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Build image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
