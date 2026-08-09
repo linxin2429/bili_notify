@@ -32,7 +32,7 @@
 }
 
 @layer base {
-  body { background: var(--color-bg); color: var(--color-text); font-family: Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif; line-height: 1.5; }
+  body { background: var(--color-bg); color: var(--color-text); font-family: "Noto Sans SC Variable", sans-serif; line-height: 1.5; }
   h1, h2, h3, p { margin-top: 0; }
   h1 { margin-bottom: .25rem; font-size: clamp(1.8rem, 3vw, 2.25rem); line-height: 1.2; letter-spacing: -.03em; }
   h2 { margin-bottom: .35rem; font-size: 1.15rem; }
