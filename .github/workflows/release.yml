@@ -233,6 +233,11 @@ jobs:
         run: |
           docker_config="${RUNNER_TEMP}/bili-notify-docker-config"
           mkdir -p "${docker_config}"
+          chmod 700 "${docker_config}"
+          # Prevent Docker Desktop from falling back to the macOS Keychain
+          # credential helper, which cannot prompt on a headless runner.
+          printf '{}\n' > "${docker_config}/config.json"
+          chmod 600 "${docker_config}/config.json"
           echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
 
       - name: Login to Docker Hub
