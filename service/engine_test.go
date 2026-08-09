@@ -29,7 +29,7 @@ func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
 		count := request.Add(1)
 		items := dynamicFixture("1", 1700000000)
 		if count > 1 {
-			items += "," + dynamicFixture("2", 1700000001)
+			items = dynamicFixture("2", 1700000001) + "," + items
 		}
 		_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","items":[%s]}}`, items)
 	}))

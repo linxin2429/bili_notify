@@ -216,30 +216,7 @@ func newHTTPClient() *http.Client {
 
 func runAuditRetention(ctx context.Context, store *state.Store, currentSettings func() model.RuntimeSettings, logger *slog.Logger, tracer trace.Tracer, metrics *service.Metrics) error {
 	prune := func() {
-		pruneCtx, span := tracer.Start(ctx, "audit.retention")
-		started := time.Now()
-		contextStore := store.WithContext(pruneCtx)
-		retention := currentSettings().AuditLogRetention()
-		var deleted int64
-		for {
-			count, err := contextStore.PruneAuditLogs(time.Now().Add(-retention), 1000)
-			if err != nil {
-				span.SetStatus(codes.Error, "audit retention failed")
-				span.End()
-				metrics.RecordWorkflow(pruneCtx, "audit_retention", "error", time.Since(started))
-				logger.ErrorContext(pruneCtx, "audit log retention failed", "event", "audit.retention.failed", "error", err)
-				return
-			}
-			deleted += count
-			if count < 1000 {
-				break
-			}
-		}
-		metrics.RecordWorkflow(pruneCtx, "audit_retention", "success", time.Since(started))
-		if deleted > 0 {
-			logger.InfoContext(pruneCtx, "expired audit logs removed", "event", "audit.retention.completed", "deleted", deleted)
-		}
-		span.End()
+		_ = pruneAuditRetentionOnce(ctx, store, currentSettings(), time.Now(), logger, tracer, metrics)
 	}
 	prune()
 	ticker := time.NewTicker(24 * time.Hour)
@@ -252,4 +229,40 @@ func runAuditRetention(ctx context.Context, store *state.Store, currentSettings 
 			prune()
 		}
 	}
+}
+
+// pruneAuditRetentionOnce performs one bounded-batch retention pass. Keeping the
+// pass separate from its daily scheduler makes the deletion boundary and failure
+// behavior testable without waiting for a wall-clock tick.
+func pruneAuditRetentionOnce(ctx context.Context, store *state.Store, settings model.RuntimeSettings, now time.Time, logger *slog.Logger, tracer trace.Tracer, metrics *service.Metrics) (err error) {
+	pruneCtx, span := tracer.Start(ctx, "audit.retention")
+	started := time.Now()
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "error"
+			span.SetStatus(codes.Error, "audit retention failed")
+		}
+		metrics.RecordWorkflow(pruneCtx, "audit_retention", result, time.Since(started))
+		span.End()
+	}()
+
+	contextStore := store.WithContext(pruneCtx)
+	before := now.Add(-settings.AuditLogRetention())
+	var deleted int64
+	for {
+		count, pruneErr := contextStore.PruneAuditLogs(before, 1000)
+		if pruneErr != nil {
+			logger.ErrorContext(pruneCtx, "audit log retention failed", "event", "audit.retention.failed", "error", pruneErr)
+			return pruneErr
+		}
+		deleted += count
+		if count < 1000 {
+			break
+		}
+	}
+	if deleted > 0 {
+		logger.InfoContext(pruneCtx, "expired audit logs removed", "event", "audit.retention.completed", "deleted", deleted)
+	}
+	return nil
 }

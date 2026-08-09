@@ -705,12 +705,18 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) (
 			}
 			if seen {
 				foundSeen = true
-				continue
+				// Space dynamics are newest-first. Once the persisted frontier is
+				// reached, everything after it is older and must not be rediscovered.
+				break
 			}
 			items = append(items, dynamic)
 		}
 		if !up.BaselineReady || foundSeen || !page.HasMore {
 			break
+		}
+		if page.Offset == "" || page.Offset == offset {
+			err := &bilibili.APIError{Kind: bilibili.ErrorSchema, Message: "space dynamics pagination offset did not advance"}
+			return e.failPoll(ctx, up, name, started, err)
 		}
 		if pageNumber == maxPages-1 {
 			err := fmt.Errorf("more than %d pages of unseen dynamics; manual review required", maxPages)
@@ -962,6 +968,7 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 	children := make(map[string]bilibili.Reply)
 	// roots that need full expansion because an UP reply lives under them
 	expandRoots := make(map[string]struct{})
+	paginationIncomplete := false
 
 	for pn := 1; pn <= rootPages; pn++ {
 		if pn > 1 {
@@ -983,6 +990,9 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 		}
 		if !page.HasMore {
 			break
+		}
+		if pn == rootPages {
+			paginationIncomplete = true
 		}
 	}
 
@@ -1041,6 +1051,9 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 			if !page.HasMore {
 				break
 			}
+			if pn == replyPages {
+				paginationIncomplete = true
+			}
 		}
 	}
 
@@ -1069,7 +1082,7 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 			ContentTitle: target.Title,
 			ContentURL:   target.URL,
 			PublishedAt:  reply.CTime,
-			Incomplete:   incomplete,
+			Incomplete:   incomplete || paginationIncomplete,
 			Thread:       thread,
 		})
 	}
