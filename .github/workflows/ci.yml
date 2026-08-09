@@ -41,6 +41,9 @@ jobs:
         # passwordless sudo for playwright install-deps. Install browser only.
         run: make check
 
+      - name: Install Codecov signature verifier
+        run: brew install gnupg
+
       - name: Upload core Go coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
