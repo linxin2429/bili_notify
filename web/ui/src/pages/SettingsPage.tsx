@@ -4,6 +4,7 @@ import type { RuntimeSettings } from '../shared/api/types'
 import { queries, queryKeys } from '../shared/api/query'
 import { resources } from '../shared/api/resources'
 import { sessionAPI } from '../shared/api/session'
+import { duringSessionReplacement, replaceSessionState } from '../shared/api/session-cache'
 import { apiErrorMessage } from '../shared/api/errors'
 import { useSession } from '../modules/session'
 import { useThemePreference } from '../shared/ui/theme'
@@ -21,7 +22,7 @@ function SettingsEditor({ initial }: { initial: RuntimeSettings }) {
   const { csrf } = useSession(); const client = useQueryClient(); const notify = useNotify(); const { preference, setPreference } = useThemePreference()
   const [form, setForm] = useState<RuntimeSettingsForm>(() => runtimeSettingsToForm(initial)); const [formError, setFormError] = useState(''); const [current, setCurrent] = useState(''); const [replacement, setReplacement] = useState(''); const [confirm, setConfirm] = useState('')
   const save = useMutation({ mutationFn: (value: RuntimeSettings) => resources.updateSettings(csrf, value), onMutate: () => client.cancelQueries({ queryKey: queryKeys.settings }), onSuccess: async () => { await client.invalidateQueries({ queryKey: queryKeys.settings }); void client.invalidateQueries({ queryKey: queryKeys.runtime }); notify('运行参数已保存', 'success') }, onError: error => notify(apiErrorMessage(error), 'danger') })
-  const password = useMutation({ mutationFn: () => sessionAPI.changePassword(csrf, current, replacement), onSuccess: state => { client.removeQueries(); client.setQueryData(queryKeys.session, { setup_required: false, authenticated: true, csrf_token: state.csrf_token }); setCurrent(''); setReplacement(''); setConfirm(''); notify('管理员密码已修改，其他设备的会话已失效', 'success') }, onError: error => notify(apiErrorMessage(error), 'danger') })
+  const password = useMutation({ mutationFn: () => duringSessionReplacement(() => sessionAPI.changePassword(csrf, current, replacement)), onSuccess: state => { replaceSessionState(client, { setup_required: false, authenticated: true, csrf_token: state.csrf_token }); setCurrent(''); setReplacement(''); setConfirm(''); notify('管理员密码已修改，其他设备的会话已失效', 'success') }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const patch = <K extends keyof RuntimeSettingsForm>(key: K, value: RuntimeSettingsForm[K]) => setForm(state => ({ ...state, [key]: value }))
   const submit = () => { const parsed = parseRuntimeSettingsForm(form); if (!parsed.ok) { setFormError(parsed.error); return } setFormError(''); save.mutate(parsed.value) }
   const changePassword = () => { if (replacement !== confirm) { notify('两次输入的新密码不一致', 'danger'); return } password.mutate() }

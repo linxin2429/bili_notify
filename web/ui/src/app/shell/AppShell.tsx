@@ -3,7 +3,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useThemePreference } from '../../shared/ui/theme'
 import { useSession } from '../../modules/session'
 import { sessionAPI } from '../../shared/api/session'
-import { queryKeys } from '../../shared/api/query-keys'
+import { replaceSessionState } from '../../shared/api/session-cache'
 import { useConnectionState } from '../../shared/realtime/RealtimeSync'
 import { Badge, IconButton } from '../../shared/ui'
 import type { ThemePreference } from '../../shared/api/types'
@@ -24,7 +24,7 @@ export function AppShell() {
   const client = useQueryClient()
   const logout = useMutation({
     mutationFn: () => sessionAPI.logout(csrf),
-    onSettled: () => { client.removeQueries(); client.setQueryData(queryKeys.session, { setup_required: false, authenticated: false }) },
+    onSettled: () => replaceSessionState(client, { setup_required: false, authenticated: false }),
   })
   const cycleTheme = () => setPreference(themes[(themes.indexOf(preference) + 1) % themes.length])
   const live = connection === 'live'

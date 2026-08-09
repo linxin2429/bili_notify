@@ -61,7 +61,7 @@ test('runs resource administration, audit, and session security workflows', asyn
     await page.getByRole('button', { name: '关闭' }).click()
   })
 
-  await test.step('invalidate every old session after a password change', async () => {
+  await test.step('replace the current session and invalidate other sessions after a password change', async () => {
     const secondContext = await browser.newContext({ ignoreHTTPSErrors: true, locale: 'zh-CN' })
     const secondPage = await secondContext.newPage()
     await secondPage.goto(harness.manifest.admin_url)
@@ -73,8 +73,8 @@ test('runs resource administration, audit, and session security workflows', asyn
     await page.getByLabel('新密码', { exact: true }).fill(REPLACEMENT_PASSWORD)
     await page.getByLabel('确认新密码').fill(REPLACEMENT_PASSWORD)
     await page.getByRole('button', { name: '修改密码' }).click()
-    await expect(page.getByLabel('管理员密码')).toBeVisible()
-    await loginAdministrator(page, REPLACEMENT_PASSWORD)
+    await expect(page.getByText('管理员密码已修改，其他设备的会话已失效')).toBeVisible()
+    await expect(page.getByText('修改管理员密码', { exact: true })).toBeVisible()
     await expect(secondPage.getByLabel('管理员密码')).toBeVisible()
 
     await secondPage.getByLabel('管理员密码').fill(ADMIN_PASSWORD)

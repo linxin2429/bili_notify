@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { sessionAPI } from '../../shared/api/session'
 import { apiErrorMessage } from '../../shared/api/errors'
-import { queryKeys } from '../../shared/api/query-keys'
+import { replaceSessionState } from '../../shared/api/session-cache'
 import { Alert, Button, Card, TextField } from '../../shared/ui'
 
 export function AuthScreen({ setup }: { setup: boolean }) {
@@ -13,7 +13,7 @@ export function AuthScreen({ setup }: { setup: boolean }) {
   const [validation, setValidation] = useState('')
   const mutation = useMutation({
     mutationFn: () => setup ? sessionAPI.setup(code, password) : sessionAPI.login(password),
-    onSuccess: state => client.setQueryData(queryKeys.session, { setup_required: false, authenticated: true, csrf_token: state.csrf_token }),
+    onSuccess: state => replaceSessionState(client, { setup_required: false, authenticated: true, csrf_token: state.csrf_token }),
   })
   const submit = () => {
     if (setup && password !== confirm) { setValidation('两次输入的密码不一致'); return }

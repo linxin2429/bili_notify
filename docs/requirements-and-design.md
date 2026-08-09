@@ -155,7 +155,7 @@ Trace 用于关联管理 HTTP、采集/评论/关系/认证/投递/审计工作�
 - JSON 体积与 UTF-8 边界、安全响应头、登录限流窗口/来源隔离/伪造代理头、TLS 最低版本与私钥权限，以及媒体路径逃逸、父目录/文件符号链接、重定向、SSRF、非图片、取消和失败临时文件清理；
 - 操作日志追加、筛选、保留清理、拒绝/失败路径、请求 ID和秘密值回归；
 - React 单元、Query 集成和组件测试覆盖 API 运行时校验、WebSocket 失效通知与 REST 降级、会话 401 清理、mutation 后失效、异步请求竞态、结构化表单字段连线、桌面/移动端以及明暗主题；statements、branches、functions、lines 四项全局覆盖率均以 80% 为门禁，避免辅助函数掩盖关键页面回退；
-- Chromium 确定性端到端链路把采集投递、管理安全和响应式验证拆为测试级隔离场景，每个场景使用独立临时目录、SQLite、随机端口和 Go harness，并同时运行桌面浅色与 Pixel 7 触控深色项目：覆盖管理员初始化、二维码登录、关注关系与空间基线、综合流采集、历史归档、失败 Outbox、同目录重启、人工重试、无刷新 WebSocket 重连、资源编辑、设置持久化、操作日志安全摘要、秘密不回显和密码变更后的全会话失效；使用 axe 扫描登录、概览、操作日志和移动历史页面，并提交移动历史视觉基线；测试只连接本地 TLS 伪上游；
+- Chromium 确定性端到端链路把采集投递、管理安全和响应式验证拆为测试级隔离场景，每个场景使用独立临时目录、SQLite、随机端口和 Go harness，并同时运行桌面浅色与 Pixel 7 触控深色项目：覆盖管理员初始化、二维码登录、关注关系与空间基线、综合流采集、历史归档、失败 Outbox、同目录重启、人工重试、无刷新 WebSocket 重连、资源编辑、设置持久化、操作日志安全摘要、秘密不回显，以及密码变更后当前设备获得替代会话、其他旧会话失效；使用 axe 扫描登录、概览、操作日志和移动历史页面，并提交移动历史视觉基线；测试只连接本地 TLS 伪上游；
 - `api/openapi.yaml` 是 REST DTO、错误和 WebSocket envelope 的传输契约源；TypeScript 类型由固定版本工具生成并接受 clean-tree 漂移检查，Go 侧以真实 HTTP 处理器和生产 WebSocket 序列化类型校验，Vitest 再通过与规范同形的 Zod 运行时边界拒绝非法响应；
 - 生产 scratch 镜像的 nonroot/只读运行、健康检查、HTTPS 初始化、优雅停止和同卷重启。
 - `telemetry.New` 通过本地 OTLP/HTTP protobuf 与 OTLP/gRPC 收集端真实导出 traces、metrics、logs，校验三类带前缀路径、资源属性、span/metric/log 字段和 Shutdown flush；不可达收集端验证记录路径不等待网络，导出失败仅在有界 Shutdown 返回。Prometheus 告警规则使用 `promtool test rules` 验证触发语义，Compose、Collector、Prometheus、Loki 与 Tempo 配置由独立 CI job 验证，不把 Docker 依赖加入普通单元测试。

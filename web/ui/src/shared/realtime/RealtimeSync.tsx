@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { createContext, useContext, useEffect, useState } from 'react'
 import type { ConnectionState, RealtimeTopic } from '../api/types'
 import { sessionAPI } from '../api/session'
+import { isSessionReplacementPending } from '../api/session-cache'
 import { invalidateTopics, queryKeys } from '../api/query-keys'
 
 const ConnectionContext = createContext<ConnectionState>('connecting')
@@ -48,6 +49,8 @@ export function RealtimeSync({ children, onAuthenticationLost, onProtocolError }
         transition('polling')
         try {
           const session = await sessionAPI.get()
+          if (stopped) return
+          if (!session.authenticated && isSessionReplacementPending()) { schedule(); return }
           queryClient.setQueryData(queryKeys.session, session)
           if (!session.authenticated) { onAuthenticationLost(); return }
         } catch { /* a restart is indistinguishable from a temporary network loss */ }
