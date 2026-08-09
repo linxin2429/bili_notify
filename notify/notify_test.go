@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -18,9 +20,14 @@ import (
 
 func TestWeComSender(t *testing.T) {
 	t.Parallel()
-	var got map[string]any
+	requests := make(chan handlerResult[map[string]any], 1)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		result := decodeJSONRequest[map[string]any](r)
+		requests <- result
+		if result.err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
 		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
 	}))
 	t.Cleanup(server.Close)
@@ -30,7 +37,9 @@ func TestWeComSender(t *testing.T) {
 		Settings: map[string]string{"webhook": server.URL},
 	}, server.Client(), "", nil)
 	require.NoError(t, err)
-	require.NoError(t, sender.Send(t.Context(), TextMessage("s", "hello")))
+	sendErr := sender.Send(t.Context(), TextMessage("s", "hello"))
+	got := requireHandlerResult(t, requests)
+	require.NoError(t, sendErr)
 	assert.Equal(t, "markdown", got["msgtype"])
 }
 
@@ -133,9 +142,14 @@ func TestRobotSenderUsesChannelSpecificFormats(t *testing.T) {
 	for _, channelType := range []model.ChannelType{model.ChannelDingTalk, model.ChannelFeishu} {
 		t.Run(string(channelType), func(t *testing.T) {
 			t.Parallel()
-			var got map[string]any
+			requests := make(chan handlerResult[map[string]any], 1)
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+				result := decodeJSONRequest[map[string]any](r)
+				requests <- result
+				if result.err != nil {
+					http.Error(w, "invalid request", http.StatusBadRequest)
+					return
+				}
 				_, _ = w.Write([]byte(`{"errcode":0,"code":0}`))
 			}))
 			t.Cleanup(server.Close)
@@ -147,7 +161,9 @@ func TestRobotSenderUsesChannelSpecificFormats(t *testing.T) {
 			message := Message{
 				Subject: "subject", Sections: []Section{{Paragraphs: []string{"body"}, Images: []Image{{Label: "image", URL: "https://example.com/image.jpg"}}}},
 			}
-			require.NoError(t, sender.Send(t.Context(), message))
+			sendErr := sender.Send(t.Context(), message)
+			got := requireHandlerResult(t, requests)
+			require.NoError(t, sendErr)
 			switch channelType {
 			case model.ChannelDingTalk:
 				assert.Equal(t, "markdown", got["msgtype"])
@@ -160,18 +176,33 @@ func TestRobotSenderUsesChannelSpecificFormats(t *testing.T) {
 
 func TestMicrosoftSenderRefreshesTokenAndSendsGraphMail(t *testing.T) {
 	t.Parallel()
-	var gotAuthorization string
-	var gotPayload map[string]any
+	tokenRequests := make(chan handlerResult[url.Values], 1)
+	type graphRequest struct {
+		authorization string
+		payload       map[string]any
+	}
+	graphRequests := make(chan handlerResult[graphRequest], 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token":
-			require.NoError(t, r.ParseForm())
-			assert.Equal(t, "old-refresh", r.Form.Get("refresh_token"))
+			result := parseFormRequest(r)
+			tokenRequests <- result
+			if result.err != nil {
+				http.Error(w, "invalid form", http.StatusBadRequest)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"access_token":"new-access","refresh_token":"new-refresh","token_type":"Bearer","expires_in":3600}`))
 		case "/send":
-			gotAuthorization = r.Header.Get("Authorization")
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&gotPayload))
+			decoded := decodeJSONRequest[map[string]any](r)
+			graphRequests <- handlerResult[graphRequest]{
+				value: graphRequest{authorization: r.Header.Get("Authorization"), payload: decoded.value},
+				err:   decoded.err,
+			}
+			if decoded.err != nil {
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
 			w.WriteHeader(http.StatusAccepted)
 		default:
 			http.NotFound(w, r)
@@ -190,11 +221,15 @@ func TestMicrosoftSenderRefreshesTokenAndSendsGraphMail(t *testing.T) {
 		updated = values
 		return nil
 	}, microsoftEndpoints{tokenURL: server.URL + "/token", graphSendURL: server.URL + "/send"})
-	require.NoError(t, sender.Send(t.Context(), TextMessage("subject", "body")))
-	assert.Equal(t, "Bearer new-access", gotAuthorization)
+	sendErr := sender.Send(t.Context(), TextMessage("subject", "body"))
+	tokenRequest := requireHandlerResult(t, tokenRequests)
+	graph := requireHandlerResult(t, graphRequests)
+	require.NoError(t, sendErr)
+	assert.Equal(t, "old-refresh", tokenRequest.Get("refresh_token"))
+	assert.Equal(t, "Bearer new-access", graph.authorization)
 	assert.Equal(t, "new-refresh", updated["refresh_token"])
 	assert.Equal(t, "true", updated["authorized"])
-	message, ok := gotPayload["message"].(map[string]any)
+	message, ok := graph.payload["message"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "subject", message["subject"])
 	recipients, ok := message["toRecipients"].([]any)
@@ -204,13 +239,18 @@ func TestMicrosoftSenderRefreshesTokenAndSendsGraphMail(t *testing.T) {
 
 func TestStartMicrosoftDeviceAuth(t *testing.T) {
 	t.Parallel()
+	requests := make(chan handlerResult[url.Values], 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/device" {
 			http.NotFound(w, r)
 			return
 		}
-		require.NoError(t, r.ParseForm())
-		assert.Contains(t, r.Form.Get("scope"), "Mail.Send")
+		result := parseFormRequest(r)
+		requests <- result
+		if result.err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"device_code":"device","user_code":"ABCD-EFGH","verification_uri":"https://microsoft.com/devicelogin","expires_in":900,"interval":5}`))
 	}))
@@ -219,7 +259,9 @@ func TestStartMicrosoftDeviceAuth(t *testing.T) {
 	auth, err := startMicrosoftDeviceAuth(t.Context(), map[string]string{
 		"client_id": "11111111-2222-3333-4444-555555555555",
 	}, server.Client(), microsoftEndpoints{deviceAuthURL: server.URL + "/device", tokenURL: server.URL + "/token"})
+	request := requireHandlerResult(t, requests)
 	require.NoError(t, err)
+	assert.Contains(t, request.Get("scope"), "Mail.Send")
 	assert.Equal(t, "ABCD-EFGH", auth.UserCode)
 	assert.Equal(t, "https://microsoft.com/devicelogin", auth.VerificationURI)
 }
@@ -249,12 +291,16 @@ func TestCommentThreadMessage(t *testing.T) {
 
 func TestWeComProgressiveSendResumes(t *testing.T) {
 	t.Parallel()
-	var payloads []map[string]any
+	requests := make(chan handlerResult[map[string]any], 3)
+	var requestCount atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var got map[string]any
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
-		payloads = append(payloads, got)
-		if len(payloads) == 2 {
+		result := decodeJSONRequest[map[string]any](r)
+		requests <- result
+		if result.err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if requestCount.Add(1) == 2 {
 			_, _ = w.Write([]byte(`{"errcode":1,"errmsg":"temp"}`))
 			return
 		}
@@ -285,17 +331,49 @@ func TestWeComProgressiveSendResumes(t *testing.T) {
 		}},
 	}
 	progress, err := progressive.SendProgressive(t.Context(), message, nil)
+	firstPayload := requireHandlerResult(t, requests)
+	secondPayload := requireHandlerResult(t, requests)
 	require.Error(t, err)
 	require.NotNil(t, progress)
 	assert.True(t, progress.TextSent)
 	assert.Equal(t, 0, progress.ImagesSent)
-	assert.Equal(t, "markdown", payloads[0]["msgtype"])
+	assert.Equal(t, "markdown", firstPayload["msgtype"])
+	assert.Equal(t, "image", secondPayload["msgtype"])
 
 	progress, err = progressive.SendProgressive(t.Context(), message, progress)
+	thirdPayload := requireHandlerResult(t, requests)
 	require.NoError(t, err)
 	require.NotNil(t, progress)
 	assert.True(t, progress.TextSent)
 	assert.Equal(t, 1, progress.ImagesSent)
-	require.GreaterOrEqual(t, len(payloads), 2)
-	assert.Equal(t, "image", payloads[len(payloads)-1]["msgtype"])
+	assert.Equal(t, "image", thirdPayload["msgtype"])
+}
+
+type handlerResult[T any] struct {
+	value T
+	err   error
+}
+
+func decodeJSONRequest[T any](request *http.Request) handlerResult[T] {
+	var value T
+	err := json.NewDecoder(request.Body).Decode(&value)
+	return handlerResult[T]{value: value, err: err}
+}
+
+func parseFormRequest(request *http.Request) handlerResult[url.Values] {
+	err := request.ParseForm()
+	return handlerResult[url.Values]{value: request.Form, err: err}
+}
+
+func requireHandlerResult[T any](t *testing.T, results <-chan handlerResult[T]) T {
+	t.Helper()
+	select {
+	case result := <-results:
+		require.NoError(t, result.err)
+		return result.value
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "expected request was not received by the test server")
+		var zero T
+		return zero
+	}
 }

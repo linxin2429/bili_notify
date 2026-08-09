@@ -353,13 +353,14 @@ func (s *emailSender) Send(ctx context.Context, message Message) error {
 }
 
 type robotSender struct {
-	kind      model.ChannelType
-	webhook   string
-	secret    string
-	client    *http.Client
-	dataDir   string
-	appID     string
-	appSecret string
+	kind              model.ChannelType
+	webhook           string
+	secret            string
+	client            *http.Client
+	dataDir           string
+	appID             string
+	appSecret         string
+	feishuTokenCaches *sync.Map
 }
 
 func (s *robotSender) Send(ctx context.Context, message Message) error {
@@ -554,7 +555,11 @@ func (s *robotSender) uploadFeishuImages(ctx context.Context, message Message) (
 }
 
 func (s *robotSender) feishuTenantToken(ctx context.Context) (string, error) {
-	raw, _ := feishuTokens.LoadOrStore(s.appID, &feishuTokenCache{})
+	caches := s.feishuTokenCaches
+	if caches == nil {
+		caches = &feishuTokens
+	}
+	raw, _ := caches.LoadOrStore(s.appID, &feishuTokenCache{})
 	cache := raw.(*feishuTokenCache)
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
