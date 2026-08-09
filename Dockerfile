@@ -15,7 +15,18 @@ ARG GOPROXY=https://mirrors.aliyun.com/goproxy,direct
 ENV GOPROXY=${GOPROXY}
 RUN apk add --no-cache ca-certificates
 COPY go.mod go.sum ./
-RUN go mod download
+RUN set -eu; \
+    attempt=1; \
+    while ! go mod download; do \
+        if [ "${attempt}" -ge 4 ]; then \
+            echo "go mod download failed after ${attempt} attempts" >&2; \
+            exit 1; \
+        fi; \
+        delay=$((attempt * 5)); \
+        echo "go mod download failed; retrying in ${delay}s (attempt $((attempt + 1))/4)" >&2; \
+        sleep "${delay}"; \
+        attempt=$((attempt + 1)); \
+    done
 COPY . .
 COPY --from=ui /src/web/dist ./web/dist
 ARG VERSION=dev
