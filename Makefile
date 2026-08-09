@@ -100,7 +100,7 @@ check-vet: go-check-ready
 	go vet $(GO_PACKAGES)
 
 check-vulncheck: go-check-ready
-	go run golang.org/x/vuln/cmd/govulncheck@latest $(GO_PACKAGES)
+	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go run golang.org/x/vuln/cmd/govulncheck@latest $(GO_PACKAGES)
 
 build: frontend-build
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "$(BINARY)" .
