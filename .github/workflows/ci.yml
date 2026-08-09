@@ -41,8 +41,8 @@ jobs:
         # passwordless sudo for playwright install-deps. Install browser only.
         run: make check
 
-      - name: Install CI verification tools
-        run: brew install gnupg jq
+      - name: Install Codecov signature verifier
+        run: brew install gnupg
 
       - name: Upload core Go coverage to Codecov
         uses: codecov/codecov-action@v7
@@ -71,15 +71,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v5
-
-      - name: Configure Docker Desktop IPv4 networking
-        run: |
-          settings_file="${HOME}/Library/Group Containers/group.com.docker/settings-store.json"
-          settings_tmp="${RUNNER_TEMP}/docker-settings.json"
-          jq '.defaultNetworkingMode = "ipv4only" | .dnsInhibition = "ipv6"' \
-            "${settings_file}" > "${settings_tmp}"
-          mv "${settings_tmp}" "${settings_file}"
-          docker desktop restart --timeout 120
 
       - name: Start Docker Desktop
         run: |
@@ -114,15 +105,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v5
-
-      - name: Configure Docker Desktop IPv4 networking
-        run: |
-          settings_file="${HOME}/Library/Group Containers/group.com.docker/settings-store.json"
-          settings_tmp="${RUNNER_TEMP}/docker-settings.json"
-          jq '.defaultNetworkingMode = "ipv4only" | .dnsInhibition = "ipv6"' \
-            "${settings_file}" > "${settings_tmp}"
-          mv "${settings_tmp}" "${settings_file}"
-          docker desktop restart --timeout 120
 
       - name: Start Docker Desktop
         run: |
