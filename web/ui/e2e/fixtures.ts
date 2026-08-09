@@ -19,6 +19,7 @@ export interface HarnessState {
   messages: Array<Record<string, unknown>>
   unexpected: string[] | null
   new_dynamic: boolean
+  new_comment: boolean
   webhook_mode: 'success' | 'permanent_failure'
   generation: number
 }
@@ -27,6 +28,7 @@ export interface Harness {
   manifest: HarnessManifest
   state: () => Promise<HarnessState>
   setFeed: (newDynamic: boolean) => Promise<void>
+  setComments: (newComment: boolean) => Promise<void>
   setWebhook: (mode: HarnessState['webhook_mode']) => Promise<void>
   restart: () => Promise<void>
 }
@@ -63,6 +65,10 @@ export const test = base.extend<HarnessFixture>({
         },
         setFeed: async newDynamic => {
           const response = await control!.put(`${started.manifest.control_url}/feed`, { data: { new_dynamic: newDynamic } })
+          expect(response.status()).toBe(204)
+        },
+        setComments: async newComment => {
+          const response = await control!.put(`${started.manifest.control_url}/comments`, { data: { new_comment: newComment } })
           expect(response.status()).toBe(204)
         },
         setWebhook: async mode => {

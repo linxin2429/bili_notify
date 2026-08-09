@@ -242,6 +242,15 @@ func (e *Engine) Run(ctx context.Context) error {
 	return g.Wait()
 }
 
+// Running reports whether Run has installed its lifecycle context. It is used
+// by embedding applications to avoid accepting interactive login work before
+// the engine is ready.
+func (e *Engine) Running() bool {
+	e.loginMu.Lock()
+	defer e.loginMu.Unlock()
+	return e.runCtx != nil
+}
+
 func (e *Engine) collectLoop(ctx context.Context) error {
 	settings, settingsChanged := e.settingsSnapshot()
 	interval := settings.PollInterval()
@@ -705,12 +714,18 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) (
 			}
 			if seen {
 				foundSeen = true
-				continue
+				// Space dynamics are newest-first. Once the persisted frontier is
+				// reached, everything after it is older and must not be rediscovered.
+				break
 			}
 			items = append(items, dynamic)
 		}
 		if !up.BaselineReady || foundSeen || !page.HasMore {
 			break
+		}
+		if page.Offset == "" || page.Offset == offset {
+			err := &bilibili.APIError{Kind: bilibili.ErrorSchema, Message: "space dynamics pagination offset did not advance"}
+			return e.failPoll(ctx, up, name, started, err)
 		}
 		if pageNumber == maxPages-1 {
 			err := fmt.Errorf("more than %d pages of unseen dynamics; manual review required", maxPages)
@@ -864,6 +879,12 @@ func (e *Engine) commentLoop(ctx context.Context) error {
 				ticker.Reset(next)
 				interval = next
 			}
+			// Apply comment-monitoring changes immediately. Waiting for the old
+			// batch boundary makes enabling monitoring or narrowing its window
+			// appear ineffective for up to an entire previous interval.
+			if err := e.commentOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				e.logger.Error("comment cycle failed", "event", "comment.cycle.failed", "phase", "settings_changed", "error", err)
+			}
 		case <-ticker.C:
 			if err := e.commentOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				e.logger.Error("comment cycle failed", "event", "comment.cycle.failed", "error", err)
@@ -962,6 +983,7 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 	children := make(map[string]bilibili.Reply)
 	// roots that need full expansion because an UP reply lives under them
 	expandRoots := make(map[string]struct{})
+	paginationIncomplete := false
 
 	for pn := 1; pn <= rootPages; pn++ {
 		if pn > 1 {
@@ -983,6 +1005,9 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 		}
 		if !page.HasMore {
 			break
+		}
+		if pn == rootPages {
+			paginationIncomplete = true
 		}
 	}
 
@@ -1041,6 +1066,9 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 			if !page.HasMore {
 				break
 			}
+			if pn == replyPages {
+				paginationIncomplete = true
+			}
 		}
 	}
 
@@ -1069,7 +1097,7 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 			ContentTitle: target.Title,
 			ContentURL:   target.URL,
 			PublishedAt:  reply.CTime,
-			Incomplete:   incomplete,
+			Incomplete:   incomplete || paginationIncomplete,
 			Thread:       thread,
 		})
 	}
@@ -1373,7 +1401,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (changed 
 		result = "blocked"
 	}
 	e.metrics.RecordDelivery(ctx, string(channel.Type), result, time.Since(started))
-	next := time.Now().Add(retryDelay(delivery.Attempts, e.Settings().DeliveryRetryDelaysSec))
+	next := nextDeliveryRetry(time.Now(), delivery.Attempts, e.Settings().DeliveryRetryDelaysSec, err)
 	if storeErr := store.FailDelivery(delivery.ID, blocked, next, err, progress); storeErr != nil {
 		return false, storeErr
 	}
@@ -1396,6 +1424,14 @@ func deliveryMessage(delivery model.Delivery) (notify.Message, string, error) {
 func retryDelay(attempt int, delays model.DeliveryRetryDelays) time.Duration {
 	base := time.Duration(delays[min(attempt, len(delays)-1)]) * time.Second
 	return base/2 + rand.N(base/2)
+}
+
+func nextDeliveryRetry(now time.Time, attempt int, delays model.DeliveryRetryDelays, sendErr error) time.Time {
+	delay := retryDelay(attempt, delays)
+	if upstreamDelay, ok := notify.RetryAfter(sendErr); ok && upstreamDelay > delay {
+		delay = upstreamDelay
+	}
+	return now.Add(delay)
 }
 
 func elapsedMS(started time.Time) int64 {

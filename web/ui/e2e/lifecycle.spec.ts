@@ -93,4 +93,39 @@ test('runs the collection, durable outbox, restart, and retry journey', async ({
     expect((await page.request.get(`${harness.manifest.observe_url}/metrics`)).status()).toBe(404)
     expect((await harness.state()).unexpected || []).toEqual([])
   })
+
+  await test.step('discover a new UP reply immediately after a comment settings update', async () => {
+    await navigateTo(page, '设置')
+    await page.getByLabel('评论批次间隔（秒）').fill('30')
+    await page.getByRole('button', { name: '保存运行设置' }).click()
+    await expect.poll(async () => (await harness.state()).counts.comment_root || 0).toBeGreaterThan(0)
+
+    await harness.setComments(true)
+    await page.getByLabel('评论批次间隔（秒）').fill('31')
+    await page.getByRole('button', { name: '保存运行设置' }).click()
+    await expect.poll(async () => (await harness.state()).messages.length).toBe(4)
+    expect(messageText((await harness.state()).messages[3])).toContain('E2E UP comment reply')
+
+    await navigateTo(page, '历史')
+    const commentsResponse = page.waitForResponse(response => response.url().includes('/api/v1/comments?'))
+    await page.getByRole('tab', { name: 'UP 回复' }).click()
+    await commentsResponse
+    await page.getByRole('button', { name: /查看评论对话/ }).click()
+    await expect(page.getByText('E2E UP comment reply')).toBeVisible()
+    await page.getByRole('button', { name: '关闭' }).click()
+  })
+
+  await test.step('remove the UP and clear its dynamic and comment history', async () => {
+    await navigateTo(page, 'UP 主')
+    page.once('dialog', dialog => dialog.accept())
+    await page.getByRole('button', { name: '删除' }).click()
+    await expect(page.getByText('尚未添加 UP 主')).toBeVisible()
+
+    await navigateTo(page, '历史')
+    await expect(page.getByText('当前筛选下没有历史记录')).toBeVisible()
+    const commentsResponse = page.waitForResponse(response => response.url().includes('/api/v1/comments?'))
+    await page.getByRole('tab', { name: 'UP 回复' }).click()
+    await commentsResponse
+    await expect(page.getByText('当前筛选下没有历史记录')).toBeVisible()
+  })
 })

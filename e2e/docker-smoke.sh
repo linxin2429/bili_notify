@@ -44,6 +44,9 @@ wait_for_setup_code() {
 }
 
 [[ $(docker image inspect --format '{{.Config.User}}' "${image}") == "65532:65532" ]]
+[[ $(docker image inspect --format '{{json .Config.Entrypoint}}' "${image}") == '["/bili-notify"]' ]]
+[[ $(docker image inspect --format '{{json .Config.Cmd}}' "${image}") == '["serve"]' ]]
+[[ $(docker image inspect --format '{{json .Config.Healthcheck.Test}}' "${image}") == '["CMD","/bili-notify","healthcheck"]' ]]
 docker volume create "${volume}" >/dev/null
 docker run --detach \
   --name "${container}" \
@@ -57,6 +60,9 @@ docker run --detach \
 wait_for_probe "liveness" --url http://127.0.0.1:9090/healthz
 wait_for_probe "admin session" --insecure --url https://127.0.0.1:8443/api/v1/session --contains '"setup_required":true'
 wait_for_probe "admin UI" --insecure --url https://127.0.0.1:8443/ --contains '<div id="root"></div>'
+
+[[ $(docker inspect --format '{{.Config.User}}' "${container}") == "65532:65532" ]]
+[[ $(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "${container}") == "true" ]]
 
 setup_code=$(wait_for_setup_code)
 docker exec "${container}" /bili-notify healthcheck \

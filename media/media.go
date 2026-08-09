@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -35,6 +37,9 @@ type Downloader struct {
 	Client    *http.Client
 	UserAgent string
 	Tracer    trace.Tracer
+	// AllowPrivateNetwork is intended for explicitly trusted test/private
+	// deployments. Production downloads reject loopback and private targets.
+	AllowPrivateNetwork bool
 }
 
 // Ensure downloads missing media for d and its Original chain. Failures leave
@@ -60,7 +65,7 @@ func (d *Downloader) ensureOne(ctx context.Context, dynamic *model.Dynamic) (dow
 		item := &dynamic.Media[i]
 		if item.LocalPath != "" {
 			if abs, err := Resolve(d.DataDir, item.LocalPath); err == nil {
-				if st, err := os.Stat(abs); err == nil && st.Size() > 0 {
+				if st, err := os.Stat(abs); err == nil && st.Size() > 0 && rejectSymlinkPath(d.DataDir, abs, false) == nil {
 					continue
 				}
 			}
@@ -97,6 +102,12 @@ func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index 
 	if err != nil {
 		return err
 	}
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return errors.New("media URL must use HTTP or HTTPS")
+	}
+	if err := validateRemoteURL(ctx, req.URL, d.AllowPrivateNetwork); err != nil {
+		return err
+	}
 	ua := d.UserAgent
 	if ua == "" {
 		ua = "bili-notify"
@@ -105,10 +116,7 @@ func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index 
 	req.Header.Set("Referer", "https://www.bilibili.com/")
 	req.Header.Set("Accept", "image/*,*/*;q=0.8")
 
-	client := d.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client := d.redirectSafeClient(ctx)
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -134,13 +142,11 @@ func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index 
 		return errors.New("empty media body")
 	}
 
-	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
-	if i := strings.IndexByte(contentType, ';'); i >= 0 {
-		contentType = strings.TrimSpace(contentType[:i])
+	detectedType := http.DetectContentType(data)
+	if !strings.HasPrefix(strings.ToLower(detectedType), "image/") {
+		return errors.New("media response is not an image")
 	}
-	if contentType == "" || contentType == "application/octet-stream" {
-		contentType = http.DetectContentType(data)
-	}
+	contentType := detectedType
 	ext := extensionFor(contentType, data)
 
 	rel := relativePath(uid, dynamicID, index, ext)
@@ -148,7 +154,13 @@ func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index 
 	if err != nil {
 		return err
 	}
+	if err := rejectSymlinkPath(d.DataDir, filepath.Dir(abs), true); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
+		return err
+	}
+	if err := rejectSymlinkPath(d.DataDir, filepath.Dir(abs), false); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(abs), ".media-*")
@@ -183,6 +195,88 @@ func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index 
 	return nil
 }
 
+func (d *Downloader) redirectSafeClient(ctx context.Context) *http.Client {
+	base := d.Client
+	if base == nil {
+		base = http.DefaultClient
+	}
+	client := *base
+	if !d.AllowPrivateNetwork {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		if configured, ok := base.Transport.(*http.Transport); ok {
+			transport = configured.Clone()
+		}
+		// Resolve and dial the exact validated address. A separate preflight
+		// lookup is insufficient because DNS can change between validation and
+		// connection establishment. Media downloads also bypass environment
+		// proxies so the destination policy cannot be bypassed by proxy routing.
+		transport.Proxy = nil
+		transport.DialTLSContext = nil
+		transport.DialContext = securePublicDial
+		client.Transport = transport
+	}
+	previous := base.CheckRedirect
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if previous != nil {
+			if err := previous(request, via); err != nil {
+				return err
+			}
+		} else if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return validateRemoteURL(ctx, request.URL, d.AllowPrivateNetwork)
+	}
+	return &client
+}
+
+func securePublicDial(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("parsing media destination: %w", err)
+	}
+	addresses, err := publicAddresses(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	dialer := net.Dialer{}
+	var dialErr error
+	for _, candidate := range addresses {
+		connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(candidate.String(), port))
+		if err == nil {
+			return connection, nil
+		}
+		dialErr = errors.Join(dialErr, err)
+	}
+	return nil, fmt.Errorf("connecting to media host: %w", dialErr)
+}
+
+func validateRemoteURL(ctx context.Context, target *url.URL, allowPrivate bool) error {
+	if target == nil || (target.Scheme != "http" && target.Scheme != "https") || target.Hostname() == "" {
+		return errors.New("media URL must use HTTP or HTTPS with a host")
+	}
+	if allowPrivate {
+		return nil
+	}
+	_, err := publicAddresses(ctx, target.Hostname())
+	return err
+}
+
+func publicAddresses(ctx context.Context, host string) ([]net.IP, error) {
+	addresses, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("resolving media host: %w", err)
+	}
+	if len(addresses) == 0 {
+		return nil, errors.New("media host has no IP addresses")
+	}
+	for _, address := range addresses {
+		if !address.IsGlobalUnicast() || address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() || address.IsUnspecified() {
+			return nil, errors.New("media URL resolves to a non-public address")
+		}
+	}
+	return addresses, nil
+}
+
 func (d *Downloader) tracer() trace.Tracer {
 	if d.Tracer != nil {
 		return d.Tracer
@@ -212,6 +306,41 @@ func Resolve(dataDir, rel string) (string, error) {
 	return clean, nil
 }
 
+// rejectSymlinkPath prevents an attacker-controlled link below dataDir from
+// redirecting media reads, writes, or deletion outside the data directory.
+func rejectSymlinkPath(dataDir, target string, allowMissing bool) error {
+	base, err := filepath.Abs(dataDir)
+	if err != nil {
+		return fmt.Errorf("resolving data directory: %w", err)
+	}
+	target, err = filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("resolving media path: %w", err)
+	}
+	rel, err := filepath.Rel(base, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return errors.New("media path escapes data directory")
+	}
+	current := base
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		if part == "." || part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if statErr != nil {
+			if allowMissing && os.IsNotExist(statErr) {
+				return nil
+			}
+			return statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("media path contains a symbolic link")
+		}
+	}
+	return nil
+}
+
 // RemoveUP deletes all on-disk media for one UP. Missing directory is fine.
 func RemoveUP(dataDir, uid string) error {
 	uid = strings.TrimSpace(uid)
@@ -219,6 +348,9 @@ func RemoveUP(dataDir, uid string) error {
 		return errors.New("invalid uid")
 	}
 	path := filepath.Join(dataDir, "media", uid)
+	if err := rejectSymlinkPath(dataDir, path, true); err != nil {
+		return err
+	}
 	if err := os.RemoveAll(path); err != nil {
 		return fmt.Errorf("removing media for uid %s: %w", uid, err)
 	}
@@ -229,6 +361,9 @@ func RemoveUP(dataDir, uid string) error {
 func ReadFile(dataDir, rel string) (data []byte, contentType string, err error) {
 	abs, err := Resolve(dataDir, rel)
 	if err != nil {
+		return nil, "", err
+	}
+	if err := rejectSymlinkPath(dataDir, abs, false); err != nil {
 		return nil, "", err
 	}
 	data, err = os.ReadFile(abs)

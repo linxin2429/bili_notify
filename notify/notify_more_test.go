@@ -3,12 +3,15 @@ package notify
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +23,9 @@ import (
 
 func TestFeishuUploadsLocalImages(t *testing.T) {
 	t.Parallel()
+	const appID = "contract-app"
+	feishuTokens.Delete(appID)
+	t.Cleanup(func() { feishuTokens.Delete(appID) })
 	dataDir := t.TempDir()
 	localPath := filepath.Join("media", "42", "dynamic", "image.png")
 	absPath := filepath.Join(dataDir, localPath)
@@ -54,7 +60,7 @@ func TestFeishuUploadsLocalImages(t *testing.T) {
 		Name: "feishu", Type: model.ChannelFeishu,
 		Settings: map[string]string{
 			"webhook": "https://hook.invalid/hook", "secret": "secret",
-			"app_id": "contract-app", "app_secret": "app-secret",
+			"app_id": appID, "app_secret": "app-secret",
 		},
 	}, client, dataDir, nil)
 	require.NoError(t, err)
@@ -73,16 +79,164 @@ func TestFeishuUploadsLocalImages(t *testing.T) {
 	assert.Contains(t, string(raw), "image-key")
 }
 
+func TestFeishuTenantTokenCache(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "cache miss requests and stores a token",
+			run: func(t *testing.T) {
+				var requests atomic.Int32
+				sender := feishuTokenTestSender(&sync.Map{}, "app-a", func(request *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					return responseFor(request, http.StatusOK, `{"code":0,"tenant_access_token":"token-a","expire":7200}`), nil
+				})
+
+				token, err := sender.feishuTenantToken(t.Context())
+				require.NoError(t, err)
+				assert.Equal(t, "token-a", token)
+				assert.Equal(t, int32(1), requests.Load())
+			},
+		},
+		{
+			name: "cache hit avoids another request",
+			run: func(t *testing.T) {
+				var requests atomic.Int32
+				sender := feishuTokenTestSender(&sync.Map{}, "app-a", func(request *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					return responseFor(request, http.StatusOK, `{"code":0,"tenant_access_token":"token-a","expire":7200}`), nil
+				})
+
+				first, err := sender.feishuTenantToken(t.Context())
+				require.NoError(t, err)
+				second, err := sender.feishuTenantToken(t.Context())
+				require.NoError(t, err)
+				assert.Equal(t, "token-a", first)
+				assert.Equal(t, first, second)
+				assert.Equal(t, int32(1), requests.Load())
+			},
+		},
+		{
+			name: "expired token is refreshed",
+			run: func(t *testing.T) {
+				caches := &sync.Map{}
+				caches.Store("app-a", &feishuTokenCache{token: "stale", expires: time.Now().Add(-time.Minute)})
+				var requests atomic.Int32
+				sender := feishuTokenTestSender(caches, "app-a", func(request *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					return responseFor(request, http.StatusOK, `{"code":0,"tenant_access_token":"fresh","expire":7200}`), nil
+				})
+
+				token, err := sender.feishuTenantToken(t.Context())
+				require.NoError(t, err)
+				assert.Equal(t, "fresh", token)
+				assert.Equal(t, int32(1), requests.Load())
+			},
+		},
+		{
+			name: "different apps have isolated entries",
+			run: func(t *testing.T) {
+				caches := &sync.Map{}
+				var requests atomic.Int32
+				transport := func(request *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					var credentials map[string]string
+					if err := json.NewDecoder(request.Body).Decode(&credentials); err != nil {
+						return nil, fmt.Errorf("decoding token request: %w", err)
+					}
+					body := fmt.Sprintf(`{"code":0,"tenant_access_token":%q,"expire":7200}`, "token-"+credentials["app_id"])
+					return responseFor(request, http.StatusOK, body), nil
+				}
+				firstSender := feishuTokenTestSender(caches, "app-a", transport)
+				secondSender := feishuTokenTestSender(caches, "app-b", transport)
+
+				first, err := firstSender.feishuTenantToken(t.Context())
+				require.NoError(t, err)
+				second, err := secondSender.feishuTenantToken(t.Context())
+				require.NoError(t, err)
+				firstAgain, err := firstSender.feishuTenantToken(t.Context())
+				require.NoError(t, err)
+				assert.Equal(t, "token-app-a", first)
+				assert.Equal(t, "token-app-b", second)
+				assert.Equal(t, first, firstAgain)
+				assert.Equal(t, int32(2), requests.Load())
+			},
+		},
+		{
+			name: "concurrent misses share one refresh",
+			run: func(t *testing.T) {
+				var requests atomic.Int32
+				sender := feishuTokenTestSender(&sync.Map{}, "app-a", func(request *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					return responseFor(request, http.StatusOK, `{"code":0,"tenant_access_token":"shared","expire":7200}`), nil
+				})
+				const callers = 16
+				start := make(chan struct{})
+				results := make(chan struct {
+					token string
+					err   error
+				}, callers)
+				var group sync.WaitGroup
+				group.Add(callers)
+				for range callers {
+					go func() {
+						group.Done()
+						<-start
+						token, err := sender.feishuTenantToken(t.Context())
+						results <- struct {
+							token string
+							err   error
+						}{token: token, err: err}
+					}()
+				}
+				group.Wait()
+				close(start)
+				for range callers {
+					result := <-results
+					require.NoError(t, result.err)
+					assert.Equal(t, "shared", result.token)
+				}
+				assert.Equal(t, int32(1), requests.Load())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t)
+		})
+	}
+}
+
+func feishuTokenTestSender(caches *sync.Map, appID string, transport roundTripperFunc) *robotSender {
+	return &robotSender{
+		client:            &http.Client{Transport: transport},
+		appID:             appID,
+		appSecret:         "secret",
+		feishuTokenCaches: caches,
+	}
+}
+
 func TestMicrosoftDeviceExchange(t *testing.T) {
 	t.Parallel()
+	tokenRequests := make(chan handlerResult[map[string]string], 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/device":
 			_, _ = io.WriteString(w, `{"device_code":"device","user_code":"CODE","verification_uri":"https://microsoft.com/devicelogin","expires_in":900,"interval":1}`)
 		case "/token":
-			require.NoError(t, r.ParseForm())
-			assert.Equal(t, "device", r.Form.Get("device_code"))
+			form := parseFormRequest(r)
+			tokenRequests <- handlerResult[map[string]string]{
+				value: map[string]string{"device_code": form.value.Get("device_code")},
+				err:   form.err,
+			}
+			if form.err != nil {
+				http.Error(w, "invalid form", http.StatusBadRequest)
+				return
+			}
 			_, _ = io.WriteString(w, `{"access_token":"access","refresh_token":"refresh","token_type":"Bearer","expires_in":3600}`)
 		default:
 			http.NotFound(w, r)
@@ -94,7 +248,9 @@ func TestMicrosoftDeviceExchange(t *testing.T) {
 	})
 	require.NoError(t, err)
 	settings, err := auth.Exchange(t.Context(), server.Client())
+	tokenRequest := requireHandlerResult(t, tokenRequests)
 	require.NoError(t, err)
+	assert.Equal(t, "device", tokenRequest["device_code"])
 	assert.Equal(t, "access", settings["access_token"])
 	assert.Equal(t, "refresh", settings["refresh_token"])
 	assert.Equal(t, "true", settings["authorized"])

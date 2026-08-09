@@ -1,0 +1,61 @@
+rule_files:
+  - bili-notify.yaml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'bili_notify_ready'
+        values: '0x20'
+      - series: 'bili_notify_workflow_last_success{workflow="collection"}'
+        values: '0x20'
+      - series: 'bili_notify_outbox_pending'
+        values: '30x20'
+      - series: 'bili_notify_outbox_blocked'
+        values: '1x20'
+      - series: 'bili_notify_config_backlog_alert_count'
+        values: '20x20'
+      - series: 'bili_notify_outbox_oldest_age_seconds'
+        values: '1200x20'
+      - series: 'bili_notify_config_backlog_alert_age'
+        values: '600x20'
+      - series: 'bili_notify_notification_delivery_attempts_total{result="retry"}'
+        values: '0+60x20'
+      - series: 'otelcol_exporter_send_failed_log_records_total'
+        values: '0+60x20'
+      - series: 'otelcol_exporter_send_failed_metric_points_total'
+        values: '0+60x20'
+      - series: 'otelcol_exporter_send_failed_spans_total'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: BiliNotifyNotReady
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations: {summary: Bili Notify has not been ready for 10 minutes}
+      - eval_time: 16m
+        alertname: BiliNotifyCollectionStalled
+        exp_alerts:
+          - exp_labels: {severity: critical, workflow: collection}
+            exp_annotations: {summary: Bili Notify collection has not succeeded recently}
+      - eval_time: 10m
+        alertname: BiliNotifyOutboxBacklog
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations: {summary: Bili Notify delivery queue exceeds its configured threshold}
+      - eval_time: 10m
+        alertname: BiliNotifyOldestDeliveryTooOld
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations: {summary: Bili Notify oldest queued delivery exceeds its configured threshold}
+      - eval_time: 16m
+        alertname: BiliNotifyDeliveryFailures
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations: {summary: Bili Notify notification deliveries are failing}
+      - eval_time: 10m
+        alertname: BiliNotifyCollectorExportFailures
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations: {summary: OpenTelemetry Collector cannot export telemetry}

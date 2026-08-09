@@ -129,6 +129,185 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	assert.True(t, gotUpdate, "missing ups.updated event")
 }
 
+func TestWebSocketPublishesEveryTopicWithOneRevision(t *testing.T) {
+	t.Parallel()
+	fixture := newAdminAPIFixture(t, nil)
+	httpServer := httptest.NewTLSServer(fixture.server.adminHandler())
+	t.Cleanup(httpServer.Close)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
+	connection := dialTestWebSocket(t, ctx, httpServer, fixture.token, httpServer.URL)
+	t.Cleanup(func() { _ = connection.CloseNow() })
+	readSnapshot(t, ctx, connection)
+
+	allTopics := service.TopicStatus | service.TopicUPs | service.TopicChannels | service.TopicDeliveries |
+		service.TopicBiliLogin | service.TopicMicrosoftLogin | service.TopicSettings
+	revision := fixture.events.Publish(allTopics)
+	wantEvents := map[string]bool{
+		"status.updated": false, "ups.updated": false, "channels.updated": false,
+		"deliveries.updated": false, "bilibili.login.updated": false,
+		"microsoft.login.updated": false, "settings.updated": false,
+	}
+	for range len(wantEvents) {
+		var envelope testWSEnvelope
+		require.NoError(t, wsjson.Read(ctx, connection, &envelope))
+		_, known := wantEvents[envelope.Event]
+		assert.True(t, known, "unexpected event %q", envelope.Event)
+		assert.Equal(t, revision, envelope.Revision)
+		wantEvents[envelope.Event] = true
+	}
+	for event, seen := range wantEvents {
+		assert.True(t, seen, "missing %s", event)
+	}
+}
+
+func TestWebSocketOriginSessionExpiryAndIdleBehavior(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		run  func(*testing.T, *adminAPIFixture, *httptest.Server)
+	}{
+		{
+			name: "foreign origin is rejected",
+			run: func(t *testing.T, fixture *adminAPIFixture, server *httptest.Server) {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				t.Cleanup(cancel)
+				connection, response, err := dialTestWebSocketResponse(ctx, server, fixture.token, "https://attacker.invalid")
+				if connection != nil {
+					_ = connection.CloseNow()
+				}
+				require.Error(t, err)
+				require.NotNil(t, response)
+				t.Cleanup(func() { _ = response.Body.Close() })
+				assert.Equal(t, http.StatusForbidden, response.StatusCode)
+			},
+		},
+		{
+			name: "idle connection emits no business event",
+			run: func(t *testing.T, fixture *adminAPIFixture, server *httptest.Server) {
+				fixture.server.wsHeartbeat = 10 * time.Millisecond
+				fixture.server.wsPingTimeout = 100 * time.Millisecond
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+				t.Cleanup(cancel)
+				connection := dialTestWebSocket(t, ctx, server, fixture.token, server.URL)
+				t.Cleanup(func() { _ = connection.CloseNow() })
+				readSnapshot(t, ctx, connection)
+
+				idleCtx, idleCancel := context.WithTimeout(t.Context(), 75*time.Millisecond)
+				t.Cleanup(idleCancel)
+				err := wsjson.Read(idleCtx, connection, &testWSEnvelope{})
+				require.Error(t, err)
+				// coder/websocket may surface either the context deadline or the
+				// connection-close error caused while aborting a concurrent Ping.
+				// The invariant under test is that our idle observation window
+				// expired without receiving a business event.
+				assert.ErrorIs(t, idleCtx.Err(), context.DeadlineExceeded)
+			},
+		},
+		{
+			name: "expired session closes promptly",
+			run: func(t *testing.T, fixture *adminAPIFixture, server *httptest.Server) {
+				fixture.server.wsHeartbeat = 10 * time.Millisecond
+				fixture.server.wsPingTimeout = 100 * time.Millisecond
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				t.Cleanup(cancel)
+				connection := dialTestWebSocket(t, ctx, server, fixture.token, server.URL)
+				t.Cleanup(func() { _ = connection.CloseNow() })
+				readSnapshot(t, ctx, connection)
+				fixture.server.auth.mu.Lock()
+				session := fixture.server.auth.sessions[fixture.token]
+				session.CreatedAt = fixture.server.auth.now().Add(-25 * time.Hour)
+				fixture.server.auth.sessions[fixture.token] = session
+				fixture.server.auth.mu.Unlock()
+				err := wsjson.Read(ctx, connection, &testWSEnvelope{})
+				require.Error(t, err)
+				assert.Equal(t, websocket.StatusPolicyViolation, websocket.CloseStatus(err))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newAdminAPIFixture(t, nil)
+			server := httptest.NewTLSServer(fixture.server.adminHandler())
+			t.Cleanup(server.Close)
+			tt.run(t, fixture, server)
+		})
+	}
+}
+
+func TestWebSocketIsClosedByLogoutAndPasswordChange(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "logout", method: http.MethodDelete, path: "/api/v1/session"},
+		{name: "password change", method: http.MethodPut, path: "/api/v1/session/password", body: `{"current_password":"correct horse battery staple","new_password":"replacement horse battery staple"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newAdminAPIFixture(t, nil)
+			server := httptest.NewTLSServer(fixture.server.adminHandler())
+			t.Cleanup(server.Close)
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			t.Cleanup(cancel)
+			connection := dialTestWebSocket(t, ctx, server, fixture.token, server.URL)
+			t.Cleanup(func() { _ = connection.CloseNow() })
+			readSnapshot(t, ctx, connection)
+
+			request, err := http.NewRequestWithContext(ctx, tt.method, server.URL+tt.path, strings.NewReader(tt.body))
+			require.NoError(t, err)
+			request.AddCookie(&http.Cookie{Name: sessionCookie, Value: fixture.token})
+			request.Header.Set("X-CSRF-Token", fixture.csrf)
+			if tt.body != "" {
+				request.Header.Set("Content-Type", "application/json")
+			}
+			response, err := server.Client().Do(request)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = response.Body.Close() })
+			assert.Less(t, response.StatusCode, http.StatusBadRequest)
+			err = wsjson.Read(ctx, connection, &testWSEnvelope{})
+			require.Error(t, err)
+			assert.Equal(t, websocket.StatusPolicyViolation, websocket.CloseStatus(err))
+		})
+	}
+}
+
+func TestWebSocketReconnectSnapshotAndDisconnectedPeerIsolation(t *testing.T) {
+	t.Parallel()
+	fixture := newAdminAPIFixture(t, nil)
+	server := httptest.NewTLSServer(fixture.server.adminHandler())
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	t.Cleanup(cancel)
+	disconnected := dialTestWebSocket(t, ctx, server, fixture.token, server.URL)
+	readSnapshot(t, ctx, disconnected)
+	_ = disconnected.CloseNow()
+
+	require.NoError(t, fixture.store.PutUP(model.UP{UID: "42", Name: "current UP", Enabled: true}))
+	fixture.events.Publish(service.TopicUPs)
+	connection := dialTestWebSocket(t, ctx, server, fixture.token, server.URL)
+	t.Cleanup(func() { _ = connection.CloseNow() })
+	var initial testWSEnvelope
+	require.NoError(t, wsjson.Read(ctx, connection, &initial))
+	assert.Equal(t, "snapshot", initial.Event)
+	var snapshot dashboardSnapshot
+	require.NoError(t, json.Unmarshal(initial.Data, &snapshot))
+	require.Len(t, snapshot.UPs, 1)
+	assert.Equal(t, "42", snapshot.UPs[0].UID)
+	assert.Equal(t, fixture.events.Revision(), initial.Revision)
+
+	revision := fixture.events.Publish(service.TopicUPs)
+	var envelope testWSEnvelope
+	require.NoError(t, wsjson.Read(ctx, connection, &envelope))
+	assert.Equal(t, "ups.updated", envelope.Event)
+	assert.Equal(t, revision, envelope.Revision)
+}
+
 func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
 	t.Parallel()
 	deliveries := make([]model.Delivery, 100)
@@ -218,6 +397,31 @@ type testWSEnvelope struct {
 	Event    string          `json:"event"`
 	Revision uint64          `json:"revision"`
 	Data     json.RawMessage `json:"data"`
+}
+
+func dialTestWebSocket(t *testing.T, ctx context.Context, server *httptest.Server, token, origin string) *websocket.Conn {
+	t.Helper()
+	connection, response, err := dialTestWebSocketResponse(ctx, server, token, origin)
+	require.NoError(t, err, "WebSocket dial status=%v", responseStatus(response))
+	return connection
+}
+
+func dialTestWebSocketResponse(ctx context.Context, server *httptest.Server, token, origin string) (*websocket.Conn, *http.Response, error) {
+	headers := http.Header{}
+	headers.Set("Cookie", (&http.Cookie{Name: sessionCookie, Value: token}).String())
+	headers.Set("Origin", origin)
+	wsURL := "wss" + strings.TrimPrefix(server.URL, "https") + "/api/v1/ws"
+	return websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: server.Client(), HTTPHeader: headers})
+}
+
+func readSnapshot(t *testing.T, ctx context.Context, connection *websocket.Conn) dashboardSnapshot {
+	t.Helper()
+	var envelope testWSEnvelope
+	require.NoError(t, wsjson.Read(ctx, connection, &envelope))
+	require.Equal(t, "snapshot", envelope.Event)
+	var snapshot dashboardSnapshot
+	require.NoError(t, json.Unmarshal(envelope.Data, &snapshot))
+	return snapshot
 }
 
 func openWebTestStore(t *testing.T) *state.Store {

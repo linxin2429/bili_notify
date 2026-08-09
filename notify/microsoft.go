@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -195,18 +194,22 @@ func (s *microsoftSender) Send(ctx context.Context, message Message) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("sending Microsoft Graph mail: %w", err)
+		return sanitizedHTTPTransportError("sending Microsoft Graph mail", err)
 	}
 	defer resp.Body.Close()
-	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20)); err != nil {
+	_, oversized, err := readProtocolResponse(resp.Body)
+	if err != nil {
 		return fmt.Errorf("reading Microsoft Graph response: %w", err)
 	}
 	if resp.StatusCode == http.StatusAccepted {
+		if oversized {
+			return &PermanentError{Err: fmt.Errorf("Microsoft Graph response exceeds %d bytes", maxProtocolResponseBytes)}
+		}
 		return nil
 	}
 	graphErr := fmt.Errorf("Microsoft Graph returned HTTP %d", resp.StatusCode)
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return graphErr
+		return retryableHTTPError("Microsoft Graph", resp)
 	}
 	return &PermanentError{Err: graphErr}
 }
@@ -249,10 +252,19 @@ func microsoftTokenChanged(before, after *oauth2.Token) bool {
 func classifyMicrosoftTokenError(err error) error {
 	var retrieveErr *oauth2.RetrieveError
 	if errors.As(err, &retrieveErr) {
+		status := 0
+		if retrieveErr.Response != nil {
+			status = retrieveErr.Response.StatusCode
+		}
+		safe := fmt.Errorf("refreshing Microsoft token failed: code=%s HTTP=%d", retrieveErr.ErrorCode, status)
 		switch retrieveErr.ErrorCode {
 		case "invalid_grant", "invalid_client", "interaction_required", "consent_required":
-			return &PermanentError{Err: fmt.Errorf("refreshing Microsoft token: %w", err)}
+			return &PermanentError{Err: safe}
 		}
+		if retrieveErr.Response != nil && (retrieveErr.Response.StatusCode == http.StatusTooManyRequests || retrieveErr.Response.StatusCode >= 500) {
+			return retryableHTTPError("refreshing Microsoft token", retrieveErr.Response)
+		}
+		return &PermanentError{Err: safe}
 	}
 	return fmt.Errorf("refreshing Microsoft token: %w", err)
 }

@@ -302,6 +302,25 @@ func (s *Store) PutUP(up model.UP) error {
 
 func (s *Store) DeleteUP(uid string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var deliveryRows []deliveryRow
+		if err := tx.Find(&deliveryRows).Error; err != nil {
+			return err
+		}
+		for _, row := range deliveryRows {
+			delivery, err := decodeDelivery(row)
+			if err != nil {
+				return err
+			}
+			belongsToUP := delivery.EffectiveKind() == model.DeliveryKindDynamic && delivery.Dynamic.UID == uid
+			if delivery.EffectiveKind() == model.DeliveryKindComment && delivery.Comment != nil {
+				belongsToUP = delivery.Comment.UPUID == uid
+			}
+			if belongsToUP {
+				if err := tx.Where("id = ?", row.ID).Delete(&deliveryRow{}).Error; err != nil {
+					return err
+				}
+			}
+		}
 		if err := tx.Where("uid = ?", uid).Delete(&upRow{}).Error; err != nil {
 			return err
 		}
@@ -597,7 +616,10 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 		}
 		return nil
 	})
-	return created, err
+	if err != nil {
+		return 0, err
+	}
+	return created, nil
 }
 
 // UpsertCommentTargets merges discovered commentable contents for one UP and keeps the newest n.
@@ -781,7 +803,10 @@ func (s *Store) RecordCommentNotifications(target model.CommentTarget, notes []m
 		updated := commentTargetFromModel(item)
 		return tx.Save(&updated).Error
 	})
-	return created, err
+	if err != nil {
+		return 0, err
+	}
+	return created, nil
 }
 
 func (s *Store) ListDeliveries(limit int) ([]model.Delivery, error) {

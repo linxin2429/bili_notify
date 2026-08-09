@@ -40,7 +40,7 @@ flowchart LR
 
 评论监控使用独立较慢的批次周期（默认 120 秒），与动态轮询共用全局速率与并发预算。每个 UP 仅跟踪最近 N 条（默认 10）可映射评论区坐标的内容；每内容最多翻根评论 P 页（默认 2）、子评论 R 页（默认 5）。基础采集、高级采集、投递与积压告警、五段重试、日志级别及审计日志保留期组成一份版本化运行设置，空库首次从启动配置和代码默认值播种，之后由 SQLite 持久化并通过管理台完整热更新。版本不匹配的旧记录直接拒绝启动，不自动升级。
 
-新动态按发布时间由旧到新处理。完整正文、动态/评论 `seen` 与对应启用渠道的投递任务在**同一 SQLite 事务**内提交（`INSERT OR IGNORE` 档案；含 baseline；系统告警 `uid=system` 不入库）。任务只有在平台 HTTP 状态和业务码均成功后才删除；网络错误、429 和 5xx 分级重试，不可恢复配置或鉴权错误进入阻塞状态。管理员可以将单个阻塞任务手动改回立即到期的待投递状态，实际发送仍由后台 Outbox 调度器异步执行；该操作保留尝试次数、最后错误与分段投递进度，避免部分成功的多段消息重复发送。删除 UP 会同时清除去重状态与该 UP 的内容库记录。v1 内容库无自动淘汰，体积随监控时长增长。
+新动态按发布时间由旧到新处理。完整正文、动态/评论 `seen` 与对应启用渠道的投递任务在**同一 SQLite 事务**内提交（`INSERT OR IGNORE` 档案；含 baseline；系统告警 `uid=system` 不入库）。任务只有在平台 HTTP 状态和业务码均成功后才删除；网络错误、429 和 5xx 分级重试，不可恢复配置或鉴权错误进入阻塞状态。管理员可以将单个阻塞任务手动改回立即到期的待投递状态，实际发送仍由后台 Outbox 调度器异步执行；该操作保留尝试次数、最后错误与分段投递进度，避免部分成功的多段消息重复发送。删除 UP 会在同一事务内取消该 UP 尚未投递的动态与评论任务，并清除去重状态和内容库记录，避免删除后继续发送或留下失去所属资源的 Outbox。v1 内容库无自动淘汰，体积随监控时长增长。
 
 ## 3. B站与通知协议
 
@@ -50,7 +50,9 @@ B站适配器使用二维码生成、二维码轮询、导航验证、关注关�
 
 SMTP 只支持隐式 TLS 和 STARTTLS，并校验证书。Microsoft 使用 OAuth 2.0 设备码与委托 `Mail.Send` 权限，访问令牌过期时自动刷新并持久化。钉钉、飞书和企业微信使用 HTTPS Webhook，钉钉与飞书要求签名密钥。飞书渠道可额外配置成对的应用 `app_id` / `app_secret`，用于上传图片并在 `post` 中内嵌 `image_key`；未配置时图片仍以链接展示。
 
-采集在写入档案与 Outbox 之前，按动态 `Media`（含封面与图文图片，以及一层转发原文）尽力下载 CDN 文件到 `data_dir/media/{uid}/{dynamic_id}/`，并把相对路径写回 `local_path`。单文件上限 10 MiB；下载失败不阻断文字归档与投递，保留远程 URL。不做存量历史回填。删除 UP 时同步删除其 media 子目录。v1 无自动淘汰，`media/` 与内容库一并随监控时长增长。
+所有通知 HTTP 协议响应最多读取 1 MiB；成功响应超过上限、JSON 损坏、业务码缺失或类型漂移都视为永久协议错误，避免把无法证明成功的响应误判为已投递。网络故障、HTTP 429 和 5xx 可重试，`Retry-After`（秒数或 HTTP 日期）是重试调度的最小等待时间；4xx、OAuth 凭据失效和明确业务错误进入阻塞。错误只保留操作名、HTTP 状态和业务码，不拼接响应正文、请求 URL、OAuth 描述或飞书 `msg`，避免 Webhook 查询签名、令牌及上游回显秘密进入日志。
+
+采集在写入档案与 Outbox 之前，按动态 `Media`（含封面与图文图片，以及一层转发原文）尽力下载 CDN 文件到 `data_dir/media/{uid}/{dynamic_id}/`，并把相对路径写回 `local_path`。单文件上限 10 MiB，只接受 HTTP(S)、公网目标和内容嗅探结果为图片的响应；每次重定向重新校验目标，避免媒体 URL 被用来访问回环、私网和链路本地服务。下载失败不阻断文字归档与投递，保留远程 URL。不做存量历史回填。读取、写入与删除均拒绝 `media/` 以下任一已有路径组件为符号链接，临时文件与最终文件分别使用 `0600` 和原子 rename；失败时删除临时文件。删除 UP 时同步删除其 media 子目录。v1 无自动淘汰，`media/` 与内容库一并随监控时长增长。
 
 动态通知保存接口返回的完整正文，并按类型提取标题、简介、内容直达链接、富文本链接、封面或多图、视频时长与播放信息、互动统计和转发原文；动态正文本身不为补充内容发起额外的 B 站请求。升级后每个已有 UP 首次可见的充电动态只归档并建立 seen 基线，不投递；同批普通新动态照常投递，后续新充电动态正常投递。评论通知在发现 UP 回复后按 root 展开对话串。邮件与 Microsoft Graph 在存在本地文件时以内联 CID/附件嵌入图片，否则退回远程 `<img src>`；钉钉自定义机器人继续使用可展示外链图片的 Markdown（`![](CDN URL)`，不用本地文件）；飞书在配置应用凭证且本地文件可用时上传并内嵌图片，否则列为链接；企业微信先发正文 Markdown，再按序追加 `msgtype=image`（原始字节 ≤2 MiB），并在 Outbox `progress` 中记录已成功段以便重试不重复。机器人消息在各平台限制内按 UTF-8 边界截断，始终保留截断提示和原内容链接。
 
@@ -80,11 +82,11 @@ HTTP 承担认证生命周期和全部管理资源 API：
 | `GET /api/v1/audit-logs` | 按操作、结果、资源、时间和关键字分页查询管理员操作日志 |
 | `GET /api/v1/ws` | 校验会话并升级 WebSocket |
 
-HTTP 负责全部浏览器主动请求：资源写操作使用 JSON body，写请求必须携带会话中的 CSRF Token；`PUT /api/v1/settings` 必须提交全部字段，缺失和未知字段均拒绝。历史查询使用 `uid?`、`q?`、`from?`、`to?`（RFC3339）、`limit?`（默认 20，最大 100）和 `offset?`，时间范围为半开区间 `[from, to)`。动态历史列表的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)`、互动统计 `stats(forwards/comments/likes)`、视频元数据 `video(duration/views/danmaku)` 和一层 `original` 引用预览（含原内容的视频元数据），前端无需逐条请求内容详情；若条目已有本地文件，列表中的 `media.url` 改写为同源 `/api/v1/dynamics/{id}/media/{index}`，否则保留 CDN URL。旧归档没有统计或视频字段时省略对应字段；列表不返回评论坐标与磁盘路径。WebSocket 仅承载服务端事件 `event/revision/data`，不接受业务命令；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、运行设置、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。重连后使用新快照修复断线期间遗漏的状态。
+HTTP 负责全部浏览器主动请求：资源写操作使用单个、合法 UTF-8 的 JSON body，硬上限为 1 MiB，写请求必须携带会话中的 CSRF Token；`PUT /api/v1/settings` 必须提交全部字段，缺失和未知字段均拒绝。历史查询使用 `uid?`、`q?`、`from?`、`to?`（RFC3339）、`limit?`（默认 20，最大 100）和 `offset?`，时间范围为半开区间 `[from, to)`。动态历史列表的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)`、互动统计 `stats(forwards/comments/likes)`、视频元数据 `video(duration/views/danmaku)` 和一层 `original` 引用预览（含原内容的视频元数据），前端无需逐条请求内容详情；若条目已有本地文件，列表中的 `media.url` 改写为同源 `/api/v1/dynamics/{id}/media/{index}`，否则保留 CDN URL。旧归档没有统计或视频字段时省略对应字段；列表不返回评论坐标与磁盘路径。WebSocket 仅承载服务端事件 `event/revision/data`，不接受业务命令；连接后先发送完整 `snapshot`（含 `settings`），后续推送状态、运行设置、UP、渠道、投递、B站登录和 Microsoft 授权领域更新。重连后使用新快照修复断线期间遗漏的状态。
 
 领域事件主要由实际状态写入驱动：空闲投递周期不发布事件，空闲采集不广播整份 UP 列表；关注关系刷新、采集路由改变、就绪状态或风控暂停等时间派生状态跨越边界时发布对应轻量事件。投递成功、失败、重试或阻塞只标记状态和投递主题；渠道授权信息只有在实际变化时才标记渠道主题。事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。WebSocket 消息限制为 1 MiB，并以独立的 30 秒 Ping 保活。
 
-管理员会话 Cookie 为 Secure、HttpOnly、SameSite=Strict，空闲 8 小时或创建 24 小时后失效。登录和初始化按来源地址与全局失败次数限流。WebSocket 必须通过会话 Cookie 和同源 Origin 校验；密码修改会清空所有会话并关闭全部连接。
+管理员会话 Cookie 为 Secure、HttpOnly、SameSite=Strict，空闲 8 小时或创建 24 小时后失效。登录和初始化只按 TCP 对端来源地址（不信任客户端可伪造的代理转发头）与全局失败次数限流，窗口一分钟后恢复。WebSocket 必须通过会话 Cookie 和同源 Origin 校验；密码修改会清空所有会话并关闭全部连接。
 
 所有管理 API 响应携带服务端生成的 `X-Request-ID`。认证和状态变更请求（含失败、未认证和 CSRF 拒绝）同步追加到 SQLite `audit_logs`，记录管理员/匿名来源、独立会话标识、远端地址、路由、目标、结果、耗时和白名单变更摘要；不记录普通读取、静态资源和 WebSocket 消息。操作日志默认保留 180 天，由管理台分页查询。审计写入失败不会篡改已经完成的业务结果，但会输出系统错误并增加指标。
 
@@ -133,14 +135,20 @@ Trace 用于关联管理 HTTP、采集/评论/关系/认证/投递/审计工作�
 
 自动测试覆盖：
 
+- 真实应用装配的首次设置播种、健康接口、取消后的优雅退出和同数据目录重启，并对旧数据库、损坏 TLS、无法解密的持久化秘密和非法遥测协议执行启动失败测试；审计保留以可单次执行的批处理验证精确时间边界、超过 1000 条时的分批删除、数据库失败和取消；
+- 空间动态与综合流的多页正常路径、seen 前沿停止、空或重复 offset、接口计数不足以及页数上限；任何不完整动态分页都不得提交部分历史、seen 或 Outbox，综合流溢出会清空 feed 游标并要求空间流重新同步；评论根页或子回复达到扫描上限时，已发现通知必须标记 `incomplete`；
+- 投递调度通过受控阻塞渠道验证初始及热更新后的并发上限，通过五段退避及饱和边界验证重试，并保留不依赖绝对耗时门限的消息构造 benchmark；
 - 各动态类型的富内容解析、评论区坐标映射、UP 回复发现与根串展开、基线、去重、Outbox、渠道渲染、篇幅边界、重试与通知协议；
+- 本地真实 SMTP 会话同时覆盖隐式 TLS、STARTTLS、证书验证、AUTH PLAIN、多收件人、multipart/alternative 与内联 CID，并注入认证、RCPT、DATA 断流和取消故障；Microsoft OAuth/Graph 与群机器人使用本地确定性 HTTP 合同覆盖刷新持久化、401/429/5xx、`Retry-After`、截断/超大/畸形响应、业务码 schema drift、取消和错误脱敏，飞书 token 缓存验证应用隔离、过期刷新与并发单飞；
 - 自动主密钥/TLS 生成、权限、损坏文件和旧 schema 拒绝；
 - Argon2id、一次性初始化、会话、限流、密码变更与连接失效；
-- HTTP 管理 API、WebSocket 单向事件、空闲周期不推送、领域事件合并、重连快照和秘密读模型；
+- 真实认证与 CSRF HTTP 管理 API（含 B站/Microsoft 登录和渠道测试的成功、取消、重复、上游失败与超时）、WebSocket 全主题与 revision、空闲周期不推送、会话过期、恶意 Origin、注销/密码变更连接失效、断开客户端隔离、重连快照和秘密读模型；
+- JSON 体积与 UTF-8 边界、安全响应头、登录限流窗口/来源隔离/伪造代理头、TLS 最低版本与私钥权限，以及媒体路径逃逸、父目录/文件符号链接、重定向、SSRF、非图片、取消和失败临时文件清理；
 - 操作日志追加、筛选、保留清理、拒绝/失败路径、请求 ID和秘密值回归；
 - React 单元、状态和组件测试覆盖 API、WebSocket、状态归约、异步请求竞态、历史坏行容错、结构化表单的全部字段连线、桌面/移动端以及明暗主题；四项全局覆盖率均以 80% 为门禁，设置页、控制台和操作日志页另设不低于当前薄弱面的文件级门禁，避免辅助函数掩盖关键页面回退；
 - Chromium 确定性端到端链路把采集投递、管理安全和响应式验证拆为测试级隔离场景，每个场景使用独立临时目录、SQLite、随机端口和 Go harness，并同时运行桌面浅色与 Pixel 7 触控深色项目：覆盖管理员初始化、二维码登录、关注关系与空间基线、综合流采集、历史归档、失败 Outbox、同目录重启、人工重试、无刷新 WebSocket 重连、资源编辑、设置持久化、操作日志安全摘要、秘密不回显和密码变更后的全会话失效；使用 axe 扫描登录、概览、操作日志和移动历史页面，并提交移动历史视觉基线；测试只连接本地 TLS 伪上游；
 - `web/testdata/contracts/` 中提交 REST 与 WebSocket JSON 契约样例；Go 侧以真实 HTTP 处理器和生产 WebSocket 序列化类型校验，Vitest 读取同一文件并以集中式 Zod schema 解析，TypeScript API 类型由 schema 推导；
 - 生产 scratch 镜像的 nonroot/只读运行、健康检查、HTTPS 初始化、优雅停止和同卷重启。
+- `telemetry.New` 通过本地 OTLP/HTTP protobuf 与 OTLP/gRPC 收集端真实导出 traces、metrics、logs，校验三类带前缀路径、资源属性、span/metric/log 字段和 Shutdown flush；不可达收集端验证记录路径不等待网络，导出失败仅在有界 Shutdown 返回。Prometheus 告警规则使用 `promtool test rules` 验证触发语义，Compose、Collector、Prometheus、Loki 与 Tempo 配置由独立 CI job 验证，不把 Docker 依赖加入普通单元测试。
 
-提交前执行前端类型检查、`npm run test:coverage` 和 `npm run test:e2e`，以及 `go build ./...`、`go test ./...`、`go test -race ./...` 和 `go vet ./...`；完整本地门禁可通过 `make check` 运行，多核机器可使用 `make -jN check`。`web/dist` 是不纳入 Git 的构建产物；Make 在一次完整检查中只从 lockfile 安装并构建一次前端，所有会编译 `web` 包的 Go 目标和 Playwright 均依赖该产物。Vitest 使用 V8 统计除入口、纯类型和测试辅助代码之外的前端生产代码，statements、branches、functions、lines 任一低于 80% 时 CI 失败，并对关键页面执行额外文件级阈值。Playwright 使用锁定版本的 Chromium 分别模拟桌面浅色和触控手机深色；axe 严重违规或已提交视觉基线变化均使检查失败。Go 覆盖率门禁只统计 `bilibili`、`notify`、`service`、`state`、`web` 五个核心包；CI 以 `go test -race -covermode=atomic -coverpkg="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)" -coverprofile=coverage.out ./...` 一次运行仓库全部测试并同时完成 race 与覆盖率验证，总覆盖率低于 80% 时失败。Go 覆盖率报告通过 GitHub OIDC 上传 Codecov，不配置静态 Token，项目目标固定为 80% 且不启用 patch 门禁。CI 必须在 Go 检查前构建前端，并对最终 Docker 镜像运行冒烟测试。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像。
+提交前执行前端类型检查、`npm run test:coverage` 和 `npm run test:e2e`，以及 `go build ./...`、`go test ./...`、`go test -race -shuffle=on ./...` 和 `go vet ./...`；完整本地门禁可通过 `make check` 运行，多核机器可使用 `make -jN check`。`web/dist` 是不纳入 Git 的构建产物；Make 在一次完整检查中只从 lockfile 安装并构建一次前端，所有会编译 `web` 包的 Go 目标和 Playwright 均依赖该产物。Vitest 使用 V8 统计除入口、纯类型和测试辅助代码之外的前端生产代码，statements、branches、functions、lines 任一低于 80% 时 CI 失败，并对关键页面执行额外文件级阈值。Playwright 使用锁定版本的 Chromium 分别模拟桌面浅色和触控手机深色；axe 严重违规或已提交视觉基线变化均使检查失败。Go 覆盖率门禁只统计 `bilibili`、`notify`、`service`、`state`、`web` 五个核心包；CI 以 `go test -race -covermode=atomic -coverpkg="$(go list ./bilibili ./notify ./service ./state ./web | paste -sd, -)" -coverprofile=coverage.out ./...` 一次运行仓库全部测试并同时完成 race 与覆盖率验证，总覆盖率低于 80% 时失败。常规 CI 通过 `make test-race` 随机化 Go 测试顺序，独立的每日/手动 Stability workflow 通过 `make test-stability` 在 race detector 下默认重复全部测试 10 次；重复次数由 `GO_STABILITY_COUNT` 覆盖，重型门禁不加入普通本地 `make check`。Go 覆盖率报告通过 GitHub OIDC 上传 Codecov，不配置静态 Token，项目与 patch 目标均固定为 80%。`make test-protocol` 在 race detector 下重复通知与遥测协议测试三次，`make benchmark` 提供通知序列化、投递消息和禁用遥测记录的无绝对耗时阈值 benchmark。CI 必须在 Go 检查前构建前端，对观测配置与告警规则运行独立门禁，并对最终 Docker 镜像运行冒烟测试。Docker 构建必须从 lockfile 重建前端并生成完整单二进制镜像；基础及完整 Compose 中应用保持镜像 UID 65532、只读根文件系统、无额外 capability，并使用命名卷实现重启持久化。

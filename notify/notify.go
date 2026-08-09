@@ -82,6 +82,28 @@ func IsPermanent(err error) bool {
 	return errors.As(err, &permanent)
 }
 
+// RetryAfterError carries an upstream's minimum retry delay without exposing
+// its response body. Delivery scheduling still applies the configured backoff
+// when it is longer.
+type RetryAfterError struct {
+	Err   error
+	Delay time.Duration
+}
+
+func (e *RetryAfterError) Error() string { return e.Err.Error() }
+func (e *RetryAfterError) Unwrap() error { return e.Err }
+
+// RetryAfter returns an upstream-requested minimum retry delay.
+func RetryAfter(err error) (time.Duration, bool) {
+	var retry *RetryAfterError
+	if !errors.As(err, &retry) || retry.Delay <= 0 {
+		return 0, false
+	}
+	return retry.Delay, true
+}
+
+const maxProtocolResponseBytes = 1 << 20
+
 func NewSender(ch model.Channel, client *http.Client, dataDir string, updateSettings SettingsUpdater) (Sender, error) {
 	if err := ch.Validate(); err != nil {
 		return nil, err
@@ -281,15 +303,28 @@ type emailSender struct {
 }
 
 func newEmailSender(settings map[string]string, dataDir string) (*emailSender, error) {
+	return newEmailSenderWithTLSConfig(settings, dataDir, nil)
+}
+
+func newEmailSenderWithTLSConfig(settings map[string]string, dataDir string, tlsConfig *tls.Config) (*emailSender, error) {
 	port, err := strconv.Atoi(settings["port"])
 	if err != nil {
 		return nil, fmt.Errorf("parsing SMTP port: %w", err)
+	}
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: settings["host"]}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+		tlsConfig.MinVersion = max(tlsConfig.MinVersion, uint16(tls.VersionTLS12))
+		if tlsConfig.ServerName == "" {
+			tlsConfig.ServerName = settings["host"]
+		}
 	}
 	opts := []mail.Option{
 		mail.WithPort(port),
 		mail.WithTimeout(10 * time.Second),
 		mail.WithTLSPolicy(mail.TLSMandatory),
-		mail.WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12, ServerName: settings["host"]}),
+		mail.WithTLSConfig(tlsConfig),
 	}
 	if settings["tls"] == "tls" {
 		opts = append(opts, mail.WithSSL())
@@ -353,13 +388,14 @@ func (s *emailSender) Send(ctx context.Context, message Message) error {
 }
 
 type robotSender struct {
-	kind      model.ChannelType
-	webhook   string
-	secret    string
-	client    *http.Client
-	dataDir   string
-	appID     string
-	appSecret string
+	kind              model.ChannelType
+	webhook           string
+	secret            string
+	client            *http.Client
+	dataDir           string
+	appID             string
+	appSecret         string
+	feishuTokenCaches *sync.Map
 }
 
 func (s *robotSender) Send(ctx context.Context, message Message) error {
@@ -486,24 +522,31 @@ func (s *robotSender) postJSON(ctx context.Context, endpoint string, payload any
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("posting %s notification: %w", s.kind, err)
+		return sanitizedHTTPTransportError(fmt.Sprintf("posting %s notification", s.kind), err)
 	}
 	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	responseBody, oversized, err := readProtocolResponse(resp.Body)
 	if err != nil {
 		return fmt.Errorf("reading %s response: %w", s.kind, err)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return fmt.Errorf("%s returned HTTP %d", s.kind, resp.StatusCode)
+		return retryableHTTPError(string(s.kind), resp)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &PermanentError{Err: fmt.Errorf("%s returned HTTP %d", s.kind, resp.StatusCode)}
+	}
+	if oversized {
+		return &PermanentError{Err: fmt.Errorf("%s response exceeds %d bytes", s.kind, maxProtocolResponseBytes)}
 	}
 	var result map[string]any
 	if err := json.Unmarshal(responseBody, &result); err != nil {
 		return &PermanentError{Err: fmt.Errorf("decoding %s response: %w", s.kind, err)}
 	}
-	if code := businessCode(result); code != 0 {
+	code, err := businessCode(result)
+	if err != nil {
+		return &PermanentError{Err: fmt.Errorf("decoding %s business result: %w", s.kind, err)}
+	}
+	if code != 0 {
 		return &PermanentError{Err: fmt.Errorf("%s returned business code %d", s.kind, code)}
 	}
 	return nil
@@ -554,7 +597,11 @@ func (s *robotSender) uploadFeishuImages(ctx context.Context, message Message) (
 }
 
 func (s *robotSender) feishuTenantToken(ctx context.Context) (string, error) {
-	raw, _ := feishuTokens.LoadOrStore(s.appID, &feishuTokenCache{})
+	caches := s.feishuTokenCaches
+	if caches == nil {
+		caches = &feishuTokens
+	}
+	raw, _ := caches.LoadOrStore(s.appID, &feishuTokenCache{})
 	cache := raw.(*feishuTokenCache)
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
@@ -572,12 +619,21 @@ func (s *robotSender) feishuTenantToken(ctx context.Context) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("requesting feishu tenant token: %w", err)
+		return "", sanitizedHTTPTransportError("requesting feishu tenant token", err)
 	}
 	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	responseBody, oversized, err := readProtocolResponse(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("reading feishu tenant token: %w", err)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return "", retryableHTTPError("feishu tenant token", resp)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", &PermanentError{Err: fmt.Errorf("feishu tenant token returned HTTP %d", resp.StatusCode)}
+	}
+	if oversized {
+		return "", &PermanentError{Err: fmt.Errorf("feishu tenant token response exceeds %d bytes", maxProtocolResponseBytes)}
 	}
 	var result struct {
 		Code              int    `json:"code"`
@@ -589,7 +645,7 @@ func (s *robotSender) feishuTenantToken(ctx context.Context) (string, error) {
 		return "", &PermanentError{Err: fmt.Errorf("decoding feishu tenant token: %w", err)}
 	}
 	if result.Code != 0 || result.TenantAccessToken == "" {
-		return "", &PermanentError{Err: fmt.Errorf("feishu tenant token failed: code=%d msg=%s", result.Code, result.Msg)}
+		return "", &PermanentError{Err: fmt.Errorf("feishu tenant token failed: code=%d", result.Code)}
 	}
 	expire := result.Expire
 	if expire <= 0 {
@@ -619,18 +675,21 @@ func (s *robotSender) uploadFeishuImage(ctx context.Context, token string, img l
 	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("uploading feishu image: %w", err)
+		return "", sanitizedHTTPTransportError("uploading feishu image", err)
 	}
 	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	responseBody, oversized, err := readProtocolResponse(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("reading feishu image upload: %w", err)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return "", fmt.Errorf("feishu image upload returned HTTP %d", resp.StatusCode)
+		return "", retryableHTTPError("feishu image upload", resp)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", &PermanentError{Err: fmt.Errorf("feishu image upload returned HTTP %d", resp.StatusCode)}
+	}
+	if oversized {
+		return "", &PermanentError{Err: fmt.Errorf("feishu image upload response exceeds %d bytes", maxProtocolResponseBytes)}
 	}
 	var result struct {
 		Code int    `json:"code"`
@@ -643,9 +702,42 @@ func (s *robotSender) uploadFeishuImage(ctx context.Context, token string, img l
 		return "", &PermanentError{Err: fmt.Errorf("decoding feishu image upload: %w", err)}
 	}
 	if result.Code != 0 || result.Data.ImageKey == "" {
-		return "", &PermanentError{Err: fmt.Errorf("feishu image upload failed: code=%d msg=%s", result.Code, result.Msg)}
+		return "", &PermanentError{Err: fmt.Errorf("feishu image upload failed: code=%d", result.Code)}
 	}
 	return result.Data.ImageKey, nil
+}
+
+func readProtocolResponse(reader io.Reader) ([]byte, bool, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, maxProtocolResponseBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	return body, len(body) > maxProtocolResponseBytes, nil
+}
+
+func retryableHTTPError(operation string, response *http.Response) error {
+	err := fmt.Errorf("%s returned HTTP %d", operation, response.StatusCode)
+	value := strings.TrimSpace(response.Header.Get("Retry-After"))
+	if value == "" {
+		return err
+	}
+	if seconds, parseErr := strconv.ParseInt(value, 10, 64); parseErr == nil && seconds > 0 {
+		return &RetryAfterError{Err: err, Delay: time.Duration(seconds) * time.Second}
+	}
+	if when, parseErr := http.ParseTime(value); parseErr == nil {
+		if delay := time.Until(when); delay > 0 {
+			return &RetryAfterError{Err: err, Delay: delay}
+		}
+	}
+	return err
+}
+
+func sanitizedHTTPTransportError(operation string, err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Err != nil {
+		err = urlErr.Err
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 type renderPart struct {
@@ -975,7 +1067,7 @@ func payloadSize(payload any) int {
 	return len(raw)
 }
 
-func businessCode(result map[string]any) int64 {
+func businessCode(result map[string]any) (int64, error) {
 	for _, key := range []string{"errcode", "code", "StatusCode"} {
 		value, ok := result[key]
 		if !ok {
@@ -983,13 +1075,21 @@ func businessCode(result map[string]any) int64 {
 		}
 		switch v := value.(type) {
 		case float64:
-			return int64(v)
+			if v != float64(int64(v)) {
+				return 0, fmt.Errorf("field %s is not an integer", key)
+			}
+			return int64(v), nil
 		case string:
-			code, _ := strconv.ParseInt(v, 10, 64)
-			return code
+			code, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("field %s is not an integer", key)
+			}
+			return code, nil
+		default:
+			return 0, fmt.Errorf("field %s has type %T", key, value)
 		}
 	}
-	return 0
+	return 0, errors.New("missing business code")
 }
 
 func hmacBase64(key, data []byte) string {
