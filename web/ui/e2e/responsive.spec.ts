@@ -20,11 +20,11 @@ test('retains the operational workflow on a phone viewport', async ({ page, harn
 
   await test.step('validate responsive navigation, filtering, and accessibility', async () => {
     await page.setViewportSize({ width: 390, height: 844 })
-    await expect(page.getByLabel('打开导航')).toBeVisible()
+    await expect(page.getByRole('navigation', { name: '移动端主导航' })).toBeVisible()
     await navigateTo(page, '历史')
     await expect(page.getByRole('heading', { name: '历史内容' })).toBeVisible()
     await expect(page.getByText('new dynamic content')).toBeVisible()
-    const commentsResponse = page.waitForResponse(response => response.url().includes('/api/v1/comments?'))
+    const commentsResponse = page.waitForResponse(response => response.url().includes('/api/v2/comments?'))
     await page.getByRole('tab', { name: 'UP 回复' }).click()
     await commentsResponse
     await expect(page.getByText('当前筛选下没有历史记录')).toBeVisible()

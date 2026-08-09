@@ -1,32 +1,36 @@
-import { useCallback, useMemo, useState } from 'react'
-import { Box, CircularProgress, CssBaseline, Snackbar, Stack, ThemeProvider, Typography, createTheme, useMediaQuery } from '@mui/material'
-import { useEffect } from 'react'
-import type { z } from 'zod'
-import { httpJSON } from './api'
-import { sessionStateSchema } from './contracts'
-import { errorMessage } from './presentation'
-import type { ThemePreference } from './types'
-import { AuthScreen } from './app/AuthScreen'
-import { Console } from './app/Console'
+import { QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect } from 'react'
+import { RouterProvider } from 'react-router-dom'
+import { AuthScreen } from './modules/session/AuthScreen'
+import { SessionProvider } from './modules/session/session'
+import { appRouter } from './app/router'
+import { ThemeProvider } from './app/theme'
+import { createQueryClient } from './shared/api/query-client'
+import { queryKeys } from './shared/api/query-keys'
+import { sessionQuery } from './shared/api/session'
+import { setAuthenticationLostHandler } from './shared/api/client'
+import { RealtimeSync } from './shared/realtime/RealtimeSync'
+import { Alert, Button, LoadingState, NotificationProvider, useNotify } from './shared/ui'
 
-type SessionState = z.infer<typeof sessionStateSchema>
-
-function useThemePreference() {
-  const [preference, setPreference] = useState<ThemePreference>(() => (window.localStorage.getItem('theme') as ThemePreference) || 'system')
-  const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
-  const mode = preference === 'system' ? (systemDark ? 'dark' : 'light') : preference
-  const theme = useMemo(() => createTheme({ palette: { mode, primary: { main: mode === 'dark' ? '#ff8ab0' : '#c2185b' }, secondary: { main: mode === 'dark' ? '#5ec7f2' : '#0277bd' }, background: mode === 'dark' ? { default: '#101116', paper: '#191b22' } : { default: '#f6f7fb', paper: '#ffffff' } }, shape: { borderRadius: 14 }, typography: { fontFamily: 'Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif' }, components: { MuiButton: { styleOverrides: { root: { minHeight: 42, textTransform: 'none', fontWeight: 650 } } }, MuiIconButton: { styleOverrides: { root: { minWidth: 44, minHeight: 44 } } }, MuiCard: { styleOverrides: { root: { border: mode === 'dark' ? '1px solid #2b2e39' : '1px solid #e7e9f1', boxShadow: 'none' } } } } }), [mode])
-  const update = (value: ThemePreference) => { window.localStorage.setItem('theme', value); setPreference(value) }
-  return { theme, preference, update }
-}
+const queryClient = createQueryClient()
 
 export default function App() {
-  const { theme, preference, update } = useThemePreference(); const [session, setSession] = useState<SessionState | null>(null); const [message, setMessage] = useState('')
-  const refreshSession = useCallback(async () => { try { setSession(await httpJSON('/api/v1/session', sessionStateSchema)) } catch (error) { setMessage(errorMessage(error)) } }, [])
-  useEffect(() => { void refreshSession() }, [refreshSession])
-  return <ThemeProvider theme={theme}><CssBaseline />{!session ? <LoadingScreen /> : session.authenticated && session.csrf_token ? <Console csrf={session.csrf_token} themePreference={preference} setThemePreference={update} onAuthLost={refreshSession} /> : <AuthScreen setup={session.setup_required} onAuthenticated={state => setSession({ setup_required: false, authenticated: true, csrf_token: state.csrf_token })} />}<Snackbar open={Boolean(message)} autoHideDuration={5000} onClose={() => setMessage('')} message={message} /></ThemeProvider>
+  return <QueryClientProvider client={queryClient}><ThemeProvider><NotificationProvider><SessionBoundary /></NotificationProvider></ThemeProvider></QueryClientProvider>
 }
 
-function LoadingScreen() {
-  return <Box minHeight="100vh" display="grid" sx={{ placeItems: 'center' }}><Stack alignItems="center" spacing={2}><CircularProgress /><Typography color="text.secondary">正在连接 Bili Notify</Typography></Stack></Box>
+function SessionBoundary() {
+  const session = useQuery(sessionQuery())
+  const client = useQueryClient()
+  const notify = useNotify()
+  const loseAuthentication = useCallback(() => {
+    client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' })
+    client.setQueryData(queryKeys.session, { setup_required: false, authenticated: false })
+  }, [client])
+  const protocolError = useCallback((message: string) => notify(message, 'danger'), [notify])
+
+  useEffect(() => { setAuthenticationLostHandler(loseAuthentication); return () => setAuthenticationLostHandler(undefined) }, [loseAuthentication])
+  if (session.isPending) return <LoadingState label="正在连接 Bili Notify" />
+  if (session.isError) return <main className="bootstrap"><Alert tone="danger"><h1>无法连接管理服务</h1><p>{session.error.message}</p><Button variant="primary" onPress={() => void session.refetch()}>重新连接</Button></Alert></main>
+  if (!session.data.authenticated || !session.data.csrf_token) return <AuthScreen setup={session.data.setup_required} />
+  return <SessionProvider value={{ csrf: session.data.csrf_token }}><RealtimeSync onAuthenticationLost={loseAuthentication} onProtocolError={protocolError}><RouterProvider router={appRouter} /></RealtimeSync></SessionProvider>
 }

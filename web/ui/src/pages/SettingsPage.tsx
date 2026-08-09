@@ -1,196 +1,40 @@
-import { useEffect, useState } from 'react'
-import BrightnessAuto from '@mui/icons-material/BrightnessAuto'
-import DarkMode from '@mui/icons-material/DarkMode'
-import ExpandLess from '@mui/icons-material/ExpandLess'
-import ExpandMore from '@mui/icons-material/ExpandMore'
-import LightMode from '@mui/icons-material/LightMode'
-import Password from '@mui/icons-material/Password'
-import { Alert, Box, Button, Card, CardContent, Collapse, FormControlLabel, IconButton, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material'
-import type { AdminAPI } from '../api'
-import { httpJSON } from '../api'
-import { csrfStateSchema } from '../contracts'
-import { applySettingsMutation } from '../dashboard'
-import { errorMessage, themeLabel } from '../presentation'
-import type { RuntimeSettings, ThemePreference } from '../types'
-import { PageHeader, type RunMutation } from '../app/shared'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import type { RuntimeSettings } from '../types'
+import { queries, queryKeys } from '../shared/api/query'
+import { resources } from '../shared/api/resources'
+import { sessionAPI } from '../shared/api/session'
+import { apiErrorMessage } from '../shared/api/errors'
+import { useSession } from '../modules/session/session'
+import { useThemePreference } from '../app/theme'
+import { Alert, Button, Card, LoadingState, PageError, PageHeader, SelectField, SwitchField, TextField, useNotify } from '../shared/ui'
 import { parseRuntimeSettingsForm, runtimeSettingsToForm, type RuntimeSettingsForm } from './settings-form'
 
-interface SettingsPageProps {
-  csrf: string
-  preference: ThemePreference
-  setPreference: (value: ThemePreference) => void
-  settings: RuntimeSettings
-  api: AdminAPI
-  runMutation: RunMutation
-  onChanged: () => void
+export function SettingsPage() {
+  const settings = useQuery(queries.settings())
+  if (settings.isPending) return <LoadingState />
+  if (settings.error) return <PageError error={settings.error} retry={() => void settings.refetch()} />
+  return <SettingsEditor key={JSON.stringify(settings.data)} initial={settings.data} />
 }
 
-const SETTINGS_EXPANDED_KEY = 'settings.expanded'
-const DEFAULT_EXPANDED: Record<string, boolean> = {
-  basic: true,
-  advanced: true,
-  delivery: true,
-  logs: true,
-  appearance: true,
-  password: true,
+function SettingsEditor({ initial }: { initial: RuntimeSettings }) {
+  const { csrf } = useSession(); const client = useQueryClient(); const notify = useNotify(); const { preference, setPreference } = useThemePreference()
+  const [form, setForm] = useState<RuntimeSettingsForm>(() => runtimeSettingsToForm(initial)); const [formError, setFormError] = useState(''); const [current, setCurrent] = useState(''); const [replacement, setReplacement] = useState(''); const [confirm, setConfirm] = useState('')
+  const save = useMutation({ mutationFn: (value: RuntimeSettings) => resources.updateSettings(csrf, value), onMutate: () => client.cancelQueries({ queryKey: queryKeys.settings }), onSuccess: async () => { await client.invalidateQueries({ queryKey: queryKeys.settings }); void client.invalidateQueries({ queryKey: queryKeys.runtime }); notify('运行参数已保存', 'success') }, onError: error => notify(apiErrorMessage(error), 'danger') })
+  const password = useMutation({ mutationFn: () => sessionAPI.changePassword(csrf, current, replacement), onSuccess: () => { client.removeQueries(); client.setQueryData(queryKeys.session, { setup_required: false, authenticated: false }) }, onError: error => notify(apiErrorMessage(error), 'danger') })
+  const patch = <K extends keyof RuntimeSettingsForm>(key: K, value: RuntimeSettingsForm[K]) => setForm(state => ({ ...state, [key]: value }))
+  const submit = () => { const parsed = parseRuntimeSettingsForm(form); if (!parsed.ok) { setFormError(parsed.error); return } setFormError(''); save.mutate(parsed.value) }
+  const changePassword = () => { if (replacement !== confirm) { notify('两次输入的新密码不一致', 'danger'); return } password.mutate() }
+  return <div className="page-stack"><PageHeader title="设置" subtitle="运行参数由服务端持久化；主题偏好只保存在当前浏览器。" />
+    <SettingsSection title="采集节奏" description="控制动态轮询、请求速率与单轮翻页上限。" open><div className="settings-grid"><NumberField label="轮询间隔（秒）" value={form.pollSec} set={value => patch('pollSec', value)} /><NumberField label="请求速率（次/秒）" value={form.requestRate} set={value => patch('requestRate', value)} /><NumberField label="请求并发数" value={form.concurrency} set={value => patch('concurrency', value)} /><NumberField label="动态翻页上限" value={form.maxDynamicPages} set={value => patch('maxDynamicPages', value)} /><NumberField label="关注关系刷新（秒）" value={form.relationRefreshSec} set={value => patch('relationRefreshSec', value)} /><NumberField label="空间校验间隔（秒）" value={form.spaceReconcileSec} set={value => patch('spaceReconcileSec', value)} /><NumberField label="风控暂停（秒）" value={form.riskPauseSec} set={value => patch('riskPauseSec', value)} /></div></SettingsSection>
+    <SettingsSection title="评论监控" description="控制评论树读取深度和批次频率。"><SwitchField checked={form.commentEnabled} onChange={value => patch('commentEnabled', value)}>启用评论监控</SwitchField><div className="settings-grid"><NumberField label="跟踪内容数 N" value={form.commentTrackN} set={value => patch('commentTrackN', value)} /><NumberField label="根评论页数" value={form.commentRootPages} set={value => patch('commentRootPages', value)} /><NumberField label="子评论页数" value={form.commentReplyPages} set={value => patch('commentReplyPages', value)} /><NumberField label="批次间隔（秒）" value={form.commentBatchSec} set={value => patch('commentBatchSec', value)} /></div></SettingsSection>
+    <SettingsSection title="投递与积压" description="控制投递并发、积压告警和五阶段重试。"><div className="settings-grid"><NumberField label="投递并发数" value={form.deliveryConcurrency} set={value => patch('deliveryConcurrency', value)} /><NumberField label="积压条数阈值" value={form.backlogAlertCount} set={value => patch('backlogAlertCount', value)} /><NumberField label="积压时长阈值（秒）" value={form.backlogAlertAgeSec} set={value => patch('backlogAlertAgeSec', value)} />{form.retryDelaysSec.map((value, index) => <NumberField key={index} label={`第 ${index + 1} 阶段重试（秒）`} value={value} set={next => { const values = [...form.retryDelaysSec] as RuntimeSettingsForm['retryDelaysSec']; values[index] = next; patch('retryDelaysSec', values) }} />)}</div></SettingsSection>
+    <SettingsSection title="日志与保留" description="设置运行日志级别和审计记录保留期。"><div className="settings-grid"><SelectField label="日志级别" value={form.logLevel} onChange={value => patch('logLevel', value as RuntimeSettings['log_level'])} options={['debug', 'info', 'warn', 'error'].map(value => ({ value, label: value }))} /><NumberField label="审计日志保留（天）" value={form.auditRetentionDays} set={value => patch('auditRetentionDays', value)} /></div></SettingsSection>
+    {formError && <Alert tone="danger">{formError}</Alert>}<Button variant="primary" busy={save.isPending} onPress={submit}>保存运行设置</Button>
+    <SettingsSection title="外观" description="CSS Variables 切换主题，不重建 React 组件树。"><div className="button-row">{(['system', 'light', 'dark'] as const).map(value => <Button key={value} variant={preference === value ? 'primary' : 'outline'} onPress={() => setPreference(value)}>{value === 'system' ? '跟随系统' : value === 'light' ? '亮色' : '暗色'}</Button>)}</div></SettingsSection>
+    <SettingsSection title="修改管理员密码" description="修改成功后，所有设备的会话都会立即失效。"><div className="form-stack form-narrow"><TextField label="当前密码" type="password" value={current} onChange={setCurrent} autoComplete="current-password" /><TextField label="新密码" type="password" value={replacement} onChange={setReplacement} autoComplete="new-password" description="至少 12 个字节" /><TextField label="确认新密码" type="password" value={confirm} onChange={setConfirm} autoComplete="new-password" /><Button variant="primary" busy={password.isPending} isDisabled={!current || !replacement} onPress={changePassword}>修改密码</Button></div></SettingsSection>
+  </div>
 }
 
-function readExpandedState(): Record<string, boolean> {
-  try {
-    const raw = window.localStorage.getItem(SETTINGS_EXPANDED_KEY)
-    if (!raw) return { ...DEFAULT_EXPANDED }
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    if (!parsed || typeof parsed !== 'object') return { ...DEFAULT_EXPANDED }
-    const next = { ...DEFAULT_EXPANDED }
-    for (const key of Object.keys(DEFAULT_EXPANDED)) {
-      if (typeof parsed[key] === 'boolean') next[key] = parsed[key] as boolean
-    }
-    return next
-  } catch {
-    return { ...DEFAULT_EXPANDED }
-  }
-}
-
-export function SettingsPage({ csrf, preference, setPreference, settings, api, runMutation, onChanged }: SettingsPageProps) {
-  const [current, setCurrent] = useState('')
-  const [replacement, setReplacement] = useState('')
-  const [confirm, setConfirm] = useState('')
-  const [message, setMessage] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [form, setForm] = useState<RuntimeSettingsForm>(() => runtimeSettingsToForm(settings))
-  const [settingsMessage, setSettingsMessage] = useState('')
-  const [settingsBusy, setSettingsBusy] = useState(false)
-  const [expanded, setExpanded] = useState<Record<string, boolean>>(readExpandedState)
-
-  useEffect(() => setForm(runtimeSettingsToForm(settings)), [settings])
-
-  const setField = <K extends keyof RuntimeSettingsForm>(field: K, value: RuntimeSettingsForm[K]) => {
-    setForm(previous => ({ ...previous, [field]: value }))
-  }
-  const setRetryDelay = (index: number, value: string) => {
-    const next = [...form.retryDelaysSec] as RuntimeSettingsForm['retryDelaysSec']
-    next[index] = value
-    setField('retryDelaysSec', next)
-  }
-  const toggleSection = (key: string) => {
-    setExpanded(previous => {
-      const next = { ...previous, [key]: !previous[key] }
-      try {
-        window.localStorage.setItem(SETTINGS_EXPANDED_KEY, JSON.stringify(next))
-      } catch {
-        // Persistence is best-effort (quota / private mode / blocked storage).
-      }
-      return next
-    })
-  }
-  const change = async () => {
-    if (replacement !== confirm) { setMessage('两次输入的新密码不一致'); return }
-    setBusy(true)
-    try {
-      await httpJSON('/api/v1/session/password', csrfStateSchema, { method: 'PUT', body: JSON.stringify({ current_password: current, new_password: replacement }) }, csrf)
-      await onChanged()
-    } catch (error) { setMessage(errorMessage(error)) } finally { setBusy(false) }
-  }
-  const saveSettings = async () => {
-    const parsed = parseRuntimeSettingsForm(form)
-    if (!parsed.ok) { setSettingsMessage(parsed.error); return }
-    setSettingsBusy(true); setSettingsMessage('')
-    try { await runMutation(() => api.updateSettings(parsed.value), applySettingsMutation) } catch (error) { setSettingsMessage(errorMessage(error)) } finally { setSettingsBusy(false) }
-  }
-
-  return <Stack spacing={3}>
-    <PageHeader title="设置" subtitle="管理运行参数、本浏览器外观与管理员凭据。" />
-    <SettingsCard sectionKey="basic" title="基础采集" description="保存后写入数据库并用于后续采集周期；正在执行的任务不会被取消。" expanded={expanded.basic} onToggle={toggleSection}>
-      <TextField label="轮询间隔（秒）" type="number" value={form.pollSec} onChange={event => setField('pollSec', event.target.value)} helperText="10–86400" inputProps={{ min: 10, max: 86400, step: 1 }} />
-      <TextField label="请求速率（次/秒）" type="number" value={form.requestRate} onChange={event => setField('requestRate', event.target.value)} helperText="(0, 10]" inputProps={{ min: 0.1, max: 10, step: 0.1 }} />
-      <TextField label="请求并发数" type="number" value={form.concurrency} onChange={event => setField('concurrency', event.target.value)} helperText="1–16" inputProps={{ min: 1, max: 16, step: 1 }} />
-      <FormControlLabel control={<Switch checked={form.commentEnabled} onChange={event => setField('commentEnabled', event.target.checked)} />} label="启用 UP 评论回复监控" />
-      <TextField label="每 UP 跟踪内容数 N" type="number" value={form.commentTrackN} onChange={event => setField('commentTrackN', event.target.value)} disabled={!form.commentEnabled} helperText="1–50" />
-      <TextField label="根评论最大页数" type="number" value={form.commentRootPages} onChange={event => setField('commentRootPages', event.target.value)} disabled={!form.commentEnabled} helperText="1–10" />
-      <TextField label="子评论最大页数" type="number" value={form.commentReplyPages} onChange={event => setField('commentReplyPages', event.target.value)} disabled={!form.commentEnabled} helperText="1–20" />
-      <TextField label="评论批次间隔（秒）" type="number" value={form.commentBatchSec} onChange={event => setField('commentBatchSec', event.target.value)} disabled={!form.commentEnabled} helperText="30–86400" />
-    </SettingsCard>
-
-    <SettingsCard sectionKey="advanced" title="高级采集" description="这些参数会改变 B 站请求深度与风控后的恢复节奏，请保持保守值。" expanded={expanded.advanced} onToggle={toggleSection}>
-      <TextField label="关注关系刷新间隔（秒）" type="number" value={form.relationRefreshSec} onChange={event => setField('relationRefreshSec', event.target.value)} helperText="60–86400" />
-      <TextField label="空间完整性校验间隔（秒）" type="number" value={form.spaceReconcileSec} onChange={event => setField('spaceReconcileSec', event.target.value)} helperText="300–604800" />
-      <TextField label="动态最大翻页数" type="number" value={form.maxDynamicPages} onChange={event => setField('maxDynamicPages', event.target.value)} helperText="1–20；同时作用于综合流和空间动态" />
-      <TextField label="风控暂停时长（秒）" type="number" value={form.riskPauseSec} onChange={event => setField('riskPauseSec', event.target.value)} helperText="60–3600；仅影响之后发生的风控暂停" />
-    </SettingsCard>
-
-    <SettingsCard sectionKey="delivery" title="投递与告警" description="新策略只影响之后的投递批次和失败；已写入的重试时间不会被改写。" expanded={expanded.delivery} onToggle={toggleSection}>
-      <TextField label="投递并发数" type="number" value={form.deliveryConcurrency} onChange={event => setField('deliveryConcurrency', event.target.value)} helperText="1–32" />
-      <TextField label="积压条数告警阈值" type="number" value={form.backlogAlertCount} onChange={event => setField('backlogAlertCount', event.target.value)} helperText="1–100000" />
-      <TextField label="积压时长告警阈值（秒）" type="number" value={form.backlogAlertAgeSec} onChange={event => setField('backlogAlertAgeSec', event.target.value)} helperText="60–86400" />
-      <Typography variant="subtitle2" fontWeight={750}>五段重试上限（秒）</Typography>
-      <Typography variant="body2" color="text.secondary">实际延迟在每段配置值的 50%–100% 之间；第五段会持续复用。</Typography>
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
-        {form.retryDelaysSec.map((value, index) => <TextField key={index} label={`第 ${index + 1} 段`} type="number" value={value} onChange={event => setRetryDelay(index, event.target.value)} inputProps={{ min: 1, max: 86400, step: 1 }} />)}
-      </Stack>
-    </SettingsCard>
-
-    <SettingsCard sectionKey="logs" title="日志" description="日志级别立即生效；审计日志保留期由应用管理，系统日志保留期由 Loki 管理。" expanded={expanded.logs} onToggle={toggleSection}>
-      <TextField select label="日志级别" value={form.logLevel} onChange={event => setField('logLevel', event.target.value as RuntimeSettings['log_level'])}>
-        {(['debug', 'info', 'warn', 'error'] as const).map(level => <MenuItem key={level} value={level}>{level}</MenuItem>)}
-      </TextField>
-      <TextField label="审计日志保留天数" type="number" value={form.auditRetentionDays} onChange={event => setField('auditRetentionDays', event.target.value)} helperText="1–3650；下一次每日清理生效" />
-    </SettingsCard>
-
-    {settingsMessage && <Alert severity="error">{settingsMessage}</Alert>}
-    <Button variant="contained" disabled={settingsBusy} onClick={() => void saveSettings()}>保存运行设置</Button>
-
-    <SettingsCard sectionKey="appearance" title="外观" description="跟随系统会响应操作系统的明暗模式。" expanded={expanded.appearance} onToggle={toggleSection}>
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-        {(['system', 'light', 'dark'] as ThemePreference[]).map(value => <Button key={value} variant={preference === value ? 'contained' : 'outlined'} startIcon={value === 'system' ? <BrightnessAuto /> : value === 'dark' ? <DarkMode /> : <LightMode />} onClick={() => setPreference(value)}>{themeLabel(value)}</Button>)}
-      </Stack>
-    </SettingsCard>
-
-    <SettingsCard sectionKey="password" title="修改管理员密码" description="修改后所有设备会话都会立即失效。" expanded={expanded.password} onToggle={toggleSection}>
-      <Stack spacing={2} maxWidth={520}>
-        <TextField label="当前密码" type="password" value={current} onChange={event => setCurrent(event.target.value)} autoComplete="current-password" />
-        <TextField label="新密码" type="password" value={replacement} onChange={event => setReplacement(event.target.value)} autoComplete="new-password" helperText="至少 12 个字节" />
-        <TextField label="确认新密码" type="password" value={confirm} onChange={event => setConfirm(event.target.value)} autoComplete="new-password" />
-        {message && <Alert severity="error">{message}</Alert>}
-        <Button variant="contained" startIcon={<Password />} disabled={busy || !current || !replacement} onClick={() => void change()}>修改密码</Button>
-      </Stack>
-    </SettingsCard>
-  </Stack>
-}
-
-function SettingsCard({ sectionKey, title, description, expanded, onToggle, children }: {
-  sectionKey: string
-  title: string
-  description: string
-  expanded: boolean
-  onToggle: (key: string) => void
-  children: React.ReactNode
-}) {
-  return <Card>
-    <CardContent>
-      <Stack spacing={2} maxWidth={720}>
-        <Stack direction="row" alignItems="flex-start" justifyContent="space-between" gap={1}>
-          <Box
-            component="button"
-            type="button"
-            onClick={() => onToggle(sectionKey)}
-            aria-expanded={expanded}
-            aria-controls={`settings-section-${sectionKey}`}
-            sx={{
-              display: 'block', flex: 1, minWidth: 0, m: 0, p: 0, border: 0, textAlign: 'left',
-              color: 'inherit', background: 'transparent', cursor: 'pointer',
-            }}
-          >
-            <Typography variant="h6" fontWeight={800}>{title}</Typography>
-            <Typography color="text.secondary">{description}</Typography>
-          </Box>
-          <IconButton aria-label={expanded ? `收起${title}` : `展开${title}`} onClick={() => onToggle(sectionKey)} size="small">
-            {expanded ? <ExpandLess /> : <ExpandMore />}
-          </IconButton>
-        </Stack>
-        <Collapse in={expanded} timeout="auto" unmountOnExit>
-          <Stack id={`settings-section-${sectionKey}`} spacing={2}>{children}</Stack>
-        </Collapse>
-      </Stack>
-    </CardContent>
-  </Card>
-}
+function SettingsSection({ title, description, children, open = false }: { title: string; description: string; children: React.ReactNode; open?: boolean }) { return <Card><details open={open || undefined} className="settings-section"><summary><div><h2>{title}</h2><p>{description}</p></div><span aria-hidden="true">⌄</span></summary><div className="settings-section__body">{children}</div></details></Card> }
+function NumberField({ label, value, set }: { label: string; value: string; set: (value: string) => void }) { return <TextField label={label} value={value} onChange={set} inputMode="decimal" /> }

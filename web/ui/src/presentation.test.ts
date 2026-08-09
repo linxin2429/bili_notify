@@ -13,7 +13,7 @@ describe('presentation helpers', () => {
   ] as const)('labels follow state %s', (input, want) => expect(followStateLabel(input)).toBe(want))
 
   it.each([
-    ['connecting', '重连中'], ['reconnecting', '重连中'], ['live', '实时'], ['stale', '数据过期'],
+    ['connecting', '重连中'], ['reconnecting', '重连中'], ['live', '实时'], ['polling', 'REST 轮询'],
   ] as const)('labels connection %s', (input, want) => expect(connectionLabel(input)).toBe(want))
 
   it.each([
@@ -51,7 +51,7 @@ describe('presentation helpers', () => {
     expect(composePreviewBody()).toBe(''); expect(composePreviewBody('正文')).toBe('正文'); expect(composePreviewBody('同 一段', '同   一段')).toBe('同 一段'); expect(composePreviewBody('摘要', '简介')).toBe('摘要\n\n简介')
     expect(normalizePreviewText(' a \n b ')).toBe('a b')
     expect(historyMediaURL('https://i0.hdslb.com/bfs/a.jpg@100w', 240)).toBe('https://i0.hdslb.com/bfs/a.jpg@240w')
-    expect(historyMediaURL('https://example.com/a.jpg', 240)).toBe('https://example.com/a.jpg'); expect(historyMediaURL('/api/v1/dynamics/1/media/0', 240)).toBe('/api/v1/dynamics/1/media/0'); expect(historyMediaURL(' ', 240)).toBe(''); expect(historyMediaURL('bad url', 0)).toBe('bad url')
+    expect(historyMediaURL('https://example.com/a.jpg', 240)).toBe('https://example.com/a.jpg'); expect(historyMediaURL('/api/v2/dynamics/1/media/0', 240)).toBe('/api/v2/dynamics/1/media/0'); expect(historyMediaURL(' ', 240)).toBe(''); expect(historyMediaURL('bad url', 0)).toBe('bad url')
   })
 
   it.each([

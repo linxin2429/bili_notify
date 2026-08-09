@@ -78,7 +78,7 @@ test('runs the collection, durable outbox, restart, and retry journey', async ({
     await expect(page.getByText('综合流采集')).toBeVisible()
     await navigateTo(page, '投递队列')
     await expect(page.getByText('已阻塞', { exact: true }).last()).toBeVisible()
-    await expect(page.getByText('共 1 个任务，页面展示前 1 个。')).toBeVisible()
+    await expect(page.getByText('按稳定游标读取待投递任务；新任务不会扰动当前页。')).toBeVisible()
     await expect(page.getByText('已尝试 1 次')).toBeVisible()
   })
 
@@ -107,7 +107,7 @@ test('runs the collection, durable outbox, restart, and retry journey', async ({
     expect(messageText((await harness.state()).messages[3])).toContain('E2E UP comment reply')
 
     await navigateTo(page, '历史')
-    const commentsResponse = page.waitForResponse(response => response.url().includes('/api/v1/comments?'))
+    const commentsResponse = page.waitForResponse(response => response.url().includes('/api/v2/comments?'))
     await page.getByRole('tab', { name: 'UP 回复' }).click()
     await commentsResponse
     await page.getByRole('button', { name: /查看评论对话/ }).click()
@@ -117,13 +117,13 @@ test('runs the collection, durable outbox, restart, and retry journey', async ({
 
   await test.step('remove the UP and clear its dynamic and comment history', async () => {
     await navigateTo(page, 'UP 主')
-    page.once('dialog', dialog => dialog.accept())
     await page.getByRole('button', { name: '删除' }).click()
+    await page.getByRole('button', { name: '确认删除' }).click()
     await expect(page.getByText('尚未添加 UP 主')).toBeVisible()
 
     await navigateTo(page, '历史')
     await expect(page.getByText('当前筛选下没有历史记录')).toBeVisible()
-    const commentsResponse = page.waitForResponse(response => response.url().includes('/api/v1/comments?'))
+    const commentsResponse = page.waitForResponse(response => response.url().includes('/api/v2/comments?'))
     await page.getByRole('tab', { name: 'UP 回复' }).click()
     await commentsResponse
     await expect(page.getByText('当前筛选下没有历史记录')).toBeVisible()

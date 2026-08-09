@@ -1,58 +1,32 @@
-import { useState } from 'react'
-import CheckCircle from '@mui/icons-material/CheckCircle'
-import ErrorOutlined from '@mui/icons-material/ErrorOutlined'
-import Hub from '@mui/icons-material/Hub'
-import LiveTv from '@mui/icons-material/LiveTv'
-import NotificationsActive from '@mui/icons-material/NotificationsActive'
-import People from '@mui/icons-material/People'
-import QrCode2 from '@mui/icons-material/QrCode2'
-import WarningAmber from '@mui/icons-material/WarningAmber'
-import { Alert, Avatar, Box, Button, Card, CardContent, Chip, Divider, Stack, Typography } from '@mui/material'
-import type { AdminAPI } from '../api'
-import { applyBiliLoginMutation, readinessMessage } from '../dashboard'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { resources } from '../shared/api/resources'
+import { queries, queryKeys } from '../shared/api/query'
+import { apiErrorMessage } from '../shared/api/errors'
+import { Alert, Badge, Button, Card, LoadingState, PageError, PageHeader, useNotify } from '../shared/ui'
 import { formatDate, loginLabel } from '../presentation'
-import type { BiliLogin, DashboardSnapshot } from '../types'
-import type { RunMutation } from '../app/shared'
+import { useSession } from '../modules/session/session'
 
-export function OverviewPage({ snapshot, api, runMutation }: { snapshot: DashboardSnapshot; api: AdminAPI; runMutation: RunMutation }) {
-  const status = snapshot.status
-  const [busy, setBusy] = useState(false)
-  const startLogin = async () => {
-    setBusy(true)
-    try { await runMutation(() => api.startBiliLogin(), applyBiliLoginMutation) } catch { /* shared handler reports it */ } finally { setBusy(false) }
-  }
-  const cancelLogin = async (id: string) => {
-    try { await runMutation(() => api.cancelBiliLogin(id), current => applyBiliLoginMutation(current, null)) } catch { /* shared handler reports it */ }
-  }
-  return <Stack spacing={3}>
-    <Box><Typography component="h1" variant="h4" fontWeight={850}>运行概览</Typography><Typography color="text.secondary">第一眼确认服务是否正在发现并可靠投递动态。</Typography></Box>
-    <Alert severity={status.ready ? 'success' : 'warning'} icon={status.ready ? <CheckCircle /> : <WarningAmber />} sx={{ py: 1.5 }}>
-      <Typography component="h2" variant="h6" fontWeight={800}>{status.ready ? '服务已就绪' : '服务尚未就绪'}</Typography><Typography>{readinessMessage(snapshot)}</Typography>
-    </Alert>
-    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', lg: 'repeat(4, 1fr)' }, gap: 2 }}>
-      <MetricCard label="B站登录" value={status.auth_valid ? '有效' : '未登录'} icon={<LiveTv />} tone={status.auth_valid ? 'success.main' : 'warning.main'} />
-      <MetricCard label="UP 主" value={`${status.up_count}`} detail={`${snapshot.ups.filter(up => up.enabled).length} 个已启用`} icon={<People />} />
-      <MetricCard label="通知渠道" value={`${status.channel_count}`} detail={`${snapshot.channels.filter(channel => channel.enabled).length} 个已启用`} icon={<NotificationsActive />} />
-      <MetricCard label="待投递" value={`${status.outbox_depth}`} detail={status.oldest_delivery ? `最早 ${formatDate(status.oldest_delivery, snapshot.timezone)}` : '队列为空'} icon={<Hub />} tone={status.outbox_depth ? 'warning.main' : 'success.main'} />
-    </Box>
-    {status.risk_paused_until && <Alert severity="error" icon={<ErrorOutlined />}>B站风控暂停至 {formatDate(status.risk_paused_until, snapshot.timezone)}，程序不会尝试绕过风控。</Alert>}
-    <Typography variant="body2" color="text.secondary">当前采集参数：每 {snapshot.settings.poll_interval_sec} 秒轮询 · {snapshot.settings.request_rate} 请求/秒 · 并发 {snapshot.settings.request_concurrency} · 评论监控{snapshot.settings.comment_enabled ? '开' : '关'}（N={snapshot.settings.comment_track_n}，批次 {snapshot.settings.comment_batch_interval_sec}s）</Typography>
-    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1.35fr) minmax(320px, .65fr)' }, gap: 2 }}>
-      <Card><CardContent><Stack spacing={2}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography component="h2" variant="h6" fontWeight={800}>B站账号</Typography><Typography color="text.secondary">{status.bili_account ? `${status.bili_account.name || '已登录账号'} · UID ${status.bili_account.uid}` : '使用哔哩哔哩 App 扫码建立网页会话'}</Typography></Box><QrCode2 color="primary" /></Stack><BiliLoginPanel login={snapshot.bili_login || null} busy={busy} timeZone={snapshot.timezone} start={() => void startLogin()} cancel={id => void cancelLogin(id)} /></Stack></CardContent></Card>
-      <Card><CardContent><Typography component="h2" variant="h6" fontWeight={800} gutterBottom>启动检查</Typography><Stack spacing={1.5}><Checklist done={status.auth_valid} label="B站账号已登录" /><Checklist done={snapshot.channels.some(channel => channel.enabled)} label="至少一个通知渠道已启用" /><Checklist done={snapshot.ups.some(up => up.enabled)} label="至少一个 UP 主已启用" /></Stack><Divider sx={{ my: 2 }} /><Typography variant="body2" color="text.secondary">最后成功采集：{status.last_success_at ? formatDate(status.last_success_at, snapshot.timezone) : '尚无记录'}</Typography></CardContent></Card>
-    </Box>
-  </Stack>
+export function OverviewPage() {
+  const runtime = useQuery(queries.runtime()); const settings = useQuery(queries.settings()); const ups = useQuery(queries.ups())
+  const channels = useQuery(queries.channels()); const login = useQuery(queries.biliLogin())
+  const { csrf } = useSession(); const client = useQueryClient(); const notify = useNotify()
+  const refreshLogin = () => { void client.invalidateQueries({ queryKey: queryKeys.biliLogin }); void client.invalidateQueries({ queryKey: queryKeys.runtime }) }
+  const start = useMutation({ mutationFn: () => resources.startBiliLogin(csrf), onSuccess: refreshLogin, onError: error => notify(apiErrorMessage(error), 'danger') })
+  const cancel = useMutation({ mutationFn: (id: string) => resources.cancelBiliLogin(csrf, id), onSuccess: refreshLogin, onError: error => notify(apiErrorMessage(error), 'danger') })
+  const all = [runtime, settings, ups, channels, login]
+  if (all.some(query => query.isPending)) return <LoadingState label="正在读取运行状态" />
+  const failed = all.find(query => query.isError)
+  if (failed?.error) return <PageError error={failed.error} retry={() => void Promise.all(all.map(query => query.refetch()))} />
+  const run = runtime.data!; const status = run.status; const configuredUps = ups.data!; const configuredChannels = channels.data!
+  return <div className="page-stack"><PageHeader title="运行概览" subtitle="第一眼确认服务是否正在发现并可靠投递动态。" />
+    <Alert tone={status.ready ? 'success' : 'warning'}><h2>{status.ready ? '服务已就绪' : '服务尚未就绪'}</h2><p>{status.ready ? '采集和投递所需条件均由服务端确认有效。' : '请完成下方启动检查，服务端会在条件满足后切换为就绪。'}</p></Alert>
+    <div className="metric-grid"><Metric label="B站登录" value={status.auth_valid ? '有效' : '未登录'} detail={status.bili_account ? `${status.bili_account.name} · UID ${status.bili_account.uid}` : undefined} /><Metric label="UP 主" value={String(status.up_count)} detail={`${configuredUps.filter(up => up.enabled).length} 个已启用`} /><Metric label="通知渠道" value={String(status.channel_count)} detail={`${configuredChannels.filter(channel => channel.enabled).length} 个已启用`} /><Metric label="待投递" value={String(status.outbox_depth)} detail={status.oldest_delivery ? `最早 ${formatDate(status.oldest_delivery, run.timezone)}` : '队列为空'} /></div>
+    {status.risk_paused_until && <Alert tone="danger">B站风控暂停至 {formatDate(status.risk_paused_until, run.timezone)}，程序不会尝试绕过风控。</Alert>}
+    <p className="muted">当前采集参数：每 {settings.data!.poll_interval_sec} 秒轮询 · {settings.data!.request_rate} 请求/秒 · 并发 {settings.data!.request_concurrency} · 评论监控{settings.data!.comment_enabled ? '开' : '关'}</p>
+    <div className="two-column"><Card><div className="section-heading"><div><h2>B站账号</h2><p>{status.bili_account ? `${status.bili_account.name || '已登录账号'} · UID ${status.bili_account.uid}` : '使用哔哩哔哩 App 扫码建立网页会话'}</p></div><span className="section-icon">▦</span></div>{!login.data || ['success', 'expired'].includes(login.data.status) ? <Button variant="primary" busy={start.isPending} onPress={() => start.mutate()}>生成登录二维码</Button> : <div className="qr-panel"><Badge tone={login.data.status === 'scanned' ? 'info' : 'warning'}>{loginLabel(login.data.status)}</Badge>{login.data.qr_data_url && <img src={login.data.qr_data_url} className="qr-image" alt="哔哩哔哩登录二维码" />}<p>二维码有效至 {formatDate(login.data.expires_at, run.timezone)}</p><Button onPress={() => cancel.mutate(login.data!.id)}>取消本次登录</Button></div>}</Card>
+      <Card><h2>启动检查</h2><Checklist done={status.auth_valid}>B站账号已登录</Checklist><Checklist done={configuredChannels.some(channel => channel.enabled)}>至少一个通知渠道已启用</Checklist><Checklist done={configuredUps.some(up => up.enabled)}>至少一个 UP 主已启用</Checklist><hr /><p className="muted">最后成功采集：{status.last_success_at ? formatDate(status.last_success_at, run.timezone) : '尚无记录'}</p></Card></div>
+  </div>
 }
 
-function MetricCard({ label, value, detail, icon, tone = 'primary.main' }: { label: string; value: string; detail?: string; icon: React.ReactNode; tone?: string }) {
-  return <Card><CardContent><Stack direction="row" justifyContent="space-between" gap={1}><Box minWidth={0}><Typography color="text.secondary" variant="body2">{label}</Typography><Typography fontWeight={850} sx={{ mt: .5, fontSize: { xs: '1.9rem', sm: '2.15rem' }, lineHeight: 1.15, wordBreak: 'keep-all' }}>{value}</Typography>{detail && <Typography variant="body2" color="text.secondary">{detail}</Typography>}</Box><Avatar sx={{ bgcolor: tone, color: 'white', flexShrink: 0 }}>{icon}</Avatar></Stack></CardContent></Card>
-}
-
-function Checklist({ done, label }: { done: boolean; label: string }) {
-  return <Stack direction="row" spacing={1.25} alignItems="center">{done ? <CheckCircle color="success" /> : <WarningAmber color="warning" />}<Typography>{label}</Typography></Stack>
-}
-
-function BiliLoginPanel({ login, busy, timeZone, start, cancel }: { login: BiliLogin | null; busy: boolean; timeZone: string; start: () => void; cancel: (id: string) => void }) {
-  if (!login || ['success', 'expired'].includes(login.status)) return <Button variant="contained" startIcon={<QrCode2 />} onClick={start} disabled={busy}>{busy ? '正在生成…' : '生成登录二维码'}</Button>
-  return <Stack alignItems="center"><Chip label={loginLabel(login.status)} color={login.status === 'scanned' ? 'info' : 'warning'} />{login.qr_data_url && <img src={login.qr_data_url} className="qr-image" alt="哔哩哔哩登录二维码" />}<Typography color="text.secondary">二维码有效至 {formatDate(login.expires_at, timeZone)}</Typography><Button color="inherit" onClick={() => cancel(login.id)}>取消本次登录</Button></Stack>
-}
+function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) { return <Card className="metric"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</Card> }
+function Checklist({ done, children }: { done: boolean; children: React.ReactNode }) { return <p className="checklist"><span aria-hidden="true">{done ? '✓' : '!'}</span>{children}</p> }

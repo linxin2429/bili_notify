@@ -9,7 +9,7 @@ export function followStateLabel(state: 'unknown' | 'followed' | 'unfollowed') {
 export function connectionLabel(state: ConnectionState) {
   if (state === 'live') return '实时'
   if (state === 'connecting' || state === 'reconnecting') return '重连中'
-  return '数据过期'
+  return 'REST 轮询'
 }
 
 export function nextTheme(value: ThemePreference): ThemePreference {
@@ -94,7 +94,7 @@ export function composePreviewBody(summary?: string, description?: string) {
 
 export function historyMediaURL(url: string, width: number) {
   const value = url.trim()
-  if (!value || width <= 0 || value.startsWith('/api/v1/dynamics/')) return value
+  if (!value || width <= 0 || value.startsWith('/api/v2/dynamics/')) return value
   try {
     const parsed = new URL(value, 'https://www.bilibili.com')
     if (!/(^|\.)hdslb\.com$/i.test(parsed.hostname) || !parsed.pathname.includes('/bfs/')) return value
