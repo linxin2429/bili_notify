@@ -129,7 +129,7 @@ Makefile 是本地与 CI 的统一任务入口：`make check` 执行全部前端
 
 Trace 用于关联管理 HTTP、采集/评论/关系/认证/投递/审计工作流、B 站逻辑外部操作和 GORM/SQLite。Outbox 创建任务时把当前采集 span 的 W3C `traceparent` 写入任务载荷，异步投递恢复它作为 `delivery.send` 的父上下文，使采集、SQLite 入队、投递和通知渠道调用出现在同一条 trace；同一内容的多渠道投递形成并列分支，重试继续使用最初的采集上下文。系统通知等没有有效来源上下文的任务归入当次投递调度 trace，非法上下文只降级、不影响投递。空闲投递轮询及其 SQLite 查询不产生 root span。对这个低流量服务使用 parent-based always-sample，不记录探针、静态资源和 WebSocket 长连接，只记录握手；外部请求 span 不记录完整 URL/查询，GORM span 不记录查询变量。运行时导出失败不停止业务，非法 SDK/协议配置在启动时拒绝。异步父 span 可以先于投递子 span 结束，因此重试会拉长整条 trace；若跨度超过 Tempo 保留期，只能看到保留窗口内的部分。
 
-生产镜像使用 Node 24 构建前端、Go 1.26.5 静态构建后端，最终 scratch 镜像以 UID 65532 运行，只挂载独立 `/data` 卷并保持只读根文件系统。
+生产镜像使用 Node 24 构建前端、与 `go.mod` 同步的 Go 工具链静态构建后端，最终 scratch 镜像以 UID 65532 运行，只挂载独立 `/data` 卷并保持只读根文件系统。Renovate 只跟踪 Go 正式版，必须同时解析到新的 `go` 指令版本和可用的 Alpine 构建镜像后才创建单个升级 PR；PR 通过现有 CI 验证，不自动合并。
 
 自动测试覆盖：
 

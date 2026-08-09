@@ -175,4 +175,4 @@ make docker-smoke DOCKER_IMAGE=bili-notify:e2e
 
 CI 通过 Make 依赖图并行执行互不写入同一产物的检查，并按 runner 类型限制 Make 与测试工具的嵌套 worker 数。Vitest 对单元、状态和组件测试执行并行文件级覆盖，statements、branches、functions、lines 四项全局覆盖率均不得低于 80%，设置页、控制台和操作日志页还有额外文件级阈值。Go race detector 与上述五个核心包的跨包原子覆盖率在一次测试中完成，低于 80% 时失败，并通过 GitHub OIDC 将 `coverage.out` 上传到 Codecov（不使用仓库 Token）。REST 与 WebSocket 契约样例位于 `web/testdata/contracts/`：Go 测试用真实处理器和生产序列化类型校验样例，Vitest 读取同一批文件并通过集中定义的 Zod schema 解析。任何 API 字段变更必须在同一提交中更新生产代码、共享样例及两端契约测试。
 
-正式镜像使用 Node 24 和 Go 1.26.5 多阶段构建，仅将前端产物、静态 Go 二进制与系统 CA 放入 nonroot scratch 镜像。
+正式镜像使用 Node 24 和与 `go.mod` 同步的 Go 工具链进行多阶段构建，仅将前端产物、静态 Go 二进制与系统 CA 放入 nonroot scratch 镜像。Renovate 监视 Go 正式版，只在 `go.mod` 和生产构建镜像都可升级时创建同一个 PR，不会自动合并。

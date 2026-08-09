@@ -12,7 +12,7 @@ Detailed product/design constraints: `docs/requirements-and-design.md`. Repo con
 
 ## Commands
 
-Requires Go 1.26.5.
+Requires the Go version declared in `go.mod`.
 
 ```bash
 make build
