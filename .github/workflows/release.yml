@@ -1,0 +1,330 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Require a stable SemVer tag from main
+        shell: bash
+        run: |
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git merge-base --is-ancestor "${GITHUB_SHA}" refs/remotes/origin/main
+
+  select-runner:
+    name: Select release runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      kind: ${{ steps.select.outputs.kind }}
+      runs-on: ${{ steps.select.outputs.runs-on }}
+      make-jobs: ${{ steps.select.outputs.make-jobs }}
+      tool-workers: ${{ steps.select.outputs.tool-workers }}
+    steps:
+      - name: Prefer online self-hosted runners
+        id: select
+        env:
+          GH_TOKEN: ${{ secrets.CI_RUNNER_STATUS_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          kind=github-hosted
+          runs_on='["ubuntu-latest"]'
+          make_jobs=2
+          tool_workers=2
+
+          if [[ -n "${GH_TOKEN}" ]] && runners="$(gh api "repos/${GH_REPO}/actions/runners" 2>/dev/null)"; then
+            if jq -e 'any(.runners[]; .status == "online" and any(.labels[]; .name == "bili-notify-primary"))' <<<"${runners}" >/dev/null; then
+              kind=primary
+              runs_on='["self-hosted","Linux","X64","bili-notify-primary"]'
+              make_jobs=2
+              tool_workers=8
+            elif jq -e 'any(.runners[]; .status == "online" and any(.labels[]; .name == "bili-notify-ci"))' <<<"${runners}" >/dev/null; then
+              kind=macmini
+              runs_on='["self-hosted","macOS","ARM64","bili-notify-ci"]'
+              make_jobs=2
+              tool_workers=4
+            fi
+          fi
+
+          echo "Selected ${kind} runner"
+          echo "kind=${kind}" >> "${GITHUB_OUTPUT}"
+          echo "runs-on=${runs_on}" >> "${GITHUB_OUTPUT}"
+          echo "make-jobs=${make_jobs}" >> "${GITHUB_OUTPUT}"
+          echo "tool-workers=${tool_workers}" >> "${GITHUB_OUTPUT}"
+
+  test:
+    needs: [validate-tag, select-runner]
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: ${{ needs.select-runner.outputs.kind == 'github-hosted' }}
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          cache: ${{ needs.select-runner.outputs.kind == 'github-hosted' && 'npm' || '' }}
+          cache-dependency-path: web/ui/package-lock.json
+
+      - name: Cache Playwright browsers
+        if: needs.select-runner.outputs.kind == 'github-hosted'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/ui/package-lock.json') }}
+
+      - name: Revalidate release source
+        env:
+          CI_MAKE_JOBS: ${{ needs.select-runner.outputs.make-jobs }}
+          CI_TOOL_WORKERS: ${{ needs.select-runner.outputs.tool-workers }}
+          GOMAXPROCS: ${{ needs.select-runner.outputs.tool-workers }}
+          GOFLAGS: -p=${{ needs.select-runner.outputs.tool-workers }}
+          GO_TEST_FLAGS: -parallel=${{ needs.select-runner.outputs.tool-workers }}
+          PLAYWRIGHT_INSTALL_FLAGS: ${{ needs.select-runner.outputs.kind == 'github-hosted' && '--with-deps' || '' }}
+        run: make -j"${CI_MAKE_JOBS}" ci-check
+
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-playwright-results-${{ github.run_attempt }}
+          path: |
+            web/ui/test-results
+            web/ui/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
+
+  observability-config:
+    needs: [validate-tag, select-runner]
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Start Docker Desktop
+        if: runner.os == 'macOS'
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            open -gj -a Docker
+          fi
+          for attempt in {1..60}; do
+            if docker info >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Docker Desktop did not become ready within 120 seconds" >&2
+          exit 1
+
+      - name: Validate observability configuration and alert behavior
+        run: make observability-validate
+
+  release:
+    name: Publish verified image
+    needs: [validate-tag, select-runner, test, observability-config]
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
+    timeout-minutes: 40
+    environment: dockerhub-production
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      IMAGE_NAME: dengxinlin/bili-notify
+      QUALIFIED_IMAGE_NAME: index.docker.io/dengxinlin/bili-notify
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Prepare isolated Docker credentials
+        shell: bash
+        run: |
+          docker_config="${RUNNER_TEMP}/bili-notify-docker-config"
+          mkdir -p "${docker_config}"
+          echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
+
+      - name: Start Docker Desktop
+        if: runner.os == 'macOS'
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            open -gj -a Docker
+          fi
+          for attempt in {1..60}; do
+            if docker info >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Docker Desktop did not become ready within 120 seconds" >&2
+          exit 1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        if: runner.os != 'macOS'
+
+      - name: Compute release metadata
+        id: build_env
+        shell: bash
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "${GITHUB_OUTPUT}"
+          echo "commit=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+          echo "smoke_tag=bili-notify:release-${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+
+      - name: Compute image tags and labels
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Build release image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          load: true
+          push: false
+          platforms: linux/amd64
+          tags: ${{ steps.build_env.outputs.smoke_tag }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            GOPROXY=https://proxy.golang.org,direct
+            VERSION=${{ steps.build_env.outputs.version }}
+            COMMIT=${{ steps.build_env.outputs.commit }}
+            BUILD_DATE=${{ steps.build_env.outputs.build_date }}
+          cache-from: ${{ runner.os != 'macOS' && 'type=gha,scope=bili-notify-linux-amd64' || '' }}
+          cache-to: ${{ runner.os != 'macOS' && 'type=gha,mode=min,scope=bili-notify-linux-amd64,ignore-error=true' || '' }}
+          provenance: false
+
+      - name: Smoke-test release image
+        env:
+          DOCKER_IMAGE: ${{ steps.build_env.outputs.smoke_tag }}
+        run: make docker-smoke-image
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Refuse to overwrite an immutable version
+        env:
+          VERSION: ${{ steps.build_env.outputs.version }}
+        shell: bash
+        run: |
+          if docker manifest inspect "${IMAGE_NAME}:${VERSION}" >/dev/null 2>&1; then
+            echo "${IMAGE_NAME}:${VERSION} already exists and cannot be overwritten" >&2
+            exit 1
+          fi
+
+      - name: Tag and push the tested image
+        id: publish
+        env:
+          IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
+          SMOKE_TAG: ${{ steps.build_env.outputs.smoke_tag }}
+        shell: bash
+        run: |
+          image_id="$(docker image inspect --format '{{.Id}}' "${SMOKE_TAG}")"
+          pushed_digest=""
+
+          while IFS= read -r image_tag; do
+            [[ -n "${image_tag}" ]] || continue
+            docker tag "${image_id}" "${image_tag}"
+            push_output="$(docker push "${image_tag}")"
+            printf '%s\n' "${push_output}"
+
+            digest="$(sed -n 's/^.*digest: \(sha256:[0-9a-f]*\).*$/\1/p' <<<"${push_output}" | tail -1)"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+            if [[ -n "${pushed_digest}" && "${digest}" != "${pushed_digest}" ]]; then
+              echo "pushed tags do not reference one image: ${pushed_digest} != ${digest}" >&2
+              exit 1
+            fi
+            pushed_digest="${digest}"
+          done <<<"${IMAGE_TAGS}"
+
+          [[ -n "${pushed_digest}" ]]
+          echo "digest=${pushed_digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.build_env.outputs.smoke_tag }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: bili-notify-${{ steps.build_env.outputs.version }}-sbom.spdx.json
+          upload-artifact-retention: 30
+          upload-release-assets: false
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          cosign-release: v2.5.2
+
+      - name: Sign image and attach SBOM
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        shell: bash
+        run: |
+          cosign sign --yes "${QUALIFIED_IMAGE_NAME}@${DIGEST}"
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${QUALIFIED_IMAGE_NAME}@${DIGEST}"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.QUALIFIED_IMAGE_NAME }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summarize release
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
+        shell: bash
+        run: |
+          {
+            echo '### Published Docker image'
+            echo
+            echo "Digest: \`${DIGEST}\`"
+            echo
+            echo 'Tags:'
+            while IFS= read -r image_tag; do
+              [[ -n "${image_tag}" ]] && echo "- \`${image_tag}\`"
+            done <<<"${IMAGE_TAGS}"
+            echo
+            echo 'The digest is signed and has SPDX SBOM and build-provenance attestations.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Remove isolated Docker credentials
+        if: always()
+        shell: bash
+        run: docker logout docker.io >/dev/null 2>&1 || true

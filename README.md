@@ -32,7 +32,7 @@ docker run -d --name bili-notify \
 
 镜像内嵌 IANA 时区数据（`time/tzdata`）。通过环境变量 `TZ` 选择服务器本地时区（Compose 默认 `Asia/Shanghai`）；未设置时回退为 UTC。通知文案、管理台时间展示与结构化日志中的时间字段均使用该时区。
 
-镜像标签由 git tag `vMAJOR.MINOR.PATCH` 发布时写入：`MAJOR.MINOR.PATCH`、`MAJOR.MINOR`、`MAJOR` 与 `latest`。push 到 `main` 只跑 CI 校验，不推送镜像。
+镜像标签由 main 历史上的正式 git tag `vMAJOR.MINOR.PATCH` 发布时写入：`MAJOR.MINOR.PATCH`、`MAJOR.MINOR`、`MAJOR` 与 `latest`。完整版本标签不可覆盖；发布工作流重新执行全部门禁并冒烟测试同一个本地镜像，经 `dockerhub-production` Environment 批准后才登录 Docker Hub。最终 digest 同时附带 SPDX SBOM、keyless Cosign 签名和 GitHub build provenance。push 到 `main` 只跑 CI 校验，不推送镜像。
 
 日志会输出一次性 `setup_code`。浏览器访问 `https://localhost:8443`，接受首次自签名证书警告，然后输入初始化码并设置至少 12 字节的管理员密码。初始化完成后代码立即失效。
 
@@ -157,6 +157,7 @@ make playwright-install # 首次运行端到端测试时安装 Chromium
 make frontend-lint
 make frontend-test
 make frontend-coverage # 与 CI 相同，四项前端覆盖率均不得低于 80%
+make frontend-audit    # high 及以上 npm 漏洞失败
 make frontend-e2e
 make test
 make test-race      # race detector + randomized test order
@@ -177,6 +178,6 @@ make docker-smoke DOCKER_IMAGE=bili-notify:e2e
 
 端到端测试使用本地 TLS 伪 B站和企业微信端点，不读取真实账号或通知凭据。采集投递、管理安全和响应式场景各自启动独立数据目录、随机端口和 Go harness，并在 Chromium 的桌面浅色与 Pixel 7 触控深色项目中并行运行；测试执行 axe 可访问性扫描并校验已提交的移动历史视觉基线。失败时 Playwright 会在 `web/ui/test-results/` 保存截图、视频、trace 和对应 harness 日志。
 
-CI 通过 Make 依赖图并行执行互不写入同一产物的检查，并按 runner 类型限制 Make 与测试工具的嵌套 worker 数。Vitest 对单元、状态和组件测试执行并行文件级覆盖，statements、branches、functions、lines 四项全局覆盖率均不得低于 80%，设置页、控制台和操作日志页还有额外文件级阈值。Go race detector 与上述五个核心包的跨包原子覆盖率在一次测试中完成，低于 80% 时失败；独立的 Stability workflow 每日以及手动触发时执行 `make test-stability`，默认以不同随机顺序重复全部 Go race 测试 10 次，用来发现进程级缓存污染、数据竞争和顺序依赖。覆盖率通过 GitHub OIDC 上传到 Codecov，不使用仓库 Token。REST 与 WebSocket 契约样例位于 `web/testdata/contracts/`：Go 测试用真实处理器和生产 WebSocket 序列化类型校验样例，Vitest 读取同一批文件并通过集中定义的 Zod schema 解析。任何 API 字段变更必须在同一提交中更新生产代码、共享样例及两端契约测试。
+CI 通过 Make 依赖图并行执行互不写入同一产物的检查，并按 runner 类型限制 Make 与测试工具的嵌套 worker 数；现有 self-hosted 优先和 GitHub-hosted fallback 选择策略保持不变。`CI Gate` 聚合格式、module tidy、workflow、npm audit、前后端测试、race、覆盖率、漏洞、观测配置和镜像冒烟结果，并作为 main 的唯一 required check。Vitest 对单元、状态和组件测试执行并行文件级覆盖，statements、branches、functions、lines 四项全局覆盖率均不得低于 80%，设置页、控制台和操作日志页还有额外文件级阈值。Go race detector、随机顺序与上述五个核心包的跨包原子覆盖率在一次测试中完成，低于 80% 时失败；独立的 Stability workflow 每日以及手动触发时为每轮启动新测试进程，默认以 10 个随机顺序运行全部 Go race 测试，用来发现数据竞争和顺序依赖。覆盖率 artifact 由不执行仓库代码的独立 job 通过 GitHub OIDC 上传 Codecov，不使用仓库 Token。BuildKit 的 GHA cache 使用 `mode=min`，只导出最终结果需要的最小缓存集合，缓存上传失败不影响正确性。REST 与 WebSocket 契约样例位于 `web/testdata/contracts/`：Go 测试用真实处理器和生产 WebSocket 序列化类型校验样例，Vitest 读取同一批文件并通过集中定义的 Zod schema 解析。任何 API 字段变更必须在同一提交中更新生产代码、共享样例及两端契约测试。
 
-正式镜像使用 Node 24 和与 `go.mod` 同步的 Go 工具链进行多阶段构建，仅将前端产物、静态 Go 二进制与系统 CA 放入 nonroot scratch 镜像。Renovate 监视 Go 正式版，只在 `go.mod` 和生产构建镜像都可升级时创建同一个 PR，不会自动合并。
+正式镜像使用 Node 24 和与 `go.mod` 同步的 Go 工具链进行多阶段构建，仅将前端产物、静态 Go 二进制与系统 CA 放入 nonroot scratch 镜像。Renovate 联动升级 Go 指令与生产构建镜像，并维护固定 SHA 的 GitHub Actions、npm lockfile 及观测组件；开发依赖、Actions 和观测栈分别分组，任何更新都不自动合并。
