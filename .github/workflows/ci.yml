@@ -38,12 +38,12 @@ jobs:
           tool_workers=2
 
           if [[ -n "${GH_TOKEN}" ]] && runners="$(gh api "repos/${GH_REPO}/actions/runners" 2>/dev/null)"; then
-            if jq -e 'any(.runners[]; .status == "online" and any(.labels[]; .name == "bili-notify-primary"))' <<<"${runners}" >/dev/null; then
+            if jq -e 'any(.runners[]; .status == "online" and (.busy | not) and any(.labels[]; .name == "bili-notify-primary"))' <<<"${runners}" >/dev/null; then
               kind=primary
               runs_on='["self-hosted","Linux","X64","bili-notify-primary"]'
               make_jobs=2
               tool_workers=8
-            elif jq -e 'any(.runners[]; .status == "online" and any(.labels[]; .name == "bili-notify-ci"))' <<<"${runners}" >/dev/null; then
+            elif jq -e 'any(.runners[]; .status == "online" and (.busy | not) and any(.labels[]; .name == "bili-notify-ci"))' <<<"${runners}" >/dev/null; then
               kind=macmini
               runs_on='["self-hosted","macOS","ARM64","bili-notify-ci"]'
               make_jobs=2
