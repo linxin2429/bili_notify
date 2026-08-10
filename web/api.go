@@ -50,6 +50,7 @@ func (s *Server) registerAdminAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/ai/profiles", s.requireSession(false, s.listAIProfilesAPI))
 	mux.HandleFunc("POST /api/v2/ai/profiles", s.audit("ai.profile.create", "ai_profile", "", s.requireSession(true, s.createAIProfileAPI)))
 	mux.HandleFunc("PUT /api/v2/ai/profiles/{id}", s.audit("ai.profile.update", "ai_profile", "id", s.requireSession(true, s.updateAIProfileAPI)))
+	mux.HandleFunc("PUT /api/v2/ai/profiles/{id}/availability", s.audit("ai.profile.availability.update", "ai_profile", "id", s.requireSession(true, s.updateAIProfileAvailabilityAPI)))
 	mux.HandleFunc("DELETE /api/v2/ai/profiles/{id}", s.audit("ai.profile.delete", "ai_profile", "id", s.requireSession(true, s.deleteAIProfileAPI)))
 	mux.HandleFunc("POST /api/v2/ai/profiles/{id}/test", s.audit("ai.profile.test", "ai_profile", "id", s.requireSession(true, s.testAIProfileAPI)))
 	mux.HandleFunc("GET /api/v2/ai/prompts", s.requireSession(false, s.listAIPromptsAPI))

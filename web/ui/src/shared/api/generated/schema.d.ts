@@ -443,6 +443,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/ai/profiles/{id}/availability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["updateAIProfileAvailability"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/ai/prompts": {
         parameters: {
             query?: never;
@@ -967,10 +985,15 @@ export interface components {
             language?: string;
             prompt?: string;
             temperature?: number;
-            max_output_tokens?: number;
+            /** @description Omit, null, or zero to use the provider default. */
+            max_output_tokens?: number | null;
             context_window_chars?: number;
             timeout_sec: number;
+            enabled: boolean;
             default: boolean;
+        };
+        AIProfileAvailabilityInput: {
+            enabled: boolean;
         };
         AIProfile: components["schemas"]["AIProfileInput"] & {
             id: string;
@@ -979,6 +1002,15 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        AIProfileTestResult: {
+            ok: boolean;
+            /** Format: int64 */
+            latency_ms: number;
+            message: string;
+            error_code?: string;
+            provider_http_status?: number;
+            provider_error?: string;
         };
         AIPromptInput: {
             name: string;
@@ -2143,19 +2175,46 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Worker is reachable. */
+            /** @description Completed real provider connectivity probe. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        /** @constant */
-                        status: "worker_reachable";
-                    };
+                    "application/json": components["schemas"]["AIProfileTestResult"];
                 };
             };
-            502: components["responses"]["InternalError"];
+            404: components["responses"]["NotFoundError"];
+        };
+    };
+    updateAIProfileAvailability: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIProfileAvailabilityInput"];
+            };
+        };
+        responses: {
+            /** @description Updated model profile availability. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIProfile"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+            404: components["responses"]["NotFoundError"];
         };
     };
     listAIPrompts: {

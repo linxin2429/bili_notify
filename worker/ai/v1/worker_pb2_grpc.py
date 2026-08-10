@@ -5,7 +5,7 @@ import warnings
 
 from ai.v1 import worker_pb2 as ai_dot_v1_dot_worker__pb2
 
-GRPC_GENERATED_VERSION = '1.74.0'
+GRPC_GENERATED_VERSION = '1.83.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,14 +18,14 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in ai/v1/worker_pb2_grpc.py depends on'
+        + ' but the generated code in ai/v1/worker_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
 
 
-class AIWorkerStub(object):
+class AIWorkerStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -39,6 +39,11 @@ class AIWorkerStub(object):
                 request_serializer=ai_dot_v1_dot_worker__pb2.CapabilitiesRequest.SerializeToString,
                 response_deserializer=ai_dot_v1_dot_worker__pb2.CapabilitiesResponse.FromString,
                 _registered_method=True)
+        self.TestProvider = channel.unary_unary(
+                '/bilinotify.ai.v1.AIWorker/TestProvider',
+                request_serializer=ai_dot_v1_dot_worker__pb2.TestProviderRequest.SerializeToString,
+                response_deserializer=ai_dot_v1_dot_worker__pb2.TestProviderResponse.FromString,
+                _registered_method=True)
         self.Transcribe = channel.unary_stream(
                 '/bilinotify.ai.v1.AIWorker/Transcribe',
                 request_serializer=ai_dot_v1_dot_worker__pb2.TranscribeRequest.SerializeToString,
@@ -51,10 +56,16 @@ class AIWorkerStub(object):
                 _registered_method=True)
 
 
-class AIWorkerServicer(object):
+class AIWorkerServicer:
     """Missing associated documentation comment in .proto file."""
 
     def GetCapabilities(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def TestProvider(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -80,6 +91,11 @@ def add_AIWorkerServicer_to_server(servicer, server):
                     request_deserializer=ai_dot_v1_dot_worker__pb2.CapabilitiesRequest.FromString,
                     response_serializer=ai_dot_v1_dot_worker__pb2.CapabilitiesResponse.SerializeToString,
             ),
+            'TestProvider': grpc.unary_unary_rpc_method_handler(
+                    servicer.TestProvider,
+                    request_deserializer=ai_dot_v1_dot_worker__pb2.TestProviderRequest.FromString,
+                    response_serializer=ai_dot_v1_dot_worker__pb2.TestProviderResponse.SerializeToString,
+            ),
             'Transcribe': grpc.unary_stream_rpc_method_handler(
                     servicer.Transcribe,
                     request_deserializer=ai_dot_v1_dot_worker__pb2.TranscribeRequest.FromString,
@@ -98,7 +114,7 @@ def add_AIWorkerServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class AIWorker(object):
+class AIWorker:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -118,6 +134,33 @@ class AIWorker(object):
             '/bilinotify.ai.v1.AIWorker/GetCapabilities',
             ai_dot_v1_dot_worker__pb2.CapabilitiesRequest.SerializeToString,
             ai_dot_v1_dot_worker__pb2.CapabilitiesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def TestProvider(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bilinotify.ai.v1.AIWorker/TestProvider',
+            ai_dot_v1_dot_worker__pb2.TestProviderRequest.SerializeToString,
+            ai_dot_v1_dot_worker__pb2.TestProviderResponse.FromString,
             options,
             channel_credentials,
             insecure,

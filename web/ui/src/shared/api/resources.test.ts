@@ -82,25 +82,30 @@ describe('resource transport', () => {
   it('whitelists writable fields in AI profile requests', async () => {
     const profile = {
       id: 'profile/1', name: '转写', kind: 'transcription' as const, base_url: 'https://example.com/v1', model: 'gpt-transcribe',
-      api_key: '', language: 'zh', timeout_sec: 600, default: true, configured_secrets: ['api_key'],
+      api_key: '', language: 'zh', timeout_sec: 600, enabled: true, default: true, configured_secrets: ['api_key'],
       created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T11:00:00Z',
     }
-    const fetch = vi.fn(async () => json({
+    const responseProfile = {
       id: profile.id, name: profile.name, kind: profile.kind, base_url: profile.base_url, model: profile.model,
-      language: profile.language, timeout_sec: profile.timeout_sec, default: profile.default,
+      language: profile.language, timeout_sec: profile.timeout_sec, enabled: profile.enabled, default: profile.default,
       configured_secrets: profile.configured_secrets, created_at: profile.created_at, updated_at: profile.updated_at,
-    }))
+    }
+    const fetch = vi.fn(async (input: string | URL | Request) => requestPath(input).endsWith('/test') ? json({ ok: true, latency_ms: 12, message: 'ok', provider_http_status: 200 }) : json(responseProfile))
     vi.stubGlobal('fetch', fetch)
 
     await resources.updateAIProfile('csrf', profile)
+    await resources.updateAIProfileAvailability('csrf', profile.id, false)
+    await resources.testAIProfile('csrf', profile.id)
 
     expect(fetch).toHaveBeenCalledWith('/api/v2/ai/profiles/profile%2F1', expect.objectContaining({
       method: 'PUT',
       body: JSON.stringify({
         name: '转写', kind: 'transcription', base_url: 'https://example.com/v1', model: 'gpt-transcribe',
-        api_key: '', language: 'zh', timeout_sec: 600, default: true,
+        api_key: '', language: 'zh', timeout_sec: 600, enabled: true, default: true,
       }),
     }))
+    expect(fetch).toHaveBeenCalledWith('/api/v2/ai/profiles/profile%2F1/availability', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ enabled: false }) }))
+    expect(fetch).toHaveBeenCalledWith('/api/v2/ai/profiles/profile%2F1/test', expect.objectContaining({ method: 'POST' }))
   })
 })
 

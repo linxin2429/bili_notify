@@ -25,9 +25,10 @@ type AIProfile struct {
 	Language           string        `json:"language,omitempty"`
 	Prompt             string        `json:"prompt,omitempty"`
 	Temperature        float64       `json:"temperature,omitempty"`
-	MaxOutputTokens    int           `json:"max_output_tokens,omitempty"`
+	MaxOutputTokens    int64         `json:"max_output_tokens,omitempty"`
 	ContextWindowChars int           `json:"context_window_chars,omitempty"`
 	TimeoutSec         int           `json:"timeout_sec"`
+	Enabled            bool          `json:"enabled"`
 	Default            bool          `json:"default"`
 	CreatedAt          time.Time     `json:"created_at"`
 	UpdatedAt          time.Time     `json:"updated_at"`
@@ -58,8 +59,8 @@ func (p AIProfile) Validate() error {
 		if p.Temperature < 0 || p.Temperature > 2 {
 			errs = append(errs, errors.New("temperature must be in [0, 2]"))
 		}
-		if p.MaxOutputTokens < 1 || p.MaxOutputTokens > 131072 {
-			errs = append(errs, errors.New("max_output_tokens must be in [1, 131072]"))
+		if p.MaxOutputTokens < 0 {
+			errs = append(errs, errors.New("max_output_tokens must be non-negative"))
 		}
 		if p.ContextWindowChars < 1000 || p.ContextWindowChars > 4<<20 {
 			errs = append(errs, errors.New("context_window_chars must be in [1000, 4194304]"))

@@ -101,6 +101,7 @@ type aiProfileRow struct {
 	Kind      string `gorm:"column:kind;not null"`
 	Name      string `gorm:"column:name;not null"`
 	Default   int    `gorm:"column:is_default;not null;default:0"`
+	Enabled   int    `gorm:"column:is_enabled;not null;default:1"`
 	Sealed    []byte `gorm:"column:sealed;not null"`
 	CreatedAt int64  `gorm:"column:created_at;not null"`
 	UpdatedAt int64  `gorm:"column:updated_at;not null"`

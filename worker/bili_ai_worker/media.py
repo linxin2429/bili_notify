@@ -11,6 +11,9 @@ from urllib.parse import urlencode
 
 import yt_dlp
 
+DOWNLOAD_SOCKET_TIMEOUT_SEC = 60
+DOWNLOAD_RETRIES = 10
+
 
 class DownloadError(RuntimeError):
     pass
@@ -49,14 +52,7 @@ async def download_pages(cache_dir: Path, job_id: str, bvid: str, page: int, coo
 
 def _download_pages(job_dir: Path, cookie_path: Path, bvid: str, selected_page: int) -> tuple[str, list[DownloadedPage]]:
     base_url = f"https://www.bilibili.com/video/{bvid}"
-    common: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "cookiefile": str(cookie_path),
-        "noplaylist": True,
-        "socket_timeout": 20,
-        "retries": 3,
-    }
+    common = _download_options(cookie_path)
     with yt_dlp.YoutubeDL(common) as ydl:
         info = ydl.extract_info(base_url, download=False)
     title = str(info.get("title") or bvid)
@@ -90,6 +86,28 @@ def _download_pages(job_dir: Path, cookie_path: Path, bvid: str, selected_page: 
             )
         )
     return title, results
+
+
+def _download_options(cookie_path: Path) -> dict[str, Any]:
+    return {
+        "quiet": True,
+        "no_warnings": True,
+        "cookiefile": str(cookie_path),
+        "noplaylist": True,
+        "socket_timeout": DOWNLOAD_SOCKET_TIMEOUT_SEC,
+        "retries": DOWNLOAD_RETRIES,
+        "fragment_retries": DOWNLOAD_RETRIES,
+        "extractor_retries": DOWNLOAD_RETRIES,
+        "retry_sleep_functions": {
+            "http": _retry_delay,
+            "fragment": _retry_delay,
+            "extractor": _retry_delay,
+        },
+    }
+
+
+def _retry_delay(attempt: int) -> int:
+    return min(2 ** max(attempt - 1, 0), 30)
 
 
 async def split_audio(page: DownloadedPage) -> list[tuple[Path, int]]:

@@ -219,6 +219,24 @@ func TestMigrationRequiresExclusiveBaselineForExistingUPs(t *testing.T) {
 	assert.False(t, up.ExclusiveBaselineReady)
 }
 
+func TestAIProfileEnabledMigrationPreservesExistingProfiles(t *testing.T) {
+	t.Parallel()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "data.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS)
+	require.NoError(t, err)
+	_, err = provider.UpTo(t.Context(), 5)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO ai_profiles (id, kind, name, is_default, sealed, created_at, updated_at) VALUES ('profile', 'text', 'text', 1, X'00', 1, 1)`)
+	require.NoError(t, err)
+	_, err = provider.Up(t.Context())
+	require.NoError(t, err)
+	var enabled int
+	require.NoError(t, db.QueryRow(`SELECT is_enabled FROM ai_profiles WHERE id = 'profile'`).Scan(&enabled))
+	assert.Equal(t, 1, enabled)
+}
+
 func TestEncryptedRecords(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "data.db")

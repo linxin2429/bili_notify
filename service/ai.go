@@ -37,6 +37,15 @@ type AIWorkerStatus struct {
 	LastError            string    `json:"last_error,omitempty"`
 }
 
+type AIProfileTestResult struct {
+	OK                 bool   `json:"ok"`
+	LatencyMS          int64  `json:"latency_ms"`
+	Message            string `json:"message"`
+	ErrorCode          string `json:"error_code,omitempty"`
+	ProviderHTTPStatus int    `json:"provider_http_status,omitempty"`
+	ProviderError      string `json:"provider_error,omitempty"`
+}
+
 type AIEngine struct {
 	store      *state.Store
 	socketPath string
@@ -45,6 +54,8 @@ type AIEngine struct {
 	wake       chan struct{}
 	statusMu   sync.RWMutex
 	status     AIWorkerStatus
+	clientMu   sync.RWMutex
+	client     aiworkerpb.AIWorkerClient
 	runningMu  sync.Mutex
 	running    map[string]context.CancelFunc
 }
@@ -65,6 +76,53 @@ func (e *AIEngine) Notify() {
 	default:
 	}
 	e.events.Publish(TopicAIJobs)
+}
+
+func (e *AIEngine) TestProfile(ctx context.Context, profile model.AIProfile) AIProfileTestResult {
+	e.clientMu.RLock()
+	client := e.client
+	e.clientMu.RUnlock()
+	if client == nil {
+		return AIProfileTestResult{Message: "AI Worker 不可用", ErrorCode: "worker_unavailable"}
+	}
+	timeout := min(time.Duration(profile.TimeoutSec)*time.Second, 20*time.Second)
+	testCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	started := time.Now()
+	result, err := client.TestProvider(testCtx, &aiworkerpb.TestProviderRequest{Kind: string(profile.Kind), Provider: profileProto(profile)})
+	if err != nil {
+		code, message := "worker_unavailable", "AI Worker 不可用"
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(testCtx.Err(), context.DeadlineExceeded) {
+			code, message = "provider_timeout", "模型连通性检测超时"
+		}
+		return AIProfileTestResult{LatencyMS: time.Since(started).Milliseconds(), Message: message, ErrorCode: code}
+	}
+	message := result.Message
+	if !result.Ok {
+		message = aiProfileTestMessage(result.ErrorCode, result.Message)
+	}
+	return AIProfileTestResult{
+		OK: result.Ok, LatencyMS: result.LatencyMs, Message: message, ErrorCode: result.ErrorCode,
+		ProviderHTTPStatus: int(result.ProviderHttpStatus), ProviderError: result.ProviderError,
+	}
+}
+
+func aiProfileTestMessage(code, fallback string) string {
+	messages := map[string]string{
+		"provider_unreachable":      "无法连接模型供应商",
+		"provider_timeout":          "模型供应商响应超时",
+		"provider_authentication":   "模型供应商拒绝了 API Key",
+		"provider_rate_limited":     "模型供应商限制了请求频率",
+		"provider_model_not_found":  "模型或供应商接口不存在",
+		"provider_failure":          "模型供应商返回错误",
+		"provider_invalid_response": "模型供应商返回了无效响应",
+		"invalid_profile_kind":      "模型配置用途无效",
+		"worker_failure":            "AI Worker 检测模型时发生内部错误",
+	}
+	if message := messages[code]; message != "" {
+		return message
+	}
+	return fallback
 }
 
 func (e *AIEngine) CancelJob(id string) error {
@@ -98,6 +156,14 @@ func (e *AIEngine) Run(ctx context.Context) error {
 	}
 	defer connection.Close()
 	client := aiworkerpb.NewAIWorkerClient(connection)
+	e.clientMu.Lock()
+	e.client = client
+	e.clientMu.Unlock()
+	defer func() {
+		e.clientMu.Lock()
+		e.client = nil
+		e.clientMu.Unlock()
+	}()
 	var workers sync.WaitGroup
 	workers.Add(3)
 	go func() { defer workers.Done(); e.dispatch(ctx, client, model.AIJobTranscription) }()
@@ -290,7 +356,7 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 func profileProto(profile model.AIProfile) *aiworkerpb.ProviderConfig {
 	return &aiworkerpb.ProviderConfig{
 		BaseUrl: profile.BaseURL, ApiKey: profile.APIKey, Model: profile.Model, Language: profile.Language, Prompt: profile.Prompt,
-		Temperature: profile.Temperature, MaxOutputTokens: int32(profile.MaxOutputTokens), ContextWindowChars: int32(profile.ContextWindowChars), TimeoutSec: int32(profile.TimeoutSec),
+		Temperature: profile.Temperature, MaxOutputTokens: profile.MaxOutputTokens, ContextWindowChars: int32(profile.ContextWindowChars), TimeoutSec: int32(profile.TimeoutSec),
 	}
 }
 

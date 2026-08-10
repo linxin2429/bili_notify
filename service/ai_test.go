@@ -21,8 +21,31 @@ type fakeAIWorker struct {
 	aiworkerpb.UnimplementedAIWorkerServer
 }
 
+func TestAIProfileTestMessage(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		code     string
+		fallback string
+		want     string
+	}{
+		{name: "known provider error", code: "provider_authentication", fallback: "english", want: "模型供应商拒绝了 API Key"},
+		{name: "unknown worker error", code: "unknown", fallback: "detail", want: "detail"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, aiProfileTestMessage(tt.code, tt.fallback))
+		})
+	}
+}
+
 func (fakeAIWorker) GetCapabilities(context.Context, *aiworkerpb.CapabilitiesRequest) (*aiworkerpb.CapabilitiesResponse, error) {
 	return &aiworkerpb.CapabilitiesResponse{Version: "test", YtDlpAvailable: true, FfmpegAvailable: true}, nil
+}
+
+func (fakeAIWorker) TestProvider(context.Context, *aiworkerpb.TestProviderRequest) (*aiworkerpb.TestProviderResponse, error) {
+	return &aiworkerpb.TestProviderResponse{Ok: true, LatencyMs: 12, Message: "模型响应正常", ProviderHttpStatus: 200}, nil
 }
 
 func (fakeAIWorker) Summarize(request *aiworkerpb.SummaryRequest, stream grpc.ServerStreamingServer[aiworkerpb.WorkerEvent]) error {
@@ -64,7 +87,7 @@ func (fakeAIWorker) Transcribe(request *aiworkerpb.TranscribeRequest, stream grp
 func TestAIEngineExecutesQueuedSummaryOverUnixRPC(t *testing.T) {
 	t.Parallel()
 	store := openServiceTestStore(t)
-	profile, err := store.PutAIProfile(model.AIProfile{Name: "text", Kind: model.AIProfileText, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", Temperature: 0.2, MaxOutputTokens: 1024, ContextWindowChars: 10000, TimeoutSec: 60})
+	profile, err := store.PutAIProfile(model.AIProfile{Name: "text", Kind: model.AIProfileText, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", Temperature: 0.2, MaxOutputTokens: 1024, ContextWindowChars: 10000, TimeoutSec: 60, Enabled: true})
 	require.NoError(t, err)
 	prompt, err := store.PutAIPrompt(model.AIPromptTemplate{Name: "prompt", ChunkPrompt: "{{text}}", ReducePrompt: "{{summaries}}"})
 	require.NoError(t, err)
@@ -76,7 +99,7 @@ func TestAIEngineExecutesQueuedSummaryOverUnixRPC(t *testing.T) {
 	require.NoError(t, err)
 	missingSourceJob, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "missing-source", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, Input: model.AISummaryInput{TranscriptionID: "missing"}})
 	require.NoError(t, err)
-	transcriptionProfile, err := store.PutAIProfile(model.AIProfile{Name: "transcription", Kind: model.AIProfileTranscription, BaseURL: "https://provider.example/v1", Model: "transcription-model", APIKey: "secret", Language: "zh", TimeoutSec: 60})
+	transcriptionProfile, err := store.PutAIProfile(model.AIProfile{Name: "transcription", Kind: model.AIProfileTranscription, BaseURL: "https://provider.example/v1", Model: "transcription-model", APIKey: "secret", Language: "zh", TimeoutSec: 60, Enabled: true})
 	require.NoError(t, err)
 	require.NoError(t, store.SaveSession(model.BiliSession{Cookies: map[string]string{"SESSDATA": "session"}}))
 	transcriptionJob, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "transcription", Kind: model.AIJobTranscription, ProfileID: transcriptionProfile.ID, Input: model.AITranscriptionInput{BVID: "BV1xx411c7mD", Page: 1}})
@@ -116,6 +139,10 @@ func TestAIEngineExecutesQueuedSummaryOverUnixRPC(t *testing.T) {
 	assert.Equal(t, float64(10), result.Usage["input_tokens"])
 	assert.Equal(t, 1, completed.Attempts)
 	assert.True(t, engine.Status().Connected)
+	probe := engine.TestProfile(t.Context(), profile)
+	assert.True(t, probe.OK)
+	assert.Equal(t, int64(12), probe.LatencyMS)
+	assert.Equal(t, 200, probe.ProviderHTTPStatus)
 	transcription, err := store.AIJob(transcriptionJob.ID)
 	require.NoError(t, err)
 	transcriptionResult, ok := transcription.Result.(model.AITranscriptionResult)
