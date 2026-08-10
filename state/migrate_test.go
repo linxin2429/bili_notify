@@ -3,12 +3,15 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	_ "github.com/glebarez/go-sqlite"
 	"github.com/linxin2429/bili_notify/config"
+	"github.com/linxin2429/bili_notify/state/migrations"
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -75,4 +78,49 @@ func TestRunMigrationsCreatesTables(t *testing.T) {
 	assert.Equal(t, "ups", name)
 	// second up is no-op
 	require.NoError(t, runMigrations(context.Background(), db))
+}
+
+func TestRuntimeSettingsBooleanMigration(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		old  bool
+	}{
+		{name: "enabled", old: true},
+		{name: "disabled", old: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "data.db"))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+			provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS)
+			require.NoError(t, err)
+			_, err = provider.UpTo(t.Context(), 7)
+			require.NoError(t, err)
+
+			oldRecord, err := json.Marshal(map[string]any{
+				"_version":        2,
+				"comment_enabled": tt.old,
+			})
+			require.NoError(t, err)
+			_, err = db.Exec(`INSERT INTO meta(key, value) VALUES ('runtime_settings', ?)`, oldRecord)
+			require.NoError(t, err)
+			_, err = provider.UpTo(t.Context(), 8)
+			require.NoError(t, err)
+
+			var brokenType string
+			require.NoError(t, db.QueryRow(`SELECT json_type(value, '$.bilibili_comments_enabled') FROM meta WHERE key = 'runtime_settings'`).Scan(&brokenType))
+			assert.Equal(t, "integer", brokenType)
+
+			_, err = provider.Up(t.Context())
+			require.NoError(t, err)
+			var raw string
+			require.NoError(t, db.QueryRow(`SELECT value FROM meta WHERE key = 'runtime_settings'`).Scan(&raw))
+			var record runtimeSettingsRecord
+			require.NoError(t, json.Unmarshal([]byte(raw), &record))
+			assert.Equal(t, tt.old, record.BilibiliCommentsEnabled)
+		})
+	}
 }
