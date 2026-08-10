@@ -65,7 +65,16 @@ func TestAIJobInvalidStateTransitions(t *testing.T) {
 		{name: "missing cancel", run: func(store *Store) error { return store.CancelAIJob("missing") }, want: ErrAIJobNotCancelable},
 		{name: "missing retry", run: func(store *Store) error { return store.RetryAIJob("missing") }, want: ErrAIJobNotRetryable},
 		{name: "missing delete", run: func(store *Store) error { return store.DeleteAIJob("missing") }, want: ErrAIJobNotTerminal},
+		{name: "missing profile", run: func(store *Store) error { _, err := store.AIProfile("missing"); return err }, want: ErrNotFound},
+		{name: "missing prompt", run: func(store *Store) error { _, err := store.AIPrompt("missing"); return err }, want: ErrNotFound},
+		{name: "missing job", run: func(store *Store) error { _, err := store.AIJob("missing"); return err }, want: ErrNotFound},
+		{name: "missing job config", run: func(store *Store) error { _, _, err := store.AIJobConfig("missing"); return err }, want: ErrNotFound},
+		{name: "delete missing profile", run: func(store *Store) error { return store.DeleteAIProfile("missing") }, want: ErrNotFound},
+		{name: "delete missing prompt", run: func(store *Store) error { return store.DeleteAIPrompt("missing") }, want: ErrNotFound},
 		{name: "negative offset", run: func(store *Store) error { _, err := store.ListAIJobs(model.AIJobQuery{Offset: -1}); return err }},
+		{name: "negative progress", run: func(store *Store) error { return store.UpdateAIJobProgress("missing", "stage", -1) }},
+		{name: "overflow progress", run: func(store *Store) error { return store.UpdateAIJobProgress("missing", "stage", 101) }},
+		{name: "empty progress stage", run: func(store *Store) error { return store.UpdateAIJobProgress("missing", "", 10) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,4 +86,66 @@ func TestAIJobInvalidStateTransitions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAIJobCreationValidation(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 114)
+	profile, err := store.PutAIProfile(model.AIProfile{Name: "text", Kind: model.AIProfileText, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", Temperature: 0.2, MaxOutputTokens: 1024, ContextWindowChars: 10000, TimeoutSec: 60})
+	require.NoError(t, err)
+	tests := []struct {
+		name string
+		job  model.AIJob
+	}{
+		{name: "invalid kind", job: model.AIJob{ClientRequestID: "invalid-kind", Kind: "invalid", ProfileID: profile.ID}},
+		{name: "empty request id", job: model.AIJob{Kind: model.AIJobTranscription, ProfileID: profile.ID}},
+		{name: "missing profile", job: model.AIJob{ClientRequestID: "missing-profile", Kind: model.AIJobTranscription, ProfileID: "missing"}},
+		{name: "summary missing prompt", job: model.AIJob{ClientRequestID: "missing-prompt-id", Kind: model.AIJobSummary, ProfileID: profile.ID}},
+		{name: "missing prompt", job: model.AIJob{ClientRequestID: "missing-prompt", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: "missing"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, created, err := store.CreateAIJob(tt.job)
+			require.Error(t, err)
+			assert.False(t, created)
+		})
+	}
+}
+
+func TestAIJobFailureRetryLifecycle(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 113)
+	profile, err := store.PutAIProfile(model.AIProfile{Name: "text", Kind: model.AIProfileText, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", Temperature: 0.2, MaxOutputTokens: 1024, ContextWindowChars: 10000, TimeoutSec: 60})
+	require.NoError(t, err)
+	prompt, err := store.PutAIPrompt(model.AIPromptTemplate{Name: "prompt", ChunkPrompt: "{{text}}", ReducePrompt: "{{summaries}}"})
+	require.NoError(t, err)
+	job, created, err := store.CreateAIJob(model.AIJob{ClientRequestID: "failure-retry", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, Input: model.AISummaryInput{Text: "source"}})
+	require.NoError(t, err)
+	assert.True(t, created)
+
+	_, err = store.ClaimAIJob(model.AIJobSummary)
+	require.NoError(t, err)
+	require.NoError(t, store.FailAIJob(job.ID, "provider_error", "provider rejected request"))
+	failed, err := store.AIJob(job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, model.AIJobFailed, failed.State)
+	assert.Equal(t, "provider_error", failed.ErrorCode)
+	assert.Equal(t, "provider rejected request", failed.LastError)
+	assert.NotZero(t, failed.FinishedAt)
+
+	require.NoError(t, store.RetryAIJob(job.ID))
+	retried, err := store.AIJob(job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, model.AIJobQueued, retried.State)
+	assert.Empty(t, retried.ErrorCode)
+	assert.Empty(t, retried.LastError)
+	assert.Zero(t, retried.FinishedAt)
+
+	_, err = store.ClaimAIJob(model.AIJobSummary)
+	require.NoError(t, err)
+	require.NoError(t, store.CancelAIJob(job.ID))
+	require.NoError(t, store.DeleteAIJob(job.ID))
+	require.NoError(t, store.DeleteAIPrompt(prompt.ID))
+	require.NoError(t, store.DeleteAIProfile(profile.ID))
 }

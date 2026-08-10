@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/linxin2429/bili_notify/model"
+	"github.com/linxin2429/bili_notify/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,6 +36,7 @@ func TestAIManagementAPI(t *testing.T) {
 	assert.Equal(t, "secret-key", saved.APIKey)
 	response = fixture.request(t, http.MethodPost, "/api/v2/ai/profiles/"+profile.ID+"/test", nil, true)
 	assert.Equal(t, http.StatusBadGateway, response.Code)
+	fixture.server.ai = service.NewAIEngine(fixture.store, "", fixture.server.logger, fixture.events)
 
 	textProfile, err := fixture.store.PutAIProfile(model.AIProfile{Name: "summary", Kind: model.AIProfileText, BaseURL: "https://openrouter.ai/api/v1", Model: "openai/gpt-5-mini", APIKey: "text-key", Temperature: 0.2, MaxOutputTokens: 4096, ContextWindowChars: 100000, TimeoutSec: 600, Default: true})
 	require.NoError(t, err)
@@ -43,6 +45,12 @@ func TestAIManagementAPI(t *testing.T) {
 	require.Equal(t, http.StatusCreated, response.Code, response.Body.String())
 	var prompt model.AIPromptTemplate
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &prompt))
+	promptBody["name"] = "updated"
+	response = fixture.request(t, http.MethodPut, "/api/v2/ai/prompts/"+prompt.ID, promptBody, true)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var updatedPrompt model.AIPromptTemplate
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &updatedPrompt))
+	assert.Equal(t, "updated", updatedPrompt.Name)
 
 	response = fixture.request(t, http.MethodPost, "/api/v2/ai/transcriptions", map[string]any{"client_request_id": "transcription-1", "bvid": "BV1xx411c7mD", "profile_id": profile.ID}, true)
 	require.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
@@ -59,6 +67,8 @@ func TestAIManagementAPI(t *testing.T) {
 	response = fixture.request(t, http.MethodGet, "/api/v2/ai/jobs/"+transcription.ID, nil, false)
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.Contains(t, response.Body.String(), "BV1xx411c7mD")
+	response = fixture.request(t, http.MethodPost, "/api/v2/ai/jobs/"+transcription.ID+"/cancel", nil, true)
+	assert.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
 
 	require.NoError(t, fixture.store.CancelAIJob(summary.ID))
 	response = fixture.request(t, http.MethodPost, "/api/v2/ai/jobs/"+summary.ID+"/retry", nil, true)
@@ -71,6 +81,15 @@ func TestAIManagementAPI(t *testing.T) {
 	assert.Equal(t, http.StatusOK, response.Code)
 	response = fixture.request(t, http.MethodGet, "/api/v2/ai/prompts", nil, false)
 	assert.Equal(t, http.StatusOK, response.Code)
+
+	spareProfile, err := fixture.store.PutAIProfile(model.AIProfile{Name: "spare", Kind: model.AIProfileTranscription, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", TimeoutSec: 60})
+	require.NoError(t, err)
+	response = fixture.request(t, http.MethodDelete, "/api/v2/ai/profiles/"+spareProfile.ID, nil, true)
+	assert.Equal(t, http.StatusNoContent, response.Code, response.Body.String())
+	sparePrompt, err := fixture.store.PutAIPrompt(model.AIPromptTemplate{Name: "spare", ChunkPrompt: "{{text}}", ReducePrompt: "{{summaries}}"})
+	require.NoError(t, err)
+	response = fixture.request(t, http.MethodDelete, "/api/v2/ai/prompts/"+sparePrompt.ID, nil, true)
+	assert.Equal(t, http.StatusNoContent, response.Code, response.Body.String())
 }
 
 func TestAIJobRequestValidation(t *testing.T) {
@@ -82,6 +101,9 @@ func TestAIJobRequestValidation(t *testing.T) {
 	}{
 		{name: "invalid bvid", path: "/api/v2/ai/transcriptions", body: map[string]any{"client_request_id": "a", "bvid": "bad", "profile_id": "missing"}},
 		{name: "ambiguous summary source", path: "/api/v2/ai/summaries", body: map[string]any{"client_request_id": "b", "text": "text", "transcription_job_id": "job", "profile_id": "missing", "prompt_id": "missing"}},
+		{name: "missing transcription profile", path: "/api/v2/ai/transcriptions", body: map[string]any{"client_request_id": "c", "bvid": "BV1xx411c7mD", "profile_id": "missing"}},
+		{name: "missing summary profile", path: "/api/v2/ai/summaries", body: map[string]any{"client_request_id": "d", "text": "text", "profile_id": "missing", "prompt_id": "missing"}},
+		{name: "invalid list limit", path: "/api/v2/ai/jobs?limit=invalid"},
 		{name: "negative list offset", path: "/api/v2/ai/jobs?offset=-1"},
 	}
 	for _, tt := range tests {
@@ -94,6 +116,52 @@ func TestAIJobRequestValidation(t *testing.T) {
 			}
 			response := fixture.request(t, method, tt.path, tt.body, csrf)
 			assert.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+		})
+	}
+}
+
+func TestAIProfileInputDefaults(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name                   string
+		kind                   model.AIProfileKind
+		wantMaxOutputTokens    int
+		wantContextWindowChars int
+	}{
+		{name: "transcription", kind: model.AIProfileTranscription},
+		{name: "text", kind: model.AIProfileText, wantMaxOutputTokens: 4096, wantContextWindowChars: 100000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			profile := profileFromInput(aiProfileInput{Kind: tt.kind})
+			assert.Equal(t, 600, profile.TimeoutSec)
+			assert.Equal(t, tt.wantMaxOutputTokens, profile.MaxOutputTokens)
+			assert.Equal(t, tt.wantContextWindowChars, profile.ContextWindowChars)
+		})
+	}
+}
+
+func TestAIMutationConflicts(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "delete missing profile", method: http.MethodDelete, path: "/api/v2/ai/profiles/missing"},
+		{name: "delete missing prompt", method: http.MethodDelete, path: "/api/v2/ai/prompts/missing"},
+		{name: "cancel missing job", method: http.MethodPost, path: "/api/v2/ai/jobs/missing/cancel"},
+		{name: "retry missing job", method: http.MethodPost, path: "/api/v2/ai/jobs/missing/retry"},
+		{name: "delete missing job", method: http.MethodDelete, path: "/api/v2/ai/jobs/missing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newAdminAPIFixture(t, http.DefaultClient)
+			fixture.server.ai = service.NewAIEngine(fixture.store, "", fixture.server.logger, fixture.events)
+			response := fixture.request(t, tt.method, tt.path, nil, true)
+			assert.Equal(t, http.StatusConflict, response.Code, response.Body.String())
 		})
 	}
 }
