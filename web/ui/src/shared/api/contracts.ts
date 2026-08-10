@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { components } from './generated/schema'
+import { realtimeTopics } from './realtime-contract'
 
 type Schemas = components['schemas']
 
@@ -160,9 +161,7 @@ export const aiJobPageSchema = z.object({ items: z.array(aiJobSchema), total: z.
 export const canceledStatusSchema = z.object({ status: z.literal('canceled') }).strict()
 export const workerReachableSchema = z.object({ status: z.literal('worker_reachable') }).strict()
 
-export const realtimeTopicSchema = z.enum([
-  'runtime', 'settings', 'ups', 'channels', 'deliveries', 'bilibili-login', 'microsoft-logins', 'dynamics', 'comments', 'audit-logs', 'ai-status', 'ai-jobs',
-])
+export const realtimeTopicSchema = z.enum(realtimeTopics)
 export const websocketEnvelopeSchema = z.object({
   event: z.enum(['sync.required', 'resources.invalidated']),
   revision: z.number().int().nonnegative(),

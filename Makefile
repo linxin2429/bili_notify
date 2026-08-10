@@ -244,7 +244,7 @@ vet: frontend-build
 vulncheck: frontend-build
 	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go tool govulncheck $(GO_PACKAGES)
 
-ci-check: check-diff check-fmt check-mod workflow-lint go-check-ready check-coverage-race check-vet check-vulncheck
+ci-check: check-diff check-fmt check-mod workflow-lint worker-check go-check-ready check-coverage-race check-vet check-vulncheck
 
 check: build ci-check
 

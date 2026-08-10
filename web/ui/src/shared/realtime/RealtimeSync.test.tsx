@@ -18,7 +18,7 @@ describe('RealtimeSync', () => {
 
   it.each([
     { name: 'valid invalidation', input: { event: 'resources.invalidated', revision: 2, topics: ['runtime'] }, valid: true },
-    { name: 'valid full sync', input: { event: 'sync.required', revision: 0, topics: [] }, valid: true },
+    { name: 'valid full sync with AI topics', input: { event: 'sync.required', revision: 0, topics: ['ai-status', 'ai-jobs'] }, valid: true },
     { name: 'null payload', input: null, valid: false },
     { name: 'primitive payload', input: 'resources.invalidated', valid: false },
     { name: 'unknown event', input: { event: 'changed', revision: 2, topics: [] }, valid: false },
@@ -49,9 +49,11 @@ describe('RealtimeSync', () => {
 
     act(() => FakeWebSocket.latest.onopen?.())
     expect(screen.getByText('live')).toBeInTheDocument()
-    act(() => FakeWebSocket.latest.onmessage?.({ data: JSON.stringify({ event: 'resources.invalidated', revision: 2, topics: ['runtime', 'settings'] }) }))
+    act(() => FakeWebSocket.latest.onmessage?.({ data: JSON.stringify({ event: 'resources.invalidated', revision: 2, topics: ['runtime', 'settings', 'ai-status', 'ai-jobs'] }) }))
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.runtime }))
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.settings })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.aiStatus })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ai-jobs'] })
 
     invalidate.mockClear()
     act(() => FakeWebSocket.latest.onmessage?.({ data: JSON.stringify({ event: 'sync.required', revision: 1, topics: ['ups'] }) }))
@@ -61,7 +63,7 @@ describe('RealtimeSync', () => {
     expect(screen.getByText('polling')).toBeInTheDocument()
     act(() => FakeWebSocket.latest.onmessage?.({ data: 'not-json' }))
     expect(onProtocolError).toHaveBeenCalledWith('实时消息不符合 API 契约，已切换为 REST 重新同步')
-    expect(FakeWebSocket.latest.close).toHaveBeenCalledWith(1002, 'invalid protocol')
+    expect(FakeWebSocket.latest.close).toHaveBeenCalledWith(4002, 'invalid application message')
   })
 
   it('reports an expired session and closes its socket on unmount', async () => {
