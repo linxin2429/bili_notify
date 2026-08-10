@@ -22,6 +22,7 @@ import (
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
+	"github.com/linxin2429/bili_notify/zsxq"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
@@ -44,6 +45,7 @@ type Server struct {
 	auth           *authenticator
 	engine         *service.Engine
 	ai             *service.AIEngine
+	zsxqLogin      *zsxq.LoginManager
 	settings       SettingsService
 	store          *state.Store
 	events         *service.EventBus
@@ -66,6 +68,10 @@ type ServerOption func(*Server)
 
 func WithAIEngine(engine *service.AIEngine) ServerOption {
 	return func(server *Server) { server.ai = engine }
+}
+
+func WithZSXQLogin(manager *zsxq.LoginManager) ServerOption {
+	return func(server *Server) { server.zsxqLogin = manager }
 }
 
 func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, settings SettingsService, store *state.Store, events *service.EventBus, logger, auditLogger *slog.Logger, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, propagator propagation.TextMapPropagator, dataDir string, options ...ServerOption) (*Server, error) {
@@ -169,13 +175,14 @@ func (s *Server) observeHandler() http.Handler {
 
 func (s *Server) adminHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v2/session", s.sessionState)
-	mux.HandleFunc("POST /api/v2/setup", s.audit("auth.setup", "session", "", s.setup))
-	mux.HandleFunc("POST /api/v2/session", s.audit("auth.login", "session", "", s.login))
-	mux.HandleFunc("DELETE /api/v2/session", s.audit("auth.logout", "session", "", s.requireSession(true, s.logout)))
-	mux.HandleFunc("PUT /api/v2/session/password", s.audit("auth.password.change", "session", "", s.requireSession(true, s.changePassword)))
+	mux.HandleFunc("GET /api/v3/session", s.sessionState)
+	mux.HandleFunc("POST /api/v3/setup", s.audit("auth.setup", "session", "", s.setup))
+	mux.HandleFunc("POST /api/v3/session", s.audit("auth.login", "session", "", s.login))
+	mux.HandleFunc("DELETE /api/v3/session", s.audit("auth.logout", "session", "", s.requireSession(true, s.logout)))
+	mux.HandleFunc("PUT /api/v3/session/password", s.audit("auth.password.change", "session", "", s.requireSession(true, s.changePassword)))
 	s.registerAdminAPI(mux)
-	mux.HandleFunc("GET /api/v2/ws", s.webSocket)
+	s.registerPlatformAPI(mux)
+	mux.HandleFunc("GET /api/v3/ws", s.webSocket)
 	mux.Handle("GET /assets/", http.FileServer(http.FS(s.static)))
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /{path...}", s.index)
@@ -185,7 +192,7 @@ func (s *Server) adminHandler() http.Handler {
 		otelhttp.WithMeterProvider(s.meterProvider),
 		otelhttp.WithPropagators(s.propagator),
 		otelhttp.WithFilter(func(request *http.Request) bool {
-			return strings.HasPrefix(request.URL.Path, "/api/") && request.URL.Path != "/api/v2/ws"
+			return strings.HasPrefix(request.URL.Path, "/api/") && request.URL.Path != "/api/v3/ws"
 		}),
 	)
 }
@@ -195,7 +202,11 @@ func securityHeaders(next http.Handler) http.Handler {
 		// Allow the admin UI to embed the official Bilibili player for history video previews,
 		// and load remote cover/media fallbacks from Bilibili CDNs when local media is absent.
 		// Child frame CSP still applies on player.bilibili.com; this only relaxes our own frame-src/img-src.
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data: https://*.hdslb.com https://*.biliimg.com; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src https://player.bilibili.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		if r.URL.Path == "/integrations/zsxq-login" {
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self' https://*.aliyun.com https://*.aliyuncs.com https://*.alicdn.com; img-src 'self' data: https://*.alicdn.com; style-src 'self' 'unsafe-inline'; script-src 'self' https://o.alicdn.com https://g.alicdn.com; frame-src https://*.aliyun.com https://*.alicdn.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		} else {
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data: https://*.hdslb.com https://*.biliimg.com; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src https://player.bilibili.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		}
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")

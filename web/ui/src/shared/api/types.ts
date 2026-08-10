@@ -9,22 +9,19 @@ export type ThemePreference = 'system' | 'light' | 'dark'
 export type ChannelType = Schemas['ChannelInput']['type']
 export type ServiceStatus = Schemas['Status']
 export type Runtime = Schemas['Runtime']
-export type UP = Schemas['UP']
 export type Channel = Schemas['Channel']
 export type Delivery = Schemas['Delivery']
 export type BiliLogin = Schemas['BilibiliLogin'] | null
 export type MicrosoftLogin = Schemas['MicrosoftLogin']
 export type RuntimeSettings = Schemas['RuntimeSettings']
-export type DynamicHistoryItem = Schemas['DynamicHistory']
-export type DynamicDetail = Schemas['DynamicDetail']
-export type DynamicMedia = Schemas['DynamicMedia']
-export type DynamicPreview = Schemas['DynamicOriginal']
-export type DynamicStats = Schemas['DynamicStats']
-export type DynamicVideo = Schemas['DynamicVideo']
-export type CommentHistoryItem = Schemas['CommentHistory']
+export type PlatformAccount = Schemas['PlatformAccount']
+export type Source = Schemas['Source']
+export type ZSXQLoginTransaction = Schemas['ZSXQLoginTransaction']
+export type UnifiedContent = Schemas['Content']
+export type Attachment = Schemas['Attachment']
+export type CommentTreeNode = Schemas['CommentTreeNode']
 export type AuditLog = Schemas['AuditLog']
 export type AuditOutcome = AuditLog['outcome']
-export type CommentDetail = Schemas['CommentNotification']
 export type SessionState = Schemas['Session']
 export type RealtimeTopic = Schemas['RealtimeEvent']['topics'][number]
 export interface AIProfile { id: string; name: string; kind: 'transcription' | 'text'; base_url: string; model: string; language?: string; prompt?: string; temperature?: number; max_output_tokens?: number; context_window_chars?: number; timeout_sec: number; enabled: boolean; default: boolean; configured_secrets: string[]; created_at: string; updated_at: string }
@@ -42,6 +39,6 @@ export type ChannelDraft =
   | { id?: string; name: string; type: 'feishu'; enabled: boolean; settings: { app_id: string }; secrets?: { webhook?: string; secret?: string; app_secret?: string } }
   | { id?: string; name: string; type: 'wecom'; enabled: boolean; settings: Record<string, never>; secrets?: { webhook?: string } }
 
-export interface ContentQuery { uid?: string; q?: string; from?: string; to?: string; limit?: number; after?: string }
+export interface ContentQuery { uid?: string; platform?: 'bilibili' | 'zsxq'; source_id?: string; q?: string; from?: string; to?: string; limit?: number; after?: string }
 export interface AuditQuery extends Omit<ContentQuery, 'uid'> { action?: string; outcome?: string; resource_type?: string }
 export interface CursorPage<T> { items: T[]; page: Schemas['PageMetadata'] }

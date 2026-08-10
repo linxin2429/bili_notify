@@ -13,8 +13,8 @@ import (
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 	valid := Config{
-		DataDir: "/data", AdminAddr: ":8443", ObserveAddr: ":9090", PollInterval: 30 * time.Second,
-		RequestRate: 2, RequestConcurrency: 4, LogLevel: "info",
+		DataDir: "/data", AdminAddr: ":8443", ObserveAddr: ":9090", BilibiliDynamicInterval: 30 * time.Second,
+		BilibiliRequestRate: 2, BilibiliRequestConcurrency: 4, LogLevel: "info",
 		AuditLogRetention: 180 * 24 * time.Hour,
 	}
 	tests := []struct {
@@ -60,17 +60,17 @@ func TestConfigValidate(t *testing.T) {
 func TestSeedRuntimeSettings(t *testing.T) {
 	t.Parallel()
 	cfg := Config{
-		PollInterval: 45 * time.Second, RequestRate: 1.5, RequestConcurrency: 3, LogLevel: " WARN ",
+		BilibiliDynamicInterval: 45 * time.Second, BilibiliRequestRate: 1.5, BilibiliRequestConcurrency: 3, LogLevel: " WARN ",
 		AuditLogRetention: 90 * 24 * time.Hour,
 	}
 	settings := cfg.SeedRuntimeSettings()
 	require.NoError(t, settings.Validate())
-	assert.Equal(t, 45, settings.PollIntervalSec)
-	assert.Equal(t, 1.5, settings.RequestRate)
-	assert.Equal(t, 3, settings.RequestConcurrency)
+	assert.Equal(t, 45, settings.BilibiliDynamicIntervalSec)
+	assert.Equal(t, 1.5, settings.BilibiliRequestRate)
+	assert.Equal(t, 3, settings.BilibiliRequestConcurrency)
 	assert.Equal(t, "warn", settings.LogLevel)
 	assert.Equal(t, 90, settings.AuditLogRetentionDays)
-	assert.Equal(t, 10, settings.MaxDynamicPages)
+	assert.Equal(t, 10, settings.BilibiliMaxDynamicPages)
 	assert.Equal(t, [5]int{5, 30, 120, 600, 3600}, [5]int(settings.DeliveryRetryDelaysSec))
 }
 

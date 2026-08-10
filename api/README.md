@@ -1,7 +1,7 @@
 # Administration API contract
 
-`openapi.yaml` is the source contract for the breaking `/api/v2` browser API.
-The server deliberately does not register `/api/v1` compatibility routes.
+`openapi.yaml` is the source contract for the breaking `/api/v3` browser API.
+The server deliberately does not register `/api/v1`, `/api/v2`, or pre-unification v3 compatibility routes.
 
 Validate the specification with a pinned tool version:
 

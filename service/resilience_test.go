@@ -97,7 +97,7 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 				require.NoError(t, store.CompleteDelivery(deliveries[0].ID))
 			}
 			settings := testSettings(30, 1000, 2)
-			settings.MaxDynamicPages = tt.maxPages
+			settings.BilibiliMaxDynamicPages = tt.maxPages
 			engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), settings, nil, nil)
 
 			require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
@@ -199,7 +199,7 @@ func TestPollFeedPaginationInvariants(t *testing.T) {
 			require.NoError(t, store.MarkSpaceSynced(account.UID, up.UID, time.Now()))
 			require.NoError(t, store.InitializeFeed(account.UID, "old", time.Now()))
 			settings := testSettings(30, 1000, 2)
-			settings.MaxDynamicPages = tt.maxPages
+			settings.BilibiliMaxDynamicPages = tt.maxPages
 			engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), settings, nil, nil)
 			engine.setAccount(account)
 
@@ -253,7 +253,7 @@ func TestCommentPaginationMarksTruncatedThreadsIncomplete(t *testing.T) {
 			require.NoError(t, store.PutCommentTargets(target.UID, []model.CommentTarget{target}))
 			engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 1000, 2), nil, nil)
 
-			require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{"channel"}, tt.rootPages, tt.replyPages))
+			require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{"channel"}))
 			deliveries, err := store.ListDeliveries(0)
 			require.NoError(t, err)
 			require.Len(t, deliveries, 1)
@@ -291,12 +291,12 @@ func TestCommentPaginationCollectsMultipleRootAndChildPages(t *testing.T) {
 	require.NoError(t, store.PutCommentTargets(target.UID, []model.CommentTarget{target}))
 	engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 1000, 2), nil, nil)
 
-	require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{"channel"}, 2, 2))
+	require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{"channel"}))
 	assert.Equal(t, int32(2), rootRequests.Load())
 	assert.Equal(t, int32(2), childRequests.Load())
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
-	require.Len(t, deliveries, 2)
+	require.Len(t, deliveries, 1)
 	for _, delivery := range deliveries {
 		require.NotNil(t, delivery.Comment)
 		assert.False(t, delivery.Comment.Incomplete)

@@ -299,9 +299,9 @@ func mustTestVault(t *testing.T) *vault.Vault {
 
 func testSettings(pollSec int, rate float64, concurrency int) model.RuntimeSettings {
 	settings := model.DefaultRuntimeSettings()
-	settings.PollIntervalSec = pollSec
-	settings.RequestRate = rate
-	settings.RequestConcurrency = concurrency
+	settings.BilibiliDynamicIntervalSec = pollSec
+	settings.BilibiliRequestRate = rate
+	settings.BilibiliRequestConcurrency = concurrency
 	return settings
 }
 
@@ -314,7 +314,7 @@ func TestApplySettingsHotReloads(t *testing.T) {
 	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 2, 4), NewEventBus(), nil)
 	_, changed := engine.settingsSnapshot()
 	updated := testSettings(120, 1.5, 8)
-	updated.RelationRefreshSec = 900
+	updated.BilibiliRelationRefreshSec = 900
 	updated.DeliveryConcurrency = 12
 	engine.ApplySettings(updated)
 	assert.Equal(t, updated, engine.Settings())
@@ -340,13 +340,17 @@ func TestStatusReadyUsesPollIntervalWindow(t *testing.T) {
 
 	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(180, 2, 4), nil, nil)
 	engine.authValid.Store(true)
-	engine.lastSuccess.Store(time.Now().Add(-150 * time.Second).Unix())
+	source, err := store.Source(model.SourceID(model.PlatformBilibili, "1"))
+	require.NoError(t, err)
+	source.LastSuccessAt = time.Now().Add(-150 * time.Second)
+	require.NoError(t, store.PutSource(source))
 
 	status, err := engine.Status()
 	require.NoError(t, err)
 	assert.True(t, status.Ready, "150s lag should still be ready when poll_interval is 180s")
 
-	engine.lastSuccess.Store(time.Now().Add(-7 * time.Minute).Unix())
+	source.LastSuccessAt = time.Now().Add(-7 * time.Minute)
+	require.NoError(t, store.PutSource(source))
 	status, err = engine.Status()
 	require.NoError(t, err)
 	assert.False(t, status.Ready, "beyond 2*poll_interval should be unready")

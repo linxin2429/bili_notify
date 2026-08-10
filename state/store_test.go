@@ -115,6 +115,9 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, baselinedUP.BaselineReady)
 	assert.True(t, baselinedUP.ExclusiveBaselineReady)
+	baselinedSource, err := store.Source(model.SourceID(model.PlatformBilibili, "42"))
+	require.NoError(t, err)
+	assert.Equal(t, model.BaselineComplete, baselinedSource.BaselineState)
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	assert.Empty(t, deliveries)
@@ -324,7 +327,7 @@ func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
 			name: "valid",
 			settings: func() model.RuntimeSettings {
 				settings := model.DefaultRuntimeSettings()
-				settings.PollIntervalSec, settings.RequestRate, settings.RequestConcurrency = 45, 1.5, 3
+				settings.BilibiliDynamicIntervalSec, settings.BilibiliRequestRate, settings.BilibiliRequestConcurrency = 45, 1.5, 3
 				return settings
 			}(),
 		},
@@ -332,7 +335,7 @@ func TestRuntimeSettingsMissingAndRoundTrip(t *testing.T) {
 			name: "reject short poll",
 			settings: func() model.RuntimeSettings {
 				settings := model.DefaultRuntimeSettings()
-				settings.PollIntervalSec = 5
+				settings.BilibiliDynamicIntervalSec = 5
 				return settings
 			}(),
 			wantErr: "poll interval",
@@ -520,6 +523,12 @@ func TestSessionSwitchResetsAccountScopedCollectionState(t *testing.T) {
 
 	first := model.BiliSession{AccountUID: "100", AccountName: "first", Cookies: map[string]string{"SESSDATA": "a"}, UpdatedAt: time.Now()}
 	require.NoError(t, store.SaveSession(first))
+	account, err := store.PlatformAccount(model.PlatformBilibili)
+	require.NoError(t, err)
+	assert.Equal(t, model.AccountConnected, account.Status)
+	assert.Equal(t, first.AccountUID, account.ExternalID)
+	assert.Equal(t, first.AccountName, account.DisplayName)
+	assert.Equal(t, first.Cookies, account.Session)
 	require.NoError(t, store.PutFollowRelations("100", map[string]model.FollowState{"42": model.Followed}, time.Now()))
 	require.NoError(t, store.MarkSpaceSynced("100", "42", time.Now()))
 	require.NoError(t, store.InitializeFeed("100", "baseline-a", time.Now()))

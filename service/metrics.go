@@ -105,10 +105,23 @@ func NewMetrics(provider metric.MeterProvider) *Metrics {
 }
 
 func (m *Metrics) RecordWorkflow(ctx context.Context, workflow, result string, duration time.Duration) {
-	attrs := metric.WithAttributes(attribute.String("workflow", workflow), attribute.String("result", result))
+	platform := "system"
+	switch workflow {
+	case "collection", "feed_poll", "up_poll", "comments":
+		platform = string(model.PlatformBilibili)
+	}
+	m.RecordPlatformWorkflow(ctx, platform, workflow, result, duration)
+	if result == "success" && workflow == "collection" {
+		m.lastWorkflowSuccess.Store(time.Now().Unix())
+	}
+}
+
+// RecordPlatformWorkflow records one independently scheduled platform workflow.
+func (m *Metrics) RecordPlatformWorkflow(ctx context.Context, platform, workflow, result string, duration time.Duration) {
+	attrs := metric.WithAttributes(attribute.String("platform", platform), attribute.String("workflow", workflow), attribute.String("result", result))
 	m.workflowRuns.Add(ctx, 1, attrs)
 	m.workflowDuration.Record(ctx, duration.Seconds(), attrs)
-	if result == "success" && workflow == "collection" {
+	if result == "success" && (workflow == "collection" || workflow == "dynamic_sync") {
 		m.lastWorkflowSuccess.Store(time.Now().Unix())
 	}
 }
@@ -163,9 +176,9 @@ func (m *Metrics) SetStatus(ready, riskPaused bool, upTotal, upEnabled, channelT
 }
 
 func (m *Metrics) ApplySettings(settings model.RuntimeSettings) {
-	m.pollInterval.Store(int64(settings.PollIntervalSec))
-	m.requestRateBits.Store(math.Float64bits(settings.RequestRate))
-	m.requestConcurrency.Store(int64(settings.RequestConcurrency))
+	m.pollInterval.Store(int64(settings.BilibiliDynamicIntervalSec))
+	m.requestRateBits.Store(math.Float64bits(settings.BilibiliRequestRate))
+	m.requestConcurrency.Store(int64(settings.BilibiliRequestConcurrency))
 	m.deliveryConcurrency.Store(int64(settings.DeliveryConcurrency))
 	m.backlogAlertCount.Store(int64(settings.BacklogAlertCount))
 	m.backlogAlertAge.Store(int64(settings.BacklogAlertAgeSec))

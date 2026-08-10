@@ -1,0 +1,117 @@
+package state
+
+import (
+	"testing"
+	"time"
+
+	"github.com/linxin2429/bili_notify/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestPlatformIdentityAndEncryptedAccountSession(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 151)
+	for _, source := range []model.Source{
+		{ID: model.SourceID(model.PlatformBilibili, "42"), Platform: model.PlatformBilibili, Type: model.SourceBilibiliUP, ExternalID: "42", Name: "UP"},
+		{ID: model.SourceID(model.PlatformZSXQ, "42"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "42", Name: "Planet"},
+	} {
+		require.NoError(t, store.PutSource(source))
+		content := model.Content{ID: model.ContentID(source.Platform, "same"), Platform: source.Platform, SourceID: source.ID, ExternalID: "same", UpstreamType: "test", Type: model.ContentDynamic, PublishedAt: time.Now()}
+		require.NoError(t, store.ArchiveContent(content, nil))
+	}
+	items, err := store.QueryContents(PlatformContentQuery{Limit: 10})
+	require.NoError(t, err)
+	assert.Len(t, items, 2)
+	assert.NotEqual(t, items[0].ID, items[1].ID)
+
+	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "7", DisplayName: "User", Status: model.AccountConnected, Session: map[string]string{"zsxq_access_token": "secret"}}
+	require.NoError(t, store.PutPlatformAccount(account))
+	loaded, err := store.PlatformAccount(model.PlatformZSXQ)
+	require.NoError(t, err)
+	assert.Equal(t, account.Session, loaded.Session)
+	var persisted platformAccountRow
+	require.NoError(t, store.db.Where("platform = ?", model.PlatformZSXQ).Take(&persisted).Error)
+	assert.NotContains(t, string(persisted.SealedSession), "secret")
+}
+
+func TestSyncCommentTreeDigestDeletionEditAndRestore(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 152)
+	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "9", Name: "Planet", OwnerID: "owner"}
+	require.NoError(t, store.PutSource(source))
+	content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "topic"), Platform: model.PlatformZSXQ, SourceID: source.ID, ExternalID: "topic", UpstreamType: "talk", Type: model.ContentDiscussion, PublishedAt: time.Now()}
+	root := model.CommentNode{ID: model.CommentID(model.PlatformZSXQ, "root"), RPID: "root", Role: model.RoleMember, AuthorID: "member", Time: time.Now()}
+	owner := model.CommentNode{ID: model.CommentID(model.PlatformZSXQ, "owner"), RPID: "owner", ParentID: root.ID, RootID: root.ID, Role: model.RoleOwner, AuthorID: "owner", Time: time.Now().Add(time.Second)}
+
+	digests, err := store.SyncCommentTree(content, []model.CommentNode{root, owner}, true, true, "baseline", []string{"a", "b"})
+	require.NoError(t, err)
+	assert.Empty(t, digests)
+
+	newOwner := owner
+	newOwner.ID, newOwner.RPID, newOwner.Message = model.CommentID(model.PlatformZSXQ, "owner-2"), "owner-2", "new"
+	digests, err = store.SyncCommentTree(content, []model.CommentNode{root, owner, newOwner}, true, false, "batch", []string{"a", "b"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	require.Len(t, digests[0].Triggers, 1)
+	require.Len(t, digests[0].Paths, 1)
+	assert.Equal(t, []string{root.ID, newOwner.ID}, []string{digests[0].Paths[0].Nodes[0].ID, digests[0].Paths[0].Nodes[1].ID})
+	var outboxCount int64
+	require.NoError(t, store.db.Model(&outboxRow{}).Count(&outboxCount).Error)
+	assert.Equal(t, int64(2), outboxCount)
+
+	newOwner.Message = "edited"
+	digests, err = store.SyncCommentTree(content, []model.CommentNode{root, owner, newOwner}, true, false, "edit", []string{"a"})
+	require.NoError(t, err)
+	assert.Empty(t, digests)
+	require.NoError(t, store.SyncCommentTreeNoDigestForTest(content, []model.CommentNode{root, owner}, true))
+	var deleted commentNodeRow
+	require.NoError(t, store.db.Where("id = ?", newOwner.ID).Take(&deleted).Error)
+	require.NotNil(t, deleted.DeletedAt)
+
+	digests, err = store.SyncCommentTree(content, []model.CommentNode{root, owner, newOwner}, true, false, "restore", []string{"a"})
+	require.NoError(t, err)
+	assert.Empty(t, digests)
+	require.NoError(t, store.db.Where("id = ?", newOwner.ID).Take(&deleted).Error)
+	assert.Nil(t, deleted.DeletedAt)
+}
+
+func TestSyncCommentTreeMalformedSnapshotDoesNotDeleteMissingNodes(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 154)
+	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "11"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "11", Name: "Planet"}
+	require.NoError(t, store.PutSource(source))
+	content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "topic-malformed"), Platform: model.PlatformZSXQ, SourceID: source.ID, ExternalID: "topic-malformed", UpstreamType: "talk", Type: model.ContentDiscussion, PublishedAt: time.Now()}
+	root := model.CommentNode{ID: model.CommentID(model.PlatformZSXQ, "root"), RPID: "root", Role: model.RoleMember, Time: time.Now()}
+	missingLater := model.CommentNode{ID: model.CommentID(model.PlatformZSXQ, "existing"), RPID: "existing", Role: model.RoleMember, Time: time.Now().Add(time.Second)}
+	_, err := store.SyncCommentTree(content, []model.CommentNode{root, missingLater}, true, true, "baseline", nil)
+	require.NoError(t, err)
+
+	orphan := model.CommentNode{ID: model.CommentID(model.PlatformZSXQ, "orphan"), RPID: "orphan", ParentID: model.CommentID(model.PlatformZSXQ, "absent-parent"), RootID: root.ID, Role: model.RoleMember, Time: time.Now().Add(2 * time.Second)}
+	_, err = store.SyncCommentTree(content, []model.CommentNode{root, orphan}, true, false, "malformed", nil)
+	require.NoError(t, err)
+
+	var persisted commentNodeRow
+	require.NoError(t, store.db.Where("id = ?", missingLater.ID).Take(&persisted).Error)
+	assert.Nil(t, persisted.DeletedAt)
+	_, incomplete, err := store.CommentTree(content.ID)
+	require.NoError(t, err)
+	assert.True(t, incomplete)
+}
+
+func (s *Store) SyncCommentTreeNoDigestForTest(content model.Content, nodes []model.CommentNode, complete bool) error {
+	_, err := s.SyncCommentTree(content, nodes, complete, false, "delete", nil)
+	return err
+}
+
+func TestArchiveContentTransactionRollsBackInvalidAttachment(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 153)
+	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "10"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "10", Name: "Planet"}
+	require.NoError(t, store.PutSource(source))
+	content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "topic"), Platform: model.PlatformZSXQ, SourceID: source.ID, ExternalID: "topic", UpstreamType: "talk", Type: model.ContentDiscussion, PublishedAt: time.Now()}
+	err := store.ArchiveContentAndEnqueue(content, []model.Attachment{{ID: "bad", ContentID: "different", ExternalID: "asset", Type: model.AttachmentFile}}, []string{"channel"}, true)
+	require.Error(t, err)
+	_, _, err = store.Content(content.ID)
+	assert.ErrorIs(t, err, ErrNotFound)
+}

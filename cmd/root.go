@@ -47,9 +47,16 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("admin_addr", ":8443")
 	v.SetDefault("observe_addr", ":9090")
 	v.SetDefault("ai_worker_socket", config.DefaultAIWorkerSocket)
-	v.SetDefault("poll_interval", time.Duration(model.DefaultPollIntervalSec)*time.Second)
-	v.SetDefault("request_rate", model.DefaultRequestRate)
-	v.SetDefault("request_concurrency", model.DefaultRequestConcurrency)
+	v.SetDefault("bilibili_dynamic_interval", time.Duration(model.DefaultPollIntervalSec)*time.Second)
+	v.SetDefault("bilibili_request_rate", model.DefaultRequestRate)
+	v.SetDefault("bilibili_request_concurrency", model.DefaultRequestConcurrency)
+	v.SetDefault("zsxq_dynamic_interval", time.Duration(model.DefaultZSXQDynamicIntervalSec)*time.Second)
+	v.SetDefault("zsxq_comment_interval", time.Duration(model.DefaultZSXQCommentIntervalSec)*time.Second)
+	v.SetDefault("zsxq_request_rate", model.DefaultZSXQRequestRate)
+	v.SetDefault("zsxq_request_concurrency", model.DefaultZSXQRequestConcurrency)
+	v.SetDefault("zsxq_risk_pause", time.Duration(model.DefaultZSXQRiskPauseSec)*time.Second)
+	v.SetDefault("zsxq_asset_max_file_size", int64(model.DefaultZSXQAssetMaxFileMiB)<<20)
+	v.SetDefault("zsxq_asset_total_budget", int64(model.DefaultZSXQAssetTotalBudgetGiB)<<30)
 	v.SetDefault("log_level", model.DefaultLogLevel)
 	v.SetDefault("audit_log_retention", time.Duration(model.DefaultAuditRetentionDays)*24*time.Hour)
 	v.SetDefault("otel_sdk_disabled", false)
@@ -74,7 +81,10 @@ func newServeCmd(v *viper.Viper) *cobra.Command {
 			}
 			cfg := config.Config{
 				DataDir: v.GetString("data_dir"), AdminAddr: v.GetString("admin_addr"), ObserveAddr: v.GetString("observe_addr"), AIWorkerSocket: v.GetString("ai_worker_socket"),
-				PollInterval: v.GetDuration("poll_interval"), RequestRate: v.GetFloat64("request_rate"), RequestConcurrency: v.GetInt("request_concurrency"), LogLevel: v.GetString("log_level"),
+				BilibiliDynamicInterval: v.GetDuration("bilibili_dynamic_interval"), BilibiliRequestRate: v.GetFloat64("bilibili_request_rate"), BilibiliRequestConcurrency: v.GetInt("bilibili_request_concurrency"),
+				ZSXQDynamicInterval: v.GetDuration("zsxq_dynamic_interval"), ZSXQCommentInterval: v.GetDuration("zsxq_comment_interval"),
+				ZSXQRequestRate: v.GetFloat64("zsxq_request_rate"), ZSXQRequestConcurrency: v.GetInt("zsxq_request_concurrency"), ZSXQRiskPause: v.GetDuration("zsxq_risk_pause"),
+				ZSXQAssetMaxFileSize: v.GetInt64("zsxq_asset_max_file_size"), ZSXQAssetTotalBudget: v.GetInt64("zsxq_asset_total_budget"), LogLevel: v.GetString("log_level"),
 				AuditLogRetention: v.GetDuration("audit_log_retention"),
 				OTelSDKDisabled:   v.GetBool("otel_sdk_disabled"), OTelServiceName: v.GetString("otel_service_name"), OTelDeploymentEnvironment: v.GetString("otel_deployment_environment"),
 				OTelExporterOTLPEndpoint: v.GetString("otel_exporter_otlp_endpoint"), OTelExporterOTLPProtocol: v.GetString("otel_exporter_otlp_protocol"),
@@ -88,9 +98,16 @@ func newServeCmd(v *viper.Viper) *cobra.Command {
 	cmd.Flags().String("admin-addr", v.GetString("admin_addr"), "TLS admin listen address")
 	cmd.Flags().String("observe-addr", v.GetString("observe_addr"), "observability listen address")
 	cmd.Flags().String("ai-worker-socket", v.GetString("ai_worker_socket"), "AI worker Unix socket path")
-	cmd.Flags().Duration("poll-interval", v.GetDuration("poll_interval"), "default polling interval for a new data directory")
-	cmd.Flags().Float64("request-rate", v.GetFloat64("request_rate"), "default Bilibili requests per second for a new data directory")
-	cmd.Flags().Int("request-concurrency", v.GetInt("request_concurrency"), "default maximum concurrent Bilibili requests for a new data directory")
+	cmd.Flags().Duration("bilibili-dynamic-interval", v.GetDuration("bilibili_dynamic_interval"), "default Bilibili dynamic interval for a new data directory")
+	cmd.Flags().Float64("bilibili-request-rate", v.GetFloat64("bilibili_request_rate"), "default Bilibili requests per second for a new data directory")
+	cmd.Flags().Int("bilibili-request-concurrency", v.GetInt("bilibili_request_concurrency"), "default maximum concurrent Bilibili requests for a new data directory")
+	cmd.Flags().Duration("zsxq-dynamic-interval", v.GetDuration("zsxq_dynamic_interval"), "default Knowledge Planet dynamic interval")
+	cmd.Flags().Duration("zsxq-comment-interval", v.GetDuration("zsxq_comment_interval"), "default Knowledge Planet comment interval")
+	cmd.Flags().Float64("zsxq-request-rate", v.GetFloat64("zsxq_request_rate"), "default Knowledge Planet requests per second")
+	cmd.Flags().Int("zsxq-request-concurrency", v.GetInt("zsxq_request_concurrency"), "default Knowledge Planet request concurrency")
+	cmd.Flags().Duration("zsxq-risk-pause", v.GetDuration("zsxq_risk_pause"), "Knowledge Planet risk-control pause")
+	cmd.Flags().Int64("zsxq-asset-max-file-size", v.GetInt64("zsxq_asset_max_file_size"), "Knowledge Planet maximum attachment bytes")
+	cmd.Flags().Int64("zsxq-asset-total-budget", v.GetInt64("zsxq_asset_total_budget"), "Knowledge Planet attachment budget bytes")
 	cmd.Flags().String("log-level", v.GetString("log_level"), "default log level for a new data directory")
 	cmd.Flags().Duration("audit-log-retention", v.GetDuration("audit_log_retention"), "default audit log retention for a new data directory")
 	cmd.Flags().Bool("otel-sdk-disabled", v.GetBool("otel_sdk_disabled"), "disable OpenTelemetry")
@@ -108,7 +125,10 @@ func newServeCmd(v *viper.Viper) *cobra.Command {
 func bindServeFlags(v *viper.Viper, cmd *cobra.Command) error {
 	bindings := map[string]string{
 		"data_dir": "data-dir", "admin_addr": "admin-addr", "observe_addr": "observe-addr", "ai_worker_socket": "ai-worker-socket",
-		"poll_interval": "poll-interval", "request_rate": "request-rate", "request_concurrency": "request-concurrency", "log_level": "log-level",
+		"bilibili_dynamic_interval": "bilibili-dynamic-interval", "bilibili_request_rate": "bilibili-request-rate", "bilibili_request_concurrency": "bilibili-request-concurrency",
+		"zsxq_dynamic_interval": "zsxq-dynamic-interval", "zsxq_comment_interval": "zsxq-comment-interval", "zsxq_request_rate": "zsxq-request-rate",
+		"zsxq_request_concurrency": "zsxq-request-concurrency", "zsxq_risk_pause": "zsxq-risk-pause", "zsxq_asset_max_file_size": "zsxq-asset-max-file-size",
+		"zsxq_asset_total_budget": "zsxq-asset-total-budget", "log_level": "log-level",
 		"audit_log_retention": "audit-log-retention",
 		"otel_sdk_disabled":   "otel-sdk-disabled", "otel_service_name": "otel-service-name", "otel_deployment_environment": "otel-deployment-environment",
 		"otel_exporter_otlp_endpoint": "otel-exporter-otlp-endpoint", "otel_exporter_otlp_protocol": "otel-exporter-otlp-protocol",

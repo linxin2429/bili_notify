@@ -9,7 +9,7 @@ import { Badge, IconButton } from '../../shared/ui'
 import type { ThemePreference } from '../../shared/api/types'
 
 const navigation = [
-  { path: '/overview', label: '概览', icon: '◫' }, { path: '/ups', label: 'UP 主', icon: '♟' },
+  { path: '/overview', label: '概览', icon: '◫' }, { path: '/sources', label: '采集源', icon: '♟' },
   { path: '/channels', label: '通知渠道', icon: '◉' }, { path: '/deliveries', label: '投递队列', icon: '↗' },
   { path: '/history', label: '历史', icon: '◷' }, { path: '/audit-logs', label: '操作日志', icon: '≡' },
   { path: '/ai', label: 'AI 工作台', icon: '✦' }, { path: '/ai-settings', label: 'AI 设置', icon: '⚒' },

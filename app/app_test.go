@@ -88,7 +88,7 @@ func TestRunWithDependenciesLifecycleAndPersistentSeed(t *testing.T) {
 			return response.StatusCode == http.StatusOK
 		}, 5*time.Second, 10*time.Millisecond)
 		require.Eventually(t, func() bool {
-			response, err := httpClient.Get("https://" + admin.Addr().String() + "/api/v2/session")
+			response, err := httpClient.Get("https://" + admin.Addr().String() + "/api/v3/session")
 			if err != nil {
 				return false
 			}
@@ -233,7 +233,7 @@ func TestRunAuditRetentionStopsOnCancellation(t *testing.T) {
 func testConfig(dataDir string) config.Config {
 	return config.Config{
 		DataDir: dataDir, AdminAddr: "127.0.0.1:0", ObserveAddr: "127.0.0.1:0",
-		PollInterval: 30 * time.Second, RequestRate: 10, RequestConcurrency: 2,
+		BilibiliDynamicInterval: 30 * time.Second, BilibiliRequestRate: 10, BilibiliRequestConcurrency: 2,
 		LogLevel: "info", AuditLogRetention: 30 * 24 * time.Hour,
 		OTelSDKDisabled: true,
 	}

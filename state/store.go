@@ -36,7 +36,7 @@ var (
 	ErrDeliveryNotBlocked = errors.New("delivery is not blocked")
 )
 
-const runtimeSettingsVersion = 2
+const runtimeSettingsVersion = 3
 
 type runtimeSettingsRecord struct {
 	Version int `json:"_version"`
@@ -199,9 +199,10 @@ func (s *Store) RuntimeSettings() (model.RuntimeSettings, error) {
 	if err != nil {
 		return model.RuntimeSettings{}, err
 	}
-	if record.Version != runtimeSettingsVersion {
+	if record.Version != runtimeSettingsVersion && record.Version != 2 {
 		return model.RuntimeSettings{}, fmt.Errorf("%w: found version %d, want %d; start with a fresh data volume", ErrRuntimeSettingsVersionMismatch, record.Version, runtimeSettingsVersion)
 	}
+	record.RuntimeSettings = collectorCompatibilitySettings(record.RuntimeSettings)
 	if err := record.RuntimeSettings.Validate(); err != nil {
 		return model.RuntimeSettings{}, fmt.Errorf("validating stored runtime settings: %w", err)
 	}
@@ -225,6 +226,7 @@ func (s *Store) runtimeSettingsRecord() (runtimeSettingsRecord, error) {
 }
 
 func (s *Store) PutRuntimeSettings(settings model.RuntimeSettings) error {
+	settings = collectorCompatibilitySettings(settings)
 	if err := settings.Validate(); err != nil {
 		return err
 	}
@@ -243,6 +245,13 @@ func (s *Store) PutRuntimeSettings(settings model.RuntimeSettings) error {
 			DoUpdates: clause.AssignmentColumns([]string{"value"}),
 		}).Create(&metaRow{Key: metaKeyRuntimeSettings, Value: string(raw)}).Error
 	})
+}
+
+// collectorCompatibilitySettings is not an API compatibility layer: it maps
+// the v3 platform-specific settings into the still-internal Bilibili engine
+// fields until that engine is split into the same collector shape as ZSXQ.
+func collectorCompatibilitySettings(settings model.RuntimeSettings) model.RuntimeSettings {
+	return settings
 }
 
 func (s *Store) ListUPs() ([]model.UP, error) {
@@ -307,6 +316,21 @@ func (s *Store) PutUP(up model.UP) error {
 		if err := tx.Save(&row).Error; err != nil {
 			return err
 		}
+		source := model.Source{
+			ID: model.SourceID(model.PlatformBilibili, up.UID), Platform: model.PlatformBilibili,
+			Type: model.SourceBilibiliUP, ExternalID: up.UID, Name: up.Name, Enabled: up.Enabled,
+			BaselineState: model.BaselinePending,
+		}
+		if up.BaselineReady {
+			source.BaselineState = model.BaselineComplete
+		}
+		sourceRow := sourceFromModel(source)
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"name", "enabled", "baseline_state"}),
+		}).Create(&sourceRow).Error; err != nil {
+			return err
+		}
 		if !wasEnabled && up.Enabled {
 			return tx.Model(&upFollowRelationRow{}).Where("up_uid = ?", up.UID).Update("space_synced", 0).Error
 		}
@@ -322,20 +346,21 @@ func (s *Store) DeleteUP(uid string) error {
 		}
 		dynamicSet := make(map[string]struct{}, len(dynamicIDs))
 		for _, id := range dynamicIDs {
-			dynamicSet[id] = struct{}{}
+			dynamicSet[model.ContentID(model.PlatformBilibili, id)] = struct{}{}
 		}
 		var deliveryRows []deliveryRow
 		if err := tx.Find(&deliveryRows).Error; err != nil {
 			return err
 		}
+		sourceID := model.SourceID(model.PlatformBilibili, uid)
 		for _, row := range deliveryRows {
 			delivery, err := decodeDelivery(row)
 			if err != nil {
 				return err
 			}
-			belongsToUP := delivery.EffectiveKind() == model.DeliveryKindDynamic && delivery.Dynamic.UID == uid
+			belongsToUP := delivery.EffectiveKind() == model.DeliveryKindDynamic && (delivery.Dynamic.UID == uid || delivery.Dynamic.UID == sourceID)
 			if delivery.EffectiveKind() == model.DeliveryKindComment && delivery.Comment != nil {
-				belongsToUP = delivery.Comment.UPUID == uid
+				belongsToUP = delivery.Comment.UPUID == uid || delivery.Comment.UPUID == sourceID
 			}
 			if delivery.EffectiveKind() == model.DeliveryKindAI && delivery.AI != nil {
 				_, belongsToUP = dynamicSet[delivery.AI.DynamicID]
@@ -359,7 +384,11 @@ func (s *Store) DeleteUP(uid string) error {
 			return err
 		}
 		if len(dynamicIDs) > 0 {
-			if err := tx.Where("source_dynamic_id IN ?", dynamicIDs).Delete(&aiJobRow{}).Error; err != nil {
+			contentIDs := make([]string, 0, len(dynamicIDs))
+			for _, id := range dynamicIDs {
+				contentIDs = append(contentIDs, model.ContentID(model.PlatformBilibili, id))
+			}
+			if err := tx.Where("source_dynamic_id IN ?", contentIDs).Delete(&aiJobRow{}).Error; err != nil {
 				return err
 			}
 		}
@@ -372,7 +401,13 @@ func (s *Store) DeleteUP(uid string) error {
 		if err := tx.Where("up_uid = ?", uid).Delete(&upFollowRelationRow{}).Error; err != nil {
 			return err
 		}
-		return nil
+		if err := tx.Where("source_id = ?", sourceID).Delete(&seenItemRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("source_id = ?", sourceID).Delete(&outboxRow{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id = ?", sourceID).Delete(&sourceRow{}).Error
 	})
 }
 
@@ -400,7 +435,14 @@ func (s *Store) SetUPResult(uid, name string, at time.Time, pollErr error) error
 			up.ConsecutiveFail++
 		}
 		row = upFromModel(up)
-		return tx.Save(&row).Error
+		if err := tx.Save(&row).Error; err != nil {
+			return err
+		}
+		updates := map[string]any{"name": up.Name, "last_poll_at": at.Unix(), "last_error": up.LastError, "consecutive_fails": up.ConsecutiveFail}
+		if pollErr == nil {
+			updates["last_success_at"] = at.Unix()
+		}
+		return tx.Model(&sourceRow{}).Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).Updates(updates).Error
 	})
 }
 
@@ -518,6 +560,10 @@ func (s *Store) SaveSession(session model.BiliSession) error {
 	if err != nil {
 		return err
 	}
+	sealedCookies, err := sealJSON(s.vault, tablePlatformAccounts, string(model.PlatformBilibili), session.Cookies)
+	if err != nil {
+		return err
+	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var previous model.BiliSession
 		var row authSessionRow
@@ -530,6 +576,29 @@ func (s *Store) SaveSession(session model.BiliSession) error {
 			return err
 		}
 		if err := tx.Save(&authSessionRow{ID: authSessionID, Sealed: sealed}).Error; err != nil {
+			return err
+		}
+		now := session.UpdatedAt
+		if now.IsZero() {
+			now = time.Now()
+		}
+		status := model.AccountInvalid
+		var verifiedAt *int64
+		if session.AccountUID != "" {
+			status = model.AccountConnected
+			verifiedAt = unixPointer(now)
+		}
+		account := platformAccountRow{
+			Platform:      string(model.PlatformBilibili),
+			ExternalID:    session.AccountUID,
+			DisplayName:   session.AccountName,
+			Status:        string(status),
+			SealedSession: sealedCookies,
+			SealedAAD:     tablePlatformAccounts,
+			VerifiedAt:    verifiedAt,
+			UpdatedAt:     now.Unix(),
+		}
+		if err := tx.Save(&account).Error; err != nil {
 			return err
 		}
 		if session.AccountUID == "" || session.AccountUID == previous.AccountUID {
@@ -562,7 +631,12 @@ func (s *Store) Session() (model.BiliSession, error) {
 }
 
 func (s *Store) ClearSession() error {
-	return s.db.Where("id = ?", authSessionID).Delete(&authSessionRow{}).Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id = ?", authSessionID).Delete(&authSessionRow{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("platform = ?", model.PlatformBilibili).Delete(&platformAccountRow{}).Error
+	})
 }
 
 func (s *Store) Seen(uid, dynamicID string) (bool, error) {
@@ -651,7 +725,15 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 			}
 			up.ExclusiveBaselineReady = true
 			updated := upFromModel(up)
-			return tx.Save(&updated).Error
+			if err := tx.Save(&updated).Error; err != nil {
+				return err
+			}
+			if baselineMode == DynamicBaselineAll {
+				return tx.Model(&sourceRow{}).
+					Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).
+					Update("baseline_state", model.BaselineComplete).Error
+			}
+			return nil
 		}
 		return nil
 	})

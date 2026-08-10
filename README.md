@@ -2,9 +2,9 @@
 
 除动态采集与通知外，AI 工作台可把 B 站视频音频转成带时间位置的文字，并异步总结直接输入或转写得到的文本。耗时、依赖多且处理不可信媒体的工作由独立 Python Worker 执行；Go 主进程只负责任务持久化、鉴权、调度和管理 API，因此 Worker 暂停时普通采集与通知仍然可用，待处理 AI 任务保留在 SQLite 队列中。
 
-Bili Notify 是一个单实例 Go 服务，通过登录后的 B 站网页接口采集 UP 主动态，并可靠投递到 SMTP 邮件、Microsoft Outlook/Microsoft 365、钉钉、飞书和企业微信群机器人。已关注的监控 UP 使用账号综合动态流及时发现，并定期通过空间动态校验；未关注或关系未知的 UP 直接轮询空间动态。React 管理台与 Go 后端通过同源 WebSocket 实时通信，状态、待投递通知与内容档案持久化到单一 SQLite 数据库。
+Bili Notify 是一个单实例 Go 服务，通过已登录的平台账号归档 B 站 UP 主和知识星球内容，并可靠投递到 SMTP 邮件、Microsoft Outlook/Microsoft 365、钉钉、飞书和企业微信群机器人。统一领域主线是“平台账号 → 采集源 → 内容 → 完整评论树 → 持久 Outbox → 通知”；两个平台使用独立调度、限流、风控暂停和登录生命周期。React 管理台与 Go 后端通过 `/api/v3` 和同源 WebSocket 通信，设置、待投递通知、内容、附件及评论树保存在单一 SQLite 数据库。
 
-> B 站未提供面向任意公开 UP 主动态的稳定推送接口。本项目使用非官方网页接口，可能因接口变化、风控或平台规则而不可用；它不会绕过验证码、限流或风控。请仅在你有权使用的场景中部署。
+> B 站和知识星球都没有为本项目提供稳定的官方采集接口。本项目使用登录后的网页接口，可能因接口变化、风控或平台规则而不可用；它不会绕过验证码、限流或风控。知识星球登录要求管理员主动完成阿里云滑块并同意其用户协议与隐私政策。请只归档你有权访问和保存的内容。
 
 ## 快速启动
 
@@ -53,11 +53,12 @@ docker run -d --name bili-notify \
 
 1. 在“概览”生成二维码并使用哔哩哔哩 App 扫码。
 2. 添加至少一个通知渠道并发送测试通知。
-3. 添加需要监控的 UID。首次拉取只建立基线，不通知历史动态；基线内容仍会写入“历史”页。
-4. 在“历史”中按 UP、时间与关键字浏览已采集内容。
-5. 如需 AI 功能，在“AI 设置”创建转写/总结模型配置档和总结提示词，然后在“AI 工作台”提交 BVID 或文本。若要让新视频动态自动按“转写 → 总结”处理，请把三个配置分别设为默认且保持模型启用，再到“设置”开启“自动处理新视频动态”；该开关默认关闭，首次基线和转发中嵌套的视频不会触发。结果可在 AI 工作台和动态历史中查看。配置档支持任意 OpenAI 兼容的 HTTPS Base URL、API Key 和模型名；API Key 加密保存且不会回传浏览器。默认示例可使用 OpenRouter 的 `https://openrouter.ai/api/v1` 与 `openai/gpt-transcribe`。
+3. 在“采集源”添加 B 站 UID。首次拉取只建立基线，不通知历史动态；基线内容仍会写入“历史”页。
+4. 如需知识星球，在“采集源”进入独立登录页，确认协议、输入国家码与手机号、完成滑块并提交短信验证码。登录成功后可见星球会同步到列表；逐个启用后执行可续传的历史动态、附件和评论树回补，历史内容不通知，回补期间新内容仍正常通知。
+5. 在“历史”中按平台、采集源、时间与关键字浏览统一内容，并展开完整嵌套评论树。所有用户评论都会归档；只有 B 站 UP 本人或知识星球星球主本人的新增节点生成通知，同一轮同一内容合并为一条摘要。
+6. 如需 AI 功能，在“AI 设置”创建转写/总结模型配置档和总结提示词，然后在“AI 工作台”提交 BVID 或文本。若要让 B 站新视频动态自动按“转写 → 总结”处理，请把三个配置分别设为默认且保持模型启用，再到“设置”开启“自动处理新视频动态”；该开关默认关闭，知识星球音视频、首次基线和转发中嵌套的视频不会触发。结果可在 AI 工作台查看。配置档支持任意 OpenAI 兼容的 HTTPS Base URL、API Key 和模型名；API Key 加密保存且不会回传浏览器。
 
-“设置”页可热更新基础与高级采集策略、投递并发与重试、积压告警、日志级别和审计日志保留期。保存的是一份完整运行设置：后续任务立即读取新策略，正在执行的任务和已经排定的重试不会被取消或改写。`BILI_NOTIFY_POLL_INTERVAL`、`BILI_NOTIFY_REQUEST_RATE`、`BILI_NOTIFY_REQUEST_CONCURRENCY`、`BILI_NOTIFY_LOG_LEVEL` 和 `BILI_NOTIFY_AUDIT_LOG_RETENTION` 只在新数据目录首次启动时播种默认值，之后以 `data.db` 中的管理台设置为准。
+“设置”页可热更新 B 站、知识星球、附件预算、投递与日志参数。保存的是一份完整运行设置：后续任务立即读取新策略，正在执行的任务和已经排定的重试不会被取消或改写。环境变量只在空库首次启动时播种默认值，之后以 `data.db` 为准。B 站种子使用 `BILI_NOTIFY_BILIBILI_DYNAMIC_INTERVAL`、`BILI_NOTIFY_BILIBILI_REQUEST_RATE`、`BILI_NOTIFY_BILIBILI_REQUEST_CONCURRENCY` 等 `BILI_NOTIFY_BILIBILI_*` 名称；知识星球使用 `BILI_NOTIFY_ZSXQ_DYNAMIC_INTERVAL`、`BILI_NOTIFY_ZSXQ_COMMENT_INTERVAL`、`BILI_NOTIFY_ZSXQ_REQUEST_RATE`、`BILI_NOTIFY_ZSXQ_REQUEST_CONCURRENCY`、`BILI_NOTIFY_ZSXQ_RISK_PAUSE`、`BILI_NOTIFY_ZSXQ_ASSET_MAX_FILE_SIZE` 和 `BILI_NOTIFY_ZSXQ_ASSET_TOTAL_BUDGET`。旧变量名不会读取。
 
 观测接口默认监听容器内 `:9090`，只包含 `/healthz` 和 `/readyz`，Compose 默认不发布到宿主机。Metrics 通过 OTLP 发送到 OpenTelemetry Collector，由 Collector 在 `:9464/metrics` 上转换为 Prometheus/OpenMetrics。
 
@@ -130,7 +131,7 @@ Trace 在这个项目中有必要：一次自动视频处理会跨越 B 站动�
 
 管理员密码可在“设置”中修改，修改后所有现有会话与 WebSocket 会立即失效。本版本不提供忘记密码恢复；密码丢失后只能使用新的数据卷重新初始化。
 
-本版本不兼容旧的外置主密钥数据库，也不会自动删除或迁移旧卷。升级前请备份；切换新版时必须显式创建全新数据卷。
+从上一版单平台数据库启动时，Goose 会一次性把 B 站账号、UP 来源、内容、评论、seen 状态和 AI 内容引用迁入带平台前缀的统一模型。升级前仍应同时备份 `data.db`、主密钥和 `media/`；迁移完成后只提供 `/api/v3` 统一资源接口，不提供旧管理 API。
 
 ## 本地开发
 

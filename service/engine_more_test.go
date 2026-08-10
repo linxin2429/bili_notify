@@ -306,7 +306,7 @@ func TestPollCommentTargetBaselinesThenQueuesNewReply(t *testing.T) {
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
 
-	require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{channel.ID}, 1, 1))
+	require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{channel.ID}))
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	assert.Empty(t, deliveries)
@@ -315,7 +315,7 @@ func TestPollCommentTargetBaselinesThenQueuesNewReply(t *testing.T) {
 	require.Len(t, targets, 1)
 	assert.True(t, targets[0].BaselineReady)
 
-	require.NoError(t, engine.pollCommentTarget(t.Context(), targets[0], []string{channel.ID}, 1, 1))
+	require.NoError(t, engine.pollCommentTarget(t.Context(), targets[0], []string{channel.ID}))
 	deliveries, err = store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
@@ -341,7 +341,7 @@ func TestPollCommentTargetClosesUnavailableTarget(t *testing.T) {
 		store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil,
 	)
-	require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{"channel"}, 1, 1))
+	require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{"channel"}))
 	targets, err := store.ListCommentTargets("42")
 	require.NoError(t, err)
 	require.Len(t, targets, 1)

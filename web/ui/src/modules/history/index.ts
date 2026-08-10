@@ -1,1 +1,0 @@
-export { DynamicHistoryCard } from './DynamicHistoryCard'

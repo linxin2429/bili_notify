@@ -309,7 +309,7 @@ func (s *upstreamState) rootReplies(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	newComment := s.newComment
 	s.mu.Unlock()
-	if newComment {
+	if newComment && r.URL.Query().Get("oid") == "dynamic-2" {
 		writeJSON(w, http.StatusOK, map[string]any{"code": 0, "message": "0", "data": map[string]any{
 			"page": map[string]any{"num": 1, "size": 20, "count": 1}, "replies": []any{map[string]any{
 				"rpid_str": "e2e-up-reply", "root_str": "0", "parent_str": "0", "ctime": 1700000002,
@@ -482,7 +482,7 @@ func (m *applicationManager) startLocked(admin, observe net.Listener) error {
 	}
 	cfg := config.Config{
 		DataDir: m.dataDir, AdminAddr: m.adminAddr, ObserveAddr: m.observeAddr,
-		PollInterval: 10 * time.Second, RequestRate: 10, RequestConcurrency: 2, LogLevel: "warn",
+		BilibiliDynamicInterval: 10 * time.Second, BilibiliRequestRate: 10, BilibiliRequestConcurrency: 2, LogLevel: "warn",
 		AuditLogRetention: 180 * 24 * time.Hour, OTelSDKDisabled: true,
 	}
 	go func() {

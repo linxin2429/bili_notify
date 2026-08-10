@@ -1,6 +1,6 @@
 export const realtimeTopics = [
-  'runtime', 'settings', 'ups', 'channels', 'deliveries', 'bilibili-login', 'microsoft-logins',
-  'dynamics', 'comments', 'audit-logs', 'ai-status', 'ai-jobs',
+  'runtime', 'settings', 'channels', 'deliveries', 'microsoft-logins', 'audit-logs',
+  'ai-status', 'ai-jobs', 'accounts', 'sources', 'contents', 'backfills',
 ] as const
 
 export type RealtimeEnvelope = {

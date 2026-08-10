@@ -20,6 +20,7 @@ import (
 	"github.com/linxin2429/bili_notify/telemetry"
 	"github.com/linxin2429/bili_notify/vault"
 	"github.com/linxin2429/bili_notify/web"
+	"github.com/linxin2429/bili_notify/zsxq"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
@@ -32,6 +33,8 @@ type Dependencies struct {
 	NotificationHTTPClient *http.Client
 	BilibiliAPIURL         string
 	BilibiliPassportURL    string
+	ZSXQHTTPClient         *http.Client
+	ZSXQAPIURL             string
 	Logger                 *slog.Logger
 	AuditLogger            *slog.Logger
 	AdminListener          net.Listener
@@ -114,6 +117,9 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if _, err := store.Session(); err != nil && !errors.Is(err, state.ErrNotFound) {
 		return fmt.Errorf("validating encrypted Bilibili session: %w", err)
 	}
+	if _, err := store.PlatformAccount(model.PlatformZSXQ); err != nil && !errors.Is(err, state.ErrNotFound) {
+		return fmt.Errorf("validating encrypted Knowledge Planet session: %w", err)
+	}
 
 	settings, err := store.RuntimeSettings()
 	if errors.Is(err, state.ErrNotFound) {
@@ -134,9 +140,9 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 		"event", "process.start",
 		"version", version,
 		"timezone", time.Local.String(),
-		"poll_interval_sec", settings.PollIntervalSec,
-		"request_rate", settings.RequestRate,
-		"request_concurrency", settings.RequestConcurrency,
+		"bilibili_dynamic_interval_sec", settings.BilibiliDynamicIntervalSec,
+		"bilibili_request_rate", settings.BilibiliRequestRate,
+		"bilibili_request_concurrency", settings.BilibiliRequestConcurrency,
 		"admin_addr", cfg.AdminAddr,
 		"observe_addr", cfg.ObserveAddr,
 	)
@@ -170,7 +176,32 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	aiEngine := service.NewAIEngine(store, cfg.EffectiveAIWorkerSocket(), logger.With("component", "ai"), events,
 		service.WithAITelemetry(telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator))
 	settingsManager := newRuntimeSettingsManager(store, engine, loggers, events)
-	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator, cfg.DataDir, web.WithAIEngine(aiEngine))
+	zsxqHTTPClient := dependencies.ZSXQHTTPClient
+	if zsxqHTTPClient == nil {
+		zsxqHTTPClient = newHTTPClient()
+	}
+	var zsxqOptions []zsxq.Option
+	if dependencies.ZSXQAPIURL != "" {
+		zsxqOptions = append(zsxqOptions, zsxq.WithBaseURL(dependencies.ZSXQAPIURL))
+	}
+	zsxqClient, err := zsxq.New(zsxqHTTPClient, "bili-notify/"+version, zsxqOptions...)
+	if err != nil {
+		return fmt.Errorf("initializing Knowledge Planet client: %w", err)
+	}
+	if account, accountErr := store.PlatformAccount(model.PlatformZSXQ); accountErr == nil {
+		zsxqClient.SetSession(account.Session)
+	}
+	zsxqLogin, err := zsxq.NewLoginManager(zsxqClient, store)
+	if err != nil {
+		return err
+	}
+	zsxqCollector, err := zsxq.NewCollector(store, zsxqClient, settingsManager.Settings, logger.With("component", "zsxq"))
+	if err != nil {
+		return err
+	}
+	zsxqCollector.SetAttachmentDownloader(&media.AttachmentDownloader{DataDir: cfg.DataDir, Client: zsxqHTTPClient, UserAgent: "bili-notify/" + version})
+	zsxqCollector.SetMetrics(metrics)
+	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator, cfg.DataDir, web.WithAIEngine(aiEngine), web.WithZSXQLogin(zsxqLogin))
 	if err != nil {
 		return err
 	}
@@ -178,6 +209,7 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return engine.Run(gctx) })
 	g.Go(func() error { return aiEngine.Run(gctx) })
+	g.Go(func() error { return zsxqCollector.Run(gctx) })
 	g.Go(func() error {
 		return runAuditRetention(gctx, store, settingsManager.Settings, appLogger, telemetryRuntime.Tracer(), metrics)
 	})

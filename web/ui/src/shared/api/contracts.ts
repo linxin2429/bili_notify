@@ -24,13 +24,6 @@ export const runtimeSchema = z.object({
   updated_at: z.string(),
 }).strict() satisfies z.ZodType<Schemas['Runtime']>
 
-export const upSchema = z.object({
-  uid: z.string(), name: z.string(), enabled: z.boolean(), baseline_ready: z.boolean(),
-  last_poll_at: z.string().optional(), last_success_at: z.string().optional(), last_error: z.string().optional(),
-  consecutive_fail: z.number().int(), follow_state: z.enum(['unknown', 'followed', 'unfollowed']),
-  follow_checked_at: z.string().optional(), collection_route: z.enum(['feed_all', 'space']),
-}).strict() satisfies z.ZodType<Schemas['UP']>
-
 export const channelSchema = z.object({
   id: z.string(), name: z.string(), type: channelTypeSchema, enabled: z.boolean(),
   settings: z.record(z.string(), z.string()), configured_secrets: z.array(z.string()),
@@ -49,7 +42,7 @@ const aiDeliveryPreviewSchema = z.object({
   stage: z.enum(['transcription', 'summary']), succeeded: z.boolean(), summary: z.string(), error_message: z.string().optional(),
 }).strict() satisfies z.ZodType<Schemas['AIDeliveryPreview']>
 export const deliverySchema = z.object({
-  id: z.string(), kind: z.enum(['dynamic', 'comment', 'ai']), dynamic: dynamicDeliveryPreviewSchema.optional(),
+  id: z.string(), kind: z.enum(['content', 'comment_digest', 'ai']), dynamic: dynamicDeliveryPreviewSchema.optional(),
   comment: commentDeliveryPreviewSchema.optional(), ai: aiDeliveryPreviewSchema.optional(), channel_id: z.string(), state: z.enum(['pending', 'blocked']),
   attempts: z.number().int(), next_at: z.string(), last_error: z.string().optional(), created_at: z.string(),
 }).strict() satisfies z.ZodType<Schemas['Delivery']>
@@ -64,13 +57,16 @@ export const microsoftLoginSchema = z.object({
 }).strict() satisfies z.ZodType<Schemas['MicrosoftLogin']>
 
 export const runtimeSettingsSchema = z.object({
-  poll_interval_sec: z.number().int().min(10).max(86400), request_rate: z.number().positive().max(10),
-  request_concurrency: z.number().int().min(1).max(16), comment_enabled: z.boolean(),
-  comment_track_n: z.number().int().min(1).max(50), comment_root_pages: z.number().int().min(1).max(10),
-  comment_reply_pages: z.number().int().min(1).max(20), comment_batch_interval_sec: z.number().int().min(30).max(86400),
+  bilibili_dynamic_interval_sec: z.number().int().min(10).max(86400), bilibili_request_rate: z.number().positive().max(10),
+  bilibili_request_concurrency: z.number().int().min(1).max(16), bilibili_comments_enabled: z.boolean(),
+  bilibili_comment_track_n: z.number().int().min(1).max(50), bilibili_comment_interval_sec: z.number().int().min(30).max(86400),
+  bilibili_relation_refresh_interval_sec: z.number().int().min(60).max(86400), bilibili_space_reconcile_interval_sec: z.number().int().min(300).max(604800),
+  bilibili_max_dynamic_pages: z.number().int().min(1).max(20), bilibili_risk_pause_sec: z.number().int().min(60).max(3600),
+  zsxq_dynamic_interval_sec: z.number().int().min(30).max(86400), zsxq_comment_interval_sec: z.number().int().min(30).max(86400),
+  zsxq_comments_enabled: z.boolean(), zsxq_request_rate: z.number().positive().max(10), zsxq_request_concurrency: z.number().int().min(1).max(16),
+  zsxq_risk_pause_sec: z.number().int().min(60).max(3600), zsxq_asset_max_file_mib: z.number().int().min(1).max(2048),
+  zsxq_asset_total_budget_gib: z.number().int().min(1).max(10240),
   log_level: z.enum(['debug', 'info', 'warn', 'error']), audit_log_retention_days: z.number().int().min(1).max(3650),
-  relation_refresh_interval_sec: z.number().int().min(60).max(86400), space_reconcile_interval_sec: z.number().int().min(300).max(604800),
-  max_dynamic_pages: z.number().int().min(1).max(20), risk_pause_sec: z.number().int().min(60).max(3600),
   delivery_concurrency: z.number().int().min(1).max(32), backlog_alert_count: z.number().int().min(1).max(100000),
   backlog_alert_age_sec: z.number().int().min(60).max(86400),
   delivery_retry_delays_sec: z.tuple([
@@ -80,39 +76,45 @@ export const runtimeSettingsSchema = z.object({
   ai_auto_processing_enabled: z.boolean(),
 }).strict()
 
-export const dynamicLinkSchema = z.object({ text: z.string(), url: z.string() }).strict() satisfies z.ZodType<Schemas['DynamicLink']>
-export const dynamicMediaSchema = z.object({ kind: z.enum(['cover', 'image']), url: z.string(), width: z.number().int().optional(), height: z.number().int().optional() }).strict() satisfies z.ZodType<Schemas['DynamicMedia']>
-export const dynamicStatsSchema = z.object({ forwards: z.number().int(), comments: z.number().int(), likes: z.number().int() }).strict() satisfies z.ZodType<Schemas['DynamicStats']>
-export const dynamicVideoSchema = z.object({ duration: z.string().optional(), views: z.string().optional(), danmaku: z.string().optional() }).strict() satisfies z.ZodType<Schemas['DynamicVideo']>
-export const dynamicPreviewSchema: z.ZodType<Schemas['DynamicOriginal']> = z.lazy(() => z.object({
-  id: z.string().optional(), uid: z.string().optional(), up_name: z.string().optional(), type: z.string().optional(), published_at: z.string().optional(),
-  title: z.string().optional(), summary: z.string().optional(), description: z.string().optional(), url: z.string().optional(),
-  target_url: z.string().optional(), badge: z.string().optional(), links: z.array(dynamicLinkSchema).optional(),
-  media: z.array(dynamicMediaSchema).optional(), stats: dynamicStatsSchema.optional(), video: dynamicVideoSchema.optional(),
-  original: dynamicPreviewSchema.optional(),
+export const platformAccountSchema = z.object({
+  platform: z.enum(['bilibili', 'zsxq']), external_id: z.string().optional(), display_name: z.string().optional(), masked_phone: z.string().optional(),
+  status: z.enum(['disconnected', 'connected', 'invalid', 'risk_paused']), verified_at: z.string().optional(), updated_at: z.string().optional(),
+  risk_paused_until: z.string().optional(), last_error: z.string().optional(),
+}).strict() satisfies z.ZodType<Schemas['PlatformAccount']>
+
+export const sourceSchema = z.object({
+  id: z.string(), platform: z.enum(['bilibili', 'zsxq']), type: z.enum(['up', 'planet']), external_id: z.string(), name: z.string(), note: z.string().optional(),
+  owner_id: z.string().optional(), owner_name: z.string().optional(), enabled: z.boolean(), baseline_state: z.enum(['pending', 'running', 'complete', 'failed']),
+  backfill_cursor: z.string().optional(), high_watermark: z.string().optional(), backfill_done: z.number().int(), backfill_total: z.number().int(),
+  last_poll_at: z.string().optional(), last_success_at: z.string().optional(), last_comment_at: z.string().optional(), sync_lag_sec: z.number().int(),
+  last_error: z.string().optional(), consecutive_fails: z.number().int(),
+}).strict() satisfies z.ZodType<Schemas['Source']>
+
+export const zsxqLoginTransactionSchema = z.object({ id: z.string(), masked_phone: z.string(), expires_at: z.string(), next_send_at: z.string(), attempts_left: z.number().int() }).strict() satisfies z.ZodType<Schemas['ZSXQLoginTransaction']>
+
+export const contentSchema = z.object({
+  id: z.string(), platform: z.enum(['bilibili', 'zsxq']), source_id: z.string(), external_id: z.string(),
+  author_id: z.string().optional(), author_name: z.string().optional(), upstream_type: z.string(),
+  type: z.enum(['dynamic', 'video', 'article', 'discussion', 'question', 'answer', 'task', 'long_article']),
+  title: z.string().optional(), text: z.string().optional(), safe_html: z.string().optional(), url: z.string().optional(),
+  published_at: z.string(), updated_at: z.string().optional(), first_seen_at: z.string(), last_synced_at: z.string(),
+  deleted_at: z.string().optional(), stats: z.record(z.string(), z.number().int()).optional(), tree_incomplete: z.boolean().optional(), baseline: z.boolean(),
+}).strict() satisfies z.ZodType<Schemas['Content']>
+
+export const attachmentSchema = z.object({
+  id: z.string(), content_id: z.string(), external_id: z.string(), type: z.enum(['image', 'file', 'audio', 'video', 'link']),
+  file_name: z.string().optional(), mime: z.string().optional(), size: z.number().int().optional(), width: z.number().int().optional(),
+  height: z.number().int().optional(), duration_sec: z.number().int().optional(), remote_host: z.string().optional(), local_path: z.string().optional(), localize_error: z.string().optional(),
+}).strict() satisfies z.ZodType<Schemas['Attachment']>
+
+export const commentTreeNodeSchema: z.ZodType<Schemas['CommentTreeNode']> = z.lazy(() => z.object({
+  id: z.string(), platform: z.enum(['bilibili', 'zsxq']), content_id: z.string(), root_id: z.string().optional(), parent_id: z.string().optional(),
+  author_id: z.string().optional(), author_role: z.enum(['owner', 'admin', 'guest', 'partner', 'member', 'up']).optional(),
+  updated_at: z.string().optional(), first_seen_at: z.string().optional(), deleted_at: z.string().optional(), media: z.array(attachmentSchema).optional(),
+  children: z.array(commentTreeNodeSchema).optional(), rpid: z.string(), parent: z.string().optional(), mid: z.string(), name: z.string(),
+  message: z.string(), time: z.string(), is_up: z.boolean().optional(), is_trigger: z.boolean().optional(),
 }).strict())
-export const dynamicHistorySchema = z.object({
-  id: z.string(), bvid: z.string().optional(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(), discovered_at: z.string(),
-  baseline: z.boolean(), title: z.string().optional(), summary: z.string(), description: z.string().optional(),
-  url: z.string(), target_url: z.string().optional(), badge: z.string().optional(), links: z.array(dynamicLinkSchema).optional(),
-  media: z.array(dynamicMediaSchema).optional(), stats: dynamicStatsSchema.optional(), video: dynamicVideoSchema.optional(),
-  original: dynamicPreviewSchema.optional(), commentable: z.boolean().optional(), comment_type: z.number().int().optional(),
-  comment_oid: z.string().optional(), comment_count: z.number().int().optional(), ai_pipeline: z.array(z.lazy(() => aiJobSchema)).optional(),
-}).strict() satisfies z.ZodType<Schemas['DynamicHistory']>
-export const commentHistorySchema = z.object({
-  rpid: z.string(), up_uid: z.string(), up_name: z.string(), content_type: z.string().optional(), content_id: z.string().optional(),
-  content_title: z.string().optional(), content_url: z.string().optional(), published_at: z.string(), discovered_at: z.string(),
-  baseline: z.boolean(), incomplete: z.boolean().optional(),
-}).strict() satisfies z.ZodType<Schemas['CommentHistory']>
-const commentThreadEntrySchema = z.object({
-  rpid: z.string(), parent: z.string().optional(), mid: z.string(), name: z.string(), message: z.string(), time: z.string(),
-  is_up: z.boolean().optional(), is_trigger: z.boolean().optional(),
-}).strict() satisfies z.ZodType<Schemas['CommentNode']>
-export const commentDetailSchema = z.object({
-  rpid: z.string(), up_uid: z.string(), up_name: z.string(), content_type: z.string(), content_id: z.string(),
-  content_title: z.string().optional(), content_url: z.string(), published_at: z.string(), incomplete: z.boolean().optional(),
-  thread: z.array(commentThreadEntrySchema),
-}).strict() satisfies z.ZodType<Schemas['CommentNotification']>
+
 export const auditLogSchema = z.object({
   id: z.number().int(), occurred_at: z.string(), request_id: z.string(), actor: z.string(),
   session_id: z.string(), remote_ip: z.string(), user_agent: z.string(), action: z.string(), resource_type: z.string(),
@@ -124,9 +126,10 @@ export const cursorPageSchema = <T extends z.ZodType>(item: T) => z.object({
   items: z.array(item),
   page: z.object({ next_cursor: z.string(), has_more: z.boolean() }).strict(),
 }).strict()
+export const contentPageSchema = cursorPageSchema(contentSchema)
+export const contentDetailSchema = z.object({ content: contentSchema, attachments: z.array(attachmentSchema) }).strict()
+export const commentTreeSchema = z.object({ children: z.array(commentTreeNodeSchema), incomplete: z.boolean() }).strict()
 export const deliveryPageSchema = cursorPageSchema(deliverySchema)
-export const dynamicHistoryPageSchema = cursorPageSchema(dynamicHistorySchema)
-export const commentHistoryPageSchema = cursorPageSchema(commentHistorySchema)
 export const auditLogPageSchema = cursorPageSchema(auditLogSchema)
 
 export const sessionStateSchema = z.object({ setup_required: z.boolean(), authenticated: z.boolean(), csrf_token: z.string().optional() }).strict() satisfies z.ZodType<Schemas['Session']>
@@ -167,13 +170,6 @@ export const aiJobSchema = z.object({
   input: z.record(z.string(), z.unknown()).optional(), result: z.union([aiTranscriptionResultSchema, aiSummaryResultSchema]).optional(),
   created_at: z.string(), started_at: z.string().optional(), finished_at: z.string().optional(), updated_at: z.string(),
 }).strict()
-export const dynamicDetailSchema = z.object({
-  id: z.string(), bvid: z.string().optional(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(),
-  title: z.string().optional(), summary: z.string(), description: z.string().optional(), url: z.string(), target_url: z.string().optional(),
-  badge: z.string().optional(), links: z.array(dynamicLinkSchema).optional(), media: z.array(dynamicMediaSchema).optional(), stats: dynamicStatsSchema.optional(),
-  video: dynamicVideoSchema.optional(), original: dynamicPreviewSchema.optional(), commentable: z.boolean().optional(), comment_type: z.number().int().optional(),
-  comment_oid: z.string().optional(), comment_count: z.number().int().optional(), ai_pipeline: z.array(aiJobSchema),
-}).strict() satisfies z.ZodType<Schemas['DynamicDetail']>
 export const aiJobPageSchema = z.object({ items: z.array(aiJobSchema), total: z.number().int(), limit: z.number().int(), offset: z.number().int() }).strict()
 export const canceledStatusSchema = z.object({ status: z.literal('canceled') }).strict()
 export const workerReachableSchema = z.object({ status: z.literal('worker_reachable') }).strict()

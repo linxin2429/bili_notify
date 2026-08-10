@@ -44,7 +44,7 @@ func TestAutomaticAIPipelineContinuesCollectionTraceAndEnqueuesTerminalNotificat
 	require.NoError(t, err)
 	require.Equal(t, 1, created)
 
-	jobs, err := store.AIJobsForDynamic("video", true)
+	jobs, err := store.AIJobsForContent(model.ContentID(model.PlatformBilibili, "video"), true)
 	require.NoError(t, err)
 	require.Len(t, jobs, 2)
 	transcription, summary := jobs[0], jobs[1]
@@ -81,7 +81,7 @@ func TestAutomaticAIPipelineContinuesCollectionTraceAndEnqueuesTerminalNotificat
 		}
 	}
 	require.NoError(t, store.DeleteUP("42"))
-	jobs, err = store.AIJobsForDynamic("video", false)
+	jobs, err = store.AIJobsForContent(model.ContentID(model.PlatformBilibili, "video"), false)
 	require.NoError(t, err)
 	assert.Empty(t, jobs)
 	deliveries, err = store.ListDeliveries(0)
@@ -115,7 +115,7 @@ func TestAutomaticAIPipelineEligibility(t *testing.T) {
 			}
 			_, err := store.RecordDynamics("42", []model.Dynamic{tt.dynamic}, nil, tt.baseline)
 			require.NoError(t, err)
-			jobs, err := store.AIJobsForDynamic(tt.dynamic.ID, false)
+			jobs, err := store.AIJobsForContent(model.ContentID(model.PlatformBilibili, tt.dynamic.ID), false)
 			require.NoError(t, err)
 			assert.Len(t, jobs, tt.wantJobs)
 		})
@@ -131,7 +131,7 @@ func TestAutomaticAITranscriptionFailureSkipsSummaryAndNotifiesOnce(t *testing.T
 	transcription, err := store.ClaimAIJob(model.AIJobTranscription)
 	require.NoError(t, err)
 	require.NoError(t, store.FailAIJob(transcription.ID, "provider_error", "failed"))
-	jobs, err := store.AIJobsForDynamic("failed-video", false)
+	jobs, err := store.AIJobsForContent(model.ContentID(model.PlatformBilibili, "failed-video"), false)
 	require.NoError(t, err)
 	require.Len(t, jobs, 2)
 	assert.Equal(t, model.AIJobFailed, jobs[0].State)
@@ -150,7 +150,7 @@ func TestAutomaticAITranscriptionFailureSkipsSummaryAndNotifiesOnce(t *testing.T
 	require.NotNil(t, failure)
 	assert.False(t, failure.Succeeded)
 	require.NoError(t, store.RetryAIJob(transcription.ID))
-	jobs, err = store.AIJobsForDynamic("failed-video", false)
+	jobs, err = store.AIJobsForContent(model.ContentID(model.PlatformBilibili, "failed-video"), false)
 	require.NoError(t, err)
 	assert.Equal(t, model.AIJobQueued, jobs[0].State)
 	assert.Equal(t, model.AIJobQueued, jobs[1].State)

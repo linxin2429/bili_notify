@@ -136,7 +136,11 @@ func DynamicMessage(d model.Dynamic) Message {
 		return TextMessage("[Bili Notify] 系统状态变更", d.Summary)
 	}
 	typeName := dynamicTypeName(d.Type)
-	subject := fmt.Sprintf("[B站动态] %s 发布了%s", d.UPName, typeName)
+	platformName, noun := "B站", "动态"
+	if d.Platform == model.PlatformZSXQ {
+		platformName, noun = "知识星球", "内容"
+	}
+	subject := fmt.Sprintf("[%s%s] %s 发布了%s", platformName, noun, d.UPName, typeName)
 	message := Message{
 		Subject:  subject,
 		Sections: []Section{dynamicSection(d, false)},
@@ -152,7 +156,11 @@ func DynamicMessage(d model.Dynamic) Message {
 }
 
 func CommentThreadMessage(n model.CommentNotification) Message {
-	subject := fmt.Sprintf("[B站评论] %s 回复了评论", n.UPName)
+	platformName, authorLabel := "B站", "UP主"
+	if n.Platform == model.PlatformZSXQ || n.ContentType == "zsxq" {
+		platformName, authorLabel = "知识星球", "星球主"
+	}
+	subject := fmt.Sprintf("[%s评论] %s 回复了评论", platformName, n.UPName)
 	contentLabel := dynamicTypeName(n.ContentType)
 	if contentLabel == n.ContentType {
 		contentLabel = "内容"
@@ -160,7 +168,8 @@ func CommentThreadMessage(n model.CommentNotification) Message {
 	section := Section{
 		Heading: firstNonEmpty(n.ContentTitle, contentLabel),
 		Facts: []Fact{
-			{Label: "UP主", Value: n.UPName},
+			{Label: authorLabel, Value: n.UPName},
+			{Label: "来源", Value: n.SourceName},
 			{Label: "内容类型", Value: contentLabel},
 			{Label: "回复时间", Value: n.PublishedAt.In(time.Local).Format("2006-01-02 15:04:05 MST")},
 		},
@@ -169,7 +178,7 @@ func CommentThreadMessage(n model.CommentNotification) Message {
 		section.Links = append(section.Links, Link{Label: "查看内容", URL: n.ContentURL})
 	}
 	if n.Incomplete {
-		section.Paragraphs = append(section.Paragraphs, "对话串可能不完整：子评论翻页达到上限。")
+		section.Paragraphs = append(section.Paragraphs, "评论树可能不完整：上游分页、父节点缺失或循环引用。")
 	}
 	section.Paragraphs = append(section.Paragraphs, "对话：")
 	for i, node := range n.Thread {
@@ -259,10 +268,15 @@ func dynamicSection(d model.Dynamic, forwarded bool) Section {
 			heading += " · " + d.Title
 		}
 	}
+	authorLabel := "UP主"
+	if d.Platform == model.PlatformZSXQ {
+		authorLabel = "作者"
+	}
 	section := Section{
 		Heading: heading,
 		Facts: []Fact{
-			{Label: "UP主", Value: d.UPName},
+			{Label: authorLabel, Value: d.UPName},
+			{Label: "来源", Value: d.SourceName},
 			{Label: "类型", Value: dynamicTypeName(d.Type)},
 			{Label: "发布时间", Value: published},
 		},

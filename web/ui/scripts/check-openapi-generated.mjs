@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
+import { relative, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 const uiDirectory = resolve(import.meta.dirname, '..')
@@ -22,6 +22,27 @@ if (!existsSync(resolve(repositoryDirectory, 'api/openapi.yaml'))) {
   process.exit(1)
 }
 
+function snapshot(paths) {
+  const files = new Map()
+  const visit = (absolutePath) => {
+    if (!existsSync(absolutePath)) return
+    const stat = lstatSync(absolutePath)
+    if (stat.isDirectory()) {
+      for (const entry of readdirSync(absolutePath).sort()) {
+        visit(resolve(absolutePath, entry))
+      }
+      return
+    }
+    if (stat.isFile()) {
+      files.set(relative(repositoryDirectory, absolutePath), readFileSync(absolutePath))
+    }
+  }
+  for (const path of paths) visit(resolve(repositoryDirectory, path))
+  return files
+}
+
+const before = snapshot(generatedPaths)
+
 const generation = spawnSync('npm', ['run', 'api:generate'], {
   cwd: uiDirectory,
   encoding: 'utf8',
@@ -34,24 +55,14 @@ if (generation.error) {
 }
 if (generation.status !== 0) process.exit(generation.status ?? 1)
 
-const status = spawnSync(
-  'git',
-  ['status', '--porcelain', '--untracked-files=all', '--', ...generatedPaths],
-  { cwd: repositoryDirectory, encoding: 'utf8' },
-)
+const after = snapshot(generatedPaths)
+const changed = [...new Set([...before.keys(), ...after.keys()])]
+  .filter((path) => !before.has(path) || !after.has(path) || !before.get(path).equals(after.get(path)))
+  .sort()
 
-if (status.error) {
-  console.error(`无法检查生成结果：${status.error.message}`)
-  process.exit(1)
-}
-if (status.status !== 0) {
-  process.stderr.write(status.stderr)
-  process.exit(status.status ?? 1)
-}
-
-if (status.stdout.trim() !== '') {
+if (changed.length !== 0) {
   console.error('OpenAPI 生成结果与仓库不一致，请重新生成并提交以下文件：')
-  console.error(status.stdout.trimEnd())
+  console.error(changed.join('\n'))
   process.exit(1)
 }
 

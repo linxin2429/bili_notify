@@ -73,9 +73,8 @@ test('runs the collection, durable outbox, restart, and retry journey', async ({
     await expect.poll(async () => (await harness.state()).counts.feed_update || 0).toBeGreaterThan(feedUpdatesBeforeRestart)
     expect((await harness.state()).messages).toHaveLength(2)
 
-    await navigateTo(page, 'UP 主')
-    await expect(page.getByText('当前账号已关注')).toBeVisible()
-    await expect(page.getByText('综合流采集')).toBeVisible()
+    await navigateTo(page, '采集源')
+    await expect(page.getByText('基线完成')).toBeVisible()
     await navigateTo(page, '投递队列')
     await expect(page.getByText('已阻塞', { exact: true }).last()).toBeVisible()
     await expect(page.getByText('按稳定游标读取待投递任务；新任务不会扰动当前页。')).toBeVisible()
@@ -96,38 +95,32 @@ test('runs the collection, durable outbox, restart, and retry journey', async ({
 
   await test.step('discover a new UP reply immediately after a comment settings update', async () => {
     await navigateTo(page, '设置')
-    await page.getByText('评论监控', { exact: true }).click()
-    await page.getByLabel('评论批次间隔（秒）').fill('30')
+    await page.getByLabel('评论同步间隔（秒）').fill('30')
     await page.getByRole('button', { name: '保存运行设置' }).click()
+    await expect(page.getByText('运行参数已保存')).toBeVisible()
+    await page.getByLabel('关闭提示').click()
     await expect.poll(async () => (await harness.state()).counts.comment_root || 0).toBeGreaterThan(0)
 
     await harness.setComments(true)
-    await page.getByText('评论监控', { exact: true }).click()
-    await page.getByLabel('评论批次间隔（秒）').fill('31')
+    await page.getByLabel('评论同步间隔（秒）').fill('31')
     await page.getByRole('button', { name: '保存运行设置' }).click()
-    await expect.poll(async () => (await harness.state()).messages.length).toBe(4)
+    await expect(page.getByText('运行参数已保存')).toBeVisible()
+    await expect.poll(async () => (await harness.state()).messages.length, { timeout: 25_000 }).toBe(4)
     expect(messageText((await harness.state()).messages[3])).toContain('E2E UP comment reply')
 
     await navigateTo(page, '历史')
-    const commentsResponse = page.waitForResponse(response => response.url().includes('/api/v2/comments?'))
-    await page.getByRole('tab', { name: 'UP 回复' }).click()
-    await commentsResponse
-    await page.getByRole('button', { name: /查看评论对话/ }).click()
+    await page.getByRole('button', { name: '查看内容：new dynamic content' }).click()
     await expect(page.getByText('E2E UP comment reply')).toBeVisible()
     await page.getByRole('button', { name: '关闭', exact: true }).click()
   })
 
   await test.step('remove the UP and clear its dynamic and comment history', async () => {
-    await navigateTo(page, 'UP 主')
-    await page.getByRole('button', { name: '删除' }).click()
-    await page.getByRole('button', { name: '确认删除' }).click()
-    await expect(page.getByText('尚未添加 UP 主')).toBeVisible()
+    await navigateTo(page, '采集源')
+    await page.getByRole('button', { name: /删除/ }).click()
+    await page.getByRole('button', { name: '删除归档' }).click()
+    await expect(page.getByText('尚未添加 B 站 UP')).toBeVisible()
 
     await navigateTo(page, '历史')
-    await expect(page.getByText('当前筛选下没有历史记录')).toBeVisible()
-    const commentsResponse = page.waitForResponse(response => response.url().includes('/api/v2/comments?'))
-    await page.getByRole('tab', { name: 'UP 回复' }).click()
-    await commentsResponse
     await expect(page.getByText('当前筛选下没有历史记录')).toBeVisible()
   })
 })

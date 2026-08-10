@@ -12,9 +12,9 @@ import (
 
 func validSettings(pollSec int, rate float64, concurrency int) RuntimeSettings {
 	settings := DefaultRuntimeSettings()
-	settings.PollIntervalSec = pollSec
-	settings.RequestRate = rate
-	settings.RequestConcurrency = concurrency
+	settings.BilibiliDynamicIntervalSec = pollSec
+	settings.BilibiliRequestRate = rate
+	settings.BilibiliRequestConcurrency = concurrency
 	return settings
 }
 
@@ -25,15 +25,15 @@ func TestRuntimeSettingsExtendedValidation(t *testing.T) {
 		mutate  func(*RuntimeSettings)
 		wantErr string
 	}{
-		{name: "poll too long", mutate: func(s *RuntimeSettings) { s.PollIntervalSec = MaxPollIntervalSec + 1 }, wantErr: "poll interval"},
-		{name: "rate nan", mutate: func(s *RuntimeSettings) { s.RequestRate = math.NaN() }, wantErr: "request rate"},
-		{name: "comment batch too long", mutate: func(s *RuntimeSettings) { s.CommentBatchIntervalSec = MaxCommentBatchIntervalSec + 1 }, wantErr: "comment_batch_interval_sec"},
+		{name: "poll too long", mutate: func(s *RuntimeSettings) { s.BilibiliDynamicIntervalSec = MaxPollIntervalSec + 1 }, wantErr: "poll interval"},
+		{name: "rate nan", mutate: func(s *RuntimeSettings) { s.BilibiliRequestRate = math.NaN() }, wantErr: "request rate"},
+		{name: "comment batch too long", mutate: func(s *RuntimeSettings) { s.BilibiliCommentIntervalSec = MaxCommentBatchIntervalSec + 1 }, wantErr: "bilibili_comment_interval_sec"},
 		{name: "bad log level", mutate: func(s *RuntimeSettings) { s.LogLevel = "trace" }, wantErr: "log_level"},
 		{name: "audit retention too long", mutate: func(s *RuntimeSettings) { s.AuditLogRetentionDays = MaxLogRetentionDays + 1 }, wantErr: "audit_log_retention_days"},
-		{name: "relation refresh too short", mutate: func(s *RuntimeSettings) { s.RelationRefreshSec = MinRelationRefreshSec - 1 }, wantErr: "relation_refresh_interval_sec"},
-		{name: "space reconcile too long", mutate: func(s *RuntimeSettings) { s.SpaceReconcileSec = MaxSpaceReconcileSec + 1 }, wantErr: "space_reconcile_interval_sec"},
-		{name: "dynamic pages too high", mutate: func(s *RuntimeSettings) { s.MaxDynamicPages = MaxDynamicPages + 1 }, wantErr: "max_dynamic_pages"},
-		{name: "risk pause too short", mutate: func(s *RuntimeSettings) { s.RiskPauseSec = MinRiskPauseSec - 1 }, wantErr: "risk_pause_sec"},
+		{name: "relation refresh too short", mutate: func(s *RuntimeSettings) { s.BilibiliRelationRefreshSec = MinRelationRefreshSec - 1 }, wantErr: "bilibili_relation_refresh_interval_sec"},
+		{name: "space reconcile too long", mutate: func(s *RuntimeSettings) { s.BilibiliSpaceReconcileSec = MaxSpaceReconcileSec + 1 }, wantErr: "bilibili_space_reconcile_interval_sec"},
+		{name: "dynamic pages too high", mutate: func(s *RuntimeSettings) { s.BilibiliMaxDynamicPages = MaxDynamicPages + 1 }, wantErr: "bilibili_max_dynamic_pages"},
+		{name: "risk pause too short", mutate: func(s *RuntimeSettings) { s.BilibiliRiskPauseSec = MinRiskPauseSec - 1 }, wantErr: "bilibili_risk_pause_sec"},
 		{name: "delivery concurrency too high", mutate: func(s *RuntimeSettings) { s.DeliveryConcurrency = MaxDeliveryConcurrency + 1 }, wantErr: "delivery_concurrency"},
 		{name: "backlog count too low", mutate: func(s *RuntimeSettings) { s.BacklogAlertCount = 0 }, wantErr: "backlog_alert_count"},
 		{name: "backlog age too high", mutate: func(s *RuntimeSettings) { s.BacklogAlertAgeSec = MaxBacklogAlertAgeSec + 1 }, wantErr: "backlog_alert_age_sec"},
@@ -100,19 +100,19 @@ func TestRuntimeSettingsValidate(t *testing.T) {
 			name: "comment track n too high",
 			settings: func() RuntimeSettings {
 				s := validSettings(30, 2, 4)
-				s.CommentTrackN = MaxCommentTrackN + 1
+				s.BilibiliCommentTrackN = MaxCommentTrackN + 1
 				return s
 			}(),
-			wantErr: "comment_track_n",
+			wantErr: "bilibili_comment_track_n",
 		},
 		{
 			name: "comment batch too short",
 			settings: func() RuntimeSettings {
 				s := validSettings(30, 2, 4)
-				s.CommentBatchIntervalSec = MinCommentBatchIntervalSec - 1
+				s.BilibiliCommentIntervalSec = MinCommentBatchIntervalSec - 1
 				return s
 			}(),
-			wantErr: "comment_batch_interval_sec",
+			wantErr: "bilibili_comment_interval_sec",
 		},
 	}
 	for _, tt := range tests {
@@ -121,7 +121,7 @@ func TestRuntimeSettingsValidate(t *testing.T) {
 			err := tt.settings.Validate()
 			if tt.wantErr == "" {
 				require.NoError(t, err)
-				assert.Equal(t, time.Duration(tt.settings.PollIntervalSec)*time.Second, tt.settings.PollInterval())
+				assert.Equal(t, time.Duration(tt.settings.BilibiliDynamicIntervalSec)*time.Second, tt.settings.PollInterval())
 				return
 			}
 			require.Error(t, err)

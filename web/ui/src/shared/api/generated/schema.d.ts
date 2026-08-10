@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-    "/api/v2/session": {
+    "/api/v3/session": {
         parameters: {
             query?: never;
             header?: never;
@@ -20,7 +20,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/setup": {
+    "/api/v3/setup": {
         parameters: {
             query?: never;
             header?: never;
@@ -36,7 +36,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/session/password": {
+    "/api/v3/session/password": {
         parameters: {
             query?: never;
             header?: never;
@@ -52,7 +52,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/runtime": {
+    "/api/v3/runtime": {
         parameters: {
             query?: never;
             header?: never;
@@ -68,7 +68,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/settings": {
+    "/api/v3/settings": {
         parameters: {
             query?: never;
             header?: never;
@@ -84,41 +84,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ups": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listUPs"];
-        put?: never;
-        post: operations["createUP"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v2/ups/{uid}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                uid: components["parameters"]["UPUID"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put: operations["updateUP"];
-        post?: never;
-        delete: operations["deleteUP"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v2/channels": {
+    "/api/v3/channels": {
         parameters: {
             query?: never;
             header?: never;
@@ -134,7 +100,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/channels/{id}": {
+    "/api/v3/channels/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -152,7 +118,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/channels/{id}/test": {
+    "/api/v3/channels/{id}/test": {
         parameters: {
             query?: never;
             header?: never;
@@ -170,7 +136,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/channels/{id}/microsoft-login": {
+    "/api/v3/channels/{id}/microsoft-login": {
         parameters: {
             query?: never;
             header?: never;
@@ -188,7 +154,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/deliveries": {
+    "/api/v3/deliveries": {
         parameters: {
             query?: never;
             header?: never;
@@ -204,7 +170,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/deliveries/{id}/retry": {
+    "/api/v3/deliveries/{id}/retry": {
         parameters: {
             query?: never;
             header?: never;
@@ -222,41 +188,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/bilibili-login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getBilibiliLogin"];
-        put?: never;
-        post: operations["startBilibiliLogin"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v2/bilibili-login/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["LoginID"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["cancelBilibiliLogin"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v2/microsoft-logins": {
+    "/api/v3/microsoft-logins": {
         parameters: {
             query?: never;
             header?: never;
@@ -272,94 +204,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/dynamics": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listDynamics"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v2/dynamics/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["DynamicID"];
-            };
-            cookie?: never;
-        };
-        get: operations["getDynamic"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v2/dynamics/{id}/media/{index}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["DynamicID"];
-                index: components["parameters"]["MediaIndex"];
-            };
-            cookie?: never;
-        };
-        get: operations["getDynamicMedia"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v2/comments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listComments"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v2/comments/{rpid}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                rpid: components["parameters"]["CommentID"];
-            };
-            cookie?: never;
-        };
-        get: operations["getComment"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v2/audit-logs": {
+    "/api/v3/audit-logs": {
         parameters: {
             query?: never;
             header?: never;
@@ -375,7 +220,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/status": {
+    "/api/v3/ai/status": {
         parameters: {
             query?: never;
             header?: never;
@@ -391,7 +236,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/profiles": {
+    "/api/v3/ai/profiles": {
         parameters: {
             query?: never;
             header?: never;
@@ -407,7 +252,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/profiles/{id}": {
+    "/api/v3/ai/profiles/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -425,7 +270,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/profiles/{id}/test": {
+    "/api/v3/ai/profiles/{id}/test": {
         parameters: {
             query?: never;
             header?: never;
@@ -443,7 +288,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/profiles/{id}/availability": {
+    "/api/v3/ai/profiles/{id}/availability": {
         parameters: {
             query?: never;
             header?: never;
@@ -461,7 +306,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/prompts": {
+    "/api/v3/ai/prompts": {
         parameters: {
             query?: never;
             header?: never;
@@ -477,7 +322,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/prompts/{id}": {
+    "/api/v3/ai/prompts/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -495,7 +340,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/transcriptions": {
+    "/api/v3/ai/transcriptions": {
         parameters: {
             query?: never;
             header?: never;
@@ -511,7 +356,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/summaries": {
+    "/api/v3/ai/summaries": {
         parameters: {
             query?: never;
             header?: never;
@@ -527,7 +372,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/jobs": {
+    "/api/v3/ai/jobs": {
         parameters: {
             query?: never;
             header?: never;
@@ -543,7 +388,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/jobs/{id}": {
+    "/api/v3/ai/jobs/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -561,7 +406,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/jobs/{id}/cancel": {
+    "/api/v3/ai/jobs/{id}/cancel": {
         parameters: {
             query?: never;
             header?: never;
@@ -579,7 +424,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ai/jobs/{id}/retry": {
+    "/api/v3/ai/jobs/{id}/retry": {
         parameters: {
             query?: never;
             header?: never;
@@ -597,7 +442,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v2/ws": {
+    "/api/v3/ws": {
         parameters: {
             query?: never;
             header?: never;
@@ -609,6 +454,216 @@ export interface paths {
          *     subsequently sends `resources.invalidated`. Messages never contain resource data.
          */
         get: operations["connectRealtime"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listPlatformAccounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/accounts/bilibili/qr": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getBilibiliQRLogin"];
+        put?: never;
+        post: operations["startBilibiliQRLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/accounts/bilibili/qr/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["cancelBilibiliQRLogin"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/accounts/bilibili/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteBilibiliSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/accounts/zsxq/sms-code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["sendZSXQSMSCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/accounts/zsxq/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createZSXQSession"];
+        delete: operations["deleteZSXQSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/accounts/zsxq/sync-sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["syncZSXQSources"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSources"];
+        put?: never;
+        post: operations["createSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/sources/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["updateSource"];
+        post?: never;
+        delete: operations["deleteSource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/contents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listContents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/contents/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getContent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/contents/{id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getContentCommentTree"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/contents/{id}/attachments/{attachment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["downloadAttachment"];
         put?: never;
         post?: never;
         delete?: never;
@@ -670,22 +725,184 @@ export interface components {
             uid: string;
             name: string;
         };
+        PlatformAccount: {
+            /** @enum {string} */
+            platform: "bilibili" | "zsxq";
+            external_id?: string;
+            display_name?: string;
+            masked_phone?: string;
+            /** @enum {string} */
+            status: "disconnected" | "connected" | "invalid" | "risk_paused";
+            /** Format: date-time */
+            verified_at?: string;
+            /** Format: date-time */
+            updated_at?: string;
+            /** Format: date-time */
+            risk_paused_until?: string;
+            last_error?: string;
+        };
+        ZSXQSMSCodeRequest: {
+            country_code: string;
+            phone: string;
+            captcha_verify_param: string;
+            agreement_accepted: boolean;
+        };
+        ZSXQLoginTransaction: {
+            id: string;
+            masked_phone: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** Format: date-time */
+            next_send_at: string;
+            attempts_left: number;
+        };
+        Source: {
+            id: string;
+            /** @enum {string} */
+            platform: "bilibili" | "zsxq";
+            /** @enum {string} */
+            type: "up" | "planet";
+            external_id: string;
+            name: string;
+            note?: string;
+            owner_id?: string;
+            owner_name?: string;
+            enabled: boolean;
+            /** @enum {string} */
+            baseline_state: "pending" | "running" | "complete" | "failed";
+            backfill_cursor?: string;
+            high_watermark?: string;
+            /** Format: int64 */
+            backfill_done: number;
+            /** Format: int64 */
+            backfill_total: number;
+            /** Format: date-time */
+            last_poll_at?: string;
+            /** Format: date-time */
+            last_success_at?: string;
+            /** Format: date-time */
+            last_comment_at?: string;
+            /** Format: int64 */
+            sync_lag_sec: number;
+            last_error?: string;
+            consecutive_fails: number;
+        };
+        CreateSourceRequest: {
+            /** @constant */
+            platform: "bilibili";
+            external_id: string;
+            name: string;
+            note: string;
+            enabled: boolean;
+        };
+        UpdateSourceRequest: {
+            name: string;
+            note: string;
+            enabled: boolean;
+        };
+        Content: {
+            id: string;
+            /** @enum {string} */
+            platform: "bilibili" | "zsxq";
+            source_id: string;
+            external_id: string;
+            author_id?: string;
+            author_name?: string;
+            upstream_type: string;
+            /** @enum {string} */
+            type: "dynamic" | "video" | "article" | "discussion" | "question" | "answer" | "task" | "long_article";
+            title?: string;
+            text?: string;
+            safe_html?: string;
+            url?: string;
+            /** Format: date-time */
+            published_at: string;
+            /** Format: date-time */
+            updated_at?: string;
+            /** Format: date-time */
+            first_seen_at: string;
+            /** Format: date-time */
+            last_synced_at: string;
+            /** Format: date-time */
+            deleted_at?: string;
+            stats?: {
+                [key: string]: number;
+            };
+            tree_incomplete?: boolean;
+            baseline: boolean;
+        };
+        Attachment: {
+            id: string;
+            content_id: string;
+            external_id: string;
+            /** @enum {string} */
+            type: "image" | "file" | "audio" | "video" | "link";
+            file_name?: string;
+            mime?: string;
+            /** Format: int64 */
+            size?: number;
+            width?: number;
+            height?: number;
+            /** Format: int64 */
+            duration_sec?: number;
+            remote_host?: string;
+            local_path?: string;
+            localize_error?: string;
+        };
+        CommentTreeNode: {
+            id: string;
+            /** @enum {string} */
+            platform: "bilibili" | "zsxq";
+            content_id: string;
+            root_id?: string;
+            parent_id?: string;
+            author_id?: string;
+            /** @enum {string} */
+            author_role?: "owner" | "admin" | "guest" | "partner" | "member" | "up";
+            /** Format: date-time */
+            updated_at?: string;
+            /** Format: date-time */
+            first_seen_at?: string;
+            /** Format: date-time */
+            deleted_at?: string;
+            media?: components["schemas"]["Attachment"][];
+            children?: components["schemas"]["CommentTreeNode"][];
+            rpid: string;
+            parent?: string;
+            mid: string;
+            name: string;
+            message: string;
+            /** Format: date-time */
+            time: string;
+            is_up?: boolean;
+            is_trigger?: boolean;
+        };
+        ContentPage: {
+            items: components["schemas"]["Content"][];
+            page: components["schemas"]["PageMetadata"];
+        };
         RuntimeSettings: {
-            poll_interval_sec: number;
-            request_rate: number;
-            request_concurrency: number;
-            comment_enabled: boolean;
-            comment_track_n: number;
-            comment_root_pages: number;
-            comment_reply_pages: number;
-            comment_batch_interval_sec: number;
+            bilibili_dynamic_interval_sec: number;
+            bilibili_request_rate: number;
+            bilibili_request_concurrency: number;
+            bilibili_comments_enabled: boolean;
+            bilibili_comment_track_n: number;
+            bilibili_comment_interval_sec: number;
+            bilibili_relation_refresh_interval_sec: number;
+            bilibili_space_reconcile_interval_sec: number;
+            bilibili_max_dynamic_pages: number;
+            bilibili_risk_pause_sec: number;
+            zsxq_dynamic_interval_sec: number;
+            zsxq_comment_interval_sec: number;
+            zsxq_comments_enabled: boolean;
+            zsxq_request_rate: number;
+            zsxq_request_concurrency: number;
+            zsxq_risk_pause_sec: number;
+            zsxq_asset_max_file_mib: number;
+            zsxq_asset_total_budget_gib: number;
             /** @enum {string} */
             log_level: "debug" | "info" | "warn" | "error";
             audit_log_retention_days: number;
-            relation_refresh_interval_sec: number;
-            space_reconcile_interval_sec: number;
-            max_dynamic_pages: number;
-            risk_pause_sec: number;
             delivery_concurrency: number;
             backlog_alert_count: number;
             backlog_alert_age_sec: number;
@@ -693,33 +910,6 @@ export interface components {
             delivery_retry_delays_sec: number[];
             /** @description Automatically transcribe and summarize newly discovered top-level video dynamics using the enabled default AI profiles and prompt. */
             ai_auto_processing_enabled: boolean;
-        };
-        CreateUPRequest: {
-            uid: string;
-            name: string;
-            enabled: boolean;
-        };
-        UpdateUPRequest: {
-            name: string;
-            enabled: boolean;
-        };
-        UP: {
-            uid: string;
-            name: string;
-            enabled: boolean;
-            baseline_ready: boolean;
-            /** @enum {string} */
-            follow_state: "unknown" | "followed" | "unfollowed";
-            /** Format: date-time */
-            follow_checked_at?: string;
-            /** @enum {string} */
-            collection_route: "space" | "feed_all";
-            /** Format: date-time */
-            last_poll_at?: string;
-            /** Format: date-time */
-            last_success_at?: string;
-            last_error?: string;
-            consecutive_fail: number;
         };
         ChannelInput: {
             name: string;
@@ -760,7 +950,7 @@ export interface components {
         Delivery: {
             id: string;
             /** @enum {string} */
-            kind: "dynamic" | "comment" | "ai";
+            kind: "content" | "comment_digest" | "ai";
             dynamic?: components["schemas"]["DynamicPreview"];
             comment?: components["schemas"]["CommentPreview"];
             ai?: components["schemas"]["AIDeliveryPreview"];
@@ -830,126 +1020,6 @@ export interface components {
             /** Format: date-time */
             expires_at?: string;
             error?: string;
-        };
-        DynamicPage: {
-            items: components["schemas"]["DynamicHistory"][];
-            page: components["schemas"]["PageMetadata"];
-        };
-        DynamicHistory: components["schemas"]["Dynamic"] & {
-            /** Format: date-time */
-            discovered_at: string;
-            baseline: boolean;
-            ai_pipeline?: components["schemas"]["AIJob"][];
-        };
-        DynamicDetail: components["schemas"]["Dynamic"] & {
-            ai_pipeline: components["schemas"]["AIJob"][];
-        };
-        Dynamic: {
-            id: string;
-            bvid?: string;
-            uid: string;
-            up_name: string;
-            type: string;
-            /** Format: date-time */
-            published_at: string;
-            title?: string;
-            summary: string;
-            description?: string;
-            url: string;
-            target_url?: string;
-            badge?: string;
-            links?: components["schemas"]["DynamicLink"][];
-            media?: components["schemas"]["DynamicMedia"][];
-            stats?: components["schemas"]["DynamicStats"];
-            video?: components["schemas"]["DynamicVideo"];
-            original?: components["schemas"]["DynamicOriginal"];
-            commentable?: boolean;
-            comment_type?: number;
-            comment_oid?: string;
-            comment_count?: number;
-        };
-        DynamicOriginal: {
-            id?: string;
-            uid?: string;
-            up_name?: string;
-            type?: string;
-            /** Format: date-time */
-            published_at?: string;
-            title?: string;
-            summary?: string;
-            description?: string;
-            url?: string;
-            target_url?: string;
-            badge?: string;
-            links?: components["schemas"]["DynamicLink"][];
-            media?: components["schemas"]["DynamicMedia"][];
-            stats?: components["schemas"]["DynamicStats"];
-            video?: components["schemas"]["DynamicVideo"];
-            original?: components["schemas"]["DynamicOriginal"];
-        };
-        DynamicLink: {
-            text: string;
-            url: string;
-        };
-        DynamicMedia: {
-            /** @enum {string} */
-            kind: "cover" | "image";
-            url: string;
-            width?: number;
-            height?: number;
-        };
-        DynamicStats: {
-            forwards: number;
-            comments: number;
-            likes: number;
-        };
-        DynamicVideo: {
-            duration?: string;
-            views?: string;
-            danmaku?: string;
-        };
-        CommentPage: {
-            items: components["schemas"]["CommentHistory"][];
-            page: components["schemas"]["PageMetadata"];
-        };
-        CommentHistory: {
-            rpid: string;
-            up_uid: string;
-            up_name: string;
-            content_type?: string;
-            content_id?: string;
-            content_title?: string;
-            content_url?: string;
-            /** Format: date-time */
-            published_at: string;
-            /** Format: date-time */
-            discovered_at: string;
-            baseline: boolean;
-            incomplete?: boolean;
-        };
-        CommentNotification: {
-            rpid: string;
-            up_uid: string;
-            up_name: string;
-            content_type: string;
-            content_id: string;
-            content_title?: string;
-            content_url: string;
-            /** Format: date-time */
-            published_at: string;
-            incomplete?: boolean;
-            thread: components["schemas"]["CommentNode"][];
-        };
-        CommentNode: {
-            rpid: string;
-            parent?: string;
-            mid: string;
-            name: string;
-            message: string;
-            /** Format: date-time */
-            time: string;
-            is_up?: boolean;
-            is_trigger?: boolean;
         };
         AuditPage: {
             items: components["schemas"]["AuditLog"][];
@@ -1129,7 +1199,7 @@ export interface components {
             event: "sync.required" | "resources.invalidated";
             /** Format: int64 */
             revision: number;
-            topics: ("runtime" | "settings" | "ups" | "channels" | "deliveries" | "bilibili-login" | "microsoft-logins" | "dynamics" | "comments" | "audit-logs" | "ai-status" | "ai-jobs")[];
+            topics: ("runtime" | "settings" | "channels" | "deliveries" | "microsoft-logins" | "audit-logs" | "ai-status" | "ai-jobs" | "accounts" | "sources" | "contents" | "backfills")[];
         };
     };
     responses: {
@@ -1162,16 +1232,6 @@ export interface components {
             };
             content: {
                 "application/json": components["schemas"]["RuntimeSettings"];
-            };
-        };
-        /** @description UP resource. */
-        UPResponse: {
-            headers: {
-                "X-Request-ID": components["headers"]["RequestID"];
-                [name: string]: unknown;
-            };
-            content: {
-                "application/json": components["schemas"]["UP"];
             };
         };
         /** @description Secret-free channel read model. */
@@ -1267,15 +1327,9 @@ export interface components {
     };
     parameters: {
         CSRFToken: string;
-        UPUID: string;
         ChannelID: string;
         DeliveryID: string;
         AIID: string;
-        LoginID: string;
-        DynamicID: string;
-        CommentID: string;
-        MediaIndex: number;
-        UIDFilter: string;
         Search: string;
         /** @description Inclusive RFC3339 lower bound. */
         From: string;
@@ -1448,103 +1502,6 @@ export interface operations {
             400: components["responses"]["InvalidRequest"];
             401: components["responses"]["AuthenticationError"];
             403: components["responses"]["CSRFError"];
-            500: components["responses"]["InternalError"];
-        };
-    };
-    listUPs: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description All monitored UPs. */
-            200: {
-                headers: {
-                    "X-Request-ID": components["headers"]["RequestID"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UP"][];
-                };
-            };
-            401: components["responses"]["AuthenticationError"];
-            500: components["responses"]["InternalError"];
-        };
-    };
-    createUP: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-CSRF-Token": components["parameters"]["CSRFToken"];
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateUPRequest"];
-            };
-        };
-        responses: {
-            201: components["responses"]["UPResponse"];
-            400: components["responses"]["InvalidRequest"];
-            401: components["responses"]["AuthenticationError"];
-            403: components["responses"]["CSRFError"];
-            409: components["responses"]["ConflictError"];
-            500: components["responses"]["InternalError"];
-        };
-    };
-    updateUP: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-CSRF-Token": components["parameters"]["CSRFToken"];
-            };
-            path: {
-                uid: components["parameters"]["UPUID"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateUPRequest"];
-            };
-        };
-        responses: {
-            200: components["responses"]["UPResponse"];
-            400: components["responses"]["InvalidRequest"];
-            401: components["responses"]["AuthenticationError"];
-            403: components["responses"]["CSRFError"];
-            404: components["responses"]["NotFoundError"];
-            500: components["responses"]["InternalError"];
-        };
-    };
-    deleteUP: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-CSRF-Token": components["parameters"]["CSRFToken"];
-            };
-            path: {
-                uid: components["parameters"]["UPUID"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description UP deleted. */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            401: components["responses"]["AuthenticationError"];
-            403: components["responses"]["CSRFError"];
-            404: components["responses"]["NotFoundError"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -1786,79 +1743,6 @@ export interface operations {
             500: components["responses"]["InternalError"];
         };
     };
-    getBilibiliLogin: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current login session or null. */
-            200: {
-                headers: {
-                    "X-Request-ID": components["headers"]["RequestID"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BilibiliLogin"] | null;
-                };
-            };
-            401: components["responses"]["AuthenticationError"];
-            500: components["responses"]["InternalError"];
-        };
-    };
-    startBilibiliLogin: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-CSRF-Token": components["parameters"]["CSRFToken"];
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description QR login session created. */
-            201: {
-                headers: {
-                    "X-Request-ID": components["headers"]["RequestID"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BilibiliLogin"];
-                };
-            };
-            401: components["responses"]["AuthenticationError"];
-            403: components["responses"]["CSRFError"];
-            500: components["responses"]["InternalError"];
-        };
-    };
-    cancelBilibiliLogin: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-CSRF-Token": components["parameters"]["CSRFToken"];
-            };
-            path: {
-                id: components["parameters"]["LoginID"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description QR login session cancelled. */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            401: components["responses"]["AuthenticationError"];
-            403: components["responses"]["CSRFError"];
-        };
-    };
     listMicrosoftLogins: {
         parameters: {
             query?: never;
@@ -1879,154 +1763,6 @@ export interface operations {
                 };
             };
             401: components["responses"]["AuthenticationError"];
-        };
-    };
-    listDynamics: {
-        parameters: {
-            query?: {
-                uid?: components["parameters"]["UIDFilter"];
-                q?: components["parameters"]["Search"];
-                /** @description Inclusive RFC3339 lower bound. */
-                from?: components["parameters"]["From"];
-                /** @description Exclusive RFC3339 upper bound. */
-                to?: components["parameters"]["To"];
-                limit?: components["parameters"]["ContentLimit"];
-                /** @description Opaque next_cursor returned by the preceding page. */
-                after?: components["parameters"]["After"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Stable published-at/id descending dynamic page. */
-            200: {
-                headers: {
-                    "X-Request-ID": components["headers"]["RequestID"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DynamicPage"];
-                };
-            };
-            400: components["responses"]["InvalidRequest"];
-            401: components["responses"]["AuthenticationError"];
-            500: components["responses"]["InternalError"];
-        };
-    };
-    getDynamic: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["DynamicID"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Full archived dynamic. */
-            200: {
-                headers: {
-                    "X-Request-ID": components["headers"]["RequestID"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DynamicDetail"];
-                };
-            };
-            401: components["responses"]["AuthenticationError"];
-            404: components["responses"]["NotFoundError"];
-            500: components["responses"]["InternalError"];
-        };
-    };
-    getDynamicMedia: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["DynamicID"];
-                index: components["parameters"]["MediaIndex"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Archived media bytes. Content-Type is the detected image media type. */
-            200: {
-                headers: {
-                    "X-Request-ID": components["headers"]["RequestID"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "image/*": string;
-                };
-            };
-            400: components["responses"]["InvalidRequest"];
-            401: components["responses"]["AuthenticationError"];
-            404: components["responses"]["NotFoundError"];
-            500: components["responses"]["InternalError"];
-        };
-    };
-    listComments: {
-        parameters: {
-            query?: {
-                uid?: components["parameters"]["UIDFilter"];
-                q?: components["parameters"]["Search"];
-                /** @description Inclusive RFC3339 lower bound. */
-                from?: components["parameters"]["From"];
-                /** @description Exclusive RFC3339 upper bound. */
-                to?: components["parameters"]["To"];
-                limit?: components["parameters"]["ContentLimit"];
-                /** @description Opaque next_cursor returned by the preceding page. */
-                after?: components["parameters"]["After"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Stable published-at/rpid descending comment page. */
-            200: {
-                headers: {
-                    "X-Request-ID": components["headers"]["RequestID"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CommentPage"];
-                };
-            };
-            400: components["responses"]["InvalidRequest"];
-            401: components["responses"]["AuthenticationError"];
-            500: components["responses"]["InternalError"];
-        };
-    };
-    getComment: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                rpid: components["parameters"]["CommentID"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Full archived UP reply thread. */
-            200: {
-                headers: {
-                    "X-Request-ID": components["headers"]["RequestID"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CommentNotification"];
-                };
-            };
-            401: components["responses"]["AuthenticationError"];
-            404: components["responses"]["NotFoundError"];
-            500: components["responses"]["InternalError"];
         };
     };
     listAuditLogs: {
@@ -2535,6 +2271,405 @@ export interface operations {
             };
             401: components["responses"]["AuthenticationError"];
             403: components["responses"]["CSRFError"];
+        };
+    };
+    listPlatformAccounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Independent platform account states without session secrets. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformAccount"][];
+                };
+            };
+        };
+    };
+    getBilibiliQRLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current Bilibili QR login transaction or null. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BilibiliLogin"] | null;
+                };
+            };
+        };
+    };
+    startBilibiliQRLogin: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bilibili QR login transaction. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BilibiliLogin"];
+                };
+            };
+        };
+    };
+    cancelBilibiliQRLogin: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description QR login transaction cancelled. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteBilibiliSession: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bilibili account disconnected. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    sendZSXQSMSCode: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZSXQSMSCodeRequest"];
+            };
+        };
+        responses: {
+            /** @description Ephemeral login transaction. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ZSXQLoginTransaction"];
+                };
+            };
+            429: components["responses"]["RateLimitError"];
+        };
+    };
+    createZSXQSession: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    transaction_id: string;
+                    code: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Connected Knowledge Planet account. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformAccount"];
+                };
+            };
+        };
+    };
+    deleteZSXQSession: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Knowledge Planet account disconnected. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    syncZSXQSources: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Visible Knowledge Planet sources. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Source"][];
+                };
+            };
+        };
+    };
+    listSources: {
+        parameters: {
+            query?: {
+                platform?: "bilibili" | "zsxq";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Collection sources. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Source"][];
+                };
+            };
+        };
+    };
+    createSource: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSourceRequest"];
+            };
+        };
+        responses: {
+            /** @description Source created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Source"];
+                };
+            };
+        };
+    };
+    updateSource: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSourceRequest"];
+            };
+        };
+        responses: {
+            /** @description Source updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Source"];
+                };
+            };
+        };
+    };
+    deleteSource: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source and archive removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listContents: {
+        parameters: {
+            query?: {
+                platform?: "bilibili" | "zsxq";
+                source_id?: string;
+                q?: string;
+                from?: string;
+                to?: string;
+                after?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unified content page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContentPage"];
+                };
+            };
+        };
+    };
+    getContent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Content with attachment metadata. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        content: components["schemas"]["Content"];
+                        attachments: components["schemas"]["Attachment"][];
+                    };
+                };
+            };
+        };
+    };
+    getContentCommentTree: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stable nested comment tree. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        children: components["schemas"]["CommentTreeNode"][];
+                        incomplete: boolean;
+                    };
+                };
+            };
+        };
+    };
+    downloadAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Authenticated attachment stream with Range support. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
 }

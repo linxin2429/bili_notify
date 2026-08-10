@@ -1,0 +1,318 @@
+package zsxq
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/linxin2429/bili_notify/model"
+)
+
+type apiUser struct {
+	UserID json.Number `json:"user_id"`
+	Name   string      `json:"name"`
+	Role   string      `json:"role"`
+}
+
+type apiImage struct {
+	ImageID json.Number `json:"image_id"`
+	Type    string      `json:"type"`
+	Width   int         `json:"width"`
+	Height  int         `json:"height"`
+	Large   struct {
+		URL    string `json:"url"`
+		Width  int    `json:"width"`
+		Height int    `json:"height"`
+	} `json:"large"`
+}
+
+type apiFile struct {
+	FileID json.Number `json:"file_id"`
+	Name   string      `json:"name"`
+	URL    string      `json:"download_url"`
+	Size   int64       `json:"size"`
+	MIME   string      `json:"mime_type"`
+}
+
+type apiBody struct {
+	Owner  apiUser    `json:"owner"`
+	Title  string     `json:"title"`
+	Text   string     `json:"text"`
+	Images []apiImage `json:"images"`
+	Files  []apiFile  `json:"files"`
+	Audio  *struct {
+		AudioID  json.Number `json:"audio_id"`
+		Name     string      `json:"name"`
+		URL      string      `json:"url"`
+		Duration int64       `json:"duration"`
+		Size     int64       `json:"size"`
+	} `json:"audio"`
+	Video *struct {
+		VideoID  json.Number `json:"video_id"`
+		Name     string      `json:"name"`
+		URL      string      `json:"url"`
+		Duration int64       `json:"duration"`
+		Size     int64       `json:"size"`
+	} `json:"video"`
+	Article *struct {
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	} `json:"article"`
+}
+
+type apiTopic struct {
+	TopicID       json.Number `json:"topic_id"`
+	Type          string      `json:"type"`
+	CreateTime    string      `json:"create_time"`
+	UpdateTime    string      `json:"update_time"`
+	LikesCount    int64       `json:"likes_count"`
+	CommentsCount int64       `json:"comments_count"`
+	RewardsCount  int64       `json:"rewards_count"`
+	Title         string      `json:"title"`
+	Talk          *apiBody    `json:"talk"`
+	Question      *apiBody    `json:"question"`
+	Answer        *apiBody    `json:"answer"`
+	Task          *apiBody    `json:"task"`
+	Solution      *apiBody    `json:"solution"`
+	Examination   *apiBody    `json:"examination"`
+	Article       *apiBody    `json:"article"`
+}
+
+func parseTopic(source model.Source, topic apiTopic) (model.Content, []model.Attachment, error) {
+	id := topic.TopicID.String()
+	if id == "" || topic.Type == "" {
+		return model.Content{}, nil, ErrSchemaDrift
+	}
+	var body *apiBody
+	var contentType model.ContentType
+	switch topic.Type {
+	case "talk", "discussion":
+		body, contentType = topic.Talk, model.ContentDiscussion
+	case "q&a", "question":
+		body, contentType = topic.Question, model.ContentQuestion
+	case "answer":
+		body, contentType = topic.Answer, model.ContentAnswer
+	case "task", "homework":
+		body, contentType = topic.Task, model.ContentTask
+	case "solution":
+		body, contentType = topic.Solution, model.ContentTask
+	case "examination":
+		body, contentType = topic.Examination, model.ContentTask
+	case "article", "long_article":
+		body, contentType = topic.Article, model.ContentLongArticle
+	default:
+		return model.Content{}, nil, fmt.Errorf("%w: unknown topic type %q", ErrSchemaDrift, topic.Type)
+	}
+	if body == nil || body.Owner.UserID.String() == "" {
+		return model.Content{}, nil, ErrSchemaDrift
+	}
+	created, err := parseTime(topic.CreateTime)
+	if err != nil {
+		return model.Content{}, nil, ErrSchemaDrift
+	}
+	updated, _ := parseTime(topic.UpdateTime)
+	text := body.Text
+	title := firstText(body.Title, topic.Title)
+	if body.Article != nil {
+		contentType = model.ContentLongArticle
+		title = firstText(body.Article.Title, title)
+		text = firstText(body.Article.Content, text)
+	}
+	if topic.Type == "q&a" || topic.Type == "question" {
+		if topic.Answer != nil {
+			text += "\n\n回答：\n" + topic.Answer.Text
+		}
+	}
+	contentID := model.ContentID(model.PlatformZSXQ, id)
+	content := model.Content{
+		ID: contentID, Platform: model.PlatformZSXQ, SourceID: source.ID, ExternalID: id,
+		AuthorID: body.Owner.UserID.String(), AuthorName: body.Owner.Name, UpstreamType: topic.Type,
+		Type: contentType, Title: title, Text: stripMarkup(text), SafeHTML: sanitizeRichText(text),
+		URL: "https://wx.zsxq.com/dweb2/index/topic_detail/" + id, PublishedAt: created, UpdatedAt: updated,
+		Stats: map[string]int64{"likes": topic.LikesCount, "comments": topic.CommentsCount, "rewards": topic.RewardsCount},
+	}
+	attachments := parseAttachments(contentID, body)
+	if topic.Answer != nil && topic.Answer != body {
+		attachments = append(attachments, parseAttachments(contentID, topic.Answer)...)
+	}
+	return content, attachments, nil
+}
+
+func parseAttachments(contentID string, body *apiBody) []model.Attachment {
+	if body == nil {
+		return nil
+	}
+	result := make([]model.Attachment, 0, len(body.Images)+len(body.Files)+2)
+	for index, image := range body.Images {
+		externalID := image.ImageID.String()
+		if externalID == "" {
+			externalID = "image-" + strconv.Itoa(index)
+		}
+		width, height := image.Large.Width, image.Large.Height
+		if width == 0 {
+			width = image.Width
+		}
+		if height == 0 {
+			height = image.Height
+		}
+		result = append(result, model.Attachment{ID: contentID + ":attachment:" + externalID, ContentID: contentID, ExternalID: externalID,
+			Type: model.AttachmentImage, MIME: image.Type, Width: width, Height: height, RemoteURL: image.Large.URL})
+	}
+	for index, file := range body.Files {
+		externalID := file.FileID.String()
+		if externalID == "" {
+			externalID = "file-" + strconv.Itoa(index)
+		}
+		result = append(result, model.Attachment{ID: contentID + ":attachment:" + externalID, ContentID: contentID, ExternalID: externalID,
+			Type: model.AttachmentFile, FileName: file.Name, MIME: file.MIME, Size: file.Size, RemoteURL: file.URL})
+	}
+	if body.Audio != nil {
+		externalID := firstText(body.Audio.AudioID.String(), "audio")
+		result = append(result, model.Attachment{ID: contentID + ":attachment:" + externalID, ContentID: contentID, ExternalID: externalID,
+			Type: model.AttachmentAudio, FileName: body.Audio.Name, Size: body.Audio.Size, DurationSec: body.Audio.Duration, RemoteURL: body.Audio.URL})
+	}
+	if body.Video != nil {
+		externalID := firstText(body.Video.VideoID.String(), "video")
+		result = append(result, model.Attachment{ID: contentID + ":attachment:" + externalID, ContentID: contentID, ExternalID: externalID,
+			Type: model.AttachmentVideo, FileName: body.Video.Name, Size: body.Video.Size, DurationSec: body.Video.Duration, RemoteURL: body.Video.URL})
+	}
+	return result
+}
+
+type apiComment struct {
+	CommentID       json.Number  `json:"comment_id"`
+	RootID          json.Number  `json:"root_comment_id"`
+	ParentID        json.Number  `json:"parent_comment_id"`
+	RepliedToID     json.Number  `json:"replied_comment_id"`
+	CreateTime      string       `json:"create_time"`
+	UpdateTime      string       `json:"update_time"`
+	Owner           apiUser      `json:"owner"`
+	Text            string       `json:"text"`
+	Repliee         *apiUser     `json:"repliee"`
+	RepliedComments []apiComment `json:"replied_comments"`
+}
+
+func appendCommentNodes(destination *[]model.CommentNode, seen map[string]struct{}, content model.Content, ownerID string, raw apiComment, inheritedRoot, inheritedParent string) error {
+	node, err := parseComment(content, ownerID, raw)
+	if err != nil {
+		return err
+	}
+	if inheritedRoot != "" && (raw.RootID.String() == "" || raw.RootID.String() == "0") {
+		node.RootID = inheritedRoot
+	}
+	if raw.RepliedToID.String() != "" && raw.RepliedToID.String() != "0" {
+		node.ParentID = model.CommentID(model.PlatformZSXQ, raw.RepliedToID.String())
+	} else if inheritedParent != "" && (raw.ParentID.String() == "" || raw.ParentID.String() == "0") {
+		node.ParentID = inheritedParent
+	}
+	if _, exists := seen[node.ID]; !exists {
+		seen[node.ID] = struct{}{}
+		*destination = append(*destination, node)
+	}
+	for _, child := range raw.RepliedComments {
+		if err := appendCommentNodes(destination, seen, content, ownerID, child, node.RootID, node.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseComment(content model.Content, ownerID string, comment apiComment) (model.CommentNode, error) {
+	id := comment.CommentID.String()
+	if id == "" || comment.Owner.UserID.String() == "" {
+		return model.CommentNode{}, ErrSchemaDrift
+	}
+	created, err := parseTime(comment.CreateTime)
+	if err != nil {
+		return model.CommentNode{}, ErrSchemaDrift
+	}
+	updated, _ := parseTime(comment.UpdateTime)
+	role := roleFor(comment.Owner, ownerID)
+	rootID := ""
+	if comment.RootID.String() != "" && comment.RootID.String() != "0" {
+		rootID = model.CommentID(model.PlatformZSXQ, comment.RootID.String())
+	}
+	parentID := ""
+	if comment.ParentID.String() != "" && comment.ParentID.String() != "0" {
+		parentID = model.CommentID(model.PlatformZSXQ, comment.ParentID.String())
+	}
+	if rootID == "" {
+		rootID = model.CommentID(model.PlatformZSXQ, id)
+	}
+	return model.CommentNode{ID: model.CommentID(model.PlatformZSXQ, id), RPID: id, Platform: model.PlatformZSXQ, ContentID: content.ID,
+		RootID: rootID, ParentID: parentID, AuthorID: comment.Owner.UserID.String(), Mid: comment.Owner.UserID.String(), Name: comment.Owner.Name,
+		Role: role, Message: stripMarkup(comment.Text), Time: created, UpdatedAt: updated}, nil
+}
+
+func roleFor(user apiUser, ownerID string) model.AuthorRole {
+	if user.UserID.String() == ownerID {
+		return model.RoleOwner
+	}
+	switch strings.ToLower(user.Role) {
+	case "admin":
+		return model.RoleAdmin
+	case "guest":
+		return model.RoleGuest
+	case "partner":
+		return model.RolePartner
+	default:
+		return model.RoleMember
+	}
+}
+
+func parseTime(raw string) (time.Time, error) {
+	if strings.TrimSpace(raw) == "" {
+		return time.Time{}, errors.New("time is empty")
+	}
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.000-0700", "2006-01-02 15:04:05"} {
+		if value, err := time.Parse(layout, raw); err == nil {
+			return value, nil
+		}
+	}
+	return time.Time{}, errors.New("invalid time")
+}
+
+func cursorBefore(raw string) string {
+	value, err := parseTime(raw)
+	if err != nil {
+		return ""
+	}
+	return value.Add(-time.Millisecond).Format("2006-01-02T15:04:05.000-0700")
+}
+
+func cursorAfter(raw string) string {
+	value, err := parseTime(raw)
+	if err != nil {
+		return ""
+	}
+	return value.Add(time.Millisecond).Format("2006-01-02T15:04:05.000-0700")
+}
+
+func sanitizeRichText(input string) string {
+	// ZSXQ text is plain text with limited markup. Escaping it and preserving
+	// line boundaries yields display-safe HTML without trusting upstream tags.
+	replacer := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&#34;", "'", "&#39;", "\n", "<br>")
+	return replacer.Replace(input)
+}
+
+func stripMarkup(input string) string {
+	return strings.TrimSpace(strings.NewReplacer("<br>", "\n", "<br/>", "\n", "<br />", "\n").Replace(input))
+}
+
+func firstText(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func remoteHost(raw string) string {
+	parsed, _ := url.Parse(raw)
+	return parsed.Hostname()
+}
