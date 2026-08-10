@@ -2,3 +2,7 @@ grpcio==1.83.0
 httpx==0.28.1
 protobuf==7.35.1
 yt-dlp==2026.7.4
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-instrumentation-grpc==0.65b0
+opentelemetry-instrumentation-httpx==0.65b0

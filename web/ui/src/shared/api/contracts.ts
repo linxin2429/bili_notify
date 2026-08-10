@@ -44,9 +44,13 @@ const commentDeliveryPreviewSchema = z.object({
   rpid: z.string(), up_uid: z.string(), up_name: z.string(), content_type: z.string(), content_id: z.string(),
   content_title: z.string().optional(), content_url: z.string(), published_at: z.string(),
 }).strict() satisfies z.ZodType<Schemas['CommentPreview']>
+const aiDeliveryPreviewSchema = z.object({
+  job_id: z.string(), dynamic_id: z.string(), up_name: z.string().optional(), title: z.string().optional(),
+  stage: z.enum(['transcription', 'summary']), succeeded: z.boolean(), summary: z.string(), error_message: z.string().optional(),
+}).strict() satisfies z.ZodType<Schemas['AIDeliveryPreview']>
 export const deliverySchema = z.object({
-  id: z.string(), kind: z.enum(['dynamic', 'comment']), dynamic: dynamicDeliveryPreviewSchema.optional(),
-  comment: commentDeliveryPreviewSchema.optional(), channel_id: z.string(), state: z.enum(['pending', 'blocked']),
+  id: z.string(), kind: z.enum(['dynamic', 'comment', 'ai']), dynamic: dynamicDeliveryPreviewSchema.optional(),
+  comment: commentDeliveryPreviewSchema.optional(), ai: aiDeliveryPreviewSchema.optional(), channel_id: z.string(), state: z.enum(['pending', 'blocked']),
   attempts: z.number().int(), next_at: z.string(), last_error: z.string().optional(), created_at: z.string(),
 }).strict() satisfies z.ZodType<Schemas['Delivery']>
 
@@ -73,6 +77,7 @@ export const runtimeSettingsSchema = z.object({
     z.number().int().min(1).max(86400), z.number().int().min(1).max(86400), z.number().int().min(1).max(86400),
     z.number().int().min(1).max(86400), z.number().int().min(1).max(86400),
   ]).refine(values => values.every((value, index) => index === 0 || value >= values[index - 1]), '重试阶段必须单调不减'),
+  ai_auto_processing_enabled: z.boolean(),
 }).strict()
 
 export const dynamicLinkSchema = z.object({ text: z.string(), url: z.string() }).strict() satisfies z.ZodType<Schemas['DynamicLink']>
@@ -87,12 +92,12 @@ export const dynamicPreviewSchema: z.ZodType<Schemas['DynamicOriginal']> = z.laz
   original: dynamicPreviewSchema.optional(),
 }).strict())
 export const dynamicHistorySchema = z.object({
-  id: z.string(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(), discovered_at: z.string(),
+  id: z.string(), bvid: z.string().optional(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(), discovered_at: z.string(),
   baseline: z.boolean(), title: z.string().optional(), summary: z.string(), description: z.string().optional(),
   url: z.string(), target_url: z.string().optional(), badge: z.string().optional(), links: z.array(dynamicLinkSchema).optional(),
   media: z.array(dynamicMediaSchema).optional(), stats: dynamicStatsSchema.optional(), video: dynamicVideoSchema.optional(),
   original: dynamicPreviewSchema.optional(), commentable: z.boolean().optional(), comment_type: z.number().int().optional(),
-  comment_oid: z.string().optional(), comment_count: z.number().int().optional(),
+  comment_oid: z.string().optional(), comment_count: z.number().int().optional(), ai_pipeline: z.array(z.lazy(() => aiJobSchema)).optional(),
 }).strict() satisfies z.ZodType<Schemas['DynamicHistory']>
 export const commentHistorySchema = z.object({
   rpid: z.string(), up_uid: z.string(), up_name: z.string(), content_type: z.string().optional(), content_id: z.string().optional(),
@@ -156,11 +161,19 @@ export const aiTranscriptionResultSchema = z.object({
 export const aiSummaryResultSchema = z.object({ markdown: z.string(), usage: z.record(z.string(), z.unknown()).optional() }).strict()
 export const aiJobSchema = z.object({
   id: z.string(), client_request_id: z.string().optional(), kind: z.enum(['transcription', 'summary']),
-  state: z.enum(['queued', 'running', 'succeeded', 'failed', 'canceled']), stage: z.string(), progress: z.number().int(),
-  profile_id: z.string(), prompt_id: z.string().optional(), attempts: z.number().int(), error_code: z.string().optional(), last_error: z.string().optional(),
-  input: z.unknown().optional(), result: z.union([aiTranscriptionResultSchema, aiSummaryResultSchema]).optional(),
+  state: z.enum(['queued', 'running', 'succeeded', 'failed', 'canceled', 'skipped']), stage: z.string(), progress: z.number().int(),
+  profile_id: z.string(), prompt_id: z.string().optional(), origin: z.enum(['workbench', 'dynamic']), source_dynamic_id: z.string().optional(),
+  depends_on_job_id: z.string().optional(), attempts: z.number().int(), error_code: z.string().optional(), last_error: z.string().optional(),
+  input: z.record(z.string(), z.unknown()).optional(), result: z.union([aiTranscriptionResultSchema, aiSummaryResultSchema]).optional(),
   created_at: z.string(), started_at: z.string().optional(), finished_at: z.string().optional(), updated_at: z.string(),
 }).strict()
+export const dynamicDetailSchema = z.object({
+  id: z.string(), bvid: z.string().optional(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(),
+  title: z.string().optional(), summary: z.string(), description: z.string().optional(), url: z.string(), target_url: z.string().optional(),
+  badge: z.string().optional(), links: z.array(dynamicLinkSchema).optional(), media: z.array(dynamicMediaSchema).optional(), stats: dynamicStatsSchema.optional(),
+  video: dynamicVideoSchema.optional(), original: dynamicPreviewSchema.optional(), commentable: z.boolean().optional(), comment_type: z.number().int().optional(),
+  comment_oid: z.string().optional(), comment_count: z.number().int().optional(), ai_pipeline: z.array(aiJobSchema),
+}).strict() satisfies z.ZodType<Schemas['DynamicDetail']>
 export const aiJobPageSchema = z.object({ items: z.array(aiJobSchema), total: z.number().int(), limit: z.number().int(), offset: z.number().int() }).strict()
 export const canceledStatusSchema = z.object({ status: z.literal('canceled') }).strict()
 export const workerReachableSchema = z.object({ status: z.literal('worker_reachable') }).strict()

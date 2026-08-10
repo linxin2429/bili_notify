@@ -34,11 +34,13 @@ export function loginLabel(value: string) {
 
 export function deliveryTitle(delivery: Delivery) {
   if (delivery.kind === 'comment' && delivery.comment) return `${delivery.comment.up_name || delivery.comment.up_uid} · 评论回复`
+  if (delivery.kind === 'ai' && delivery.ai) return `${delivery.ai.up_name || '视频'} · ${delivery.ai.stage === 'transcription' ? 'AI 转写' : 'AI 总结'}`
   return delivery.dynamic?.up_name || delivery.dynamic?.uid || delivery.id
 }
 
 export function deliverySummary(delivery: Delivery) {
   if (delivery.kind === 'comment' && delivery.comment) return delivery.comment.content_title || delivery.comment.content_url || `评论 ${delivery.comment.rpid}`
+  if (delivery.kind === 'ai' && delivery.ai) return delivery.ai.summary
   return delivery.dynamic?.summary || ''
 }
 

@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from bili_ai_worker.telemetry import provider_duration, provider_requests
+
 logger = logging.getLogger("bili_ai_worker.provider")
 
 
@@ -304,6 +306,9 @@ def _log_response(
     started: float,
     api_key: str,
 ) -> None:
+    attributes = {"provider.operation": label, "http.response.status_code": response.status_code}
+    provider_requests.add(1, attributes)
+    provider_duration.record(time.monotonic() - started, attributes)
     response_fields = {
         **request_fields,
         "event": f"provider.{label}.response",
@@ -328,6 +333,9 @@ def _log_transport_failure(
     started: float,
     error: httpx.HTTPError,
 ) -> None:
+    attributes = {"provider.operation": label, "result": failure}
+    provider_requests.add(1, attributes)
+    provider_duration.record(time.monotonic() - started, attributes)
     logger.warning(
         f"{label} provider request failed",
         extra={

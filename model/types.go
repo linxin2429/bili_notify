@@ -174,6 +174,7 @@ func (c Channel) NameCompare(other Channel) int { return cmp.Compare(c.Name, oth
 
 type Dynamic struct {
 	ID          string         `json:"id"`
+	BVID        string         `json:"bvid,omitempty"`
 	UID         string         `json:"uid"`
 	UPName      string         `json:"up_name"`
 	Type        string         `json:"type"`
@@ -245,13 +246,31 @@ type DeliveryKind string
 const (
 	DeliveryKindDynamic DeliveryKind = "dynamic"
 	DeliveryKindComment DeliveryKind = "comment"
+	DeliveryKindAI      DeliveryKind = "ai"
 )
+
+// AINotification is the immutable payload queued when an AI stage reaches a
+// terminal state. Body may be large; channel renderers split it safely.
+type AINotification struct {
+	JobID        string    `json:"job_id"`
+	DynamicID    string    `json:"dynamic_id"`
+	BVID         string    `json:"bvid"`
+	UPName       string    `json:"up_name,omitempty"`
+	Title        string    `json:"title,omitempty"`
+	Stage        AIJobKind `json:"stage"`
+	Succeeded    bool      `json:"succeeded"`
+	Body         string    `json:"body,omitempty"`
+	ErrorCode    string    `json:"error_code,omitempty"`
+	ErrorMessage string    `json:"error_message,omitempty"`
+	SourceURL    string    `json:"source_url,omitempty"`
+}
 
 type Delivery struct {
 	ID        string               `json:"id"`
 	Kind      DeliveryKind         `json:"kind,omitempty"` // empty means dynamic for back-compat
 	Dynamic   Dynamic              `json:"dynamic,omitzero"`
 	Comment   *CommentNotification `json:"comment,omitempty"`
+	AI        *AINotification      `json:"ai,omitempty"`
 	ChannelID string               `json:"channel_id"`
 	State     DeliveryState        `json:"state"`
 	Attempts  int                  `json:"attempts"`
@@ -268,13 +287,15 @@ type Delivery struct {
 
 // DeliveryProgress records which parts of a multi-message delivery already succeeded.
 type DeliveryProgress struct {
-	TextSent   bool `json:"text_sent,omitempty"`
-	ImagesSent int  `json:"images_sent,omitempty"`
+	TextSent      bool `json:"text_sent,omitempty"`
+	TextPartsSent int  `json:"text_parts_sent,omitempty"`
+	ImagesSent    int  `json:"images_sent,omitempty"`
 }
 
 func (d Delivery) EffectiveKind() DeliveryKind {
-	if d.Kind == DeliveryKindComment {
-		return DeliveryKindComment
+	switch d.Kind {
+	case DeliveryKindComment, DeliveryKindAI:
+		return d.Kind
 	}
 	return DeliveryKindDynamic
 }
@@ -412,6 +433,7 @@ type RuntimeSettings struct {
 	BacklogAlertCount       int                 `json:"backlog_alert_count"`
 	BacklogAlertAgeSec      int                 `json:"backlog_alert_age_sec"`
 	DeliveryRetryDelaysSec  DeliveryRetryDelays `json:"delivery_retry_delays_sec"`
+	AIAutoProcessingEnabled bool                `json:"ai_auto_processing_enabled"`
 }
 
 func (s RuntimeSettings) PollInterval() time.Duration {

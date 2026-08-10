@@ -27,6 +27,7 @@ func TestRuntimeSettingsManagerUpdate(t *testing.T) {
 	}{
 		{name: "success", mutate: func(settings *model.RuntimeSettings) { settings.PollIntervalSec = 45 }},
 		{name: "invalid", mutate: func(settings *model.RuntimeSettings) { settings.DeliveryConcurrency = 0 }, wantError: true},
+		{name: "automatic AI without defaults", mutate: func(settings *model.RuntimeSettings) { settings.AIAutoProcessingEnabled = true }, wantError: true},
 		{name: "persistence failure", mutate: func(settings *model.RuntimeSettings) { settings.PollIntervalSec = 60 }, closeDB: true, wantError: true},
 	}
 	for _, tt := range tests {

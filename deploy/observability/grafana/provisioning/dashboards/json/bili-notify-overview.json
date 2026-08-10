@@ -69,6 +69,22 @@
       "targets": [{ "expr": "sum by (result) (rate(bili_notify_bilibili_requests_total[$__rate_interval]))", "legendFormat": "{{result}}", "refId": "A" }],
       "title": "Bilibili request rate",
       "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "bili-notify-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "id": 9,
+      "targets": [{ "expr": "sum by (job_kind, result) (rate(bili_notify_ai_worker_jobs_total[$__rate_interval]))", "legendFormat": "{{job_kind}} {{result}}", "refId": "A" }],
+      "title": "AI Worker job rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "bili-notify-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+      "id": 10,
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, job_kind) (rate(bili_notify_ai_worker_job_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "p95 {{job_kind}}", "refId": "A" }],
+      "title": "AI Worker job p95 duration",
+      "type": "timeseries"
     }
   ],
   "refresh": "15s",

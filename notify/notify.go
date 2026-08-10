@@ -42,9 +42,10 @@ type ProgressiveSender interface {
 type SettingsUpdater func(map[string]string) error
 
 type Message struct {
-	Subject  string
-	Sections []Section
-	Action   Link
+	Subject    string
+	Sections   []Section
+	Action     Link
+	AllowSplit bool
 }
 
 type Section struct {
@@ -208,6 +209,29 @@ func firstNonEmpty(values ...string) string {
 
 func TextMessage(subject, body string) Message {
 	return Message{Subject: subject, Sections: []Section{{Paragraphs: []string{body}}}}
+}
+
+// AINotificationMessage renders one automatic AI terminal event.
+func AINotificationMessage(value model.AINotification) Message {
+	stage := "视频转写"
+	if value.Stage == model.AIJobSummary {
+		stage = "视频总结"
+	}
+	result := "完成"
+	body := value.Body
+	if !value.Succeeded {
+		result = "失败"
+		body = value.ErrorMessage
+		if value.ErrorCode != "" {
+			body = value.ErrorCode + "：" + body
+		}
+	}
+	message := TextMessage(fmt.Sprintf("[Bili Notify] %s%s：%s", stage, result, value.Title), body)
+	message.AllowSplit = value.Succeeded
+	if value.SourceURL != "" {
+		message.Action = Link{Label: "查看原视频", URL: value.SourceURL}
+	}
+	return message
 }
 
 func dynamicTypeName(dynamicType string) string {
@@ -399,36 +423,35 @@ type robotSender struct {
 }
 
 func (s *robotSender) Send(ctx context.Context, message Message) error {
-	if s.kind == model.ChannelWeCom {
-		_, err := s.SendProgressive(ctx, message, nil)
-		return err
-	}
-	endpoint, payload, err := s.buildPayload(ctx, message)
-	if err != nil {
-		return err
-	}
-	return s.postJSON(ctx, endpoint, payload)
+	_, err := s.SendProgressive(ctx, message, nil)
+	return err
 }
 
 func (s *robotSender) SendProgressive(ctx context.Context, message Message, progress *model.DeliveryProgress) (*model.DeliveryProgress, error) {
-	if s.kind != model.ChannelWeCom {
-		if err := s.Send(ctx, message); err != nil {
-			return progress, err
-		}
-		return progress, nil
-	}
 	current := model.DeliveryProgress{}
 	if progress != nil {
 		current = *progress
 	}
-	images := collectLocalImages(message, s.dataDir, media.WeComMaxImageSize)
-	if !current.TextSent {
-		payload := map[string]any{"msgtype": "markdown", "markdown": map[string]string{"content": renderMarkdown(message, 4096, true, false)}}
-		if err := s.postJSON(ctx, s.webhook, payload); err != nil {
+	parts := splitRobotMessage(message, s.kind)
+	for index := current.TextPartsSent; index < len(parts); index++ {
+		endpoint, payload := s.webhook, any(map[string]any{"msgtype": "markdown", "markdown": map[string]string{"content": renderMarkdown(parts[index], 4096, true, false)}})
+		if s.kind != model.ChannelWeCom {
+			var err error
+			endpoint, payload, err = s.buildPayload(ctx, parts[index])
+			if err != nil {
+				return &current, err
+			}
+		}
+		if err := s.postJSON(ctx, endpoint, payload); err != nil {
 			return &current, err
 		}
-		current.TextSent = true
+		current.TextPartsSent = index + 1
 	}
+	current.TextSent = current.TextPartsSent == len(parts)
+	if s.kind != model.ChannelWeCom {
+		return &current, nil
+	}
+	images := collectLocalImages(message, s.dataDir, media.WeComMaxImageSize)
 	for i := current.ImagesSent; i < len(images); i++ {
 		img := images[i]
 		sum := md5.Sum(img.data)
@@ -445,6 +468,98 @@ func (s *robotSender) SendProgressive(ctx context.Context, message Message, prog
 		current.ImagesSent = i + 1
 	}
 	return &current, nil
+}
+
+func splitRobotMessage(message Message, kind model.ChannelType) []Message {
+	if !message.AllowSplit || len(message.Sections) != 1 || len(message.Sections[0].Paragraphs) != 1 {
+		return []Message{message}
+	}
+	chunks := splitRobotText(message, kind)
+	if len(chunks) <= 1 {
+		return []Message{message}
+	}
+	parts := make([]Message, 0, len(chunks))
+	for index, chunk := range chunks {
+		part := TextMessage(fmt.Sprintf("%s（%d/%d）", message.Subject, index+1, len(chunks)), chunk)
+		part.Action = message.Action
+		parts = append(parts, part)
+	}
+	return parts
+}
+
+func splitRobotText(message Message, kind model.ChannelType) []string {
+	value := message.Sections[0].Paragraphs[0]
+	if value == "" || robotMessageFits(message, kind) {
+		return []string{value}
+	}
+	// Probe with a fixed-width worst-case suffix. Actual part numbers are
+	// shorter, so chunks accepted here cannot be truncated by the renderer.
+	probe := message
+	probe.Sections = slices.Clone(message.Sections)
+	probe.Sections[0].Paragraphs = slices.Clone(message.Sections[0].Paragraphs)
+	probe.Subject = message.Subject + "（999999/999999）"
+	parts := make([]string, 0)
+	runes := []rune(value)
+	for start := 0; start < len(runes); {
+		remaining := len(runes) - start
+		best, high := 0, 1
+		for high <= remaining {
+			probe.Sections[0].Paragraphs[0] = string(runes[start : start+high])
+			if !robotMessageFits(probe, kind) {
+				break
+			}
+			best = high
+			if high == remaining {
+				break
+			}
+			high = min(high*2, remaining)
+		}
+		low := best + 1
+		for low <= high {
+			middle := low + (high-low)/2
+			probe.Sections[0].Paragraphs[0] = string(runes[start : start+middle])
+			if robotMessageFits(probe, kind) {
+				best = middle
+				low = middle + 1
+			} else {
+				high = middle - 1
+			}
+		}
+		if best == 0 {
+			// AI notification subjects and source URLs are bounded in practice.
+			// Still make progress for pathological input instead of looping.
+			best = 1
+		}
+		end := start + best
+		for index := end - 1; index > start+best/2; index-- {
+			if runes[index] == '\n' {
+				end = index + 1
+				break
+			}
+		}
+		parts = append(parts, string(runes[start:end]))
+		start = end
+	}
+	return parts
+}
+
+func robotMessageFits(message Message, kind model.ChannelType) bool {
+	switch kind {
+	case model.ChannelWeCom:
+		full := renderMarkdown(message, int(^uint(0)>>1), true, false)
+		return len(full) <= 4096
+	case model.ChannelDingTalk:
+		full := renderMarkdown(message, int(^uint(0)>>1), false, true)
+		return len([]rune(full)) <= 20_000
+	case model.ChannelFeishu:
+		rows := [][]feishuElement{{{Tag: "text", Text: message.Sections[0].Paragraphs[0]}}}
+		if message.Action.URL != "" {
+			rows = append(rows, []feishuElement{{Tag: "a", Text: message.Action.Label, Href: message.Action.URL}})
+		}
+		return payloadSize(feishuPayload(message.Subject, rows, "9999999999", strings.Repeat("s", 44))) <= 20*1024
+	default:
+		return true
+	}
 }
 
 type localImage struct {

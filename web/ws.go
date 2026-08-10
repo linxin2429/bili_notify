@@ -59,12 +59,24 @@ type deliveryView struct {
 	Kind      model.DeliveryKind      `json:"kind,omitempty"`
 	Dynamic   dynamicPreview          `json:"dynamic,omitzero"`
 	Comment   *commentDeliveryPreview `json:"comment,omitempty"`
+	AI        *aiDeliveryPreview      `json:"ai,omitempty"`
 	ChannelID string                  `json:"channel_id"`
 	State     model.DeliveryState     `json:"state"`
 	Attempts  int                     `json:"attempts"`
 	NextAt    time.Time               `json:"next_at"`
 	LastError string                  `json:"last_error,omitempty"`
 	CreatedAt time.Time               `json:"created_at"`
+}
+
+type aiDeliveryPreview struct {
+	JobID        string          `json:"job_id"`
+	DynamicID    string          `json:"dynamic_id"`
+	UPName       string          `json:"up_name,omitempty"`
+	Title        string          `json:"title,omitempty"`
+	Stage        model.AIJobKind `json:"stage"`
+	Succeeded    bool            `json:"succeeded"`
+	Summary      string          `json:"summary"`
+	ErrorMessage string          `json:"error_message,omitempty"`
 }
 
 type dynamicPreview struct {
@@ -99,6 +111,7 @@ type contentQueryInput struct {
 
 type dynamicHistoryView struct {
 	ID           string                `json:"id"`
+	BVID         string                `json:"bvid,omitempty"`
 	UID          string                `json:"uid"`
 	UPName       string                `json:"up_name"`
 	Type         string                `json:"type"`
@@ -115,6 +128,12 @@ type dynamicHistoryView struct {
 	Stats        *model.DynamicStats   `json:"stats,omitempty"`
 	Video        *model.DynamicVideo   `json:"video,omitempty"`
 	Original     *state.DynamicPreview `json:"original,omitempty"`
+	AIPipeline   []model.AIJob         `json:"ai_pipeline,omitempty"`
+}
+
+type dynamicDetailView struct {
+	model.Dynamic
+	AIPipeline []model.AIJob `json:"ai_pipeline"`
 }
 
 type commentHistoryView struct {
@@ -326,14 +345,31 @@ func deliveryViews(deliveries []model.Delivery) []deliveryView {
 			ChannelID: delivery.ChannelID, State: delivery.State, Attempts: delivery.Attempts,
 			NextAt: delivery.NextAt, LastError: delivery.LastError, CreatedAt: delivery.CreatedAt,
 		}
-		if delivery.EffectiveKind() == model.DeliveryKindComment && delivery.Comment != nil {
+		switch delivery.EffectiveKind() {
+		case model.DeliveryKindComment:
+			if delivery.Comment == nil {
+				break
+			}
 			view.Comment = &commentDeliveryPreview{
 				RPID: delivery.Comment.RPID, UPUID: delivery.Comment.UPUID, UPName: delivery.Comment.UPName,
 				ContentType: delivery.Comment.ContentType, ContentID: delivery.Comment.ContentID,
 				ContentTitle: delivery.Comment.ContentTitle, ContentURL: delivery.Comment.ContentURL,
 				PublishedAt: delivery.Comment.PublishedAt,
 			}
-		} else {
+		case model.DeliveryKindAI:
+			if delivery.AI == nil {
+				break
+			}
+			body := delivery.AI.Body
+			if !delivery.AI.Succeeded {
+				body = delivery.AI.ErrorMessage
+			}
+			view.AI = &aiDeliveryPreview{
+				JobID: delivery.AI.JobID, DynamicID: delivery.AI.DynamicID, UPName: delivery.AI.UPName,
+				Title: delivery.AI.Title, Stage: delivery.AI.Stage, Succeeded: delivery.AI.Succeeded,
+				Summary: previewText(body, 240), ErrorMessage: delivery.AI.ErrorMessage,
+			}
+		default:
 			view.Dynamic = dynamicPreview{
 				ID: delivery.Dynamic.ID, UID: delivery.Dynamic.UID, UPName: delivery.Dynamic.UPName,
 				Type: delivery.Dynamic.Type, PublishedAt: delivery.Dynamic.PublishedAt,
@@ -374,7 +410,7 @@ const (
 
 func toDynamicHistoryView(item state.DynamicRecord) dynamicHistoryView {
 	return dynamicHistoryView{
-		ID: item.ID, UID: item.UID, UPName: item.UPName, Type: item.Type,
+		ID: item.ID, BVID: item.BVID, UID: item.UID, UPName: item.UPName, Type: item.Type,
 		PublishedAt: item.PublishedAt, DiscoveredAt: item.DiscoveredAt, Baseline: item.Baseline,
 		Title: item.Title, Summary: previewText(item.Summary, historyPreviewTextLimit),
 		Description: previewText(item.Description, historyPreviewTextLimit),

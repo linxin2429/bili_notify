@@ -691,6 +691,8 @@ export interface components {
             backlog_alert_age_sec: number;
             /** @description Five retry delays in nondecreasing order. */
             delivery_retry_delays_sec: number[];
+            /** @description Automatically transcribe and summarize newly discovered top-level video dynamics using the enabled default AI profiles and prompt. */
+            ai_auto_processing_enabled: boolean;
         };
         CreateUPRequest: {
             uid: string;
@@ -758,9 +760,10 @@ export interface components {
         Delivery: {
             id: string;
             /** @enum {string} */
-            kind: "dynamic" | "comment";
+            kind: "dynamic" | "comment" | "ai";
             dynamic?: components["schemas"]["DynamicPreview"];
             comment?: components["schemas"]["CommentPreview"];
+            ai?: components["schemas"]["AIDeliveryPreview"];
             channel_id: string;
             /** @enum {string} */
             state: "pending" | "blocked";
@@ -791,6 +794,17 @@ export interface components {
             content_url: string;
             /** Format: date-time */
             published_at: string;
+        };
+        AIDeliveryPreview: {
+            job_id: string;
+            dynamic_id: string;
+            up_name?: string;
+            title?: string;
+            /** @enum {string} */
+            stage: "transcription" | "summary";
+            succeeded: boolean;
+            summary: string;
+            error_message?: string;
         };
         SentStatus: {
             /** @constant */
@@ -825,9 +839,14 @@ export interface components {
             /** Format: date-time */
             discovered_at: string;
             baseline: boolean;
+            ai_pipeline?: components["schemas"]["AIJob"][];
+        };
+        DynamicDetail: components["schemas"]["Dynamic"] & {
+            ai_pipeline: components["schemas"]["AIJob"][];
         };
         Dynamic: {
             id: string;
+            bvid?: string;
             uid: string;
             up_name: string;
             type: string;
@@ -1073,11 +1092,15 @@ export interface components {
             /** @enum {string} */
             kind: "transcription" | "summary";
             /** @enum {string} */
-            state: "queued" | "running" | "succeeded" | "failed" | "canceled";
+            state: "queued" | "running" | "succeeded" | "failed" | "canceled" | "skipped";
             stage: string;
             progress: number;
             profile_id: string;
             prompt_id?: string;
+            /** @enum {string} */
+            origin: "workbench" | "dynamic";
+            source_dynamic_id?: string;
+            depends_on_job_id?: string;
             attempts: number;
             error_code?: string;
             last_error?: string;
@@ -1910,7 +1933,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Dynamic"];
+                    "application/json": components["schemas"]["DynamicDetail"];
                 };
             };
             401: components["responses"]["AuthenticationError"];

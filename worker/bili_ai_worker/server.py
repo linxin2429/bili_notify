@@ -14,12 +14,16 @@ from typing import Any
 import grpc
 from google.protobuf.json_format import ParseDict
 from google.protobuf.struct_pb2 import Struct
+from opentelemetry.instrumentation.grpc import aio_server_interceptor, filters
 
 from ai.v1 import worker_pb2, worker_pb2_grpc
 from bili_ai_worker import __version__
 from bili_ai_worker.log import configure_logging
 from bili_ai_worker.media import DownloadError, cleanup_cache, download_pages, split_audio
 from bili_ai_worker.provider import ProviderError, complete, test_provider, transcribe
+from bili_ai_worker.telemetry import audio_bytes as audio_bytes_metric
+from bili_ai_worker.telemetry import cache_bytes as cache_bytes_metric
+from bili_ai_worker.telemetry import configure_telemetry, job_duration, jobs
 
 logger = logging.getLogger("bili_ai_worker.server")
 
@@ -43,6 +47,7 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
     async def GetCapabilities(self, request, context):
         del request, context
         cache_bytes = await asyncio.to_thread(cleanup_cache, self.cache_dir, 24 * 3600, 5 << 30)
+        cache_bytes_metric.set(cache_bytes)
         logger.debug(
             "worker capabilities requested",
             extra={
@@ -133,6 +138,7 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
     async def Transcribe(self, request, context) -> AsyncIterator[worker_pb2.WorkerEvent]:
         self.active_transcriptions += 1
         succeeded = False
+        job_result = "error"
         started = time.monotonic()
         logger.info(
             "transcription job started",
@@ -151,6 +157,8 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
             title, pages = await download_pages(
                 self.cache_dir, request.job_id, request.bvid, request.page, dict(request.cookies)
             )
+            downloaded_bytes = sum(page.audio_path.stat().st_size for page in pages)
+            audio_bytes_metric.add(downloaded_bytes, {"job.kind": "transcription"})
             logger.info(
                 "video audio downloaded",
                 extra={
@@ -158,7 +166,7 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
                     "job_id": request.job_id,
                     "bvid": request.bvid,
                     "page_count": len(pages),
-                    "audio_bytes": sum(page.audio_path.stat().st_size for page in pages),
+                    "audio_bytes": downloaded_bytes,
                 },
             )
             yield _progress("downloading_audio", 20, "音频下载完成")
@@ -211,6 +219,7 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
                 )
             )
             succeeded = True
+            job_result = "success"
             logger.info(
                 "transcription job completed",
                 extra={
@@ -222,7 +231,10 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
                     "duration_ms": round((time.monotonic() - started) * 1000),
                 },
             )
+            jobs.add(1, {"job.kind": "transcription", "result": "success"})
         except asyncio.CancelledError:
+            job_result = "canceled"
+            jobs.add(1, {"job.kind": "transcription", "result": "canceled"})
             logger.warning(
                 "transcription job cancelled",
                 extra={"event": "worker.transcription.cancelled", "job_id": request.job_id, "bvid": request.bvid},
@@ -230,6 +242,7 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
             raise
         except (DownloadError, ProviderError) as exc:
             code = exc.code if isinstance(exc, ProviderError) else "download_failed"
+            jobs.add(1, {"job.kind": "transcription", "result": "error", "error.type": code})
             logger.warning(
                 "transcription job failed",
                 extra={
@@ -243,6 +256,7 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
             )
             await context.abort(grpc.StatusCode.FAILED_PRECONDITION, json.dumps({"code": code, "message": str(exc)}))
         except Exception as exc:
+            jobs.add(1, {"job.kind": "transcription", "result": "error", "error.type": "worker_failure"})
             logger.exception(
                 "transcription job crashed",
                 extra={
@@ -256,11 +270,13 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
             await context.abort(grpc.StatusCode.INTERNAL, json.dumps({"code": "worker_failure", "message": str(exc)}))
         finally:
             self.active_transcriptions -= 1
+            job_duration.record(time.monotonic() - started, {"job.kind": "transcription", "result": job_result})
             if succeeded:
                 await asyncio.to_thread(shutil.rmtree, self.cache_dir / request.job_id, True)
 
     async def Summarize(self, request, context) -> AsyncIterator[worker_pb2.WorkerEvent]:
         self.active_summaries += 1
+        job_result = "error"
         started = time.monotonic()
         logger.info(
             "summary job started",
@@ -312,10 +328,15 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
                     "duration_ms": round((time.monotonic() - started) * 1000),
                 },
             )
+            job_result = "success"
+            jobs.add(1, {"job.kind": "summary", "result": "success"})
         except asyncio.CancelledError:
+            job_result = "canceled"
+            jobs.add(1, {"job.kind": "summary", "result": "canceled"})
             logger.warning("summary job cancelled", extra={"event": "worker.summary.cancelled", "job_id": request.job_id})
             raise
         except ProviderError as exc:
+            jobs.add(1, {"job.kind": "summary", "result": "error", "error.type": exc.code})
             logger.warning(
                 "summary job failed",
                 extra={
@@ -328,6 +349,7 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
             )
             await context.abort(grpc.StatusCode.FAILED_PRECONDITION, json.dumps({"code": exc.code, "message": str(exc)}))
         except Exception as exc:
+            jobs.add(1, {"job.kind": "summary", "result": "error", "error.type": "worker_failure"})
             logger.exception(
                 "summary job crashed",
                 extra={
@@ -340,6 +362,7 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
             await context.abort(grpc.StatusCode.INTERNAL, json.dumps({"code": "worker_failure", "message": str(exc)}))
         finally:
             self.active_summaries -= 1
+            job_duration.record(time.monotonic() - started, {"job.kind": "summary", "result": job_result})
 
 
 def _progress(stage: str, percent: int, message: str) -> worker_pb2.WorkerEvent:
@@ -381,7 +404,10 @@ def _chunks(text: str, limit: int) -> list[str]:
 async def serve(socket_path: Path, cache_dir: Path) -> None:
     socket_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     socket_path.unlink(missing_ok=True)
-    server = grpc.aio.server(options=(("grpc.max_receive_message_length", 16 << 20),))
+    server = grpc.aio.server(
+        interceptors=(aio_server_interceptor(filter_=filters.negate(filters.method_name("GetCapabilities"))),),
+        options=(("grpc.max_receive_message_length", 16 << 20),),
+    )
     worker_pb2_grpc.add_AIWorkerServicer_to_server(AIWorker(cache_dir), server)
     server.add_insecure_port(f"unix:{socket_path}")
     await server.start()
@@ -410,8 +436,12 @@ def main() -> None:
     parser.add_argument("--socket", default=os.environ.get("BILI_NOTIFY_AI_WORKER_SOCKET", "/run/bili-notify/ai-worker.sock"))
     parser.add_argument("--cache-dir", default=os.environ.get("BILI_NOTIFY_AI_CACHE_DIR", "/cache"))
     args = parser.parse_args()
-    configure_logging()
-    asyncio.run(serve(Path(args.socket), Path(args.cache_dir)))
+    telemetry_runtime = configure_telemetry()
+    configure_logging(telemetry_runtime.logging_handler)
+    try:
+        asyncio.run(serve(Path(args.socket), Path(args.cache_dir)))
+    finally:
+        telemetry_runtime.shutdown()
 
 
 if __name__ == "__main__":

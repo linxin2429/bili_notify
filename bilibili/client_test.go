@@ -132,7 +132,7 @@ func TestParseDynamic(t *testing.T) {
 				"type":"DYNAMIC_TYPE_AV",
 				"modules":{
 					"module_author":{"mid":42,"name":"tester","pub_ts":` + timestamp + `},
-					"module_dynamic":{"desc":{"text":"new video","rich_text_nodes":[{"orig_text":"topic","jump_url":"//www.bilibili.com/v/topic/detail"}]},"major":{"archive":{"title":"title","desc":"description","cover":"//i0.hdslb.com/cover.jpg","jump_url":"//www.bilibili.com/video/BV1","duration_text":"03:21","stat":{"play":"1.2万","danmaku":"88"}}}},
+					"module_dynamic":{"desc":{"text":"new video","rich_text_nodes":[{"orig_text":"topic","jump_url":"//www.bilibili.com/v/topic/detail"}]},"major":{"archive":{"bvid":"BV1xx411c7mD","title":"title","desc":"description","cover":"//i0.hdslb.com/cover.jpg","jump_url":"//www.bilibili.com/video/BV1","duration_text":"03:21","stat":{"play":"1.2万","danmaku":"88"}}}},
 					"module_stat":{"forward":{"count":1},"comment":{"count":2},"like":{"count":3}}
 				}
 			}`)
@@ -144,6 +144,7 @@ func TestParseDynamic(t *testing.T) {
 			assert.Equal(t, "new video", got.Summary)
 			assert.Equal(t, int64(1700000000), got.PublishedAt.Unix())
 			assert.Equal(t, "title", got.Title)
+			assert.Equal(t, "BV1xx411c7mD", got.BVID)
 			assert.Equal(t, "description", got.Description)
 			assert.Equal(t, "https://www.bilibili.com/video/BV1", got.TargetURL)
 			require.Len(t, got.Media, 1)

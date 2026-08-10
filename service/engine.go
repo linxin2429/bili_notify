@@ -1422,6 +1422,11 @@ func deliveryMessage(delivery model.Delivery) (notify.Message, string, error) {
 			return notify.Message{}, "", errors.New("comment delivery is missing payload")
 		}
 		return notify.CommentThreadMessage(*delivery.Comment), delivery.Comment.RPID, nil
+	case model.DeliveryKindAI:
+		if delivery.AI == nil {
+			return notify.Message{}, "", errors.New("AI delivery is missing payload")
+		}
+		return notify.AINotificationMessage(*delivery.AI), delivery.AI.JobID, nil
 	default:
 		return notify.DynamicMessage(delivery.Dynamic), delivery.Dynamic.ID, nil
 	}

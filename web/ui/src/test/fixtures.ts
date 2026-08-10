@@ -5,6 +5,7 @@ export const settings: RuntimeSettings = {
   comment_root_pages: 2, comment_reply_pages: 3, comment_batch_interval_sec: 60, log_level: 'info', audit_log_retention_days: 90,
   relation_refresh_interval_sec: 3600, space_reconcile_interval_sec: 3600, max_dynamic_pages: 5, risk_pause_sec: 300,
   delivery_concurrency: 4, backlog_alert_count: 100, backlog_alert_age_sec: 600, delivery_retry_delays_sec: [5, 30, 120, 600, 3600],
+  ai_auto_processing_enabled: false,
 }
 
 export function makeDelivery(overrides: Partial<Delivery> = {}): Delivery {

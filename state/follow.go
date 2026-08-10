@@ -156,6 +156,10 @@ func (s *Store) RecordFeedDynamics(accountUID, baseline string, dynamics []model
 	}
 	created := 0
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		autoAI, err := automaticAIEnabledTx(tx)
+		if err != nil {
+			return err
+		}
 		if err := archiveDynamicsTx(tx, dynamics, DynamicBaselineNone); err != nil {
 			return err
 		}
@@ -180,6 +184,11 @@ func (s *Store) RecordFeedDynamics(accountUID, baseline string, dynamics []model
 				}
 				if err := putDeliveryTx(tx, delivery); err != nil {
 					return err
+				}
+			}
+			if autoAI {
+				if _, err := s.createAutomaticAIJobsTx(tx, dynamic, channelIDs); err != nil {
+					return fmt.Errorf("creating automatic AI pipeline for dynamic %s: %w", dynamic.ID, err)
 				}
 			}
 			created++

@@ -862,6 +862,7 @@ func parseMajor(dynamic *model.Dynamic, raw json.RawMessage) error {
 			return unexpectedMajor(dynamic.Type, "archive")
 		}
 		dynamic.Title = strings.TrimSpace(major.Archive.Title)
+		dynamic.BVID = strings.TrimSpace(major.Archive.BVID)
 		dynamic.Description = strings.TrimSpace(major.Archive.Desc)
 		dynamic.TargetURL = webURL(major.Archive.JumpURL)
 		dynamic.Badge = strings.TrimSpace(major.Archive.Badge.Text)
