@@ -19,7 +19,7 @@ func TestAIManagementAPI(t *testing.T) {
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.Contains(t, response.Body.String(), "AI Worker 未配置")
 
-	profileBody := map[string]any{"name": "transcribe", "kind": "transcription", "base_url": "https://openrouter.ai/api/v1", "model": "openai/gpt-transcribe", "api_key": "secret-key", "language": "zh", "timeout_sec": 600, "default": true}
+	profileBody := map[string]any{"name": "transcribe", "kind": "transcription", "base_url": "https://openrouter.ai/api/v1", "model": "openai/gpt-transcribe", "api_key": "secret-key", "language": "zh", "timeout_sec": 600, "enabled": true, "default": true}
 	response = fixture.request(t, http.MethodPost, "/api/v2/ai/profiles", profileBody, true)
 	require.Equal(t, http.StatusCreated, response.Code, response.Body.String())
 	var profile aiProfileView
@@ -34,11 +34,18 @@ func TestAIManagementAPI(t *testing.T) {
 	saved, err := fixture.store.AIProfile(profile.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "secret-key", saved.APIKey)
+	response = fixture.request(t, http.MethodPut, "/api/v2/ai/profiles/"+profile.ID+"/availability", map[string]any{"enabled": false}, true)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	saved, err = fixture.store.AIProfile(profile.ID)
+	require.NoError(t, err)
+	assert.False(t, saved.Enabled)
+	assert.False(t, saved.Default)
 	response = fixture.request(t, http.MethodPost, "/api/v2/ai/profiles/"+profile.ID+"/test", nil, true)
-	assert.Equal(t, http.StatusBadGateway, response.Code)
+	require.Equal(t, http.StatusOK, response.Code)
+	assert.Contains(t, response.Body.String(), "worker_unavailable")
 	fixture.server.ai = service.NewAIEngine(fixture.store, "", fixture.server.logger, fixture.events)
 
-	textProfile, err := fixture.store.PutAIProfile(model.AIProfile{Name: "summary", Kind: model.AIProfileText, BaseURL: "https://openrouter.ai/api/v1", Model: "openai/gpt-5-mini", APIKey: "text-key", Temperature: 0.2, MaxOutputTokens: 4096, ContextWindowChars: 100000, TimeoutSec: 600, Default: true})
+	textProfile, err := fixture.store.PutAIProfile(model.AIProfile{Name: "summary", Kind: model.AIProfileText, BaseURL: "https://openrouter.ai/api/v1", Model: "openai/gpt-5-mini", APIKey: "text-key", Temperature: 0.2, MaxOutputTokens: 4096, ContextWindowChars: 100000, TimeoutSec: 600, Enabled: true, Default: true})
 	require.NoError(t, err)
 	promptBody := map[string]any{"name": "default", "system_prompt": "system", "chunk_prompt": "chunk {{text}}", "reduce_prompt": "reduce {{summaries}}", "default": true}
 	response = fixture.request(t, http.MethodPost, "/api/v2/ai/prompts", promptBody, true)
@@ -82,7 +89,7 @@ func TestAIManagementAPI(t *testing.T) {
 	response = fixture.request(t, http.MethodGet, "/api/v2/ai/prompts", nil, false)
 	assert.Equal(t, http.StatusOK, response.Code)
 
-	spareProfile, err := fixture.store.PutAIProfile(model.AIProfile{Name: "spare", Kind: model.AIProfileTranscription, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", TimeoutSec: 60})
+	spareProfile, err := fixture.store.PutAIProfile(model.AIProfile{Name: "spare", Kind: model.AIProfileTranscription, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", TimeoutSec: 60, Enabled: true})
 	require.NoError(t, err)
 	response = fixture.request(t, http.MethodDelete, "/api/v2/ai/profiles/"+spareProfile.ID, nil, true)
 	assert.Equal(t, http.StatusNoContent, response.Code, response.Body.String())
@@ -90,6 +97,34 @@ func TestAIManagementAPI(t *testing.T) {
 	require.NoError(t, err)
 	response = fixture.request(t, http.MethodDelete, "/api/v2/ai/prompts/"+sparePrompt.ID, nil, true)
 	assert.Equal(t, http.StatusNoContent, response.Code, response.Body.String())
+}
+
+func TestAIProfileMaxOutputTokensAPI(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		value       any
+		omitEnabled bool
+		status      int
+	}{
+		{name: "null uses provider default", value: nil, status: http.StatusCreated},
+		{name: "zero uses provider default", value: 0, status: http.StatusCreated},
+		{name: "above former limit", value: int64(1 << 40), status: http.StatusCreated},
+		{name: "negative rejected", value: -1, status: http.StatusBadRequest},
+		{name: "missing enabled rejected", value: 1, omitEnabled: true, status: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newAdminAPIFixture(t, http.DefaultClient)
+			body := map[string]any{"name": tt.name, "kind": "text", "base_url": "https://provider.example/v1", "model": "model", "api_key": "secret", "temperature": 0.2, "max_output_tokens": tt.value, "context_window_chars": 10000, "timeout_sec": 60, "enabled": true, "default": false}
+			if tt.omitEnabled {
+				delete(body, "enabled")
+			}
+			response := fixture.request(t, http.MethodPost, "/api/v2/ai/profiles", body, true)
+			assert.Equal(t, tt.status, response.Code, response.Body.String())
+		})
+	}
 }
 
 func TestAIJobRequestValidation(t *testing.T) {
@@ -125,11 +160,11 @@ func TestAIProfileInputDefaults(t *testing.T) {
 	tests := []struct {
 		name                   string
 		kind                   model.AIProfileKind
-		wantMaxOutputTokens    int
+		wantMaxOutputTokens    int64
 		wantContextWindowChars int
 	}{
 		{name: "transcription", kind: model.AIProfileTranscription},
-		{name: "text", kind: model.AIProfileText, wantMaxOutputTokens: 4096, wantContextWindowChars: 100000},
+		{name: "text", kind: model.AIProfileText, wantContextWindowChars: 100000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

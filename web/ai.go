@@ -24,9 +24,10 @@ type aiProfileInput struct {
 	Language           string              `json:"language,omitempty"`
 	Prompt             string              `json:"prompt,omitempty"`
 	Temperature        float64             `json:"temperature,omitempty"`
-	MaxOutputTokens    int                 `json:"max_output_tokens,omitempty"`
+	MaxOutputTokens    int64               `json:"max_output_tokens,omitempty"`
 	ContextWindowChars int                 `json:"context_window_chars,omitempty"`
 	TimeoutSec         int                 `json:"timeout_sec"`
+	Enabled            *bool               `json:"enabled"`
 	Default            bool                `json:"default"`
 }
 
@@ -39,9 +40,10 @@ type aiProfileView struct {
 	Language           string              `json:"language,omitempty"`
 	Prompt             string              `json:"prompt,omitempty"`
 	Temperature        float64             `json:"temperature,omitempty"`
-	MaxOutputTokens    int                 `json:"max_output_tokens,omitempty"`
+	MaxOutputTokens    int64               `json:"max_output_tokens,omitempty"`
 	ContextWindowChars int                 `json:"context_window_chars,omitempty"`
 	TimeoutSec         int                 `json:"timeout_sec"`
+	Enabled            bool                `json:"enabled"`
 	Default            bool                `json:"default"`
 	ConfiguredSecrets  []string            `json:"configured_secrets"`
 	CreatedAt          time.Time           `json:"created_at"`
@@ -57,7 +59,7 @@ func aiProfileViewFor(profile model.AIProfile) aiProfileView {
 		ID: profile.ID, Name: profile.Name, Kind: profile.Kind, BaseURL: profile.BaseURL, Model: profile.Model,
 		Language: profile.Language, Prompt: profile.Prompt, Temperature: profile.Temperature,
 		MaxOutputTokens: profile.MaxOutputTokens, ContextWindowChars: profile.ContextWindowChars,
-		TimeoutSec: profile.TimeoutSec, Default: profile.Default, ConfiguredSecrets: secrets,
+		TimeoutSec: profile.TimeoutSec, Enabled: profile.Enabled, Default: profile.Default, ConfiguredSecrets: secrets,
 		CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt,
 	}
 }
@@ -67,15 +69,12 @@ func profileFromInput(input aiProfileInput) model.AIProfile {
 		Name: input.Name, Kind: input.Kind, BaseURL: input.BaseURL, Model: input.Model, APIKey: input.APIKey,
 		Language: input.Language, Prompt: input.Prompt, Temperature: input.Temperature,
 		MaxOutputTokens: input.MaxOutputTokens, ContextWindowChars: input.ContextWindowChars,
-		TimeoutSec: input.TimeoutSec, Default: input.Default,
+		TimeoutSec: input.TimeoutSec, Enabled: input.Enabled != nil && *input.Enabled, Default: input.Default,
 	}
 	if profile.TimeoutSec == 0 {
 		profile.TimeoutSec = 600
 	}
 	if profile.Kind == model.AIProfileText {
-		if profile.MaxOutputTokens == 0 {
-			profile.MaxOutputTokens = 4096
-		}
 		if profile.ContextWindowChars == 0 {
 			profile.ContextWindowChars = 100000
 		}
@@ -105,6 +104,10 @@ func (s *Server) createAIProfileAPI(w http.ResponseWriter, r *http.Request) {
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
+	if input.Enabled == nil {
+		s.writeAPIResult(w, http.StatusCreated, nil, validationFailure(errors.New("enabled is required")))
+		return
+	}
 	profile, err := s.store.WithContext(r.Context()).PutAIProfile(profileFromInput(input))
 	if err != nil {
 		err = validationFailure(err)
@@ -123,6 +126,10 @@ func (s *Server) updateAIProfileAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	var input aiProfileInput
 	if !decodeAPIRequest(w, r, &input) {
+		return
+	}
+	if input.Enabled == nil {
+		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(errors.New("enabled is required")))
 		return
 	}
 	next := profileFromInput(input)
@@ -149,16 +156,35 @@ func (s *Server) deleteAIProfileAPI(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) updateAIProfileAvailabilityAPI(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !decodeAPIRequest(w, r, &input) {
+		return
+	}
+	if input.Enabled == nil {
+		s.writeAPIResult(w, http.StatusOK, nil, validationFailure(errors.New("enabled is required")))
+		return
+	}
+	profile, err := s.store.WithContext(r.Context()).SetAIProfileEnabled(r.PathValue("id"), *input.Enabled)
+	if err == nil {
+		s.events.Publish(service.TopicAIStatus)
+	}
+	s.writeAPIResult(w, http.StatusOK, aiProfileViewFor(profile), err)
+}
+
 func (s *Server) testAIProfileAPI(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.store.WithContext(r.Context()).AIProfile(r.PathValue("id")); err != nil {
+	profile, err := s.store.WithContext(r.Context()).AIProfile(r.PathValue("id"))
+	if err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, err)
 		return
 	}
-	if s.ai == nil || !s.ai.Status().Connected {
-		writeAPIError(w, http.StatusBadGateway, "upstream_failure", "AI Worker 不可用")
-		return
+	if s.ai == nil {
+		writeJSON(w, http.StatusOK, service.AIProfileTestResult{Message: "AI Worker 不可用", ErrorCode: "worker_unavailable"})
+	} else {
+		writeJSON(w, http.StatusOK, s.ai.TestProfile(r.Context(), profile))
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "worker_reachable"})
 }
 
 func (s *Server) listAIPromptsAPI(w http.ResponseWriter, r *http.Request) {

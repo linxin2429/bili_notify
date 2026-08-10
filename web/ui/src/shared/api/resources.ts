@@ -3,7 +3,7 @@ import {
   auditLogPageSchema, biliLoginSchema, channelSchema, commentDetailSchema, commentHistoryPageSchema,
   deliveryPageSchema, dynamicHistoryPageSchema, emptyResponseSchema, microsoftLoginSchema, queuedStatusSchema,
   runtimeSchema, runtimeSettingsSchema, sentStatusSchema, upSchema,
-  aiWorkerStatusSchema, aiProfileSchema, aiPromptSchema, aiJobSchema, aiJobPageSchema, canceledStatusSchema, workerReachableSchema,
+  aiWorkerStatusSchema, aiProfileSchema, aiProfileTestResultSchema, aiPromptSchema, aiJobSchema, aiJobPageSchema, canceledStatusSchema,
 } from './contracts'
 import type { AIProfileDraft, AIPromptDraft, AuditQuery, ChannelDraft, ContentQuery, RuntimeSettings, UP } from './types'
 import { queryString, requestJSON } from './client'
@@ -47,8 +47,9 @@ export const resources = {
   updateSettings: (csrf: string, settings: RuntimeSettings) => write(`${apiRoot}/settings`, runtimeSettingsSchema, 'PUT', csrf, settings),
   createAIProfile: (csrf: string, input: AIProfileDraft) => write(`${apiRoot}/ai/profiles`, aiProfileSchema, 'POST', csrf, aiProfileBody(input)),
   updateAIProfile: (csrf: string, input: AIProfileDraft & { id: string }) => write(`${apiRoot}/ai/profiles/${encodeURIComponent(input.id)}`, aiProfileSchema, 'PUT', csrf, aiProfileBody(input)),
+  updateAIProfileAvailability: (csrf: string, id: string, enabled: boolean) => write(`${apiRoot}/ai/profiles/${encodeURIComponent(id)}/availability`, aiProfileSchema, 'PUT', csrf, { enabled }),
   deleteAIProfile: (csrf: string, id: string) => write(`${apiRoot}/ai/profiles/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
-  testAIProfile: (csrf: string, id: string) => write(`${apiRoot}/ai/profiles/${encodeURIComponent(id)}/test`, workerReachableSchema, 'POST', csrf),
+  testAIProfile: (csrf: string, id: string) => write(`${apiRoot}/ai/profiles/${encodeURIComponent(id)}/test`, aiProfileTestResultSchema, 'POST', csrf),
   createAIPrompt: (csrf: string, input: AIPromptDraft) => write(`${apiRoot}/ai/prompts`, aiPromptSchema, 'POST', csrf, input),
   updateAIPrompt: (csrf: string, input: AIPromptDraft & { id: string }) => { const { id, ...body } = input; return write(`${apiRoot}/ai/prompts/${encodeURIComponent(id)}`, aiPromptSchema, 'PUT', csrf, body) },
   deleteAIPrompt: (csrf: string, id: string) => write(`${apiRoot}/ai/prompts/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
@@ -76,6 +77,7 @@ function aiProfileBody(input: AIProfileDraft): AIProfileDraft {
     max_output_tokens: input.max_output_tokens,
     context_window_chars: input.context_window_chars,
     timeout_sec: input.timeout_sec,
+    enabled: input.enabled,
     default: input.default,
   }
 }

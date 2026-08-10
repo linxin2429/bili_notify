@@ -30,6 +30,9 @@ func (s *Store) PutAIProfile(profile model.AIProfile) (model.AIProfile, error) {
 	if err := profile.Validate(); err != nil {
 		return model.AIProfile{}, err
 	}
+	if !profile.Enabled {
+		profile.Default = false
+	}
 	now := time.Now()
 	if profile.ID == "" {
 		id, err := randomID()
@@ -60,7 +63,7 @@ func (s *Store) PutAIProfile(profile model.AIProfile) (model.AIProfile, error) {
 			}
 		}
 		return tx.Save(&aiProfileRow{
-			ID: profile.ID, Kind: string(profile.Kind), Name: profile.Name, Default: boolToInt(profile.Default), Sealed: sealed,
+			ID: profile.ID, Kind: string(profile.Kind), Name: profile.Name, Default: boolToInt(profile.Default), Enabled: boolToInt(profile.Enabled), Sealed: sealed,
 			CreatedAt: profile.CreatedAt.Unix(), UpdatedAt: profile.UpdatedAt.Unix(),
 		}).Error
 	})
@@ -101,7 +104,33 @@ func decodeAIProfile(s *Store, row aiProfileRow) (model.AIProfile, error) {
 		return model.AIProfile{}, err
 	}
 	sealed.AIProfile.APIKey = sealed.APIKey
+	sealed.AIProfile.Enabled = row.Enabled != 0
+	sealed.AIProfile.Default = row.Default != 0
+	sealed.AIProfile.CreatedAt = time.Unix(row.CreatedAt, 0)
+	sealed.AIProfile.UpdatedAt = time.Unix(row.UpdatedAt, 0)
 	return sealed.AIProfile, nil
+}
+
+func (s *Store) SetAIProfileEnabled(id string, enabled bool) (model.AIProfile, error) {
+	now := time.Now()
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		updates := map[string]any{"is_enabled": boolToInt(enabled), "updated_at": now.Unix()}
+		if !enabled {
+			updates["is_default"] = 0
+		}
+		result := tx.Model(&aiProfileRow{}).Where("id = ?", id).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		return model.AIProfile{}, err
+	}
+	return s.AIProfile(id)
 }
 
 func (s *Store) DeleteAIProfile(id string) error {

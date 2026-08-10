@@ -728,8 +728,19 @@ paths:
       operationId: testAIProfile
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
       responses:
-        '200': {description: Worker is reachable., content: {application/json: {schema: {type: object, additionalProperties: false, required: [status], properties: {status: {const: worker_reachable}}}}}}
-        '502': {$ref: '#/components/responses/InternalError'}
+        '200': {description: Completed real provider connectivity probe., content: {application/json: {schema: {$ref: '#/components/schemas/AIProfileTestResult'}}}}
+        '404': {$ref: '#/components/responses/NotFoundError'}
+  /api/v2/ai/profiles/{id}/availability:
+    parameters: [{$ref: '#/components/parameters/AIID'}]
+    put:
+      tags: [ai]
+      operationId: updateAIProfileAvailability
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AIProfileAvailabilityInput'}}}}
+      responses:
+        '200': {description: Updated model profile availability., content: {application/json: {schema: {$ref: '#/components/schemas/AIProfile'}}}}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/NotFoundError'}
   /api/v2/ai/prompts:
     get:
       tags: [ai]
@@ -1567,7 +1578,7 @@ components:
     AIProfileInput:
       type: object
       additionalProperties: false
-      required: [name, kind, base_url, model, timeout_sec, default]
+      required: [name, kind, base_url, model, timeout_sec, enabled, default]
       properties:
         name: {type: string, minLength: 1}
         kind: {type: string, enum: [transcription, text]}
@@ -1577,10 +1588,17 @@ components:
         language: {type: string}
         prompt: {type: string}
         temperature: {type: number, minimum: 0, maximum: 2}
-        max_output_tokens: {type: integer, minimum: 0}
+        max_output_tokens: {type: [integer, 'null'], minimum: 0, description: 'Omit, null, or zero to use the provider default.'}
         context_window_chars: {type: integer, minimum: 0}
         timeout_sec: {type: integer, minimum: 10, maximum: 86400}
+        enabled: {type: boolean}
         default: {type: boolean}
+    AIProfileAvailabilityInput:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled: {type: boolean}
     AIProfile:
       allOf:
         - $ref: '#/components/schemas/AIProfileInput'
@@ -1591,6 +1609,17 @@ components:
             configured_secrets: {type: array, items: {type: string, enum: [api_key]}}
             created_at: {type: string, format: date-time}
             updated_at: {type: string, format: date-time}
+    AIProfileTestResult:
+      type: object
+      additionalProperties: false
+      required: [ok, latency_ms, message]
+      properties:
+        ok: {type: boolean}
+        latency_ms: {type: integer, format: int64, minimum: 0}
+        message: {type: string}
+        error_code: {type: string}
+        provider_http_status: {type: integer}
+        provider_error: {type: string}
     AIPromptInput:
       type: object
       additionalProperties: false

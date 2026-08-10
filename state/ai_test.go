@@ -8,10 +8,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAIProfileAvailabilityMaintainsDefaultInvariant(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 115)
+	profile, err := store.PutAIProfile(model.AIProfile{Name: "text", Kind: model.AIProfileText, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", ContextWindowChars: 10000, TimeoutSec: 60, Enabled: true, Default: true})
+	require.NoError(t, err)
+
+	disabled, err := store.SetAIProfileEnabled(profile.ID, false)
+	require.NoError(t, err)
+	assert.False(t, disabled.Enabled)
+	assert.False(t, disabled.Default)
+
+	enabled, err := store.SetAIProfileEnabled(profile.ID, true)
+	require.NoError(t, err)
+	assert.True(t, enabled.Enabled)
+	assert.False(t, enabled.Default)
+
+	enabled.Enabled, enabled.Default = false, true
+	normalized, err := store.PutAIProfile(enabled)
+	require.NoError(t, err)
+	assert.False(t, normalized.Enabled)
+	assert.False(t, normalized.Default)
+
+	_, err = store.SetAIProfileEnabled("missing", true)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
 func TestAIJobLifecycleAndEncryptedDetail(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, 111)
-	profile, err := store.PutAIProfile(model.AIProfile{Name: "transcriber", Kind: model.AIProfileTranscription, BaseURL: "https://openrouter.ai/api/v1", Model: "openai/gpt-transcribe", APIKey: "secret", Language: "zh", TimeoutSec: 600, Default: true})
+	profile, err := store.PutAIProfile(model.AIProfile{Name: "transcriber", Kind: model.AIProfileTranscription, BaseURL: "https://openrouter.ai/api/v1", Model: "openai/gpt-transcribe", APIKey: "secret", Language: "zh", TimeoutSec: 600, Enabled: true, Default: true})
 	require.NoError(t, err)
 	prompt, err := store.PutAIPrompt(model.AIPromptTemplate{Name: "default", ChunkPrompt: "chunk {{text}}", ReducePrompt: "reduce {{summaries}}", Default: true})
 	require.NoError(t, err)
@@ -91,7 +117,7 @@ func TestAIJobInvalidStateTransitions(t *testing.T) {
 func TestAIJobCreationValidation(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, 114)
-	profile, err := store.PutAIProfile(model.AIProfile{Name: "text", Kind: model.AIProfileText, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", Temperature: 0.2, MaxOutputTokens: 1024, ContextWindowChars: 10000, TimeoutSec: 60})
+	profile, err := store.PutAIProfile(model.AIProfile{Name: "text", Kind: model.AIProfileText, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", Temperature: 0.2, MaxOutputTokens: 1024, ContextWindowChars: 10000, TimeoutSec: 60, Enabled: true})
 	require.NoError(t, err)
 	tests := []struct {
 		name string
@@ -116,7 +142,7 @@ func TestAIJobCreationValidation(t *testing.T) {
 func TestAIJobFailureRetryLifecycle(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, 113)
-	profile, err := store.PutAIProfile(model.AIProfile{Name: "text", Kind: model.AIProfileText, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", Temperature: 0.2, MaxOutputTokens: 1024, ContextWindowChars: 10000, TimeoutSec: 60})
+	profile, err := store.PutAIProfile(model.AIProfile{Name: "text", Kind: model.AIProfileText, BaseURL: "https://provider.example/v1", Model: "model", APIKey: "secret", Temperature: 0.2, MaxOutputTokens: 1024, ContextWindowChars: 10000, TimeoutSec: 60, Enabled: true})
 	require.NoError(t, err)
 	prompt, err := store.PutAIPrompt(model.AIPromptTemplate{Name: "prompt", ChunkPrompt: "{{text}}", ReducePrompt: "{{summaries}}"})
 	require.NoError(t, err)

@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import shutil
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ from google.protobuf.struct_pb2 import Struct
 from ai.v1 import worker_pb2, worker_pb2_grpc
 from bili_ai_worker import __version__
 from bili_ai_worker.media import DownloadError, cleanup_cache, download_pages, split_audio
-from bili_ai_worker.provider import ProviderError, complete, transcribe
+from bili_ai_worker.provider import ProviderError, complete, test_provider, transcribe
 
 
 def _struct(value: dict[str, Any]):
@@ -46,6 +47,34 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
             active_summaries=self.active_summaries,
             cache_bytes=cache_bytes,
         )
+
+    async def TestProvider(self, request, context):
+        del context
+        started = time.monotonic()
+        try:
+            provider_status = await test_provider(request.kind, request.provider)
+            return worker_pb2.TestProviderResponse(
+                ok=True,
+                latency_ms=round((time.monotonic() - started) * 1000),
+                message="模型响应正常",
+                provider_http_status=provider_status,
+            )
+        except ProviderError as exc:
+            return worker_pb2.TestProviderResponse(
+                ok=False,
+                latency_ms=round((time.monotonic() - started) * 1000),
+                message=str(exc),
+                error_code=exc.code,
+                provider_http_status=exc.status_code,
+                provider_error=exc.provider_error,
+            )
+        except Exception:  # noqa: BLE001
+            return worker_pb2.TestProviderResponse(
+                ok=False,
+                latency_ms=round((time.monotonic() - started) * 1000),
+                message="AI Worker 检测模型时发生内部错误",
+                error_code="worker_failure",
+            )
 
     async def Transcribe(self, request, context) -> AsyncIterator[worker_pb2.WorkerEvent]:
         self.active_transcriptions += 1

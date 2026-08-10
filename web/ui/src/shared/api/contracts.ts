@@ -138,8 +138,12 @@ export const aiWorkerStatusSchema = z.object({
 export const aiProfileSchema = z.object({
   id: z.string(), name: z.string(), kind: z.enum(['transcription', 'text']), base_url: z.string(), model: z.string(),
   language: z.string().optional(), prompt: z.string().optional(), temperature: z.number().optional(), max_output_tokens: z.number().int().optional(),
-  context_window_chars: z.number().int().optional(), timeout_sec: z.number().int(), default: z.boolean(), configured_secrets: z.array(z.string()),
+  context_window_chars: z.number().int().optional(), timeout_sec: z.number().int(), enabled: z.boolean(), default: z.boolean(), configured_secrets: z.array(z.string()),
   created_at: z.string(), updated_at: z.string(),
+}).strict()
+export const aiProfileTestResultSchema = z.object({
+  ok: z.boolean(), latency_ms: z.number().int(), message: z.string(), error_code: z.string().optional(),
+  provider_http_status: z.number().int().optional(), provider_error: z.string().optional(),
 }).strict()
 export const aiPromptSchema = z.object({
   id: z.string(), name: z.string(), system_prompt: z.string(), chunk_prompt: z.string(), reduce_prompt: z.string(),

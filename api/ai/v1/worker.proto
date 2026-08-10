@@ -8,6 +8,7 @@ import "google/protobuf/struct.proto";
 
 service AIWorker {
   rpc GetCapabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+  rpc TestProvider(TestProviderRequest) returns (TestProviderResponse);
   rpc Transcribe(TranscribeRequest) returns (stream WorkerEvent);
   rpc Summarize(SummaryRequest) returns (stream WorkerEvent);
 }
@@ -30,9 +31,23 @@ message ProviderConfig {
   string language = 4;
   string prompt = 5;
   double temperature = 6;
-  int32 max_output_tokens = 7;
+  int64 max_output_tokens = 7;
   int32 context_window_chars = 8;
   int32 timeout_sec = 9;
+}
+
+message TestProviderRequest {
+  string kind = 1;
+  ProviderConfig provider = 2;
+}
+
+message TestProviderResponse {
+  bool ok = 1;
+  int64 latency_ms = 2;
+  string message = 3;
+  string error_code = 4;
+  int32 provider_http_status = 5;
+  string provider_error = 6;
 }
 
 message TranscribeRequest {
