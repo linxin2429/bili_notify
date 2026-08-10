@@ -54,7 +54,7 @@ func TestRetryDeliveryAPI(t *testing.T) {
 				}
 			}
 
-			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v2/deliveries/"+id+"/retry", nil)
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v3/deliveries/"+id+"/retry", nil)
 			require.NoError(t, err)
 			if tt.authenticated {
 				token, csrf, _, sessionErr := auth.createSession()
@@ -112,7 +112,7 @@ func TestChannelAuditDoesNotPersistSecretValues(t *testing.T) {
 		"settings": map[string]string{}, "secrets": map[string]string{"webhook": "https://secret.example/hook"},
 	})
 	require.NoError(t, err)
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v2/channels", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v3/channels", bytes.NewReader(body))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-CSRF-Token", csrf)
@@ -158,7 +158,7 @@ func TestLoginAuditSessionCorrelation(t *testing.T) {
 
 			body, err := json.Marshal(map[string]string{"password": tt.password})
 			require.NoError(t, err)
-			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v2/session", bytes.NewReader(body))
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL+"/api/v3/session", bytes.NewReader(body))
 			require.NoError(t, err)
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("User-Agent", "audit-test")
@@ -207,7 +207,7 @@ func TestAuditWriteFailurePreservesBusinessResponse(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	require.NoError(t, store.Close())
 
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpServer.URL+"/api/v2/session", nil)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpServer.URL+"/api/v3/session", nil)
 	require.NoError(t, err)
 	request.Header.Set("X-CSRF-Token", csrf)
 	request.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})

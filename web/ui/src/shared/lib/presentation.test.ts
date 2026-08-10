@@ -51,7 +51,7 @@ describe('presentation helpers', () => {
     expect(composePreviewBody()).toBe(''); expect(composePreviewBody('正文')).toBe('正文'); expect(composePreviewBody('同 一段', '同   一段')).toBe('同 一段'); expect(composePreviewBody('摘要', '简介')).toBe('摘要\n\n简介')
     expect(normalizePreviewText(' a \n b ')).toBe('a b')
     expect(historyMediaURL('https://i0.hdslb.com/bfs/a.jpg@100w', 240)).toBe('https://i0.hdslb.com/bfs/a.jpg@240w')
-    expect(historyMediaURL('https://example.com/a.jpg', 240)).toBe('https://example.com/a.jpg'); expect(historyMediaURL('/api/v2/dynamics/1/media/0', 240)).toBe('/api/v2/dynamics/1/media/0'); expect(historyMediaURL(' ', 240)).toBe(''); expect(historyMediaURL('bad url', 0)).toBe('bad url')
+    expect(historyMediaURL('https://example.com/a.jpg', 240)).toBe('https://example.com/a.jpg'); expect(historyMediaURL('/api/v3/dynamics/1/media/0', 240)).toBe('/api/v3/dynamics/1/media/0'); expect(historyMediaURL(' ', 240)).toBe(''); expect(historyMediaURL('bad url', 0)).toBe('bad url')
   })
 
   it.each([
@@ -82,7 +82,7 @@ describe('presentation helpers', () => {
 
   it('formats delivery and audit variants', () => {
     expect(deliveryTitle(makeDelivery())).toBe('delivery'); expect(deliverySummary(makeDelivery())).toBe('')
-    const comment = makeDelivery({ kind: 'comment', comment: { rpid: '1', up_uid: '42', up_name: '', content_type: 'video', content_id: 'BV', content_url: 'https://example.com', published_at: '2026-08-06T00:00:00Z' } })
+    const comment = makeDelivery({ kind: 'comment_digest', comment: { rpid: '1', up_uid: '42', up_name: '', content_type: 'video', content_id: 'BV', content_url: 'https://example.com', published_at: '2026-08-06T00:00:00Z' } })
     expect(deliveryTitle(comment)).toBe('42 · 评论回复'); expect(deliverySummary(comment)).toBe('https://example.com')
     expect(auditResult(makeAudit()).label).toBe('成功'); expect(auditResult(makeAudit({ outcome: 'denied' })).label).toBe('已拒绝'); expect(auditResult(makeAudit({ outcome: 'failure' })).label).toBe('失败')
     expect(errorMessage(new Error('broken'))).toBe('broken'); expect(errorMessage('broken')).toBe('发生未知错误')

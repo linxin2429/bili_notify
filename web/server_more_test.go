@@ -24,16 +24,16 @@ func TestAuthenticationHTTPLifecycle(t *testing.T) {
 	server := &Server{auth: auth, store: store, events: service.NewEventBus(), connections: make(map[string]map[*websocket.Conn]struct{})}
 	handler := server.adminHandler()
 
-	response := authenticationRequest(t, handler, http.MethodGet, "/api/v2/session", nil, "", "")
+	response := authenticationRequest(t, handler, http.MethodGet, "/api/v3/session", nil, "", "")
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.JSONEq(t, `{"setup_required":true,"authenticated":false}`, response.Body.String())
 
-	response = authenticationRequest(t, handler, http.MethodPost, "/api/v2/setup", map[string]string{
+	response = authenticationRequest(t, handler, http.MethodPost, "/api/v3/setup", map[string]string{
 		"setup_code": "wrong", "password": "correct horse battery staple",
 	}, "", "")
 	assertAPIError(t, response, http.StatusBadRequest, "invalid_setup")
 
-	response = authenticationRequest(t, handler, http.MethodPost, "/api/v2/setup", map[string]string{
+	response = authenticationRequest(t, handler, http.MethodPost, "/api/v3/setup", map[string]string{
 		"setup_code": setupCode, "password": "correct horse battery staple",
 	}, "", "")
 	assert.Equal(t, http.StatusOK, response.Code)
@@ -49,17 +49,17 @@ func TestAuthenticationHTTPLifecycle(t *testing.T) {
 	assert.True(t, cookies[0].HttpOnly)
 	assert.Equal(t, http.SameSiteStrictMode, cookies[0].SameSite)
 
-	response = authenticationRequest(t, handler, http.MethodGet, "/api/v2/session", nil, token, "")
+	response = authenticationRequest(t, handler, http.MethodGet, "/api/v3/session", nil, token, "")
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.Contains(t, response.Body.String(), `"authenticated":true`)
 	assert.Contains(t, response.Body.String(), login.CSRF)
 
-	response = authenticationRequest(t, handler, http.MethodPut, "/api/v2/session/password", map[string]string{
+	response = authenticationRequest(t, handler, http.MethodPut, "/api/v3/session/password", map[string]string{
 		"current_password": "wrong", "new_password": "replacement horse battery staple",
 	}, token, login.CSRF)
 	assertAPIError(t, response, http.StatusBadRequest, "invalid_password")
 
-	response = authenticationRequest(t, handler, http.MethodPut, "/api/v2/session/password", map[string]string{
+	response = authenticationRequest(t, handler, http.MethodPut, "/api/v3/session/password", map[string]string{
 		"current_password": "correct horse battery staple", "new_password": "replacement horse battery staple",
 	}, token, login.CSRF)
 	assert.Equal(t, http.StatusOK, response.Code)
@@ -73,16 +73,16 @@ func TestAuthenticationHTTPLifecycle(t *testing.T) {
 	newToken := newCookies[0].Value
 	assert.NotEqual(t, token, newToken)
 
-	response = authenticationRequest(t, handler, http.MethodGet, "/api/v2/runtime", nil, token, "")
+	response = authenticationRequest(t, handler, http.MethodGet, "/api/v3/runtime", nil, token, "")
 	assertAPIError(t, response, http.StatusUnauthorized, "authentication_required")
-	response = authenticationRequest(t, handler, http.MethodDelete, "/api/v2/session", nil, newToken, replacement.CSRF)
+	response = authenticationRequest(t, handler, http.MethodDelete, "/api/v3/session", nil, newToken, replacement.CSRF)
 	assert.Equal(t, http.StatusNoContent, response.Code)
 	require.Len(t, response.Result().Cookies(), 1)
 	assert.Equal(t, -1, response.Result().Cookies()[0].MaxAge)
 
-	response = authenticationRequest(t, handler, http.MethodPost, "/api/v2/session", map[string]string{"password": "correct horse battery staple"}, "", "")
+	response = authenticationRequest(t, handler, http.MethodPost, "/api/v3/session", map[string]string{"password": "correct horse battery staple"}, "", "")
 	assertAPIError(t, response, http.StatusUnauthorized, "invalid_credentials")
-	response = authenticationRequest(t, handler, http.MethodPost, "/api/v2/session", map[string]string{"password": "replacement horse battery staple"}, "", "")
+	response = authenticationRequest(t, handler, http.MethodPost, "/api/v3/session", map[string]string{"password": "replacement horse battery staple"}, "", "")
 	assert.Equal(t, http.StatusOK, response.Code)
 }
 
@@ -95,10 +95,10 @@ func TestAuthenticationRateLimit(t *testing.T) {
 	server := &Server{auth: auth, store: store, events: service.NewEventBus(), connections: make(map[string]map[*websocket.Conn]struct{})}
 	handler := server.adminHandler()
 	for range 5 {
-		response := authenticationRequest(t, handler, http.MethodPost, "/api/v2/session", map[string]string{"password": "wrong"}, "", "")
+		response := authenticationRequest(t, handler, http.MethodPost, "/api/v3/session", map[string]string{"password": "wrong"}, "", "")
 		assert.Equal(t, http.StatusUnauthorized, response.Code)
 	}
-	response := authenticationRequest(t, handler, http.MethodPost, "/api/v2/session", map[string]string{"password": "correct horse battery staple"}, "", "")
+	response := authenticationRequest(t, handler, http.MethodPost, "/api/v3/session", map[string]string{"password": "correct horse battery staple"}, "", "")
 	assertAPIError(t, response, http.StatusTooManyRequests, "rate_limited")
 }
 
@@ -115,7 +115,7 @@ func TestAuthenticationRateLimitIsolationRecoveryAndProxyHeaders(t *testing.T) {
 
 	requestLogin := func(remote, forwardedFor, password string) *httptest.ResponseRecorder {
 		body := strings.NewReader(`{"password":"` + password + `"}`)
-		request := httptest.NewRequest(http.MethodPost, "/api/v2/session", body)
+		request := httptest.NewRequest(http.MethodPost, "/api/v3/session", body)
 		request.RemoteAddr = remote
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("X-Forwarded-For", forwardedFor)
@@ -144,8 +144,8 @@ func TestAdminSecurityHeaders(t *testing.T) {
 		path string
 	}{
 		{name: "HTML", path: "/"},
-		{name: "API", path: "/api/v2/session"},
-		{name: "missing API", path: "/api/v2/missing"},
+		{name: "API", path: "/api/v3/session"},
+		{name: "missing API", path: "/api/v3/missing"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -177,7 +177,7 @@ func TestJSONBodySizeAndEncodingBoundaries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			request := httptest.NewRequest(http.MethodPost, "/api/v2/ups", bytes.NewReader(tt.body))
+			request := httptest.NewRequest(http.MethodPost, "/api/v3/sources", bytes.NewReader(tt.body))
 			request.AddCookie(&http.Cookie{Name: sessionCookie, Value: fixture.token})
 			request.Header.Set("X-CSRF-Token", fixture.csrf)
 			response := httptest.NewRecorder()
@@ -194,8 +194,8 @@ func TestEncodedAPIPathsCannotEscapeTheirRoute(t *testing.T) {
 		name string
 		path string
 	}{
-		{name: "encoded traversal", path: "/api/v2/dynamics/%2e%2e%2fsession"},
-		{name: "encoded NUL", path: "/api/v2/dynamics/%00"},
+		{name: "encoded traversal", path: "/api/v3/contents/%2e%2e%2fsession"},
+		{name: "encoded NUL", path: "/api/v3/contents/%00"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -225,7 +225,7 @@ func TestIndexAndUnknownAPIRoutes(t *testing.T) {
 	}{
 		{name: "root serves UI", path: "/", status: http.StatusOK, contentType: "text/html; charset=utf-8", contains: `<div id="root"></div>`},
 		{name: "client route serves UI", path: "/history", status: http.StatusOK, contentType: "text/html; charset=utf-8", contains: `<div id="root"></div>`},
-		{name: "unknown API stays JSON", path: "/api/v2/missing", status: http.StatusNotFound, contentType: "application/json; charset=utf-8", contains: `"not_found"`},
+		{name: "unknown API stays JSON", path: "/api/v3/missing", status: http.StatusNotFound, contentType: "application/json; charset=utf-8", contains: `"not_found"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

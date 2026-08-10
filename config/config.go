@@ -33,9 +33,16 @@ type Config struct {
 	AdminAddr                       string        `mapstructure:"admin_addr"`
 	ObserveAddr                     string        `mapstructure:"observe_addr"`
 	AIWorkerSocket                  string        `mapstructure:"ai_worker_socket"`
-	PollInterval                    time.Duration `mapstructure:"poll_interval"`
-	RequestRate                     float64       `mapstructure:"request_rate"`
-	RequestConcurrency              int           `mapstructure:"request_concurrency"`
+	BilibiliDynamicInterval         time.Duration `mapstructure:"bilibili_dynamic_interval"`
+	BilibiliRequestRate             float64       `mapstructure:"bilibili_request_rate"`
+	BilibiliRequestConcurrency      int           `mapstructure:"bilibili_request_concurrency"`
+	ZSXQDynamicInterval             time.Duration `mapstructure:"zsxq_dynamic_interval"`
+	ZSXQCommentInterval             time.Duration `mapstructure:"zsxq_comment_interval"`
+	ZSXQRequestRate                 float64       `mapstructure:"zsxq_request_rate"`
+	ZSXQRequestConcurrency          int           `mapstructure:"zsxq_request_concurrency"`
+	ZSXQRiskPause                   time.Duration `mapstructure:"zsxq_risk_pause"`
+	ZSXQAssetMaxFileSize            int64         `mapstructure:"zsxq_asset_max_file_size"`
+	ZSXQAssetTotalBudget            int64         `mapstructure:"zsxq_asset_total_budget"`
 	LogLevel                        string        `mapstructure:"log_level"`
 	AuditLogRetention               time.Duration `mapstructure:"audit_log_retention"`
 	OTelSDKDisabled                 bool          `mapstructure:"otel_sdk_disabled"`
@@ -66,8 +73,31 @@ func (c Config) Validate() error {
 			errs = append(errs, fmt.Errorf("invalid %s address %q: %w", name, addr, err))
 		}
 	}
-	if err := model.ValidateCollectorParams(c.PollInterval, c.RequestRate, c.RequestConcurrency); err != nil {
+	biliInterval, biliRate, biliConcurrency := c.bilibiliSeed()
+	if err := model.ValidateCollectorParams(biliInterval, biliRate, biliConcurrency); err != nil {
 		errs = append(errs, err)
+	}
+	zsxqDynamic, zsxqComment, zsxqRate, zsxqConcurrency, zsxqPause, maxFile, totalBudget := c.zsxqSeed()
+	if zsxqDynamic < 30*time.Second || zsxqDynamic > 24*time.Hour {
+		errs = append(errs, errors.New("ZSXQ dynamic interval must be between 30s and 24h"))
+	}
+	if zsxqComment < 30*time.Second || zsxqComment > 24*time.Hour {
+		errs = append(errs, errors.New("ZSXQ comment interval must be between 30s and 24h"))
+	}
+	if zsxqRate <= 0 || zsxqRate > model.MaxRequestRate {
+		errs = append(errs, errors.New("ZSXQ request rate must be in (0, 10]"))
+	}
+	if zsxqConcurrency < 1 || zsxqConcurrency > 16 {
+		errs = append(errs, errors.New("ZSXQ request concurrency must be in [1, 16]"))
+	}
+	if zsxqPause < time.Minute || zsxqPause > time.Hour {
+		errs = append(errs, errors.New("ZSXQ risk pause must be between 1m and 1h"))
+	}
+	if maxFile < 1<<20 || maxFile > 2048<<20 {
+		errs = append(errs, errors.New("ZSXQ asset max file size must be between 1MiB and 2048MiB"))
+	}
+	if totalBudget < 1<<30 || totalBudget > int64(10240)<<30 {
+		errs = append(errs, errors.New("ZSXQ asset total budget must be between 1GiB and 10240GiB"))
 	}
 	switch strings.ToLower(strings.TrimSpace(c.LogLevel)) {
 	case "debug", "info", "warn", "error":
@@ -83,12 +113,52 @@ func (c Config) Validate() error {
 // SeedRuntimeSettings converts startup defaults into a complete runtime settings record.
 func (c Config) SeedRuntimeSettings() model.RuntimeSettings {
 	settings := model.DefaultRuntimeSettings()
-	settings.PollIntervalSec = int(c.PollInterval / time.Second)
-	settings.RequestRate = c.RequestRate
-	settings.RequestConcurrency = c.RequestConcurrency
+	biliInterval, biliRate, biliConcurrency := c.bilibiliSeed()
+	settings.BilibiliDynamicIntervalSec = int(biliInterval / time.Second)
+	settings.BilibiliRequestRate = biliRate
+	settings.BilibiliRequestConcurrency = biliConcurrency
+	zsxqDynamic, zsxqComment, zsxqRate, zsxqConcurrency, zsxqPause, maxFile, totalBudget := c.zsxqSeed()
+	settings.ZSXQDynamicIntervalSec = int(zsxqDynamic / time.Second)
+	settings.ZSXQCommentIntervalSec = int(zsxqComment / time.Second)
+	settings.ZSXQRequestRate = zsxqRate
+	settings.ZSXQRequestConcurrency = zsxqConcurrency
+	settings.ZSXQRiskPauseSec = int(zsxqPause / time.Second)
+	settings.ZSXQAssetMaxFileMiB = int(maxFile >> 20)
+	settings.ZSXQAssetTotalBudgetGiB = int(totalBudget >> 30)
 	settings.LogLevel = strings.ToLower(strings.TrimSpace(c.LogLevel))
 	settings.AuditLogRetentionDays = int(c.AuditLogRetention / (24 * time.Hour))
 	return settings
+}
+
+func (c Config) bilibiliSeed() (time.Duration, float64, int) {
+	return c.BilibiliDynamicInterval, c.BilibiliRequestRate, c.BilibiliRequestConcurrency
+}
+
+func (c Config) zsxqSeed() (time.Duration, time.Duration, float64, int, time.Duration, int64, int64) {
+	dynamic, comments, requestRate, concurrency := c.ZSXQDynamicInterval, c.ZSXQCommentInterval, c.ZSXQRequestRate, c.ZSXQRequestConcurrency
+	pause, maxFile, totalBudget := c.ZSXQRiskPause, c.ZSXQAssetMaxFileSize, c.ZSXQAssetTotalBudget
+	if dynamic == 0 {
+		dynamic = time.Duration(model.DefaultZSXQDynamicIntervalSec) * time.Second
+	}
+	if comments == 0 {
+		comments = time.Duration(model.DefaultZSXQCommentIntervalSec) * time.Second
+	}
+	if requestRate == 0 {
+		requestRate = model.DefaultZSXQRequestRate
+	}
+	if concurrency == 0 {
+		concurrency = model.DefaultZSXQRequestConcurrency
+	}
+	if pause == 0 {
+		pause = time.Duration(model.DefaultZSXQRiskPauseSec) * time.Second
+	}
+	if maxFile == 0 {
+		maxFile = int64(model.DefaultZSXQAssetMaxFileMiB) << 20
+	}
+	if totalBudget == 0 {
+		totalBudget = int64(model.DefaultZSXQAssetTotalBudgetGiB) << 30
+	}
+	return dynamic, comments, requestRate, concurrency, pause, maxFile, totalBudget
 }
 
 // Paths returns data.db, master.key, and tls.pem under dataDir.

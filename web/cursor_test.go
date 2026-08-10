@@ -19,31 +19,20 @@ func TestCursorPaginationUsesStableTieBreakers(t *testing.T) {
 	t.Parallel()
 	fixture := newAdminAPIFixture(t, nil)
 	published := time.Date(2026, time.August, 9, 10, 11, 12, 0, time.UTC)
-	require.NoError(t, fixture.store.PutUP(model.UP{UID: "42", Name: "UP", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}))
+	source := model.Source{ID: "bilibili:up:42", Platform: model.PlatformBilibili, Type: model.SourceBilibiliUP, ExternalID: "42", Name: "UP", Enabled: true, BaselineState: model.BaselineComplete}
+	require.NoError(t, fixture.store.PutSource(source))
 	channel, err := fixture.store.PutChannel(model.Channel{
 		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
 		Settings: map[string]string{"webhook": fixture.webhook.URL},
 	})
 	require.NoError(t, err)
-	dynamics := []model.Dynamic{
-		{ID: "dynamic-a", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_WORD", PublishedAt: published, Summary: "a", URL: "https://t.bilibili.com/a"},
-		{ID: "dynamic-b", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_WORD", PublishedAt: published, Summary: "b", URL: "https://t.bilibili.com/b"},
+	contents := []model.Content{
+		{ID: "bilibili:content:dynamic-a", Platform: model.PlatformBilibili, SourceID: source.ID, ExternalID: "dynamic-a", AuthorID: "42", AuthorName: "UP", UpstreamType: "DYNAMIC_TYPE_WORD", Type: model.ContentDynamic, PublishedAt: published, FirstSeenAt: published, LastSyncedAt: published, Text: "a", URL: "https://t.bilibili.com/a"},
+		{ID: "bilibili:content:dynamic-b", Platform: model.PlatformBilibili, SourceID: source.ID, ExternalID: "dynamic-b", AuthorID: "42", AuthorName: "UP", UpstreamType: "DYNAMIC_TYPE_WORD", Type: model.ContentDynamic, PublishedAt: published, FirstSeenAt: published, LastSyncedAt: published, Text: "b", URL: "https://t.bilibili.com/b"},
 	}
-	created, err := fixture.store.RecordDynamics("42", dynamics, []string{channel.ID}, state.DynamicBaselineNone)
-	require.NoError(t, err)
-	require.Equal(t, 2, created)
-	target := model.CommentTarget{
-		UID: "42", UPName: "UP", DynamicID: "dynamic-a", ContentType: "DYNAMIC_TYPE_WORD",
-		URL: "https://t.bilibili.com/a", CommentType: 11, CommentOID: "oid", PublishedAt: published,
+	for _, content := range contents {
+		require.NoError(t, fixture.store.ArchiveContentAndEnqueue(content, nil, []string{channel.ID}, true))
 	}
-	require.NoError(t, fixture.store.PutCommentTargets("42", []model.CommentTarget{target}))
-	comments := []model.CommentNotification{
-		{RPID: "reply-a", UPUID: "42", UPName: "UP", ContentType: "dynamic", ContentID: "dynamic-a", ContentURL: target.URL, PublishedAt: published, Thread: []model.CommentNode{}},
-		{RPID: "reply-b", UPUID: "42", UPName: "UP", ContentType: "dynamic", ContentID: "dynamic-a", ContentURL: target.URL, PublishedAt: published, Thread: []model.CommentNode{}},
-	}
-	created, err = fixture.store.RecordCommentNotifications(target, comments, nil, false)
-	require.NoError(t, err)
-	require.Equal(t, 2, created)
 	for index := range 2 {
 		_, err := fixture.store.AppendAudit(state.AuditLog{
 			OccurredAt: published, RequestID: fmt.Sprintf("request-%d", index), Action: "up.create",
@@ -59,10 +48,8 @@ func TestCursorPaginationUsesStableTieBreakers(t *testing.T) {
 		wantFirst  string
 		wantSecond string
 	}{
-		{name: "dynamics", path: "/api/v2/dynamics", key: "id", wantFirst: "dynamic-b", wantSecond: "dynamic-a"},
-		{name: "comments", path: "/api/v2/comments", key: "rpid", wantFirst: "reply-b", wantSecond: "reply-a"},
-		{name: "deliveries", path: "/api/v2/deliveries", key: "id", wantFirst: "dynamic-b:" + channel.ID, wantSecond: "dynamic-a:" + channel.ID},
-		{name: "audit logs", path: "/api/v2/audit-logs", key: "id", wantFirst: "2", wantSecond: "1"},
+		{name: "contents", path: "/api/v3/contents", key: "id", wantFirst: "bilibili:content:dynamic-b", wantSecond: "bilibili:content:dynamic-a"},
+		{name: "audit logs", path: "/api/v3/audit-logs", key: "id", wantFirst: "2", wantSecond: "1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -84,21 +71,20 @@ func TestDynamicCursorDoesNotAdmitNewerInsertions(t *testing.T) {
 	t.Parallel()
 	fixture := newAdminAPIFixture(t, nil)
 	published := time.Date(2026, time.August, 9, 10, 11, 12, 0, time.UTC)
-	require.NoError(t, fixture.store.PutUP(model.UP{UID: "42", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}))
-	_, err := fixture.store.RecordDynamics("42", []model.Dynamic{
-		{ID: "dynamic-a", UID: "42", PublishedAt: published, Summary: "a", URL: "https://t.bilibili.com/a"},
-		{ID: "dynamic-b", UID: "42", PublishedAt: published, Summary: "b", URL: "https://t.bilibili.com/b"},
-	}, nil, state.DynamicBaselineNone)
-	require.NoError(t, err)
-	first := requestCursorTestPage(t, fixture, "/api/v2/dynamics?limit=1", "id")
-	require.Equal(t, "dynamic-b", first.itemKey)
+	source := model.Source{ID: "bilibili:up:42", Platform: model.PlatformBilibili, Type: model.SourceBilibiliUP, ExternalID: "42", Enabled: true, BaselineState: model.BaselineComplete}
+	require.NoError(t, fixture.store.PutSource(source))
+	archive := func(id string, at time.Time) {
+		t.Helper()
+		require.NoError(t, fixture.store.ArchiveContent(model.Content{ID: "bilibili:content:" + id, Platform: model.PlatformBilibili, SourceID: source.ID, ExternalID: id, UpstreamType: "DYNAMIC_TYPE_WORD", Type: model.ContentDynamic, PublishedAt: at, FirstSeenAt: at, LastSyncedAt: at}, nil))
+	}
+	archive("dynamic-a", published)
+	archive("dynamic-b", published)
+	first := requestCursorTestPage(t, fixture, "/api/v3/contents?limit=1", "id")
+	require.Equal(t, "bilibili:content:dynamic-b", first.itemKey)
 
-	_, err = fixture.store.RecordDynamics("42", []model.Dynamic{{
-		ID: "dynamic-c", UID: "42", PublishedAt: published.Add(time.Minute), Summary: "c", URL: "https://t.bilibili.com/c",
-	}}, nil, state.DynamicBaselineNone)
-	require.NoError(t, err)
-	second := requestCursorTestPage(t, fixture, "/api/v2/dynamics?limit=1&after="+url.QueryEscape(first.nextCursor), "id")
-	assert.Equal(t, "dynamic-a", second.itemKey)
+	archive("dynamic-c", published.Add(time.Minute))
+	second := requestCursorTestPage(t, fixture, "/api/v3/contents?limit=1&after="+url.QueryEscape(first.nextCursor), "id")
+	assert.Equal(t, "bilibili:content:dynamic-a", second.itemKey)
 }
 
 type cursorTestPage struct {

@@ -1,28 +1,30 @@
 import { z } from 'zod'
 import {
-  auditLogPageSchema, biliLoginSchema, channelSchema, commentDetailSchema, commentHistoryPageSchema,
-  deliveryPageSchema, dynamicDetailSchema, dynamicHistoryPageSchema, emptyResponseSchema, microsoftLoginSchema, queuedStatusSchema,
-  runtimeSchema, runtimeSettingsSchema, sentStatusSchema, upSchema,
+  auditLogPageSchema, biliLoginSchema, channelSchema,
+  deliveryPageSchema, emptyResponseSchema, microsoftLoginSchema, queuedStatusSchema,
+  runtimeSchema, runtimeSettingsSchema, sentStatusSchema,
+  platformAccountSchema, sourceSchema, zsxqLoginTransactionSchema,
+  contentPageSchema, contentDetailSchema, commentTreeSchema,
   aiWorkerStatusSchema, aiProfileSchema, aiProfileTestResultSchema, aiPromptSchema, aiJobSchema, aiJobPageSchema, canceledStatusSchema,
 } from './contracts'
-import type { AIProfileDraft, AIPromptDraft, AuditQuery, ChannelDraft, ContentQuery, RuntimeSettings, UP } from './types'
+import type { AIProfileDraft, AIPromptDraft, AuditQuery, ChannelDraft, ContentQuery, RuntimeSettings, Source } from './types'
 import { queryString, requestJSON } from './client'
 
-const apiRoot = '/api/v2'
+const apiRoot = '/api/v3'
 const array = <T extends z.ZodType>(schema: T) => z.array(schema)
 
 export const resources = {
   runtime: (signal?: AbortSignal) => requestJSON(`${apiRoot}/runtime`, runtimeSchema, { signal }),
   settings: (signal?: AbortSignal) => requestJSON(`${apiRoot}/settings`, runtimeSettingsSchema, { signal }),
-  ups: (signal?: AbortSignal) => requestJSON(`${apiRoot}/ups`, array(upSchema), { signal }),
+  accounts: (signal?: AbortSignal) => requestJSON(`${apiRoot}/accounts`, array(platformAccountSchema), { signal }),
+  sources: (platform = '', signal?: AbortSignal) => requestJSON(`${apiRoot}/sources${queryString({ platform })}`, array(sourceSchema), { signal }),
+  contents: (query: ContentQuery, signal?: AbortSignal) => requestJSON(`${apiRoot}/contents${queryString(query)}`, contentPageSchema, { signal }),
+  content: (id: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/contents/${encodeURIComponent(id)}`, contentDetailSchema, { signal }),
+  contentComments: (id: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/contents/${encodeURIComponent(id)}/comments`, commentTreeSchema, { signal }),
   channels: (signal?: AbortSignal) => requestJSON(`${apiRoot}/channels`, array(channelSchema), { signal }),
   deliveries: (after = '', signal?: AbortSignal) => requestJSON(`${apiRoot}/deliveries${queryString({ limit: 20, after })}`, deliveryPageSchema, { signal }),
-  biliLogin: (signal?: AbortSignal) => requestJSON(`${apiRoot}/bilibili-login`, biliLoginSchema, { signal }),
+  biliLogin: (signal?: AbortSignal) => requestJSON(`${apiRoot}/accounts/bilibili/qr`, biliLoginSchema, { signal }),
   microsoftLogins: (signal?: AbortSignal) => requestJSON(`${apiRoot}/microsoft-logins`, array(microsoftLoginSchema), { signal }),
-  dynamics: (query: ContentQuery, signal?: AbortSignal) => requestJSON(`${apiRoot}/dynamics${queryString(query)}`, dynamicHistoryPageSchema, { signal }),
-  dynamic: (id: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/dynamics/${encodeURIComponent(id)}`, dynamicDetailSchema, { signal }),
-  comments: (query: ContentQuery, signal?: AbortSignal) => requestJSON(`${apiRoot}/comments${queryString(query)}`, commentHistoryPageSchema, { signal }),
-  comment: (rpid: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/comments/${encodeURIComponent(rpid)}`, commentDetailSchema, { signal }),
   auditLogs: (query: AuditQuery, signal?: AbortSignal) => requestJSON(`${apiRoot}/audit-logs${queryString(query)}`, auditLogPageSchema, { signal }),
   aiStatus: (signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/status`, aiWorkerStatusSchema, { signal }),
   aiProfiles: (signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/profiles`, array(aiProfileSchema), { signal }),
@@ -30,9 +32,13 @@ export const resources = {
   aiJobs: (query: { kind?: string; state?: string; limit?: number; offset?: number } = {}, signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/jobs${queryString(query)}`, aiJobPageSchema, { signal }),
   aiJob: (id: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/jobs/${encodeURIComponent(id)}`, aiJobSchema, { signal }),
 
-  createUP: (csrf: string, input: Pick<UP, 'uid' | 'name' | 'enabled'>) => write(`${apiRoot}/ups`, upSchema, 'POST', csrf, input),
-  updateUP: (csrf: string, input: Pick<UP, 'uid' | 'name' | 'enabled'>) => write(`${apiRoot}/ups/${encodeURIComponent(input.uid)}`, upSchema, 'PUT', csrf, { name: input.name, enabled: input.enabled }),
-  deleteUP: (csrf: string, uid: string) => write(`${apiRoot}/ups/${encodeURIComponent(uid)}`, emptyResponseSchema, 'DELETE', csrf),
+  createSource: (csrf: string, input: { platform: 'bilibili'; external_id: string; name: string; note: string; enabled: boolean }) => write(`${apiRoot}/sources`, sourceSchema, 'POST', csrf, input),
+  updateSource: (csrf: string, input: Pick<Source, 'id' | 'name' | 'note' | 'enabled'>) => write(`${apiRoot}/sources/${encodeURIComponent(input.id)}`, sourceSchema, 'PUT', csrf, { name: input.name, note: input.note || '', enabled: input.enabled }),
+  deleteSource: (csrf: string, id: string) => write(`${apiRoot}/sources/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
+  syncZSXQSources: (csrf: string) => write(`${apiRoot}/accounts/zsxq/sync-sources`, array(sourceSchema), 'POST', csrf),
+  sendZSXQCode: (csrf: string, input: { country_code: string; phone: string; captcha_verify_param: string; agreement_accepted: boolean }) => write(`${apiRoot}/accounts/zsxq/sms-code`, zsxqLoginTransactionSchema, 'POST', csrf, input),
+  createZSXQSession: (csrf: string, transaction_id: string, code: string) => write(`${apiRoot}/accounts/zsxq/session`, platformAccountSchema, 'POST', csrf, { transaction_id, code }),
+  deleteZSXQSession: (csrf: string) => write(`${apiRoot}/accounts/zsxq/session`, emptyResponseSchema, 'DELETE', csrf),
   createChannel: (csrf: string, input: ChannelDraft) => write(`${apiRoot}/channels`, channelSchema, 'POST', csrf, input),
   updateChannel: (csrf: string, input: ChannelDraft & { id: string }) => {
     const { id, ...body } = input
@@ -41,8 +47,8 @@ export const resources = {
   deleteChannel: (csrf: string, id: string) => write(`${apiRoot}/channels/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
   testChannel: (csrf: string, id: string) => write(`${apiRoot}/channels/${encodeURIComponent(id)}/test`, sentStatusSchema, 'POST', csrf),
   retryDelivery: (csrf: string, id: string) => write(`${apiRoot}/deliveries/${encodeURIComponent(id)}/retry`, queuedStatusSchema, 'POST', csrf),
-  startBiliLogin: (csrf: string) => write(`${apiRoot}/bilibili-login`, biliLoginSchema.unwrap(), 'POST', csrf),
-  cancelBiliLogin: (csrf: string, id: string) => write(`${apiRoot}/bilibili-login/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
+  startBiliLogin: (csrf: string) => write(`${apiRoot}/accounts/bilibili/qr`, biliLoginSchema.unwrap(), 'POST', csrf),
+  cancelBiliLogin: (csrf: string, id: string) => write(`${apiRoot}/accounts/bilibili/qr/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
   startMicrosoftLogin: (csrf: string, channelID: string) => write(`${apiRoot}/channels/${encodeURIComponent(channelID)}/microsoft-login`, microsoftLoginSchema, 'POST', csrf),
   cancelMicrosoftLogin: (csrf: string, channelID: string) => write(`${apiRoot}/channels/${encodeURIComponent(channelID)}/microsoft-login`, emptyResponseSchema, 'DELETE', csrf),
   updateSettings: (csrf: string, settings: RuntimeSettings) => write(`${apiRoot}/settings`, runtimeSettingsSchema, 'PUT', csrf, settings),

@@ -186,7 +186,7 @@ func TestAIEnginePropagatesWorkbenchTraceAcrossUnixRPC(t *testing.T) {
 	require.NoError(t, err)
 	prompt, err := store.PutAIPrompt(model.AIPromptTemplate{Name: "prompt", ChunkPrompt: "{{text}}", ReducePrompt: "{{summaries}}"})
 	require.NoError(t, err)
-	originCtx, origin := provider.Tracer("test").Start(t.Context(), "POST /api/v2/ai/summaries", trace.WithSpanKind(trace.SpanKindServer))
+	originCtx, origin := provider.Tracer("test").Start(t.Context(), "POST /api/v3/ai/summaries", trace.WithSpanKind(trace.SpanKindServer))
 	originContext := origin.SpanContext()
 	job, _, err := store.WithContext(originCtx).CreateAIJob(model.AIJob{ClientRequestID: "traced-summary", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, Input: model.AISummaryInput{Text: "source"}})
 	require.NoError(t, err)
@@ -263,7 +263,7 @@ func TestAIEngineContinuesDynamicCollectionTraceThroughAutomaticPipeline(t *test
 	require.NoError(t, err)
 	assert.Equal(t, 1, created)
 	origin.End()
-	jobs, err := store.AIJobsForDynamic("dynamic-video", false)
+	jobs, err := store.AIJobsForContent(model.ContentID(model.PlatformBilibili, "dynamic-video"), false)
 	require.NoError(t, err)
 	require.Len(t, jobs, 2)
 	assert.Equal(t, transcriptionProfile.ID, jobs[0].ProfileID)
@@ -288,7 +288,7 @@ func TestAIEngineContinuesDynamicCollectionTraceThroughAutomaticPipeline(t *test
 	runDone := make(chan error, 1)
 	go func() { runDone <- engine.Run(ctx) }()
 	require.Eventually(t, func() bool {
-		current, jobErr := store.AIJobsForDynamic("dynamic-video", false)
+		current, jobErr := store.AIJobsForContent(model.ContentID(model.PlatformBilibili, "dynamic-video"), false)
 		return jobErr == nil && len(current) == 2 && current[0].State == model.AIJobSucceeded && current[1].State == model.AIJobSucceeded
 	}, 5*time.Second, 20*time.Millisecond)
 

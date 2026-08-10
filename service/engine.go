@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -93,7 +94,7 @@ func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger,
 	engine := &Engine{
 		store: store, client: client, media: mediaDownloader, logger: logger, metrics: metrics,
 		settings: settings, settingsChanged: make(chan struct{}),
-		limiter:        rate.NewLimiter(rate.Limit(settings.RequestRate), max(1, int(settings.RequestRate))),
+		limiter:        rate.NewLimiter(rate.Limit(settings.BilibiliRequestRate), max(1, int(settings.BilibiliRequestRate))),
 		relationNotify: make(chan struct{}, 1), httpTimeout: 10 * time.Second,
 		microsoftLogins: make(map[string]*MicrosoftLoginSession), events: events,
 		tracer: tracenoop.NewTracerProvider().Tracer("github.com/linxin2429/bili_notify/service"),
@@ -107,6 +108,23 @@ func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger,
 
 // Metrics returns the engine's process metrics for HTTP boundary instrumentation.
 func (e *Engine) Metrics() *Metrics { return e.metrics }
+
+// ClearBilibiliSession disconnects only the Bilibili platform. Notification,
+// AI and Knowledge Planet workflows retain their independent state.
+func (e *Engine) ClearBilibiliSession() error {
+	e.sessionMu.Lock()
+	defer e.sessionMu.Unlock()
+	if err := e.store.ClearSession(); err != nil {
+		return err
+	}
+	e.client.ClearSession()
+	e.setAuth(false)
+	e.accountMu.Lock()
+	e.account = model.BiliAccount{}
+	e.accountMu.Unlock()
+	e.publish(TopicStatus)
+	return nil
+}
 
 func (e *Engine) Settings() model.RuntimeSettings {
 	e.settingsMu.RLock()
@@ -122,8 +140,8 @@ func (e *Engine) ApplySettings(settings model.RuntimeSettings) {
 	}
 	e.settingsMu.Lock()
 	e.settings = settings
-	e.limiter.SetLimit(rate.Limit(settings.RequestRate))
-	e.limiter.SetBurst(max(1, int(settings.RequestRate)))
+	e.limiter.SetLimit(rate.Limit(settings.BilibiliRequestRate))
+	e.limiter.SetBurst(max(1, int(settings.BilibiliRequestRate)))
 	close(e.settingsChanged)
 	e.settingsChanged = make(chan struct{})
 	e.settingsMu.Unlock()
@@ -136,9 +154,9 @@ func (e *Engine) settingsSnapshot() (model.RuntimeSettings, <-chan struct{}) {
 	return e.settings, e.settingsChanged
 }
 
-func (e *Engine) currentCommentSettings() (enabled bool, trackN, rootPages, replyPages int) {
+func (e *Engine) currentCommentSettings() (enabled bool, trackN int) {
 	settings := e.Settings()
-	return settings.CommentEnabled, settings.CommentTrackN, settings.CommentRootPages, settings.CommentReplyPages
+	return settings.BilibiliCommentsEnabled, settings.BilibiliCommentTrackN
 }
 
 type LoginSession struct {
@@ -224,6 +242,9 @@ func (e *Engine) Run(ctx context.Context) error {
 			e.logger.Info("stored Bilibili session restored", "event", "bilibili.session.restored", "result", "success")
 		} else {
 			e.authEverValid.Store(true)
+			if statusErr := store.SetPlatformAccountStatus(model.PlatformBilibili, model.AccountInvalid, "session validation failed"); statusErr != nil {
+				return fmt.Errorf("marking invalid Bilibili session: %w", statusErr)
+			}
 			e.logger.Warn("stored Bilibili session is invalid", "event", "bilibili.session.invalid", "result", "failure", "error", validateErr)
 			e.enqueueSystem("B站登录失效，请在管理控制台重新扫码登录。")
 		}
@@ -452,7 +473,7 @@ func (e *Engine) collectOnce(ctx context.Context) (err error) {
 		feedInitialized = feed.Initialized
 	}
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(settings.RequestConcurrency)
+	g.SetLimit(settings.BilibiliRequestConcurrency)
 	enabledUPs := 0
 	feedUPs := make([]model.UP, 0, len(ups))
 	now := time.Now()
@@ -538,7 +559,7 @@ func (e *Engine) pollFeed(ctx context.Context, account model.BiliAccount, ups []
 		newBaseline string
 		updateNum   = -1
 	)
-	maxPages := e.Settings().MaxDynamicPages
+	maxPages := e.Settings().BilibiliMaxDynamicPages
 	for pageNumber := range maxPages {
 		if err := e.limiter.Wait(requestCtx); err != nil {
 			return err
@@ -697,7 +718,7 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) (
 		offset string
 		name   string
 	)
-	maxPages := e.Settings().MaxDynamicPages
+	maxPages := e.Settings().BilibiliMaxDynamicPages
 	for pageNumber := range maxPages {
 		if err := e.limiter.Wait(requestCtx); err != nil {
 			return err
@@ -811,7 +832,7 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP, channelIDs []string) (
 
 func (e *Engine) refreshCommentTargets(ctx context.Context, up model.UP, name string, items []model.Dynamic) error {
 	store := e.store.WithContext(ctx)
-	enabled, trackN, _, _ := e.currentCommentSettings()
+	enabled, trackN := e.currentCommentSettings()
 	if !enabled || trackN < 1 {
 		return nil
 	}
@@ -910,7 +931,7 @@ func (e *Engine) commentOnce(ctx context.Context) (err error) {
 	}()
 	store := e.store.WithContext(ctx)
 	settings := e.Settings()
-	if !settings.CommentEnabled {
+	if !settings.BilibiliCommentsEnabled {
 		return nil
 	}
 	if !e.authValid.Load() {
@@ -944,7 +965,7 @@ func (e *Engine) commentOnce(ctx context.Context) (err error) {
 		return err
 	}
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(settings.RequestConcurrency)
+	g.SetLimit(settings.BilibiliRequestConcurrency)
 	scanned := 0
 	for _, target := range targets {
 		if _, ok := enabledUIDs[target.UID]; !ok {
@@ -958,7 +979,7 @@ func (e *Engine) commentOnce(ctx context.Context) (err error) {
 			if err := e.limiter.Wait(gctx); err != nil {
 				return err
 			}
-			return e.pollCommentTarget(gctx, target, channelIDs, settings.CommentRootPages, settings.CommentReplyPages)
+			return e.pollCommentTarget(gctx, target, channelIDs)
 		})
 	}
 	if err := g.Wait(); err != nil {
@@ -970,15 +991,13 @@ func (e *Engine) commentOnce(ctx context.Context) (err error) {
 	return nil
 }
 
-func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarget, channelIDs []string, rootPages, replyPages int) (err error) {
+func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarget, channelIDs []string) (err error) {
 	ctx, span := e.tracer.Start(ctx, "comments.poll_target", trace.WithAttributes(
 		attribute.Int("bili.comment.type", target.CommentType),
 		attribute.String("bili.comment.oid", target.CommentOID),
 	))
 	defer func() { finishSpan(span, err) }()
 	store := e.store.WithContext(ctx)
-	requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
-	defer cancel()
 
 	upReplies := make([]bilibili.Reply, 0)
 	// rootRPID -> root reply
@@ -989,16 +1008,25 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 	expandRoots := make(map[string]struct{})
 	paginationIncomplete := false
 
-	for pn := 1; pn <= rootPages; pn++ {
+	seenRootPages := make(map[string]bool)
+	for pn := 1; pn <= 10000; pn++ {
 		if pn > 1 {
 			if err := e.limiter.Wait(ctx); err != nil {
 				return err
 			}
 		}
+		requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
 		page, err := e.client.ListRootReplies(requestCtx, target.CommentType, target.CommentOID, pn, 20)
+		cancel()
 		if err != nil {
 			return e.handleCommentPollError(ctx, target, err)
 		}
+		signature := replyPageSignature(page.Replies)
+		if page.HasMore && (signature == "" || seenRootPages[signature]) {
+			paginationIncomplete = true
+			break
+		}
+		seenRootPages[signature] = true
 		for _, reply := range page.Replies {
 			roots[reply.RPID] = reply
 			if reply.Mid == target.UID {
@@ -1010,54 +1038,38 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 		if !page.HasMore {
 			break
 		}
-		if pn == rootPages {
+		if pn == 10000 {
 			paginationIncomplete = true
 		}
 	}
 
-	// Scan root previews is not enough for nested-only UP replies; for each root with
-	// rcount>0 we do not expand unless we already saw an UP reply under it. Nested-only
-	// discovery requires expanding roots that grew — we expand any root that already
-	// has an UP reply, and also roots when target is baselining (to mark all current UP replies).
-	if !target.BaselineReady {
-		for _, root := range roots {
-			if root.RCount > 0 {
-				expandRoots[root.RPID] = struct{}{}
-			}
-			if root.Mid == target.UID {
-				// root itself is enough; no expand needed solely for that
-			}
-		}
-	}
-
-	// First pass already collected root-level UP replies. Expand when we need children.
-	// For ongoing monitoring, expand roots only when we found a nested UP candidate is
-	// impossible without scanning children. Practical approach: expand roots with rcount>0
-	// only during baseline; afterwards expand roots when any root-level page shows growth
-	// via comment count change. To keep nested UP replies discoverable without huge cost,
-	// expand each root with rcount>0 up to replyPages but stop early if no UP mid found
-	// after first child page unless baselining.
+	// A complete tree requires expanding every root that reports children. This
+	// also discovers nested UP replies without relying on truncated root previews.
 	for rootID, root := range roots {
 		if root.RCount <= 0 {
 			continue
-		}
-		if target.BaselineReady {
-			// After baseline, expand only roots that may contain new activity.
-			// Without per-root rcount storage, expand every root with replies within window.
-			// Cap is replyPages; accept cost for N small.
 		}
 		expandRoots[rootID] = struct{}{}
 	}
 
 	for rootID := range expandRoots {
-		for pn := 1; pn <= replyPages; pn++ {
+		seenReplyPages := make(map[string]bool)
+		for pn := 1; pn <= 10000; pn++ {
 			if err := e.limiter.Wait(ctx); err != nil {
 				return err
 			}
+			requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
 			page, err := e.client.ListChildReplies(requestCtx, target.CommentType, target.CommentOID, rootID, pn, 20)
+			cancel()
 			if err != nil {
 				return e.handleCommentPollError(ctx, target, err)
 			}
+			signature := replyPageSignature(page.Replies)
+			if page.HasMore && (signature == "" || seenReplyPages[signature]) {
+				paginationIncomplete = true
+				break
+			}
+			seenReplyPages[signature] = true
 			for _, reply := range page.Replies {
 				if reply.Root == "" {
 					reply.Root = rootID
@@ -1070,7 +1082,7 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 			if !page.HasMore {
 				break
 			}
-			if pn == replyPages {
+			if pn == 10000 {
 				paginationIncomplete = true
 			}
 		}
@@ -1110,18 +1122,115 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 	})
 
 	target.LastError = ""
-	created, err := store.RecordCommentNotifications(target, notes, channelIDs, !target.BaselineReady)
+	content, _, contentErr := store.Content(model.ContentID(model.PlatformBilibili, target.DynamicID))
+	if errors.Is(contentErr, state.ErrNotFound) {
+		externalID := target.DynamicID
+		if externalID == "" {
+			externalID = target.CommentOID
+		}
+		source := model.Source{ID: model.SourceID(model.PlatformBilibili, target.UID), Platform: model.PlatformBilibili,
+			Type: model.SourceBilibiliUP, ExternalID: target.UID, Name: target.UPName, Enabled: true, BaselineState: model.BaselineComplete}
+		if err := store.PutSource(source); err != nil {
+			return err
+		}
+		content = model.Content{ID: model.ContentID(model.PlatformBilibili, externalID), Platform: model.PlatformBilibili,
+			SourceID: source.ID, ExternalID: externalID, AuthorID: target.UID, AuthorName: target.UPName,
+			UpstreamType: firstNonEmptyString(target.ContentType, "commentable"), Type: biliContentType(target.ContentType),
+			Title: target.Title, URL: target.URL, PublishedAt: target.PublishedAt, LastSyncedAt: time.Now()}
+		if content.PublishedAt.IsZero() {
+			content.PublishedAt = time.Now()
+		}
+	} else if contentErr != nil {
+		return contentErr
+	}
+	nodes := make([]model.CommentNode, 0, len(roots)+len(children))
+	for _, reply := range roots {
+		nodes = append(nodes, biliCommentNode(content.ID, target.UID, reply, true))
+	}
+	for _, reply := range children {
+		nodes = append(nodes, biliCommentNode(content.ID, target.UID, reply, false))
+	}
+	slices.SortFunc(nodes, func(a, b model.CommentNode) int {
+		if order := a.Time.Compare(b.Time); order != 0 {
+			return order
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	digests, err := store.SyncCommentTree(content, nodes, !paginationIncomplete, !target.BaselineReady, newBatchID("bilibili"), channelIDs)
 	if err != nil {
 		return err
+	}
+	if _, err := store.PromotePlatformOutbox(time.Now(), 50); err != nil {
+		return err
+	}
+	// Preserve the list projection while the v3 tree is the authoritative archive.
+	if _, err := store.RecordCommentNotifications(target, notes, nil, !target.BaselineReady); err != nil {
+		return err
+	}
+	created := 0
+	if len(digests) > 0 {
+		created = len(digests[0].Triggers)
 	}
 	e.metrics.RecordCommentPoll(ctx, "success", created)
 	if created > 0 {
 		e.logger.InfoContext(ctx, "new UP replies queued", "event", "comment.replies_queued", "up_uid", target.UID, "comment_oid", target.CommentOID, "reply_count", created)
-		e.publish(TopicStatus | TopicDeliveries | TopicComments)
+		e.publish(TopicStatus | TopicDeliveries | TopicComments | TopicContents)
 	} else if len(notes) > 0 {
-		e.publish(TopicComments)
+		e.publish(TopicComments | TopicContents)
 	}
 	return nil
+}
+
+func replyPageSignature(replies []bilibili.Reply) string {
+	ids := make([]string, 0, len(replies))
+	for _, reply := range replies {
+		ids = append(ids, reply.RPID)
+	}
+	slices.Sort(ids)
+	return strings.Join(ids, "\x00")
+}
+
+func biliCommentNode(contentID, upUID string, reply bilibili.Reply, root bool) model.CommentNode {
+	id := model.CommentID(model.PlatformBilibili, reply.RPID)
+	rootID := model.CommentID(model.PlatformBilibili, reply.Root)
+	parentID := model.CommentID(model.PlatformBilibili, reply.Parent)
+	if root || reply.Root == "" || reply.Root == "0" {
+		rootID, parentID = id, ""
+	} else if reply.Parent == "" || reply.Parent == "0" {
+		parentID = rootID
+	}
+	role := model.RoleMember
+	if reply.Mid == upUID {
+		role = model.RoleUP
+	}
+	return model.CommentNode{ID: id, Platform: model.PlatformBilibili, ContentID: contentID, RootID: rootID, ParentID: parentID,
+		RPID: reply.RPID, Parent: strings.TrimPrefix(parentID, "bilibili:comment:"), AuthorID: reply.Mid, Mid: reply.Mid,
+		Name: reply.Name, Role: role, Message: reply.Message, Time: reply.CTime, IsUP: role == model.RoleUP}
+}
+
+func biliContentType(upstream string) model.ContentType {
+	upper := strings.ToUpper(upstream)
+	switch {
+	case strings.Contains(upper, "AV") || strings.Contains(upper, "VIDEO"):
+		return model.ContentVideo
+	case strings.Contains(upper, "ARTICLE"):
+		return model.ContentArticle
+	default:
+		return model.ContentDynamic
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func newBatchID(platform string) string {
+	return fmt.Sprintf("%s:%d", platform, time.Now().UnixNano())
 }
 
 func buildCommentThread(target model.CommentTarget, trigger bilibili.Reply, roots, children map[string]bilibili.Reply) ([]model.CommentNode, bool) {
@@ -1268,6 +1377,10 @@ func (e *Engine) dispatchOnce(ctx context.Context) (err error) {
 	// they dominated Tempo with empty delivery.dispatch + SQLite select spans.
 	started := time.Now()
 	store := e.store.WithContext(ctx)
+	if _, err := store.PromotePlatformOutbox(time.Now(), 50); err != nil {
+		e.metrics.RecordWorkflow(ctx, "delivery", "error", time.Since(started))
+		return err
+	}
 	deliveries, err := store.DueDeliveries(time.Now(), 50)
 	if err != nil {
 		e.metrics.RecordWorkflow(ctx, "delivery", "error", time.Since(started))
@@ -1509,6 +1622,11 @@ func (e *Engine) setAuth(valid bool) {
 		}
 		if previous && e.authEverValid.Load() {
 			e.enqueueSystem("B站登录失效，请在管理控制台重新扫码登录。")
+		}
+		if previous {
+			if err := e.store.SetPlatformAccountStatus(model.PlatformBilibili, model.AccountInvalid, "session validation failed"); err != nil {
+				e.logger.Error("unable to persist Bilibili authentication state", "event", "bilibili.authentication.persist_failed", "error", err)
+			}
 		}
 	}
 	if previous != valid {
@@ -1911,6 +2029,14 @@ func (e *Engine) Status() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	sources, err := e.store.ListSources("")
+	if err != nil {
+		return Status{}, err
+	}
+	accounts, err := e.store.ListPlatformAccounts()
+	if err != nil {
+		return Status{}, err
+	}
 	status := Status{AuthValid: e.authValid.Load(), UPCount: len(ups), ChannelCount: len(channels), OutboxDepth: len(deliveries)}
 	if account := e.currentAccount(); account.UID != "" {
 		status.BiliAccount = &account
@@ -1921,14 +2047,51 @@ func (e *Engine) Status() (Status, error) {
 	if len(deliveries) > 0 {
 		status.OldestDelivery = oldestDelivery(deliveries)
 	}
-	status.Ready = status.AuthValid && enabledUPCount(ups) > 0 && len(enabledChannelIDs(channels)) > 0
-	if until := e.riskUntil.Load(); until > time.Now().Unix() {
-		status.RiskPausedUntil = time.Unix(until, 0)
-		status.Ready = false
+	enabledSources := 0
+	platformReady := map[model.Platform]bool{model.PlatformBilibili: status.AuthValid}
+	for _, account := range accounts {
+		if account.Platform == model.PlatformZSXQ {
+			platformReady[account.Platform] = account.Status == model.AccountConnected && (account.RiskPausedUntil.IsZero() || time.Now().After(account.RiskPausedUntil))
+		}
 	}
-	staleAfter := max(2*time.Minute, 2*e.Settings().PollInterval())
-	if status.Ready && (status.LastSuccessAt.IsZero() || time.Since(status.LastSuccessAt) > staleAfter) {
-		status.Ready = false
+	for _, source := range sources {
+		if !source.Enabled {
+			continue
+		}
+		enabledSources++
+		if !platformReady[source.Platform] {
+			continue
+		}
+		if source.LastSuccessAt.After(status.LastSuccessAt) {
+			status.LastSuccessAt = source.LastSuccessAt
+		}
+	}
+	status.Ready = enabledSources > 0 && len(enabledChannelIDs(channels)) > 0
+	now := time.Now()
+	settings := e.Settings()
+	for _, source := range sources {
+		if !source.Enabled {
+			continue
+		}
+		if !platformReady[source.Platform] {
+			status.Ready = false
+			continue
+		}
+		interval := settings.PollInterval()
+		if source.Platform == model.PlatformZSXQ {
+			interval = time.Duration(settings.ZSXQDynamicIntervalSec) * time.Second
+		}
+		if source.LastSuccessAt.IsZero() || now.Sub(source.LastSuccessAt) > max(2*time.Minute, 2*interval) {
+			status.Ready = false
+		}
+	}
+	if until := e.riskUntil.Load(); until > now.Unix() {
+		status.RiskPausedUntil = time.Unix(until, 0)
+		for _, source := range sources {
+			if source.Enabled && source.Platform == model.PlatformBilibili {
+				status.Ready = false
+			}
+		}
 	}
 	e.metrics.SetStatus(status.Ready, !status.RiskPausedUntil.IsZero(), len(ups), enabledUPCount(ups), len(channels), len(enabledChannelIDs(channels)), len(commentTargets))
 	return status, nil

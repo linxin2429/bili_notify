@@ -145,6 +145,13 @@ func (s *Store) SetUPResults(uids []string, at time.Time, pollErr error) error {
 			if err := tx.Save(&updated).Error; err != nil {
 				return err
 			}
+			sourceUpdates := map[string]any{"last_poll_at": at.Unix(), "last_error": up.LastError, "consecutive_fails": up.ConsecutiveFail}
+			if pollErr == nil {
+				sourceUpdates["last_success_at"] = at.Unix()
+			}
+			if err := tx.Model(&sourceRow{}).Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).Updates(sourceUpdates).Error; err != nil {
+				return err
+			}
 		}
 		return nil
 	})

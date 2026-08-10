@@ -54,7 +54,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	}
 	httpServer := httptest.NewTLSServer(server.adminHandler())
 	t.Cleanup(httpServer.Close)
-	wsURL := "wss" + strings.TrimPrefix(httpServer.URL, "https") + "/api/v2/ws"
+	wsURL := "wss" + strings.TrimPrefix(httpServer.URL, "https") + "/api/v3/ws"
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancel)
@@ -81,7 +81,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	assert.Equal(t, "sync.required", initial.Event)
 	assert.Equal(t, allResourceTopics(), initial.Topics)
 
-	badRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v2/ups", strings.NewReader(`{"uid":"42","name":"Test UP","enabled":true}`))
+	badRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v3/sources", strings.NewReader(`{"platform":"bilibili","external_id":"42","name":"Test UP","enabled":true}`))
 	require.NoError(t, err)
 	badRequest.Header.Set("Content-Type", "application/json")
 	badRequest.Header.Set("X-CSRF-Token", "invalid")
@@ -91,7 +91,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	t.Cleanup(func() { _ = badResponse.Body.Close() })
 	assert.Equal(t, http.StatusForbidden, badResponse.StatusCode)
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v2/ups", strings.NewReader(`{"uid":"42","name":"Test UP","enabled":true}`))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v3/sources", strings.NewReader(`{"platform":"bilibili","external_id":"42","name":"Test UP","enabled":true}`))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-CSRF-Token", csrf)
@@ -100,17 +100,17 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = apiResponse.Body.Close() })
 	assert.Equal(t, http.StatusCreated, apiResponse.StatusCode)
-	var up model.UP
-	require.NoError(t, json.NewDecoder(apiResponse.Body).Decode(&up))
-	assert.Equal(t, "42", up.UID)
-	assert.Equal(t, "Test UP", up.Name)
-	assert.True(t, up.Enabled)
+	var source model.Source
+	require.NoError(t, json.NewDecoder(apiResponse.Body).Decode(&source))
+	assert.Equal(t, "42", source.ExternalID)
+	assert.Equal(t, "Test UP", source.Name)
+	assert.True(t, source.Enabled)
 
 	var gotUpdate bool
 	for range 3 {
 		var envelope testWSEnvelope
 		require.NoError(t, wsjson.Read(ctx, connection, &envelope))
-		if envelope.Event == "resources.invalidated" && slices.Contains(envelope.Topics, "ups") {
+		if envelope.Event == "resources.invalidated" && slices.Contains(envelope.Topics, "sources") {
 			assert.NotZero(t, envelope.Revision)
 			gotUpdate = true
 		}
@@ -134,7 +134,8 @@ func TestWebSocketPublishesEveryTopicWithOneRevision(t *testing.T) {
 
 	allTopics := service.TopicStatus | service.TopicUPs | service.TopicChannels | service.TopicDeliveries |
 		service.TopicBiliLogin | service.TopicMicrosoftLogin | service.TopicSettings | service.TopicDynamics |
-		service.TopicComments | service.TopicAuditLogs | service.TopicAIStatus | service.TopicAIJobs
+		service.TopicComments | service.TopicAuditLogs | service.TopicAIStatus | service.TopicAIJobs |
+		service.TopicAccounts | service.TopicSources | service.TopicContents | service.TopicBackfills
 	revision := fixture.events.Publish(allTopics)
 	var envelope testWSEnvelope
 	require.NoError(t, wsjson.Read(ctx, connection, &envelope))
@@ -226,8 +227,8 @@ func TestWebSocketIsClosedByLogoutAndPasswordChange(t *testing.T) {
 		path   string
 		body   string
 	}{
-		{name: "logout", method: http.MethodDelete, path: "/api/v2/session"},
-		{name: "password change", method: http.MethodPut, path: "/api/v2/session/password", body: `{"current_password":"correct horse battery staple","new_password":"replacement horse battery staple"}`},
+		{name: "logout", method: http.MethodDelete, path: "/api/v3/session"},
+		{name: "password change", method: http.MethodPut, path: "/api/v3/session/password", body: `{"current_password":"correct horse battery staple","new_password":"replacement horse battery staple"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -279,7 +280,7 @@ func TestWebSocketReconnectSyncAndDisconnectedPeerIsolation(t *testing.T) {
 	var initial testWSEnvelope
 	require.NoError(t, wsjson.Read(ctx, connection, &initial))
 	assert.Equal(t, "sync.required", initial.Event)
-	assert.Contains(t, initial.Topics, "ups")
+	assert.Contains(t, initial.Topics, "sources")
 	assert.Equal(t, fixture.events.Revision(), initial.Revision)
 
 	revision := fixture.events.Publish(service.TopicUPs)
@@ -287,7 +288,7 @@ func TestWebSocketReconnectSyncAndDisconnectedPeerIsolation(t *testing.T) {
 	require.NoError(t, wsjson.Read(ctx, connection, &envelope))
 	assert.Equal(t, "resources.invalidated", envelope.Event)
 	assert.Equal(t, revision, envelope.Revision)
-	assert.Equal(t, []string{"ups"}, envelope.Topics)
+	assert.Equal(t, []string{"sources"}, envelope.Topics)
 }
 
 func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
@@ -404,7 +405,7 @@ func dialTestWebSocketResponse(ctx context.Context, server *httptest.Server, tok
 	headers := http.Header{}
 	headers.Set("Cookie", (&http.Cookie{Name: sessionCookie, Value: token}).String())
 	headers.Set("Origin", origin)
-	wsURL := "wss" + strings.TrimPrefix(server.URL, "https") + "/api/v2/ws"
+	wsURL := "wss" + strings.TrimPrefix(server.URL, "https") + "/api/v3/ws"
 	return websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: server.Client(), HTTPHeader: headers})
 }
 
@@ -432,19 +433,4 @@ func responseStatus(response *http.Response) any {
 		return nil
 	}
 	return response.StatusCode
-}
-
-func TestDynamicHistoryViewRewritesLocalMediaURL(t *testing.T) {
-	t.Parallel()
-	view := toDynamicHistoryView(state.DynamicRecord{
-		ID: "10", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_DRAW",
-		PublishedAt: time.Now(), DiscoveredAt: time.Now(),
-		Media: []model.DynamicMedia{{
-			Kind: model.DynamicMediaImage, URL: "https://i0.hdslb.com/bfs/album/a.jpg",
-			LocalPath: "media/42/10/0.jpg", Width: 100, Height: 80,
-		}},
-	})
-	require.Len(t, view.Media, 1)
-	assert.Equal(t, "/api/v2/dynamics/10/media/0", view.Media[0].URL)
-	assert.Empty(t, view.Media[0].LocalPath)
 }

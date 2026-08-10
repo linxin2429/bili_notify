@@ -31,7 +31,7 @@ const (
 // ErrTooLarge is returned when a remote object exceeds MaxFileSize.
 var ErrTooLarge = errors.New("media exceeds size limit")
 
-// Downloader fetches CDN media into dataDir/media/{uid}/{dynamic_id}/{index}{ext}.
+// Downloader fetches Bilibili CDN media into the platform/source/content tree.
 type Downloader struct {
 	DataDir   string
 	Client    *http.Client
@@ -285,7 +285,9 @@ func (d *Downloader) tracer() trace.Tracer {
 }
 
 func relativePath(uid, dynamicID string, index int, ext string) string {
-	return filepath.ToSlash(filepath.Join("media", uid, dynamicID, strconv.Itoa(index)+ext))
+	return filepath.ToSlash(filepath.Join("media", string(model.PlatformBilibili),
+		safePathSegment(model.SourceID(model.PlatformBilibili, uid)),
+		safePathSegment(model.ContentID(model.PlatformBilibili, dynamicID)), strconv.Itoa(index)+ext))
 }
 
 // Resolve joins dataDir with a relative media path and rejects path escape.
@@ -347,12 +349,31 @@ func RemoveUP(dataDir, uid string) error {
 	if uid == "" || strings.Contains(uid, "..") || strings.ContainsAny(uid, `/\`) {
 		return errors.New("invalid uid")
 	}
-	path := filepath.Join(dataDir, "media", uid)
+	path := filepath.Join(dataDir, "media", string(model.PlatformBilibili), safePathSegment(model.SourceID(model.PlatformBilibili, uid)))
 	if err := rejectSymlinkPath(dataDir, path, true); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(path); err != nil {
 		return fmt.Errorf("removing media for uid %s: %w", uid, err)
+	}
+	return nil
+}
+
+// RemoveSource deletes one v3 source archive without accepting path traversal.
+func RemoveSource(dataDir string, platform model.Platform, sourceID string) error {
+	if err := platform.Validate(); err != nil {
+		return err
+	}
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" || strings.Contains(sourceID, "..") || strings.ContainsAny(sourceID, `/\`) {
+		return errors.New("invalid source id")
+	}
+	path := filepath.Join(dataDir, "media", string(platform), safePathSegment(sourceID))
+	if err := rejectSymlinkPath(dataDir, path, true); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("removing media for source %s: %w", sourceID, err)
 	}
 	return nil
 }

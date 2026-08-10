@@ -56,7 +56,7 @@ func conflictFailure(err error) error {
 
 type deliveryView struct {
 	ID        string                  `json:"id"`
-	Kind      model.DeliveryKind      `json:"kind,omitempty"`
+	Kind      string                  `json:"kind"`
 	Dynamic   dynamicPreview          `json:"dynamic,omitzero"`
 	Comment   *commentDeliveryPreview `json:"comment,omitempty"`
 	AI        *aiDeliveryPreview      `json:"ai,omitempty"`
@@ -226,7 +226,7 @@ func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
 		if s.propagator != nil {
 			ctx = s.propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
 		}
-		_, span := s.tracer.Start(ctx, "GET /api/v2/ws", trace.WithSpanKind(trace.SpanKindServer))
+		_, span := s.tracer.Start(ctx, "GET /api/v3/ws", trace.WithSpanKind(trace.SpanKindServer))
 		endHandshake = func() { span.End() }
 	}
 	token, _, ok := s.auth.validate(r)
@@ -305,33 +305,38 @@ func (s *Server) writeTopicEvents(ctx context.Context, writer *wsWriter, topics 
 
 func allResourceTopics() []string {
 	return []string{
-		"runtime", "settings", "ups", "channels", "deliveries",
-		"bilibili-login", "microsoft-logins", "dynamics", "comments", "audit-logs",
-		"ai-status", "ai-jobs",
+		"runtime", "settings", "sources", "channels", "deliveries", "accounts",
+		"microsoft-logins", "contents", "audit-logs", "ai-status", "ai-jobs", "backfills",
 	}
 }
 
 func resourceTopics(topics service.Topic) []string {
 	resources := make([]string, 0, 10)
+	seen := make(map[string]bool)
 	for _, topic := range []struct {
 		mask service.Topic
 		name string
 	}{
 		{service.TopicStatus, "runtime"},
 		{service.TopicSettings, "settings"},
-		{service.TopicUPs, "ups"},
+		{service.TopicUPs, "sources"},
 		{service.TopicChannels, "channels"},
 		{service.TopicDeliveries, "deliveries"},
-		{service.TopicBiliLogin, "bilibili-login"},
+		{service.TopicBiliLogin, "accounts"},
 		{service.TopicMicrosoftLogin, "microsoft-logins"},
-		{service.TopicDynamics, "dynamics"},
-		{service.TopicComments, "comments"},
+		{service.TopicDynamics, "contents"},
+		{service.TopicComments, "contents"},
 		{service.TopicAuditLogs, "audit-logs"},
 		{service.TopicAIStatus, "ai-status"},
 		{service.TopicAIJobs, "ai-jobs"},
+		{service.TopicAccounts, "accounts"},
+		{service.TopicSources, "sources"},
+		{service.TopicContents, "contents"},
+		{service.TopicBackfills, "backfills"},
 	} {
-		if topics&topic.mask != 0 {
+		if topics&topic.mask != 0 && !seen[topic.name] {
 			resources = append(resources, topic.name)
+			seen[topic.name] = true
 		}
 	}
 	return resources
@@ -340,8 +345,14 @@ func resourceTopics(topics service.Topic) []string {
 func deliveryViews(deliveries []model.Delivery) []deliveryView {
 	views := make([]deliveryView, 0, len(deliveries))
 	for _, delivery := range deliveries {
+		kind := "content"
+		if delivery.EffectiveKind() == model.DeliveryKindComment {
+			kind = "comment_digest"
+		} else if delivery.EffectiveKind() == model.DeliveryKindAI {
+			kind = "ai"
+		}
 		view := deliveryView{
-			ID: delivery.ID, Kind: delivery.EffectiveKind(),
+			ID: delivery.ID, Kind: kind,
 			ChannelID: delivery.ChannelID, State: delivery.State, Attempts: delivery.Attempts,
 			NextAt: delivery.NextAt, LastError: delivery.LastError, CreatedAt: delivery.CreatedAt,
 		}
@@ -433,7 +444,7 @@ func boundHistoryMedia(dynamicID string, mediaItems []model.DynamicMedia, limit 
 	for index, item := range mediaItems {
 		item.URL = strings.TrimSpace(item.URL)
 		if item.LocalPath != "" && dynamicID != "" {
-			item.URL = "/api/v2/dynamics/" + url.PathEscape(dynamicID) + "/media/" + strconv.Itoa(index)
+			item.URL = "/api/v3/dynamics/" + url.PathEscape(dynamicID) + "/media/" + strconv.Itoa(index)
 			item.LocalPath = ""
 			item.ContentType = ""
 			item.Size = 0

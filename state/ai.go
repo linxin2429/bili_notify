@@ -409,9 +409,10 @@ func (s *Store) createAutomaticAIJobsTx(tx *gorm.DB, dynamic model.Dynamic, chan
 		return 0, err
 	}
 	traceparent, tracestate := originTraceparent(tx.Statement.Context), originTracestate(tx.Statement.Context)
+	contentID := model.ContentID(model.PlatformBilibili, dynamic.ID)
 	transcription, created, err := s.createAIJobTx(tx, model.AIJob{
-		ClientRequestID: "dynamic:" + dynamic.ID + ":transcription", Kind: model.AIJobTranscription,
-		ProfileID: transcriptionProfile.ID, Origin: model.AIJobOriginDynamic, SourceDynamicID: dynamic.ID,
+		ClientRequestID: "content:" + contentID + ":transcription", Kind: model.AIJobTranscription,
+		ProfileID: transcriptionProfile.ID, Origin: model.AIJobOriginDynamic, SourceDynamicID: contentID,
 		OriginTraceparent: traceparent, OriginTracestate: tracestate, TargetChannelIDs: channelIDs,
 		Input: model.AITranscriptionInput{BVID: dynamic.BVID},
 	}, &transcriptionProfile, nil)
@@ -419,9 +420,9 @@ func (s *Store) createAutomaticAIJobsTx(tx *gorm.DB, dynamic model.Dynamic, chan
 		return 0, err
 	}
 	_, summaryCreated, err := s.createAIJobTx(tx, model.AIJob{
-		ClientRequestID: "dynamic:" + dynamic.ID + ":summary", Kind: model.AIJobSummary,
+		ClientRequestID: "content:" + contentID + ":summary", Kind: model.AIJobSummary,
 		ProfileID: summaryProfile.ID, PromptID: prompt.ID, Origin: model.AIJobOriginDynamic,
-		SourceDynamicID: dynamic.ID, DependsOnJobID: transcription.ID, OriginTraceparent: traceparent,
+		SourceDynamicID: contentID, DependsOnJobID: transcription.ID, OriginTraceparent: traceparent,
 		OriginTracestate: tracestate, TargetChannelIDs: channelIDs,
 		Input: model.AISummaryInput{TranscriptionID: transcription.ID},
 	}, &summaryProfile, &prompt)
@@ -713,8 +714,13 @@ func (s *Store) enqueueAINotificationTx(tx *gorm.DB, row aiJobRow, result any, s
 	if err := json.Unmarshal([]byte(row.TargetChannelIDs), &channels); err != nil {
 		return err
 	}
+	prefix := model.ContentID(model.PlatformBilibili, "")
+	if !strings.HasPrefix(row.SourceDynamicID, prefix) {
+		return fmt.Errorf("AI source %q is not a Bilibili content ID", row.SourceDynamicID)
+	}
+	externalID := strings.TrimPrefix(row.SourceDynamicID, prefix)
 	var dynamicRow dynamicRow
-	if err := tx.Where("id = ?", row.SourceDynamicID).Take(&dynamicRow).Error; err != nil {
+	if err := tx.Where("id = ?", externalID).Take(&dynamicRow).Error; err != nil {
 		return err
 	}
 	var dynamic model.Dynamic
@@ -764,10 +770,10 @@ func transcriptionNotificationText(result model.AITranscriptionResult) string {
 	return strings.TrimSpace(body.String())
 }
 
-// AIJobsForDynamic returns the automatic pipeline in execution order.
-func (s *Store) AIJobsForDynamic(dynamicID string, detail bool) ([]model.AIJob, error) {
+// AIJobsForContent returns the Bilibili automatic pipeline in execution order.
+func (s *Store) AIJobsForContent(contentID string, detail bool) ([]model.AIJob, error) {
 	var rows []aiJobRow
-	if err := s.db.Where("source_dynamic_id = ?", dynamicID).
+	if err := s.db.Where("source_dynamic_id = ?", contentID).
 		Order("CASE kind WHEN 'transcription' THEN 0 ELSE 1 END, created_at, id").Find(&rows).Error; err != nil {
 		return nil, err
 	}

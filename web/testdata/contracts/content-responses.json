@@ -66,7 +66,7 @@
         "resource_id":"42",
         "outcome":"success",
         "http_method":"POST",
-        "route":"/api/v2/ups",
+        "route":"/api/v3/ups",
         "status_code":201,
         "duration_ms":5,
         "details":{"enabled":true}

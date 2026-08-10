@@ -174,6 +174,8 @@ func (c Channel) NameCompare(other Channel) int { return cmp.Compare(c.Name, oth
 
 type Dynamic struct {
 	ID          string         `json:"id"`
+	Platform    Platform       `json:"platform,omitempty"`
+	SourceName  string         `json:"source_name,omitempty"`
 	BVID        string         `json:"bvid,omitempty"`
 	UID         string         `json:"uid"`
 	UPName      string         `json:"up_name"`
@@ -325,6 +327,8 @@ func (t CommentTarget) Key() string {
 // CommentNotification is the outbox payload for one UP reply under own content.
 type CommentNotification struct {
 	RPID         string        `json:"rpid"`
+	Platform     Platform      `json:"platform,omitempty"`
+	SourceName   string        `json:"source_name,omitempty"`
 	UPUID        string        `json:"up_uid"`
 	UPName       string        `json:"up_name"`
 	ContentType  string        `json:"content_type"`
@@ -337,14 +341,26 @@ type CommentNotification struct {
 }
 
 type CommentNode struct {
-	RPID      string    `json:"rpid"`
-	Parent    string    `json:"parent,omitempty"`
-	Mid       string    `json:"mid"`
-	Name      string    `json:"name"`
-	Message   string    `json:"message"`
-	Time      time.Time `json:"time"`
-	IsUP      bool      `json:"is_up,omitempty"`
-	IsTrigger bool      `json:"is_trigger,omitempty"`
+	ID          string        `json:"id,omitempty"`
+	Platform    Platform      `json:"platform,omitempty"`
+	ContentID   string        `json:"content_id,omitempty"`
+	RootID      string        `json:"root_id,omitempty"`
+	ParentID    string        `json:"parent_id,omitempty"`
+	AuthorID    string        `json:"author_id,omitempty"`
+	Role        AuthorRole    `json:"author_role,omitempty"`
+	UpdatedAt   time.Time     `json:"updated_at,omitzero"`
+	FirstSeenAt time.Time     `json:"first_seen_at,omitzero"`
+	DeletedAt   time.Time     `json:"deleted_at,omitzero"`
+	Media       []Attachment  `json:"media,omitempty"`
+	Children    []CommentNode `json:"children,omitempty"`
+	RPID        string        `json:"rpid"`
+	Parent      string        `json:"parent,omitempty"`
+	Mid         string        `json:"mid"`
+	Name        string        `json:"name"`
+	Message     string        `json:"message"`
+	Time        time.Time     `json:"time"`
+	IsUP        bool          `json:"is_up,omitempty"`
+	IsTrigger   bool          `json:"is_trigger,omitempty"`
 }
 
 type BiliSession struct {
@@ -392,22 +408,31 @@ const (
 	MaxDeliveryRetryDelaySec   = 24 * 60 * 60
 	DeliveryRetryStages        = 5
 
-	DefaultPollIntervalSec     = 30
-	DefaultRequestRate         = 2.0
-	DefaultRequestConcurrency  = 4
-	DefaultCommentTrackN       = 10
-	DefaultCommentRootPages    = 2
-	DefaultCommentReplyPages   = 5
-	DefaultCommentBatchSec     = 120
-	DefaultLogLevel            = "info"
-	DefaultAuditRetentionDays  = 180
-	DefaultRelationRefreshSec  = 10 * 60
-	DefaultSpaceReconcileSec   = 30 * 60
-	DefaultMaxDynamicPages     = 10
-	DefaultRiskPauseSec        = 5 * 60
-	DefaultDeliveryConcurrency = 8
-	DefaultBacklogAlertCount   = 100
-	DefaultBacklogAlertAgeSec  = 5 * 60
+	DefaultPollIntervalSec         = 30
+	DefaultRequestRate             = 2.0
+	DefaultRequestConcurrency      = 4
+	DefaultCommentTrackN           = 10
+	DefaultCommentBatchSec         = 120
+	DefaultLogLevel                = "info"
+	DefaultAuditRetentionDays      = 180
+	DefaultRelationRefreshSec      = 10 * 60
+	DefaultSpaceReconcileSec       = 30 * 60
+	DefaultMaxDynamicPages         = 10
+	DefaultRiskPauseSec            = 5 * 60
+	DefaultDeliveryConcurrency     = 8
+	DefaultBacklogAlertCount       = 100
+	DefaultBacklogAlertAgeSec      = 5 * 60
+	DefaultZSXQDynamicIntervalSec  = 60
+	DefaultZSXQCommentIntervalSec  = 600
+	DefaultZSXQRequestRate         = 1.0
+	DefaultZSXQRequestConcurrency  = 2
+	DefaultZSXQRiskPauseSec        = 600
+	DefaultZSXQAssetMaxFileMiB     = 500
+	DefaultZSXQAssetTotalBudgetGiB = 50
+	MinZSXQAssetMaxFileMiB         = 1
+	MaxZSXQAssetMaxFileMiB         = 2048
+	MinZSXQAssetTotalBudgetGiB     = 1
+	MaxZSXQAssetTotalBudgetGiB     = 10240
 )
 
 // DeliveryRetryDelays stores the five retry-stage upper bounds in seconds.
@@ -415,20 +440,27 @@ type DeliveryRetryDelays [DeliveryRetryStages]int
 
 // RuntimeSettings is the complete hot-reloadable configuration persisted in the store.
 type RuntimeSettings struct {
-	PollIntervalSec         int                 `json:"poll_interval_sec"`
-	RequestRate             float64             `json:"request_rate"`
-	RequestConcurrency      int                 `json:"request_concurrency"`
-	CommentEnabled          bool                `json:"comment_enabled"`
-	CommentTrackN           int                 `json:"comment_track_n"`
-	CommentRootPages        int                 `json:"comment_root_pages"`
-	CommentReplyPages       int                 `json:"comment_reply_pages"`
-	CommentBatchIntervalSec int                 `json:"comment_batch_interval_sec"`
+	BilibiliDynamicIntervalSec int     `json:"bilibili_dynamic_interval_sec"`
+	BilibiliRequestRate        float64 `json:"bilibili_request_rate"`
+	BilibiliRequestConcurrency int     `json:"bilibili_request_concurrency"`
+	BilibiliCommentsEnabled    bool    `json:"bilibili_comments_enabled"`
+	BilibiliCommentTrackN      int     `json:"bilibili_comment_track_n"`
+	BilibiliCommentIntervalSec int     `json:"bilibili_comment_interval_sec"`
+	BilibiliRelationRefreshSec int     `json:"bilibili_relation_refresh_interval_sec"`
+	BilibiliSpaceReconcileSec  int     `json:"bilibili_space_reconcile_interval_sec"`
+	BilibiliMaxDynamicPages    int     `json:"bilibili_max_dynamic_pages"`
+	BilibiliRiskPauseSec       int     `json:"bilibili_risk_pause_sec"`
+	ZSXQDynamicIntervalSec     int     `json:"zsxq_dynamic_interval_sec"`
+	ZSXQCommentIntervalSec     int     `json:"zsxq_comment_interval_sec"`
+	ZSXQCommentsEnabled        bool    `json:"zsxq_comments_enabled"`
+	ZSXQRequestRate            float64 `json:"zsxq_request_rate"`
+	ZSXQRequestConcurrency     int     `json:"zsxq_request_concurrency"`
+	ZSXQRiskPauseSec           int     `json:"zsxq_risk_pause_sec"`
+	ZSXQAssetMaxFileMiB        int     `json:"zsxq_asset_max_file_mib"`
+	ZSXQAssetTotalBudgetGiB    int     `json:"zsxq_asset_total_budget_gib"`
+
 	LogLevel                string              `json:"log_level"`
 	AuditLogRetentionDays   int                 `json:"audit_log_retention_days"`
-	RelationRefreshSec      int                 `json:"relation_refresh_interval_sec"`
-	SpaceReconcileSec       int                 `json:"space_reconcile_interval_sec"`
-	MaxDynamicPages         int                 `json:"max_dynamic_pages"`
-	RiskPauseSec            int                 `json:"risk_pause_sec"`
 	DeliveryConcurrency     int                 `json:"delivery_concurrency"`
 	BacklogAlertCount       int                 `json:"backlog_alert_count"`
 	BacklogAlertAgeSec      int                 `json:"backlog_alert_age_sec"`
@@ -437,23 +469,23 @@ type RuntimeSettings struct {
 }
 
 func (s RuntimeSettings) PollInterval() time.Duration {
-	return time.Duration(s.PollIntervalSec) * time.Second
+	return time.Duration(s.BilibiliDynamicIntervalSec) * time.Second
 }
 
 func (s RuntimeSettings) CommentBatchInterval() time.Duration {
-	return time.Duration(s.CommentBatchIntervalSec) * time.Second
+	return time.Duration(s.BilibiliCommentIntervalSec) * time.Second
 }
 
 func (s RuntimeSettings) RelationRefreshInterval() time.Duration {
-	return time.Duration(s.RelationRefreshSec) * time.Second
+	return time.Duration(s.BilibiliRelationRefreshSec) * time.Second
 }
 
 func (s RuntimeSettings) SpaceReconcileInterval() time.Duration {
-	return time.Duration(s.SpaceReconcileSec) * time.Second
+	return time.Duration(s.BilibiliSpaceReconcileSec) * time.Second
 }
 
 func (s RuntimeSettings) RiskPause() time.Duration {
-	return time.Duration(s.RiskPauseSec) * time.Second
+	return time.Duration(s.BilibiliRiskPauseSec) * time.Second
 }
 
 func (s RuntimeSettings) BacklogAlertAge() time.Duration {
@@ -466,35 +498,66 @@ func (s RuntimeSettings) AuditLogRetention() time.Duration {
 
 func DefaultRuntimeSettings() RuntimeSettings {
 	return RuntimeSettings{
-		PollIntervalSec: DefaultPollIntervalSec, RequestRate: DefaultRequestRate, RequestConcurrency: DefaultRequestConcurrency,
-		CommentEnabled: true, CommentTrackN: DefaultCommentTrackN, CommentRootPages: DefaultCommentRootPages,
-		CommentReplyPages: DefaultCommentReplyPages, CommentBatchIntervalSec: DefaultCommentBatchSec,
-		LogLevel: DefaultLogLevel, AuditLogRetentionDays: DefaultAuditRetentionDays,
-		RelationRefreshSec: DefaultRelationRefreshSec, SpaceReconcileSec: DefaultSpaceReconcileSec, MaxDynamicPages: DefaultMaxDynamicPages,
-		RiskPauseSec: DefaultRiskPauseSec, DeliveryConcurrency: DefaultDeliveryConcurrency,
-		BacklogAlertCount: DefaultBacklogAlertCount, BacklogAlertAgeSec: DefaultBacklogAlertAgeSec,
+		BilibiliDynamicIntervalSec: DefaultPollIntervalSec,
+		BilibiliRequestRate:        DefaultRequestRate,
+		BilibiliRequestConcurrency: DefaultRequestConcurrency,
+		BilibiliCommentsEnabled:    true,
+		BilibiliCommentTrackN:      DefaultCommentTrackN,
+		BilibiliCommentIntervalSec: DefaultCommentBatchSec,
+		BilibiliRelationRefreshSec: DefaultRelationRefreshSec,
+		BilibiliSpaceReconcileSec:  DefaultSpaceReconcileSec,
+		BilibiliMaxDynamicPages:    DefaultMaxDynamicPages,
+		BilibiliRiskPauseSec:       DefaultRiskPauseSec,
+		ZSXQDynamicIntervalSec:     DefaultZSXQDynamicIntervalSec,
+		ZSXQCommentIntervalSec:     DefaultZSXQCommentIntervalSec,
+		ZSXQCommentsEnabled:        true,
+		ZSXQRequestRate:            DefaultZSXQRequestRate,
+		ZSXQRequestConcurrency:     DefaultZSXQRequestConcurrency,
+		ZSXQRiskPauseSec:           DefaultZSXQRiskPauseSec,
+		ZSXQAssetMaxFileMiB:        DefaultZSXQAssetMaxFileMiB,
+		ZSXQAssetTotalBudgetGiB:    DefaultZSXQAssetTotalBudgetGiB,
+		LogLevel:                   DefaultLogLevel, AuditLogRetentionDays: DefaultAuditRetentionDays,
+		DeliveryConcurrency: DefaultDeliveryConcurrency,
+		BacklogAlertCount:   DefaultBacklogAlertCount, BacklogAlertAgeSec: DefaultBacklogAlertAgeSec,
 		DeliveryRetryDelaysSec: DeliveryRetryDelays{5, 30, 120, 600, 3600},
 	}
 }
 
 func (s RuntimeSettings) Validate() error {
 	var errs []error
-	if err := ValidateCollectorParams(s.PollInterval(), s.RequestRate, s.RequestConcurrency); err != nil {
-		errs = append(errs, err)
+	if s.BilibiliDynamicIntervalSec != 0 {
+		if err := ValidateCollectorParams(time.Duration(s.BilibiliDynamicIntervalSec)*time.Second, s.BilibiliRequestRate, s.BilibiliRequestConcurrency); err != nil {
+			errs = append(errs, fmt.Errorf("bilibili collector: %w", err))
+		}
+		if s.BilibiliCommentTrackN < 1 || s.BilibiliCommentTrackN > MaxCommentTrackN {
+			errs = append(errs, fmt.Errorf("bilibili_comment_track_n must be in [1, %d]", MaxCommentTrackN))
+		}
+		if s.BilibiliCommentIntervalSec < MinCommentBatchIntervalSec || s.BilibiliCommentIntervalSec > MaxCommentBatchIntervalSec {
+			errs = append(errs, fmt.Errorf("bilibili_comment_interval_sec must be in [%d, %d]", MinCommentBatchIntervalSec, MaxCommentBatchIntervalSec))
+		}
 	}
-	if s.CommentTrackN < 1 || s.CommentTrackN > MaxCommentTrackN {
-		errs = append(errs, fmt.Errorf("comment_track_n must be in [1, %d]", MaxCommentTrackN))
-	}
-	if s.CommentRootPages < 1 || s.CommentRootPages > MaxCommentRootPages {
-		errs = append(errs, fmt.Errorf("comment_root_pages must be in [1, %d]", MaxCommentRootPages))
-	}
-	if s.CommentReplyPages < 1 || s.CommentReplyPages > MaxCommentReplyPages {
-		errs = append(errs, fmt.Errorf("comment_reply_pages must be in [1, %d]", MaxCommentReplyPages))
-	}
-	if s.CommentBatchIntervalSec < MinCommentBatchIntervalSec {
-		errs = append(errs, fmt.Errorf("comment_batch_interval_sec must be in [%d, %d]", MinCommentBatchIntervalSec, MaxCommentBatchIntervalSec))
-	} else if s.CommentBatchIntervalSec > MaxCommentBatchIntervalSec {
-		errs = append(errs, fmt.Errorf("comment_batch_interval_sec must be in [%d, %d]", MinCommentBatchIntervalSec, MaxCommentBatchIntervalSec))
+	if s.ZSXQDynamicIntervalSec != 0 {
+		if s.ZSXQDynamicIntervalSec < 30 || s.ZSXQDynamicIntervalSec > MaxPollIntervalSec {
+			errs = append(errs, errors.New("zsxq_dynamic_interval_sec must be in [30, 86400]"))
+		}
+		if s.ZSXQCommentIntervalSec < 30 || s.ZSXQCommentIntervalSec > MaxCommentBatchIntervalSec {
+			errs = append(errs, errors.New("zsxq_comment_interval_sec must be in [30, 86400]"))
+		}
+		if math.IsNaN(s.ZSXQRequestRate) || math.IsInf(s.ZSXQRequestRate, 0) || s.ZSXQRequestRate <= 0 || s.ZSXQRequestRate > MaxRequestRate {
+			errs = append(errs, errors.New("zsxq_request_rate must be in (0, 10]"))
+		}
+		if s.ZSXQRequestConcurrency < MinRequestConcurrency || s.ZSXQRequestConcurrency > MaxRequestConcurrency {
+			errs = append(errs, errors.New("zsxq_request_concurrency must be in [1, 16]"))
+		}
+		if s.ZSXQRiskPauseSec < MinRiskPauseSec || s.ZSXQRiskPauseSec > MaxRiskPauseSec {
+			errs = append(errs, errors.New("zsxq_risk_pause_sec must be in [60, 3600]"))
+		}
+		if s.ZSXQAssetMaxFileMiB < MinZSXQAssetMaxFileMiB || s.ZSXQAssetMaxFileMiB > MaxZSXQAssetMaxFileMiB {
+			errs = append(errs, errors.New("zsxq_asset_max_file_mib must be in [1, 2048]"))
+		}
+		if s.ZSXQAssetTotalBudgetGiB < MinZSXQAssetTotalBudgetGiB || s.ZSXQAssetTotalBudgetGiB > MaxZSXQAssetTotalBudgetGiB {
+			errs = append(errs, errors.New("zsxq_asset_total_budget_gib must be in [1, 10240]"))
+		}
 	}
 	if s.LogLevel != "debug" && s.LogLevel != "info" && s.LogLevel != "warn" && s.LogLevel != "error" {
 		errs = append(errs, errors.New("log_level must be debug, info, warn, or error"))
@@ -502,17 +565,17 @@ func (s RuntimeSettings) Validate() error {
 	if s.AuditLogRetentionDays < MinLogRetentionDays || s.AuditLogRetentionDays > MaxLogRetentionDays {
 		errs = append(errs, fmt.Errorf("audit_log_retention_days must be in [%d, %d]", MinLogRetentionDays, MaxLogRetentionDays))
 	}
-	if s.RelationRefreshSec < MinRelationRefreshSec || s.RelationRefreshSec > MaxRelationRefreshSec {
-		errs = append(errs, fmt.Errorf("relation_refresh_interval_sec must be in [%d, %d]", MinRelationRefreshSec, MaxRelationRefreshSec))
+	if s.BilibiliRelationRefreshSec < MinRelationRefreshSec || s.BilibiliRelationRefreshSec > MaxRelationRefreshSec {
+		errs = append(errs, fmt.Errorf("bilibili_relation_refresh_interval_sec must be in [%d, %d]", MinRelationRefreshSec, MaxRelationRefreshSec))
 	}
-	if s.SpaceReconcileSec < MinSpaceReconcileSec || s.SpaceReconcileSec > MaxSpaceReconcileSec {
-		errs = append(errs, fmt.Errorf("space_reconcile_interval_sec must be in [%d, %d]", MinSpaceReconcileSec, MaxSpaceReconcileSec))
+	if s.BilibiliSpaceReconcileSec < MinSpaceReconcileSec || s.BilibiliSpaceReconcileSec > MaxSpaceReconcileSec {
+		errs = append(errs, fmt.Errorf("bilibili_space_reconcile_interval_sec must be in [%d, %d]", MinSpaceReconcileSec, MaxSpaceReconcileSec))
 	}
-	if s.MaxDynamicPages < MinDynamicPages || s.MaxDynamicPages > MaxDynamicPages {
-		errs = append(errs, fmt.Errorf("max_dynamic_pages must be in [%d, %d]", MinDynamicPages, MaxDynamicPages))
+	if s.BilibiliMaxDynamicPages < MinDynamicPages || s.BilibiliMaxDynamicPages > MaxDynamicPages {
+		errs = append(errs, fmt.Errorf("bilibili_max_dynamic_pages must be in [%d, %d]", MinDynamicPages, MaxDynamicPages))
 	}
-	if s.RiskPauseSec < MinRiskPauseSec || s.RiskPauseSec > MaxRiskPauseSec {
-		errs = append(errs, fmt.Errorf("risk_pause_sec must be in [%d, %d]", MinRiskPauseSec, MaxRiskPauseSec))
+	if s.BilibiliRiskPauseSec < MinRiskPauseSec || s.BilibiliRiskPauseSec > MaxRiskPauseSec {
+		errs = append(errs, fmt.Errorf("bilibili_risk_pause_sec must be in [%d, %d]", MinRiskPauseSec, MaxRiskPauseSec))
 	}
 	if s.DeliveryConcurrency < MinDeliveryConcurrency || s.DeliveryConcurrency > MaxDeliveryConcurrency {
 		errs = append(errs, fmt.Errorf("delivery_concurrency must be in [%d, %d]", MinDeliveryConcurrency, MaxDeliveryConcurrency))
@@ -535,12 +598,6 @@ func (s RuntimeSettings) Validate() error {
 		previous = delay
 	}
 	return errors.Join(errs...)
-}
-
-// DefaultCommentSettings returns the comment-monitoring defaults used when seeding
-// an empty store or filling missing fields on older settings records.
-func DefaultCommentSettings() (trackN, rootPages, replyPages, batchSec int, enabled bool) {
-	return DefaultCommentTrackN, DefaultCommentRootPages, DefaultCommentReplyPages, DefaultCommentBatchSec, true
 }
 
 // ValidateCollectorParams checks poll interval, request rate, and concurrency bounds.

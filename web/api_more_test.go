@@ -33,30 +33,30 @@ func TestAdminAPILifecycle(t *testing.T) {
 	t.Parallel()
 	fixture := newAdminAPIFixture(t, nil)
 
-	response := fixture.request(t, http.MethodPost, "/api/v2/ups", map[string]any{
-		"uid": "42", "name": "first name", "enabled": true,
+	response := fixture.request(t, http.MethodPost, "/api/v3/sources", map[string]any{
+		"platform": "bilibili", "external_id": "42", "name": "first name", "enabled": true,
 	}, true)
 	assert.Equal(t, http.StatusCreated, response.Code)
-	var createdUP model.UP
-	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &createdUP))
-	assert.Equal(t, "42", createdUP.UID)
-	assert.Equal(t, model.CollectionRouteSpace, createdUP.CollectionRoute)
+	var createdSource model.Source
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &createdSource))
+	assert.Equal(t, "42", createdSource.ExternalID)
+	assert.Equal(t, model.SourceBilibiliUP, createdSource.Type)
 
-	response = fixture.request(t, http.MethodPost, "/api/v2/ups", map[string]any{
-		"uid": "42", "name": "duplicate", "enabled": true,
+	response = fixture.request(t, http.MethodPost, "/api/v3/sources", map[string]any{
+		"platform": "bilibili", "external_id": "42", "name": "duplicate", "enabled": true,
 	}, true)
 	assertAPIError(t, response, http.StatusConflict, "conflict")
 
-	response = fixture.request(t, http.MethodPut, "/api/v2/ups/42", map[string]any{
-		"name": "updated name", "enabled": false,
+	response = fixture.request(t, http.MethodPut, "/api/v3/sources/bilibili:up:42", map[string]any{
+		"name": "updated name", "note": "note", "enabled": false,
 	}, true)
 	assert.Equal(t, http.StatusOK, response.Code)
-	var updatedUP model.UP
-	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &updatedUP))
-	assert.Equal(t, "updated name", updatedUP.Name)
-	assert.False(t, updatedUP.Enabled)
+	var updatedSource model.Source
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &updatedSource))
+	assert.Equal(t, "updated name", updatedSource.Name)
+	assert.False(t, updatedSource.Enabled)
 
-	response = fixture.request(t, http.MethodPost, "/api/v2/channels", map[string]any{
+	response = fixture.request(t, http.MethodPost, "/api/v3/channels", map[string]any{
 		"name": "robot", "type": "wecom", "enabled": true,
 		"settings": map[string]string{}, "secrets": map[string]string{"webhook": fixture.webhook.URL},
 	}, true)
@@ -67,11 +67,11 @@ func TestAdminAPILifecycle(t *testing.T) {
 	assert.Equal(t, []string{"webhook"}, createdChannel.ConfiguredSecrets)
 	assert.NotContains(t, response.Body.String(), fixture.webhook.URL)
 
-	response = fixture.request(t, http.MethodPost, "/api/v2/channels/"+createdChannel.ID+"/test", nil, true)
+	response = fixture.request(t, http.MethodPost, "/api/v3/channels/"+createdChannel.ID+"/test", nil, true)
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.JSONEq(t, `{"status":"sent"}`, response.Body.String())
 
-	response = fixture.request(t, http.MethodPut, "/api/v2/channels/"+createdChannel.ID, map[string]any{
+	response = fixture.request(t, http.MethodPut, "/api/v3/channels/"+createdChannel.ID, map[string]any{
 		"name": "renamed robot", "type": "wecom", "enabled": false,
 		"settings": map[string]string{},
 	}, true)
@@ -83,31 +83,31 @@ func TestAdminAPILifecycle(t *testing.T) {
 	assert.Equal(t, []string{"webhook"}, updatedChannel.ConfiguredSecrets)
 
 	settings := webTestSettings()
-	settings.PollIntervalSec = 60
-	settings.RequestRate = 3
-	settings.RequestConcurrency = 6
-	response = fixture.request(t, http.MethodPut, "/api/v2/settings", settings, true)
+	settings.BilibiliDynamicIntervalSec = 60
+	settings.BilibiliRequestRate = 3
+	settings.BilibiliRequestConcurrency = 6
+	response = fixture.request(t, http.MethodPut, "/api/v3/settings", settings, true)
 	assert.Equal(t, http.StatusOK, response.Code)
 	var gotSettings model.RuntimeSettings
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &gotSettings))
 	assert.Equal(t, settings, gotSettings)
 
-	response = fixture.request(t, http.MethodGet, "/api/v2/ups", nil, false)
+	response = fixture.request(t, http.MethodGet, "/api/v3/sources?platform=bilibili", nil, false)
 	assert.Equal(t, http.StatusOK, response.Code)
-	var ups []model.UP
-	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &ups))
-	assert.Len(t, ups, 1)
-	response = fixture.request(t, http.MethodGet, "/api/v2/channels", nil, false)
+	var sources []model.Source
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &sources))
+	assert.Len(t, sources, 1)
+	response = fixture.request(t, http.MethodGet, "/api/v3/channels", nil, false)
 	assert.Equal(t, http.StatusOK, response.Code)
 	var channels []channelView
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &channels))
 	assert.Len(t, channels, 1)
-	response = fixture.request(t, http.MethodGet, "/api/v2/settings", nil, false)
+	response = fixture.request(t, http.MethodGet, "/api/v3/settings", nil, false)
 	assert.Equal(t, http.StatusOK, response.Code)
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &gotSettings))
 	assert.Equal(t, settings, gotSettings)
 
-	response = fixture.request(t, http.MethodGet, "/api/v2/audit-logs?action=channel.update&outcome=success&limit=100", nil, false)
+	response = fixture.request(t, http.MethodGet, "/api/v3/audit-logs?action=channel.update&outcome=success&limit=100", nil, false)
 	assert.Equal(t, http.StatusOK, response.Code)
 	var auditPage struct {
 		Items []state.AuditLog `json:"items"`
@@ -116,9 +116,9 @@ func TestAdminAPILifecycle(t *testing.T) {
 	require.Len(t, auditPage.Items, 1)
 	assert.Equal(t, "channel.update", auditPage.Items[0].Action)
 
-	response = fixture.request(t, http.MethodDelete, "/api/v2/channels/"+createdChannel.ID, nil, true)
+	response = fixture.request(t, http.MethodDelete, "/api/v3/channels/"+createdChannel.ID, nil, true)
 	assert.Equal(t, http.StatusNoContent, response.Code)
-	response = fixture.request(t, http.MethodDelete, "/api/v2/ups/42", nil, true)
+	response = fixture.request(t, http.MethodDelete, "/api/v3/sources/bilibili:up:42", nil, true)
 	assert.Equal(t, http.StatusNoContent, response.Code)
 	assert.Greater(t, fixture.events.Revision(), uint64(0))
 }
@@ -141,7 +141,7 @@ func TestBilibiliLoginHTTPAPIAndAuditLifecycle(t *testing.T) {
 	stopEngine := runWebTestEngine(t, fixture.engine)
 	t.Cleanup(stopEngine)
 
-	first := fixture.request(t, http.MethodPost, "/api/v2/bilibili-login", nil, true)
+	first := fixture.request(t, http.MethodPost, "/api/v3/accounts/bilibili/qr", nil, true)
 	assert.Equal(t, http.StatusCreated, first.Code)
 	assert.NotContains(t, first.Body.String(), "raw-qr-value")
 	var firstLogin biliLoginView
@@ -149,7 +149,7 @@ func TestBilibiliLoginHTTPAPIAndAuditLifecycle(t *testing.T) {
 	assert.Equal(t, "login-1", firstLogin.ID)
 	assert.True(t, strings.HasPrefix(firstLogin.QRDataURL, "data:image/png;base64,"))
 
-	second := fixture.request(t, http.MethodPost, "/api/v2/bilibili-login", nil, true)
+	second := fixture.request(t, http.MethodPost, "/api/v3/accounts/bilibili/qr", nil, true)
 	assert.Equal(t, http.StatusCreated, second.Code)
 	var secondLogin biliLoginView
 	require.NoError(t, json.Unmarshal(second.Body.Bytes(), &secondLogin))
@@ -157,7 +157,7 @@ func TestBilibiliLoginHTTPAPIAndAuditLifecycle(t *testing.T) {
 	_, err := fixture.engine.LoginURL(firstLogin.ID)
 	require.Error(t, err)
 
-	canceled := fixture.request(t, http.MethodDelete, "/api/v2/bilibili-login/"+secondLogin.ID, nil, true)
+	canceled := fixture.request(t, http.MethodDelete, "/api/v3/accounts/bilibili/qr/"+secondLogin.ID, nil, true)
 	assert.Equal(t, http.StatusNoContent, canceled.Code)
 	_, ok := fixture.engine.Login()
 	assert.False(t, ok)
@@ -218,7 +218,7 @@ func TestBilibiliLoginHTTPUpstreamFailuresAreBoundedAndRedacted(t *testing.T) {
 			fixture := newAdminAPIFixtureWithBilibili(t, tt.client(upstream), upstream.URL)
 			stopEngine := runWebTestEngine(t, fixture.engine)
 			t.Cleanup(stopEngine)
-			response := fixture.request(t, http.MethodPost, "/api/v2/bilibili-login", nil, true)
+			response := fixture.request(t, http.MethodPost, "/api/v3/accounts/bilibili/qr", nil, true)
 			assert.Equal(t, http.StatusInternalServerError, response.Code)
 			assert.NotContains(t, response.Body.String(), "upstream-secret-body")
 			assert.NotContains(t, response.Body.String(), upstream.URL)
@@ -261,7 +261,7 @@ func TestMicrosoftLoginHTTPAPIAndAuditLifecycle(t *testing.T) {
 	t.Cleanup(stopEngine)
 
 	for range 2 {
-		response := fixture.request(t, http.MethodPost, "/api/v2/channels/"+channel.ID+"/microsoft-login", nil, true)
+		response := fixture.request(t, http.MethodPost, "/api/v3/channels/"+channel.ID+"/microsoft-login", nil, true)
 		assert.Equal(t, http.StatusCreated, response.Code)
 		assert.Contains(t, response.Body.String(), "ABCD-EFGH")
 		assert.NotContains(t, response.Body.String(), "device-secret")
@@ -271,7 +271,7 @@ func TestMicrosoftLoginHTTPAPIAndAuditLifecycle(t *testing.T) {
 			require.FailNow(t, "Microsoft device request was not observed")
 		}
 	}
-	canceled := fixture.request(t, http.MethodDelete, "/api/v2/channels/"+channel.ID+"/microsoft-login", nil, true)
+	canceled := fixture.request(t, http.MethodDelete, "/api/v3/channels/"+channel.ID+"/microsoft-login", nil, true)
 	assert.Equal(t, http.StatusNoContent, canceled.Code)
 	login, err := fixture.engine.MicrosoftLogin(channel.ID)
 	require.NoError(t, err)
@@ -330,7 +330,7 @@ func TestMicrosoftLoginHTTPUpstreamFailuresAreBoundedAndRedacted(t *testing.T) {
 			require.NoError(t, err)
 			stopEngine := runWebTestEngine(t, fixture.engine)
 			t.Cleanup(stopEngine)
-			response := fixture.request(t, http.MethodPost, "/api/v2/channels/"+channel.ID+"/microsoft-login", nil, true)
+			response := fixture.request(t, http.MethodPost, "/api/v3/channels/"+channel.ID+"/microsoft-login", nil, true)
 			assert.Equal(t, http.StatusInternalServerError, response.Code)
 			assert.NotContains(t, response.Body.String(), "identity-secret-body")
 			assert.NotContains(t, response.Body.String(), upstream.URL)
@@ -386,7 +386,7 @@ func TestChannelTestHTTPFailureTimeoutAndAuditRedaction(t *testing.T) {
 				Settings: map[string]string{"webhook": upstream.URL + "/send?key=webhook-secret-query"},
 			})
 			require.NoError(t, err)
-			response := fixture.request(t, http.MethodPost, "/api/v2/channels/"+channel.ID+"/test", nil, true)
+			response := fixture.request(t, http.MethodPost, "/api/v3/channels/"+channel.ID+"/test", nil, true)
 			assert.Equal(t, http.StatusBadGateway, response.Code)
 			assert.NotContains(t, response.Body.String(), "webhook-secret")
 			assert.NotContains(t, response.Body.String(), upstream.URL)
@@ -405,37 +405,27 @@ func TestContentAPIs(t *testing.T) {
 	t.Parallel()
 	fixture := newAdminAPIFixture(t, nil)
 	published := time.Date(2026, time.August, 6, 1, 2, 3, 0, time.UTC)
-	require.NoError(t, fixture.store.PutUP(model.UP{UID: "42", Name: "UP", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}))
-	channel, err := fixture.store.PutChannel(model.Channel{
-		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
-		Settings: map[string]string{"webhook": fixture.webhook.URL},
-	})
-	require.NoError(t, err)
-	relativeMedia := filepath.Join("media", "42", "dynamic-1", "0.png")
+	source := model.Source{ID: "bilibili:up:42", Platform: model.PlatformBilibili, Type: model.SourceBilibiliUP,
+		ExternalID: "42", Name: "UP", Enabled: true, BaselineState: model.BaselineComplete}
+	require.NoError(t, fixture.store.PutSource(source))
+	contentID := model.ContentID(model.PlatformBilibili, "dynamic-1")
+	relativeMedia := filepath.Join("media", "bilibili", "source", "content", "image.png")
 	absMedia := filepath.Join(fixture.dataDir, relativeMedia)
 	require.NoError(t, os.MkdirAll(filepath.Dir(absMedia), 0o700))
 	require.NoError(t, os.WriteFile(absMedia, []byte("\x89PNG\r\n\x1a\ncontract"), 0o600))
-	dynamic := model.Dynamic{
-		ID: "dynamic-1", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_DRAW",
-		PublishedAt: published, Title: "title", Summary: "summary", URL: "https://t.bilibili.com/1",
-		Media: []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://example.invalid/image.png", LocalPath: relativeMedia, ContentType: "image/png", Width: 10, Height: 20}},
-		Stats: &model.DynamicStats{Forwards: 1, Comments: 2, Likes: 3},
-		Video: &model.DynamicVideo{Duration: "01:00", Views: "10", Danmaku: "2"},
+	content := model.Content{
+		ID: contentID, Platform: model.PlatformBilibili, SourceID: source.ID, ExternalID: "dynamic-1", AuthorID: "42", AuthorName: "UP",
+		UpstreamType: "DYNAMIC_TYPE_DRAW", Type: model.ContentDynamic, PublishedAt: published, FirstSeenAt: published, LastSyncedAt: published,
+		Title: "title", Text: "summary", URL: "https://t.bilibili.com/1", Stats: map[string]int64{"comments": 2},
 	}
-	created, err := fixture.store.RecordDynamics("42", []model.Dynamic{dynamic}, []string{channel.ID}, state.DynamicBaselineNone)
-	require.NoError(t, err)
-	assert.Equal(t, 1, created)
-	target := model.CommentTarget{
-		UID: "42", UPName: "UP", DynamicID: dynamic.ID, ContentType: dynamic.Type,
-		Title: dynamic.Title, URL: dynamic.URL, CommentType: 11, CommentOID: "oid-1", PublishedAt: published,
+	attachment := model.Attachment{ID: "bilibili:attachment:image-1", ContentID: contentID, ExternalID: "image-1", Type: model.AttachmentImage,
+		FileName: "image.png", MIME: "image/png", Size: 16, Width: 10, Height: 20, LocalPath: relativeMedia}
+	require.NoError(t, fixture.store.ArchiveContent(content, []model.Attachment{attachment}))
+	nodes := []model.CommentNode{
+		{ID: "bilibili:comment:root", Platform: model.PlatformBilibili, ContentID: contentID, RootID: "bilibili:comment:root", RPID: "root", Mid: "7", Name: "viewer", Message: "hello", Time: published, Role: model.RoleMember},
+		{ID: "bilibili:comment:reply-1", Platform: model.PlatformBilibili, ContentID: contentID, RootID: "bilibili:comment:root", ParentID: "bilibili:comment:root", RPID: "reply-1", Mid: "42", Name: "UP", Message: "reply", Time: published, Role: model.RoleUP},
 	}
-	require.NoError(t, fixture.store.PutCommentTargets("42", []model.CommentTarget{target}))
-	note := model.CommentNotification{
-		RPID: "reply-1", UPUID: "42", UPName: "UP", ContentType: dynamic.Type,
-		ContentID: dynamic.ID, ContentTitle: dynamic.Title, ContentURL: dynamic.URL, PublishedAt: published,
-		Thread: []model.CommentNode{{RPID: "root", Mid: "7", Name: "viewer", Message: "hello", Time: published}, {RPID: "reply-1", Parent: "root", Mid: "42", Name: "UP", Message: "reply", Time: published, IsUP: true, IsTrigger: true}},
-	}
-	_, err = fixture.store.RecordCommentNotifications(target, []model.CommentNotification{note}, []string{channel.ID}, false)
+	_, err := fixture.store.SyncCommentTree(content, nodes, true, true, "baseline", nil)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -445,15 +435,13 @@ func TestContentAPIs(t *testing.T) {
 		wantContain string
 		contentType string
 	}{
-		{name: "dynamic list", path: "/api/v2/dynamics?uid=42&q=summary&limit=1", wantStatus: http.StatusOK, wantContain: `"dynamic-1"`},
-		{name: "dynamic detail", path: "/api/v2/dynamics/dynamic-1", wantStatus: http.StatusOK, wantContain: `"summary"`},
-		{name: "dynamic media", path: "/api/v2/dynamics/dynamic-1/media/0", wantStatus: http.StatusOK, wantContain: "PNG", contentType: "image/png"},
-		{name: "comment list", path: "/api/v2/comments?uid=42&q=reply", wantStatus: http.StatusOK, wantContain: `"reply-1"`},
-		{name: "comment detail", path: "/api/v2/comments/reply-1", wantStatus: http.StatusOK, wantContain: `"thread"`},
-		{name: "missing dynamic", path: "/api/v2/dynamics/missing", wantStatus: http.StatusNotFound, wantContain: `"not_found"`},
-		{name: "missing comment", path: "/api/v2/comments/missing", wantStatus: http.StatusNotFound, wantContain: `"not_found"`},
-		{name: "invalid media index", path: "/api/v2/dynamics/dynamic-1/media/nope", wantStatus: http.StatusBadRequest, wantContain: `"validation_error"`},
-		{name: "missing media index", path: "/api/v2/dynamics/dynamic-1/media/9", wantStatus: http.StatusNotFound, wantContain: `"not_found"`},
+		{name: "content list", path: "/api/v3/contents?source_id=bilibili:up:42&q=summary&limit=1", wantStatus: http.StatusOK, wantContain: `"bilibili:content:dynamic-1"`},
+		{name: "content detail", path: "/api/v3/contents/" + contentID, wantStatus: http.StatusOK, wantContain: `"summary"`},
+		{name: "attachment", path: "/api/v3/contents/" + contentID + "/attachments/" + attachment.ID, wantStatus: http.StatusOK, wantContain: "PNG", contentType: "image/png"},
+		{name: "comment tree", path: "/api/v3/contents/" + contentID + "/comments", wantStatus: http.StatusOK, wantContain: `"children"`},
+		{name: "missing content", path: "/api/v3/contents/missing", wantStatus: http.StatusNotFound, wantContain: `"not_found"`},
+		{name: "missing comment tree", path: "/api/v3/contents/missing/comments", wantStatus: http.StatusNotFound, wantContain: `"not_found"`},
+		{name: "missing attachment", path: "/api/v3/contents/" + contentID + "/attachments/missing", wantStatus: http.StatusNotFound, wantContain: `"not_found"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -463,7 +451,8 @@ func TestContentAPIs(t *testing.T) {
 			assert.Contains(t, response.Body.String(), tt.wantContain)
 			if tt.contentType != "" {
 				assert.Equal(t, tt.contentType, response.Header().Get("Content-Type"))
-				assert.Equal(t, "private, max-age=86400", response.Header().Get("Cache-Control"))
+				assert.Contains(t, response.Header().Get("Content-Disposition"), "attachment")
+				assert.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
 			}
 		})
 	}
@@ -473,7 +462,7 @@ func TestAdminAPIRequestValidation(t *testing.T) {
 	t.Parallel()
 	fixture := newAdminAPIFixture(t, nil)
 	invalidSettings := webTestSettings()
-	invalidSettings.PollIntervalSec = 1
+	invalidSettings.BilibiliDynamicIntervalSec = 1
 	invalidSettingsJSON, err := json.Marshal(invalidSettings)
 	require.NoError(t, err)
 	validSettingsJSON, err := json.Marshal(webTestSettings())
@@ -495,25 +484,25 @@ func TestAdminAPIRequestValidation(t *testing.T) {
 		status int
 		code   string
 	}{
-		{name: "invalid json", method: http.MethodPost, path: "/api/v2/ups", body: `{`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "unknown field", method: http.MethodPost, path: "/api/v2/ups", body: `{"uid":"42","name":"up","enabled":true,"unknown":1}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "channel create id belongs to server", method: http.MethodPost, path: "/api/v2/channels", body: `{"id":"client-id","name":"mail","type":"email","enabled":true,"settings":{}}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "channel update id belongs to path", method: http.MethodPut, path: "/api/v2/channels/server-id", body: `{"id":"client-id","name":"mail","type":"email","enabled":true,"settings":{}}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "multiple values", method: http.MethodPost, path: "/api/v2/ups", body: `{} {}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "invalid up", method: http.MethodPost, path: "/api/v2/ups", body: `{"uid":"","name":"up","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
-		{name: "missing settings", method: http.MethodPut, path: "/api/v2/settings", body: `{"poll_interval_sec":30}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "short retry settings", method: http.MethodPut, path: "/api/v2/settings", body: string(shortRetryJSON), status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "unknown setting", method: http.MethodPut, path: "/api/v2/settings", body: string(unknownSettingsJSON), status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "invalid settings", method: http.MethodPut, path: "/api/v2/settings", body: string(invalidSettingsJSON), status: http.StatusBadRequest, code: "validation_failed"},
-		{name: "invalid audit outcome", method: http.MethodGet, path: "/api/v2/audit-logs?outcome=maybe", status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "invalid audit from", method: http.MethodGet, path: "/api/v2/audit-logs?from=bad", status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "invalid audit to", method: http.MethodGet, path: "/api/v2/audit-logs?to=bad", status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "reversed audit range", method: http.MethodGet, path: "/api/v2/audit-logs?from=2026-08-06T02:00:00Z&to=2026-08-06T01:00:00Z", status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "invalid audit limit", method: http.MethodGet, path: "/api/v2/audit-logs?limit=bad", status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "invalid audit cursor", method: http.MethodGet, path: "/api/v2/audit-logs?after=not-base64", status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "invalid content limit", method: http.MethodGet, path: "/api/v2/dynamics?limit=bad", status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "invalid content cursor", method: http.MethodGet, path: "/api/v2/comments?after=not-base64", status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "invalid content range", method: http.MethodGet, path: "/api/v2/dynamics?from=2026-08-06T02:00:00Z&to=2026-08-06T01:00:00Z", status: http.StatusBadRequest, code: "validation_failed"},
+		{name: "invalid json", method: http.MethodPost, path: "/api/v3/sources", body: `{`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "unknown field", method: http.MethodPost, path: "/api/v3/sources", body: `{"platform":"bilibili","external_id":"42","name":"up","enabled":true,"unknown":1}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "channel create id belongs to server", method: http.MethodPost, path: "/api/v3/channels", body: `{"id":"client-id","name":"mail","type":"email","enabled":true,"settings":{}}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "channel update id belongs to path", method: http.MethodPut, path: "/api/v3/channels/server-id", body: `{"id":"client-id","name":"mail","type":"email","enabled":true,"settings":{}}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "multiple values", method: http.MethodPost, path: "/api/v3/sources", body: `{} {}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid source", method: http.MethodPost, path: "/api/v3/sources", body: `{"platform":"bilibili","external_id":"","name":"up","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
+		{name: "missing settings", method: http.MethodPut, path: "/api/v3/settings", body: `{"poll_interval_sec":30}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "short retry settings", method: http.MethodPut, path: "/api/v3/settings", body: string(shortRetryJSON), status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "unknown setting", method: http.MethodPut, path: "/api/v3/settings", body: string(unknownSettingsJSON), status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid settings", method: http.MethodPut, path: "/api/v3/settings", body: string(invalidSettingsJSON), status: http.StatusBadRequest, code: "validation_failed"},
+		{name: "invalid audit outcome", method: http.MethodGet, path: "/api/v3/audit-logs?outcome=maybe", status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid audit from", method: http.MethodGet, path: "/api/v3/audit-logs?from=bad", status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid audit to", method: http.MethodGet, path: "/api/v3/audit-logs?to=bad", status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "reversed audit range", method: http.MethodGet, path: "/api/v3/audit-logs?from=2026-08-06T02:00:00Z&to=2026-08-06T01:00:00Z", status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid audit limit", method: http.MethodGet, path: "/api/v3/audit-logs?limit=bad", status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid audit cursor", method: http.MethodGet, path: "/api/v3/audit-logs?after=not-base64", status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid content limit", method: http.MethodGet, path: "/api/v3/contents?limit=bad", status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid content cursor", method: http.MethodGet, path: "/api/v3/contents?after=not-base64", status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid content range", method: http.MethodGet, path: "/api/v3/contents?from=2026-08-06T02:00:00Z&to=2026-08-06T01:00:00Z", status: http.StatusBadRequest, code: "validation_failed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -536,19 +525,19 @@ func TestAdminAPIWriteAuthorization(t *testing.T) {
 		method string
 		path   string
 	}{
-		{name: "create up", method: http.MethodPost, path: "/api/v2/ups"},
-		{name: "update up", method: http.MethodPut, path: "/api/v2/ups/42"},
-		{name: "delete up", method: http.MethodDelete, path: "/api/v2/ups/42"},
-		{name: "create channel", method: http.MethodPost, path: "/api/v2/channels"},
-		{name: "update channel", method: http.MethodPut, path: "/api/v2/channels/id"},
-		{name: "delete channel", method: http.MethodDelete, path: "/api/v2/channels/id"},
-		{name: "test channel", method: http.MethodPost, path: "/api/v2/channels/id/test"},
-		{name: "retry delivery", method: http.MethodPost, path: "/api/v2/deliveries/id/retry"},
-		{name: "start bili login", method: http.MethodPost, path: "/api/v2/bilibili-login"},
-		{name: "cancel bili login", method: http.MethodDelete, path: "/api/v2/bilibili-login/id"},
-		{name: "start microsoft login", method: http.MethodPost, path: "/api/v2/channels/id/microsoft-login"},
-		{name: "cancel microsoft login", method: http.MethodDelete, path: "/api/v2/channels/id/microsoft-login"},
-		{name: "update settings", method: http.MethodPut, path: "/api/v2/settings"},
+		{name: "create source", method: http.MethodPost, path: "/api/v3/sources"},
+		{name: "update source", method: http.MethodPut, path: "/api/v3/sources/bilibili:up:42"},
+		{name: "delete source", method: http.MethodDelete, path: "/api/v3/sources/bilibili:up:42"},
+		{name: "create channel", method: http.MethodPost, path: "/api/v3/channels"},
+		{name: "update channel", method: http.MethodPut, path: "/api/v3/channels/id"},
+		{name: "delete channel", method: http.MethodDelete, path: "/api/v3/channels/id"},
+		{name: "test channel", method: http.MethodPost, path: "/api/v3/channels/id/test"},
+		{name: "retry delivery", method: http.MethodPost, path: "/api/v3/deliveries/id/retry"},
+		{name: "start bili login", method: http.MethodPost, path: "/api/v3/accounts/bilibili/qr"},
+		{name: "cancel bili login", method: http.MethodDelete, path: "/api/v3/accounts/bilibili/qr/id"},
+		{name: "start microsoft login", method: http.MethodPost, path: "/api/v3/channels/id/microsoft-login"},
+		{name: "cancel microsoft login", method: http.MethodDelete, path: "/api/v3/channels/id/microsoft-login"},
+		{name: "update settings", method: http.MethodPut, path: "/api/v3/settings"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -718,6 +707,6 @@ func assertAPIError(t *testing.T, response *httptest.ResponseRecorder, status in
 
 func webTestSettings() model.RuntimeSettings {
 	settings := model.DefaultRuntimeSettings()
-	settings.RequestRate = 10
+	settings.BilibiliRequestRate = 10
 	return settings
 }

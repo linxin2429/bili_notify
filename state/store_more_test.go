@@ -21,6 +21,9 @@ func TestClearSessionAndResetFeed(t *testing.T) {
 	_, err = store.Session()
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = store.PlatformAccount(model.PlatformBilibili)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
 
 	fixed := time.Date(2026, time.August, 6, 1, 2, 3, 0, time.UTC)
 	require.NoError(t, store.InitializeFeed("100", "baseline", fixed))

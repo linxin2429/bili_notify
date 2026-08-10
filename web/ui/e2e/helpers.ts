@@ -30,7 +30,7 @@ export async function createNotificationChannel(page: Page, harness: Harness, se
   await page.getByLabel('渠道名称').fill('E2E 企业微信')
   await page.getByLabel('渠道类型').selectOption({ label: '企业微信机器人' })
   await page.getByLabel('Webhook URL').fill(harness.manifest.webhook_url)
-  const createResponse = page.waitForResponse(response => response.url().endsWith('/api/v2/channels') && response.request().method() === 'POST')
+  const createResponse = page.waitForResponse(response => response.url().endsWith('/api/v3/channels') && response.request().method() === 'POST')
   await page.getByRole('button', { name: '保存' }).click()
   expect(JSON.stringify(await (await createResponse).json())).not.toContain(harness.manifest.webhook_url)
   await expect(page.getByText('E2E 企业微信')).toBeVisible()
@@ -44,12 +44,12 @@ export async function createNotificationChannel(page: Page, harness: Harness, se
 }
 
 export async function createFollowedUP(page: Page) {
-  await navigateTo(page, 'UP 主')
-  await page.getByRole('button', { name: '添加 UP 主' }).click()
+  await navigateTo(page, '采集源')
+  await page.getByRole('button', { name: /添加 B 站 UP/ }).click()
   await page.getByLabel('UID').fill('42')
-  await page.getByLabel('备注名').fill('E2E UP')
+  await page.getByLabel('来源名称').fill('E2E UP')
   await page.getByRole('button', { name: '保存' }).click()
-  await expect(page.getByText('E2E UP')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'E2E UP', exact: true })).toBeVisible()
 }
 
 export async function completeBilibiliLoginAndBaseline(page: Page, harness: Harness) {
@@ -63,10 +63,8 @@ export async function completeBilibiliLoginAndBaseline(page: Page, harness: Harn
     return [state.counts.relations || 0, state.counts.feed_initialize || 0, state.counts.space_feed || 0]
   }, { timeout: 25_000 }).toEqual([1, 1, 1])
 
-  await navigateTo(page, 'UP 主')
-  await expect(page.getByText('基线已建立')).toBeVisible()
-  await expect(page.getByText('当前账号已关注')).toBeVisible()
-  await expect(page.getByText('综合流采集')).toBeVisible()
+  await navigateTo(page, '采集源')
+  await expect(page.getByText('基线完成')).toBeVisible()
   await navigateTo(page, '历史')
   await expect(page.getByText('baseline content')).toBeVisible()
   await expect(page.getByText('基线', { exact: true })).toBeVisible()

@@ -2,9 +2,9 @@
 
 ## 1. 背景与边界
 
-Bili Notify 面向个人或小团队，在一个 Docker 容器中监控最多 100 个 B 站 UP 主。B 站没有面向任意 UP 主动态的官方推送能力，因此服务使用登录后的网页接口轮询；“及时”是接口可用和未触发风控时的服务目标，不是无条件保证。
+Bili Notify 面向个人或小团队，在一个 Docker 容器中归档 B 站 UP 主和登录账号可见的知识星球。两个平台都缺少满足本产品需求的稳定官方推送能力，因此服务使用登录后的网页接口轮询；“及时”是接口可用且未触发风控时的服务目标，不是无条件保证。
 
-系统处理登录账号有权查看的新动态（公开或充电专属，含文字、图片、视频投稿、专栏、转发、PGC 和通用内容卡片），并在启用时额外监控 UP 本人在其最近 N 条视频/动态/专栏评论区中的回复。直播状态、动态编辑、置顶变化、删除、关键词过滤、粉丝评论全量监听、UP 在他人内容下的发言、多租户、多实例高可用和**向 B 站主动历史回补**不在范围内。已采集内容会写入本地内容库供管理台查询。未知动态结构不会被猜测解析或标记为已处理；账号无权查看的充电动态会跳过且不标记为已处理；无法确定评论区坐标（type/oid）的内容不会进入评论跟踪。
+系统处理账号有权查看的 B 站动态和知识星球主题。B 站只持续同步每个 UP 最近 N 条可映射评论区坐标的内容；知识星球首次启用时全量回补主题、附件和评论，此后轮询新内容并周期性刷新全部已归档主题。所有评论节点都归档，通知目标严格限定为当前 UP 或星球 `owner`，管理员、嘉宾、合伙人、普通作者和其他用户都不会触发评论通知。未知内容结构不猜测、不写 seen、也不推进水位。上游编辑更新当前快照，删除写 tombstone，恢复旧 ID 不视为新增。
 
 主要目标：
 
@@ -20,8 +20,10 @@ Bili Notify 面向个人或小团队，在一个 Docker 容器中监控最多 10
 
 ```mermaid
 flowchart LR
-    B[B站登录及动态接口] --> C[限流轮询器]
+    B[B站登录及动态接口] --> C[B站独立限流轮询器]
+    Z[知识星球短信登录及接口] --> Q[知识星球独立限流与回补器]
     C --> P[严格解析与去重]
+    Q --> P
     P -->|同一事务 archive+seen+Outbox| S[(data.db SQLite)]
     S --> O[持久化 Outbox]
     O --> N[SMTP / Graph / 群机器人]
@@ -38,7 +40,7 @@ flowchart LR
     AI --> OP[OpenAI 兼容转写与文本接口]
 ```
 
-代码按功能划分为顶层包：`bilibili` 负责网页接口与二维码登录，`state` 负责事务和持久化（单一 SQLite `data.db`：配置/Outbox/内容档案，GORM + goose 版本化迁移），`notify` 负责投递协议，`service` 负责编排轮询、OAuth、Outbox 和领域事件，`web` 负责认证、管理 REST API、WebSocket 事件流与嵌入式管理台，`cmd` 只处理命令和非秘密启动配置。
+代码按功能划分为顶层包：`bilibili` 负责 B 站网页接口与二维码登录，`zsxq` 负责知识星球短信登录、严格解析、动态回补和评论同步，`media` 负责安全附件本地化，`state` 负责事务和持久化，`notify` 负责投递协议，`service` 负责编排 B 站、Outbox、OAuth 和领域事件，`web` 负责认证、`/api/v3`、WebSocket 与嵌入式管理台。
 
 AI 子系统采用“持久化控制面 + 可替换执行面”：Go 主进程把模型配置档、提示词模板、任务输入、进度和结果持久化到 `data.db`，提交任务时同时密封模型与提示词配置快照，避免排队期间的设置修改改变已有任务语义；调度器以一个转写槽位和两个总结槽位从队列领取任务，再通过仅本机 Unix Socket 暴露的内部 gRPC 调用 Python Worker。Python Worker 使用 yt-dlp 读取指定 BVID/分 P，下载连接以连续 60 秒无响应作为单次失败边界，对元数据、普通 HTTP 和分片请求分别最多重试 10 次并执行最长 30 秒的指数退避；随后由 FFmpeg 提取并切分为最长 10 分钟的单声道 16kHz、16-bit FLAC，显式限制采样位深，使单个切片在最坏情况下仍低于 OpenAI 兼容 multipart 的 25 MB 上限。Worker 通过 `/audio/transcriptions` 请求 `verbose_json` 和 segment timestamps，并把分段时间加上音频切片偏移。文本总结对超长输入执行分块 Map/Reduce。模型 Base URL、API Key、模型名、语言、超时、温度、上下文字符预算和提示词均由管理台配置，不绑定单一供应商；最大输出 Token 留空或为零时不向供应商发送 `max_tokens`，正整数没有应用侧业务上限。模型的可用状态是管理员标记而非执行权限，停用模型不会阻止工作台选择和任务提交；默认模型必须同时可用。管理台可以通过 Worker 对文本或转写模型发起一次最多 20 秒的最小真实推理来检测连通性，该操作可能产生极小的供应商费用，结果只在当前页面显示、不持久化，也不会自动启停模型。Worker 向标准输出写 JSON 结构化日志，覆盖进程生命周期、任务阶段、音频切片字节数和数量、上游 HTTP 状态/耗时/请求 ID 及经过截断和密钥脱敏的错误消息，但不记录 API Key、Cookie、音频、转写正文或提示词；日志级别由 `BILI_NOTIFY_AI_LOG_LEVEL` 控制。Worker 不可用时任务保持 queued，主进程的采集、通知和管理能力不受影响；正在运行的任务在主进程重启后标为 `worker_interrupted`，由管理员显式重试。
 
@@ -46,11 +48,13 @@ AI 子系统采用“持久化控制面 + 可替换执行面”：Go 主进程�
 
 安全边界建立在最小暴露面上：内部 RPC 不监听 TCP，Socket 模式为 `0600`；模型 Key、B站 Cookie、AI 输入和结果使用现有 Vault 加密后写入 SQLite，列表接口不返回任务输入/结果，只有详情接口按需解密；连通性检测只向已认证管理员返回供应商错误对象中的消息，不返回完整响应正文，检测输入、供应商错误和 API Key 均不持久化或写日志。Worker 的任务目录为 `0700`，Cookie 临时文件为 `0600` 且下载完成即删除，成功任务删除音频缓存，失败缓存受 24 小时 TTL 和 5 GiB LRU 上限约束。供应商地址必须是无凭据、查询和 fragment 的绝对 HTTPS URL。取消通过 gRPC Context 传播，任务状态转换由 SQLite 条件更新约束，`client_request_id` 提供提交幂等性。
 
+跨平台持久化以平台作为所有身份的一部分：账号写入 `platform_accounts`；来源 ID 为 `bilibili:up:{uid}` 或 `zsxq:planet:{group_id}`；内容 ID 为 `{platform}:content:{external_id}`；评论 ID 为 `{platform}:comment:{external_id}`。`contents` 保存当前正文、类型、统计、首次发现、最后同步和删除 tombstone，`attachments` 保存远端元数据与本地相对路径，`comment_nodes` 使用邻接表保存 `root_id/parent_id`，查询时稳定重建 `children`。内容/评论归档、seen 与 Outbox 在同一事务中提交；编辑只更新当前快照，完整成功的评论分页才能把缺失节点标记为删除，恢复已有 ID 不生成新通知。一轮同步把同一内容的多个目标作者评论合并为一个 `comment_digest`，载荷只包含新触发节点及各自从已知根开始的祖先路径。
+
 轮询器默认以 30 秒为目标周期、全局 2 请求/秒、4 个并发请求。服务默认每 10 分钟批量查询当前登录账号与监控 UP 的关注关系：已关注且完成空间同步的 UP 使用账号综合动态流，其余 UP 轮询空间动态；关系未知时明确走空间接口。已关注 UP 默认每 30 分钟额外执行一次空间完整性校验。空间和综合流默认最多翻 10 页；超过上限不会静默推进游标，综合流会退回空间同步后重新建立基线。
 
-评论监控使用独立较慢的批次周期（默认 120 秒），与动态轮询共用全局速率与并发预算。每个 UP 仅跟踪最近 N 条（默认 10）可映射评论区坐标的内容；每内容最多翻根评论 P 页（默认 2）、子评论 R 页（默认 5）。基础采集、高级采集、投递与积压告警、五段重试、日志级别及审计日志保留期组成一份版本化运行设置，空库首次从启动配置和代码默认值播种，之后由 SQLite 持久化并通过管理台完整热更新。版本不匹配的旧记录直接拒绝启动，不自动升级。
+评论监控按平台独立调度。B 站默认每 120 秒同步每个 UP 最近 N 条（默认 10）可映射评论区坐标的内容，并翻完全部根评论与每个根下的全部子回复；退出最近 N 窗口后保留树但不再请求。知识星球默认每 600 秒同步全部已归档主题，上一轮未结束时不启动重叠任务。两者首次同步评论均只建立基线。运行设置由 SQLite 持久化并热更新；环境变量只为空库播种，B 站和知识星球分别使用 `BILI_NOTIFY_BILIBILI_*` 与 `BILI_NOTIFY_ZSXQ_*`。
 
-新动态按发布时间由旧到新处理。完整正文、动态/评论 `seen` 与对应启用渠道的投递任务在**同一 SQLite 事务**内提交（`INSERT OR IGNORE` 档案；含 baseline；系统告警 `uid=system` 不入库）。任务只有在平台 HTTP 状态和业务码均成功后才删除；网络错误、429 和 5xx 分级重试，不可恢复配置或鉴权错误进入阻塞状态。管理员可以将单个阻塞任务手动改回立即到期的待投递状态，实际发送仍由后台 Outbox 调度器异步执行；该操作保留尝试次数、最后错误与分段投递进度，避免部分成功的多段消息重复发送。删除 UP 会在同一事务内取消该 UP 尚未投递的动态与评论任务，并清除去重状态和内容库记录，避免删除后继续发送或留下失去所属资源的 Outbox。v1 内容库无自动淘汰，体积随监控时长增长。
+新内容按发布时间和稳定 ID 由旧到新处理。知识星球启用时先固定最新页高水位，再持久化分页回补水位以前的历史；回补内容不通知，回补期间水位以后的新内容走实时通知。任务只有在平台 HTTP 状态和业务码均成功后才删除；网络错误、429 和 5xx 分级重试，不可恢复配置或鉴权错误进入阻塞。删除来源会取消未投递任务，并通过外键级联删除内容、附件元数据、评论、seen 和同步状态，随后删除媒体目录；知识星球来源下次刷新账号时会以停用状态重新出现。
 
 ## 3. B站与通知协议
 
@@ -62,7 +66,7 @@ SMTP 只支持隐式 TLS 和 STARTTLS，并校验证书。Microsoft 使用 OAuth
 
 所有通知 HTTP 协议响应最多读取 1 MiB；成功响应超过上限、JSON 损坏、业务码缺失或类型漂移都视为永久协议错误，避免把无法证明成功的响应误判为已投递。网络故障、HTTP 429 和 5xx 可重试，`Retry-After`（秒数或 HTTP 日期）是重试调度的最小等待时间；4xx、OAuth 凭据失效和明确业务错误进入阻塞。错误只保留操作名、HTTP 状态和业务码，不拼接响应正文、请求 URL、OAuth 描述或飞书 `msg`，避免 Webhook 查询签名、令牌及上游回显秘密进入日志。
 
-采集在写入档案与 Outbox 之前，按动态 `Media`（含封面与图文图片，以及一层转发原文）尽力下载 CDN 文件到 `data_dir/media/{uid}/{dynamic_id}/`，并把相对路径写回 `local_path`。单文件上限 10 MiB，只接受 HTTP(S)、公网目标和内容嗅探结果为图片的响应；每次重定向重新校验目标，避免媒体 URL 被用来访问回环、私网和链路本地服务。下载失败不阻断文字归档与投递，保留远程 URL。不做存量历史回填。读取、写入与删除均拒绝 `media/` 以下任一已有路径组件为符号链接，临时文件与最终文件分别使用 `0600` 和原子 rename；失败时删除临时文件。删除 UP 时同步删除其 media 子目录。v1 无自动淘汰，`media/` 与内容库一并随监控时长增长。
+附件统一落在 `data_dir/media/{platform}/{source_id}/{content_id}/`。B 站继续只下载可安全识别的图片并维持 10 MiB 单图保护；知识星球支持图片、文件、音频和视频，默认单件上限 500 MiB、平台总预算 50 GiB。超过单件限制或总预算时只保留元数据，不删除旧档案，也不阻断正文、评论和通知。所有下载只接受 HTTP(S) 公网目标，每次重定向重新校验；临时文件为 `0600` 并原子 rename，路径穿越和符号链接均拒绝。知识星球 Cookie 只发送给原始 API 域名，跳转或 CDN 请求会剥离敏感请求头；签名下载 URL 不出现在日志、通知或列表响应。认证附件端点支持 Range，并设置 attachment disposition 与 `nosniff`。
 
 动态通知保存接口返回的完整正文，并按类型提取标题、简介、内容直达链接、富文本链接、封面或多图、视频时长与播放信息、互动统计和转发原文；动态正文本身不为补充内容发起额外的 B 站请求。升级后每个已有 UP 首次可见的充电动态只归档并建立 seen 基线，不投递；同批普通新动态照常投递，后续新充电动态正常投递。评论通知在发现 UP 回复后按 root 展开对话串。邮件与 Microsoft Graph 在存在本地文件时以内联 CID/附件嵌入图片，否则退回远程 `<img src>`；钉钉自定义机器人继续使用可展示外链图片的 Markdown（`![](CDN URL)`，不用本地文件）；飞书在配置应用凭证且本地文件可用时上传并内嵌图片，否则列为链接；企业微信先发正文 Markdown，再按序追加 `msgtype=image`（原始字节 ≤2 MiB），并在 Outbox `progress` 中记录已成功段以便重试不重复。机器人消息在各平台限制内按 UTF-8 边界截断，始终保留截断提示和原内容链接。
 
@@ -74,30 +78,34 @@ HTTP 承担认证生命周期和全部管理资源 API：
 
 | 方法与路径 | 用途 |
 | --- | --- |
-| `GET /api/v2/session` | 查询初始化和会话状态 |
-| `POST /api/v2/setup` | 使用日志初始化码设置首个管理员密码 |
-| `POST /api/v2/session` | 登录 |
-| `DELETE /api/v2/session` | 注销 |
-| `PUT /api/v2/session/password` | 验证当前密码并修改密码 |
-| `GET /api/v2/runtime`、`GET /api/v2/settings` | 分别读取运行状态/时区和完整运行设置 |
-| `GET/POST /api/v2/ups`、`PUT/DELETE /api/v2/ups/{uid}` | 读取、创建、更新或删除 UP 主 |
-| `GET/POST /api/v2/channels`、`PUT/DELETE /api/v2/channels/{id}` | 读取、创建、更新或删除通知渠道 |
-| `POST /api/v2/channels/{id}/test` | 发送渠道测试通知 |
-| `GET /api/v2/deliveries` | 按稳定游标读取投递任务 |
-| `POST /api/v2/deliveries/{id}/retry` | 将单个阻塞投递任务立即重新入队，返回 202，不同步等待发送 |
-| `GET/POST /api/v2/bilibili-login`、`DELETE /api/v2/bilibili-login/{id}` | 读取、启动或取消 B 站扫码登录 |
-| `GET /api/v2/microsoft-logins`、`POST/DELETE /api/v2/channels/{id}/microsoft-login` | 读取、启动或取消 Microsoft 授权 |
-| `PUT /api/v2/settings` | 严格校验并完整更新 18 项运行设置 |
-| `GET /api/v2/dynamics[/{id}]`、`GET /api/v2/comments[/{rpid}]` | 查询历史列表或内容详情 |
-| `GET /api/v2/dynamics/{id}/media/{index}` | 读取已落盘的动态媒体（需会话） |
-| `GET /api/v2/audit-logs` | 按操作、结果、资源、时间和关键字分页查询管理员操作日志 |
-| `GET /api/v2/ws` | 校验会话并升级 WebSocket |
+| `GET /api/v3/session` | 查询初始化和会话状态 |
+| `POST /api/v3/setup` | 使用日志初始化码设置首个管理员密码 |
+| `POST /api/v3/session` | 登录 |
+| `DELETE /api/v3/session` | 注销 |
+| `PUT /api/v3/session/password` | 验证当前密码并修改密码 |
+| `GET /api/v3/runtime`、`GET /api/v3/settings` | 分别读取运行状态/时区和完整运行设置 |
+| `GET /api/v3/accounts` | 读取 B 站与知识星球账号的非秘密状态 |
+| `GET/POST /api/v3/accounts/bilibili/qr`、`DELETE /api/v3/accounts/bilibili/qr/{id}`、`DELETE /api/v3/accounts/bilibili/session` | 查询、建立或取消二维码事务，以及清除 B 站会话 |
+| `POST /api/v3/accounts/zsxq/sms-code`、`POST/DELETE /api/v3/accounts/zsxq/session` | 知识星球滑块后短信登录及注销 |
+| `POST /api/v3/accounts/zsxq/sync-sources` | 刷新账号可见星球，不改变管理员启停选择 |
+| `GET/POST /api/v3/sources`、`PUT/DELETE /api/v3/sources/{id}` | 查询、创建 B 站来源、启停或删除跨平台采集源 |
+| `GET /api/v3/contents[/{id}]` | 按平台、来源、关键字、时间和稳定游标查询统一内容 |
+| `GET /api/v3/contents/{id}/comments` | 返回稳定重建的嵌套评论树 |
+| `GET /api/v3/contents/{id}/attachments/{attachment_id}` | 认证下载本地附件，支持 Range |
+| `GET/POST /api/v3/channels`、`PUT/DELETE /api/v3/channels/{id}` | 读取、创建、更新或删除通知渠道 |
+| `POST /api/v3/channels/{id}/test` | 发送渠道测试通知 |
+| `GET /api/v3/deliveries` | 按稳定游标读取投递任务 |
+| `POST /api/v3/deliveries/{id}/retry` | 将单个阻塞投递任务立即重新入队，返回 202，不同步等待发送 |
+| `GET /api/v3/microsoft-logins`、`POST/DELETE /api/v3/channels/{id}/microsoft-login` | 读取、启动或取消 Microsoft 授权 |
+| `PUT /api/v3/settings` | 严格校验并完整更新跨平台运行设置 |
+| `GET /api/v3/audit-logs` | 按操作、结果、资源、时间和关键字分页查询管理员操作日志 |
+| `GET /api/v3/ws` | 校验会话并升级 WebSocket |
 
-HTTP 负责全部浏览器主动请求：资源写操作使用单个、合法 UTF-8 的 JSON body，硬上限为 1 MiB，写请求必须携带会话中的 CSRF Token；`PUT /api/v2/settings` 必须提交全部字段，缺失和未知字段均拒绝。成功响应直接返回资源，不增加通用 `data` 外壳；错误统一返回 `{error:{code,message}}`。`api/openapi.yaml` 是 v2 请求、响应、错误和实时消息的传输契约，旧 `/api/v1` 路由不注册，也不保留 dashboard 兼容适配。
+HTTP 负责全部浏览器主动请求：资源写操作使用单个、合法 UTF-8 的 JSON body，硬上限为 1 MiB，写请求必须携带会话中的 CSRF Token；`PUT /api/v3/settings` 必须提交全部字段，缺失和未知字段均拒绝。成功响应直接返回资源，不增加通用 `data` 外壳；错误统一返回 `{error:{code,message}}`。`api/openapi.yaml` 是 v3 请求、响应、错误和实时消息的唯一传输契约；不注册 `/api/v2`。
 
-投递、动态、评论和审计列表统一返回 `{items,page:{next_cursor,has_more}}`，下一次请求只把非空 `next_cursor` 原样作为 `after` 传回。游标是服务端不透明值；投递按不可变的 `(created_at DESC,id DESC)`，动态和评论按 `(published_at DESC,id/rpid DESC)`，审计按 `(occurred_at DESC,id DESC)` 稳定排序。动态、评论与投递默认每页 20 条，审计默认 50 条，均最多 100 条且不再接受 offset；历史时间范围为半开区间 `[from,to)`。动态历史列表的每个条目直接从已归档的 `payload_json` 投影正文、媒体 `media(kind/url/width/height)`、互动统计 `stats(forwards/comments/likes)`、视频元数据 `video(duration/views/danmaku)` 和一层 `original` 引用预览（含原内容的视频元数据），前端无需逐条请求内容详情；若条目已有本地文件，列表中的 `media.url` 改写为同源 `/api/v2/dynamics/{id}/media/{index}`，否则保留 CDN URL。旧归档没有统计或视频字段时省略对应字段；列表不返回评论坐标与磁盘路径。
+内容、投递和审计列表统一返回 `{items,page:{next_cursor,has_more}}`，下一次请求只把非空 `next_cursor` 原样作为 `after` 传回。游标是服务端不透明值；投递按不可变的 `(created_at DESC,id DESC)`，内容按 `(published_at DESC,id DESC)`，审计按 `(occurred_at DESC,id DESC)` 稳定排序。内容与投递默认每页 20 条，审计默认 50 条，均最多 100 条且不接受 offset；历史时间范围为半开区间 `[from,to)`。内容详情同时返回不含私有远端 URL 的附件元数据，附件字节只能从认证下载端点取得；评论详情直接返回完整嵌套 `children`，不再暴露旧线性 thread 投影。
 
-WebSocket 只承载失效信号，不接受业务命令或资源数据。连接后先发送 `{event:"sync.required",revision,topics}`，客户端按需通过 REST 建立基线；后续将同一事件总线批次合并为 `{event:"resources.invalidated",revision,topics}`。topic 固定为 `runtime`、`settings`、`ups`、`channels`、`deliveries`、`bilibili-login`、`microsoft-logins`、`dynamics`、`comments`、`audit-logs`、`ai-status` 和 `ai-jobs`。客户端丢失连接或遇到未知消息后保留最后成功数据，通过资源 GET 重建事实，不在浏览器合成服务端领域状态。
+WebSocket 只承载失效信号，不接受业务命令或资源数据。连接后先发送 `{event:"sync.required",revision,topics}`，客户端按需通过 REST 建立基线；后续将同一事件总线批次合并为 `{event:"resources.invalidated",revision,topics}`。资源主题只有 `accounts`、`sources`、`contents`、`backfills`、运行设置、渠道、投递、Microsoft 登录、审计和 AI；旧的 `ups`、`dynamics`、`comments` 与 `bilibili-login` 主题不再对外。客户端丢失连接或遇到未知消息后保留最后成功数据，通过资源 GET 重建事实，不在浏览器合成服务端领域状态。
 
 领域事件主要由实际状态写入驱动：空闲投递周期不发布事件，空闲采集不广播整份 UP 列表；关注关系刷新、采集路由改变、就绪状态或风控暂停等时间派生状态跨越边界时发布对应轻量事件。投递成功、失败、重试或阻塞只标记状态和投递主题；渠道授权信息只有在实际变化时才标记渠道主题。事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。WebSocket 消息限制为 1 MiB，并以独立的 30 秒 Ping 保活。
 

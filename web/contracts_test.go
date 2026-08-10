@@ -24,21 +24,21 @@ func TestRESTResourceContracts(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	response := fixture.request(t, http.MethodGet, "/api/v2/runtime", nil, false)
+	response := fixture.request(t, http.MethodGet, "/api/v3/runtime", nil, false)
 	require.Equal(t, http.StatusOK, response.Code)
 	var runtime runtimeView
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &runtime))
 	assert.NotEmpty(t, runtime.Timezone)
 	assert.False(t, runtime.UpdatedAt.IsZero())
 
-	response = fixture.request(t, http.MethodGet, "/api/v2/ups", nil, false)
+	response = fixture.request(t, http.MethodGet, "/api/v3/sources?platform=bilibili", nil, false)
 	require.Equal(t, http.StatusOK, response.Code)
-	var ups []model.UP
-	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &ups))
-	require.Len(t, ups, 1)
-	assert.Equal(t, "42", ups[0].UID)
+	var sources []model.Source
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &sources))
+	require.Len(t, sources, 1)
+	assert.Equal(t, "42", sources[0].ExternalID)
 
-	response = fixture.request(t, http.MethodGet, "/api/v2/channels", nil, false)
+	response = fixture.request(t, http.MethodGet, "/api/v3/channels", nil, false)
 	require.Equal(t, http.StatusOK, response.Code)
 	var channels []channelView
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &channels))
@@ -46,7 +46,7 @@ func TestRESTResourceContracts(t *testing.T) {
 	assert.Equal(t, []string{"webhook"}, channels[0].ConfiguredSecrets)
 	assert.NotContains(t, response.Body.String(), "https://example.com/webhook")
 
-	response = fixture.request(t, http.MethodGet, "/api/v2/deliveries", nil, false)
+	response = fixture.request(t, http.MethodGet, "/api/v3/deliveries", nil, false)
 	require.Equal(t, http.StatusOK, response.Code)
 	assert.JSONEq(t, `{"items":[],"page":{"next_cursor":"","has_more":false}}`, response.Body.String())
 }
@@ -55,7 +55,7 @@ func TestWebSocketEventContract(t *testing.T) {
 	t.Parallel()
 	events := []wsEvent{
 		{Event: "sync.required", Revision: 7, Topics: allResourceTopics()},
-		{Event: "resources.invalidated", Revision: 8, Topics: []string{"runtime", "ups", "deliveries"}},
+		{Event: "resources.invalidated", Revision: 8, Topics: []string{"runtime", "sources", "deliveries"}},
 	}
 
 	raw, err := json.Marshal(events)
@@ -95,7 +95,7 @@ func TestRESTContentContracts(t *testing.T) {
 		"audit_logs": cursorPageResponse{Items: []state.AuditLog{{
 			ID: 1, OccurredAt: fixed, RequestID: "request-1", Actor: "administrator", SessionID: "session-1",
 			RemoteIP: "192.0.2.1", UserAgent: "contract-test", Action: "up.create", ResourceType: "up", ResourceID: "42",
-			Outcome: state.AuditSuccess, HTTPMethod: http.MethodPost, Route: "/api/v2/ups", StatusCode: http.StatusCreated,
+			Outcome: state.AuditSuccess, HTTPMethod: http.MethodPost, Route: "/api/v3/ups", StatusCode: http.StatusCreated,
 			DurationMS: 5, Details: map[string]any{"enabled": true},
 		}}, Page: cursorPage{}},
 	}

@@ -20,6 +20,10 @@ const (
 	TopicAuditLogs
 	TopicAIStatus
 	TopicAIJobs
+	TopicAccounts
+	TopicSources
+	TopicContents
+	TopicBackfills
 )
 
 type EventBus struct {
