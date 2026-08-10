@@ -947,15 +947,13 @@ func humanBytes(size int64) string {
 	if size < unit {
 		return fmt.Sprintf("%d B", size)
 	}
-	value, suffix := float64(size), "KiB"
-	for _, next := range []string{"MiB", "GiB", "TiB"} {
+	units := []string{"KiB", "MiB", "GiB", "TiB"}
+	value, index := float64(size)/float64(unit), 0
+	for value >= float64(unit) && index < len(units)-1 {
 		value /= float64(unit)
-		if value < float64(unit) {
-			return fmt.Sprintf("%.1f %s", value, suffix)
-		}
-		suffix = next
+		index++
 	}
-	return fmt.Sprintf("%.1f %s", value, suffix)
+	return fmt.Sprintf("%.1f %s", value, units[index])
 }
 
 func commentModels(rows []commentNodeRow) []model.CommentNode {
