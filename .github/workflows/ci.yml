@@ -220,7 +220,7 @@ jobs:
         run: make observability-validate
 
   image:
-    name: Build and smoke-test image
+    name: Build and smoke-test images
     needs: [select-runner, test, observability-config]
     runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
     timeout-minutes: 30
@@ -268,6 +268,7 @@ jobs:
             echo "commit=${GITHUB_SHA}"
             echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "smoke_tag=bili-notify:smoke-${GITHUB_SHA}"
+            echo "worker_smoke_tag=bili-notify-ai-worker:smoke-${GITHUB_SHA}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Build image
@@ -291,6 +292,24 @@ jobs:
         env:
           DOCKER_IMAGE: ${{ steps.build_env.outputs.smoke_tag }}
         run: make docker-smoke-image
+
+      - name: Build AI Worker image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: worker/Dockerfile
+          load: true
+          push: false
+          platforms: linux/amd64
+          tags: ${{ steps.build_env.outputs.worker_smoke_tag }}
+          cache-from: ${{ needs.select-runner.outputs.kind == 'github-hosted' && 'type=gha,scope=bili-notify-ai-worker-linux-amd64' || '' }}
+          cache-to: ${{ needs.select-runner.outputs.kind == 'github-hosted' && 'type=gha,mode=min,scope=bili-notify-ai-worker-linux-amd64,ignore-error=true' || '' }}
+          provenance: false
+
+      - name: Smoke-test AI Worker image
+        env:
+          AI_WORKER_IMAGE: ${{ steps.build_env.outputs.worker_smoke_tag }}
+        run: make worker-docker-smoke-image
 
   ci-gate:
     name: CI Gate

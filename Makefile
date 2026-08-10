@@ -28,7 +28,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/cmd.commit=$(COMMIT) \
 	-X $(MODULE)/cmd.date=$(BUILD_DATE)
 
-.PHONY: help setup frontend-install frontend-contract-check frontend-typecheck frontend-build frontend-bundle-check frontend-lint frontend-test frontend-coverage frontend-audit frontend-quality playwright-install frontend-e2e worker-install worker-lint worker-test worker-check worker-docker-build go-check-ready check-diff check-fmt check-mod workflow-lint check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck ci-check check run docker-build docker-smoke-image docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
+.PHONY: help setup frontend-install frontend-contract-check frontend-typecheck frontend-build frontend-bundle-check frontend-lint frontend-test frontend-coverage frontend-audit frontend-quality playwright-install frontend-e2e worker-install worker-lint worker-test worker-check worker-docker-build worker-docker-smoke-image go-check-ready check-diff check-fmt check-mod workflow-lint check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck ci-check check run docker-build docker-smoke-image docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
 
 help:
 	@printf '%s\n' \
@@ -67,6 +67,7 @@ help:
 		'  worker-install         create worker/.venv and install locked dependencies' \
 		'  worker-check           lint and test the Python AI Worker' \
 		'  worker-docker-build    build AI_WORKER_IMAGE' \
+		'  worker-docker-smoke-image smoke-test an existing AI_WORKER_IMAGE' \
 		'' \
 		'Docker:' \
 		'  docker-build           build DOCKER_IMAGE (default: bili-notify:local)' \
@@ -144,6 +145,9 @@ worker-check: worker-lint worker-test
 
 worker-docker-build:
 	$(DOCKER_BUILD) $(DOCKER_BUILD_FLAGS) -f worker/Dockerfile --tag "$(AI_WORKER_IMAGE)" .
+
+worker-docker-smoke-image:
+	./e2e/worker-docker-smoke.sh "$(AI_WORKER_IMAGE)"
 
 # Playwright and Vitest replace transient directories below web/ui. Finish the
 # ordered frontend gate before `go ... ./...` walks the repository.

@@ -45,8 +45,8 @@ export const resources = {
   startMicrosoftLogin: (csrf: string, channelID: string) => write(`${apiRoot}/channels/${encodeURIComponent(channelID)}/microsoft-login`, microsoftLoginSchema, 'POST', csrf),
   cancelMicrosoftLogin: (csrf: string, channelID: string) => write(`${apiRoot}/channels/${encodeURIComponent(channelID)}/microsoft-login`, emptyResponseSchema, 'DELETE', csrf),
   updateSettings: (csrf: string, settings: RuntimeSettings) => write(`${apiRoot}/settings`, runtimeSettingsSchema, 'PUT', csrf, settings),
-  createAIProfile: (csrf: string, input: AIProfileDraft) => write(`${apiRoot}/ai/profiles`, aiProfileSchema, 'POST', csrf, input),
-  updateAIProfile: (csrf: string, input: AIProfileDraft & { id: string }) => { const { id, ...body } = input; return write(`${apiRoot}/ai/profiles/${encodeURIComponent(id)}`, aiProfileSchema, 'PUT', csrf, body) },
+  createAIProfile: (csrf: string, input: AIProfileDraft) => write(`${apiRoot}/ai/profiles`, aiProfileSchema, 'POST', csrf, aiProfileBody(input)),
+  updateAIProfile: (csrf: string, input: AIProfileDraft & { id: string }) => write(`${apiRoot}/ai/profiles/${encodeURIComponent(input.id)}`, aiProfileSchema, 'PUT', csrf, aiProfileBody(input)),
   deleteAIProfile: (csrf: string, id: string) => write(`${apiRoot}/ai/profiles/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
   testAIProfile: (csrf: string, id: string) => write(`${apiRoot}/ai/profiles/${encodeURIComponent(id)}/test`, workerReachableSchema, 'POST', csrf),
   createAIPrompt: (csrf: string, input: AIPromptDraft) => write(`${apiRoot}/ai/prompts`, aiPromptSchema, 'POST', csrf, input),
@@ -61,4 +61,21 @@ export const resources = {
 
 function write<T>(path: string, schema: z.ZodType<T>, method: string, csrf: string, body?: unknown) {
   return requestJSON(path, schema, { method, csrf, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+}
+
+function aiProfileBody(input: AIProfileDraft): AIProfileDraft {
+  return {
+    name: input.name,
+    kind: input.kind,
+    base_url: input.base_url,
+    model: input.model,
+    api_key: input.api_key,
+    language: input.language,
+    prompt: input.prompt,
+    temperature: input.temperature,
+    max_output_tokens: input.max_output_tokens,
+    context_window_chars: input.context_window_chars,
+    timeout_sec: input.timeout_sec,
+    default: input.default,
+  }
 }

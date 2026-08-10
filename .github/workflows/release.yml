@@ -158,7 +158,7 @@ jobs:
         run: make observability-validate
 
   release:
-    name: Publish verified image
+    name: Publish verified images
     needs: [validate-tag, select-runner, test, observability-config]
     runs-on: ${{ fromJSON(needs.select-runner.outputs.runs-on) }}
     timeout-minutes: 40
@@ -170,6 +170,8 @@ jobs:
     env:
       IMAGE_NAME: dengxinlin/bili-notify
       QUALIFIED_IMAGE_NAME: index.docker.io/dengxinlin/bili-notify
+      AI_WORKER_IMAGE_NAME: dengxinlin/bili-notify-ai-worker
+      QUALIFIED_AI_WORKER_IMAGE_NAME: index.docker.io/dengxinlin/bili-notify-ai-worker
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -200,6 +202,7 @@ jobs:
             echo "commit=${GITHUB_SHA}"
             echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "smoke_tag=bili-notify:release-${GITHUB_SHA}"
+            echo "worker_smoke_tag=bili-notify-ai-worker:release-${GITHUB_SHA}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Compute image tags and labels
@@ -213,12 +216,24 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=latest
 
+      - name: Compute AI Worker image tags and labels
+        id: worker_metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.AI_WORKER_IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
       - name: Build release image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           load: true
           push: false
+          no-cache: true
           platforms: linux/amd64
           tags: ${{ steps.build_env.outputs.smoke_tag }}
           labels: ${{ steps.metadata.outputs.labels }}
@@ -227,14 +242,30 @@ jobs:
             VERSION=${{ steps.build_env.outputs.version }}
             COMMIT=${{ steps.build_env.outputs.commit }}
             BUILD_DATE=${{ steps.build_env.outputs.build_date }}
-          cache-from: ${{ runner.os != 'macOS' && 'type=gha,scope=bili-notify-linux-amd64' || '' }}
-          cache-to: ${{ runner.os != 'macOS' && 'type=gha,mode=min,scope=bili-notify-linux-amd64,ignore-error=true' || '' }}
           provenance: false
 
       - name: Smoke-test release image
         env:
           DOCKER_IMAGE: ${{ steps.build_env.outputs.smoke_tag }}
         run: make docker-smoke-image
+
+      - name: Build AI Worker release image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: worker/Dockerfile
+          load: true
+          push: false
+          no-cache: true
+          platforms: linux/amd64
+          tags: ${{ steps.build_env.outputs.worker_smoke_tag }}
+          labels: ${{ steps.worker_metadata.outputs.labels }}
+          provenance: false
+
+      - name: Smoke-test AI Worker release image
+        env:
+          AI_WORKER_IMAGE: ${{ steps.build_env.outputs.worker_smoke_tag }}
+        run: make worker-docker-smoke-image
 
       - name: Prepare isolated Docker credentials
         shell: bash
@@ -254,7 +285,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Refuse to overwrite an immutable version
+      - name: Refuse to overwrite immutable versions
         env:
           VERSION: ${{ steps.build_env.outputs.version }}
         shell: bash
@@ -263,9 +294,13 @@ jobs:
             echo "${IMAGE_NAME}:${VERSION} already exists and cannot be overwritten" >&2
             exit 1
           fi
+          if docker manifest inspect "${AI_WORKER_IMAGE_NAME}:${VERSION}" >/dev/null 2>&1; then
+            echo "${AI_WORKER_IMAGE_NAME}:${VERSION} already exists and cannot be overwritten" >&2
+            exit 1
+          fi
 
-      - name: Tag and push the tested image
-        id: publish
+      - name: Tag and push the tested application image
+        id: publish_app
         env:
           IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
           SMOKE_TAG: ${{ steps.build_env.outputs.smoke_tag }}
@@ -292,13 +327,51 @@ jobs:
           [[ -n "${pushed_digest}" ]]
           echo "digest=${pushed_digest}" >> "${GITHUB_OUTPUT}"
 
-      - name: Generate SPDX SBOM
+      - name: Tag and push the tested AI Worker image
+        id: publish_worker
+        env:
+          IMAGE_TAGS: ${{ steps.worker_metadata.outputs.tags }}
+          SMOKE_TAG: ${{ steps.build_env.outputs.worker_smoke_tag }}
+        shell: bash
+        run: |
+          image_id="$(docker image inspect --format '{{.Id}}' "${SMOKE_TAG}")"
+          pushed_digest=""
+
+          while IFS= read -r image_tag; do
+            [[ -n "${image_tag}" ]] || continue
+            docker tag "${image_id}" "${image_tag}"
+            push_output="$(docker push "${image_tag}")"
+            printf '%s\n' "${push_output}"
+
+            digest="$(sed -n 's/^.*digest: \(sha256:[0-9a-f]*\).*$/\1/p' <<<"${push_output}" | tail -1)"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+            if [[ -n "${pushed_digest}" && "${digest}" != "${pushed_digest}" ]]; then
+              echo "pushed tags do not reference one image: ${pushed_digest} != ${digest}" >&2
+              exit 1
+            fi
+            pushed_digest="${digest}"
+          done <<<"${IMAGE_TAGS}"
+
+          [[ -n "${pushed_digest}" ]]
+          echo "digest=${pushed_digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate application SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ${{ steps.build_env.outputs.smoke_tag }}
           format: spdx-json
-          output-file: sbom.spdx.json
+          output-file: application-sbom.spdx.json
           artifact-name: bili-notify-${{ steps.build_env.outputs.version }}-sbom.spdx.json
+          upload-artifact-retention: 30
+          upload-release-assets: false
+
+      - name: Generate AI Worker SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.build_env.outputs.worker_smoke_tag }}
+          format: spdx-json
+          output-file: worker-sbom.spdx.json
+          artifact-name: bili-notify-ai-worker-${{ steps.build_env.outputs.version }}-sbom.spdx.json
           upload-artifact-retention: 30
           upload-release-assets: false
 
@@ -307,37 +380,59 @@ jobs:
         with:
           cosign-release: v2.5.2
 
-      - name: Sign image and attach SBOM
+      - name: Sign images and attach SBOMs
         env:
-          DIGEST: ${{ steps.publish.outputs.digest }}
+          APPLICATION_DIGEST: ${{ steps.publish_app.outputs.digest }}
+          WORKER_DIGEST: ${{ steps.publish_worker.outputs.digest }}
         shell: bash
         run: |
-          cosign sign --yes "${QUALIFIED_IMAGE_NAME}@${DIGEST}"
-          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${QUALIFIED_IMAGE_NAME}@${DIGEST}"
+          cosign sign --yes "${QUALIFIED_IMAGE_NAME}@${APPLICATION_DIGEST}"
+          cosign attest --yes --type spdxjson --predicate application-sbom.spdx.json "${QUALIFIED_IMAGE_NAME}@${APPLICATION_DIGEST}"
+          cosign sign --yes "${QUALIFIED_AI_WORKER_IMAGE_NAME}@${WORKER_DIGEST}"
+          cosign attest --yes --type spdxjson --predicate worker-sbom.spdx.json "${QUALIFIED_AI_WORKER_IMAGE_NAME}@${WORKER_DIGEST}"
 
-      - name: Attest build provenance
+      - name: Attest application build provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-name: ${{ env.QUALIFIED_IMAGE_NAME }}
-          subject-digest: ${{ steps.publish.outputs.digest }}
+          subject-digest: ${{ steps.publish_app.outputs.digest }}
+
+      - name: Attest AI Worker build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.QUALIFIED_AI_WORKER_IMAGE_NAME }}
+          subject-digest: ${{ steps.publish_worker.outputs.digest }}
 
       - name: Summarize release
         env:
-          DIGEST: ${{ steps.publish.outputs.digest }}
-          IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
+          APPLICATION_DIGEST: ${{ steps.publish_app.outputs.digest }}
+          APPLICATION_TAGS: ${{ steps.metadata.outputs.tags }}
+          WORKER_DIGEST: ${{ steps.publish_worker.outputs.digest }}
+          WORKER_TAGS: ${{ steps.worker_metadata.outputs.tags }}
         shell: bash
         run: |
           {
-            echo '### Published Docker image'
+            echo '### Published Docker images'
             echo
-            echo "Digest: \`${DIGEST}\`"
+            echo '#### Application'
+            echo
+            echo "Digest: \`${APPLICATION_DIGEST}\`"
             echo
             echo 'Tags:'
             while IFS= read -r image_tag; do
               [[ -n "${image_tag}" ]] && echo "- \`${image_tag}\`"
-            done <<<"${IMAGE_TAGS}"
+            done <<<"${APPLICATION_TAGS}"
             echo
-            echo 'The digest is signed and has SPDX SBOM and build-provenance attestations.'
+            echo '#### AI Worker'
+            echo
+            echo "Digest: \`${WORKER_DIGEST}\`"
+            echo
+            echo 'Tags:'
+            while IFS= read -r image_tag; do
+              [[ -n "${image_tag}" ]] && echo "- \`${image_tag}\`"
+            done <<<"${WORKER_TAGS}"
+            echo
+            echo 'Both digests are signed and have SPDX SBOM and build-provenance attestations.'
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Remove isolated Docker credentials
