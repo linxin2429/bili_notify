@@ -6,6 +6,7 @@ GO_PACKAGES ?= ./...
 GO_TEST_FLAGS ?=
 GO_STABILITY_COUNT ?= 10
 DOCKER_IMAGE ?= bili-notify:local
+AI_WORKER_IMAGE ?= bili-notify-ai-worker:local
 DOCKER_BUILD ?= docker build
 DOCKER_BUILD_FLAGS ?=
 GOPROXY ?= https://mirrors.aliyun.com/goproxy,direct
@@ -27,7 +28,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/cmd.commit=$(COMMIT) \
 	-X $(MODULE)/cmd.date=$(BUILD_DATE)
 
-.PHONY: help setup frontend-install frontend-contract-check frontend-typecheck frontend-build frontend-bundle-check frontend-lint frontend-test frontend-coverage frontend-audit frontend-quality playwright-install frontend-e2e go-check-ready check-diff check-fmt check-mod workflow-lint check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck ci-check check run docker-build docker-smoke-image docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
+.PHONY: help setup frontend-install frontend-contract-check frontend-typecheck frontend-build frontend-bundle-check frontend-lint frontend-test frontend-coverage frontend-audit frontend-quality playwright-install frontend-e2e worker-install worker-lint worker-test worker-check worker-docker-build go-check-ready check-diff check-fmt check-mod workflow-lint check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck ci-check check run docker-build docker-smoke-image docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
 
 help:
 	@printf '%s\n' \
@@ -61,6 +62,11 @@ help:
 		'  frontend-quality       run the ordered frontend quality gate' \
 		'  playwright-install     install Chromium' \
 		'  frontend-e2e           build the UI once and run Playwright tests' \
+		'' \
+		'AI Worker:' \
+		'  worker-install         create worker/.venv and install locked dependencies' \
+		'  worker-check           lint and test the Python AI Worker' \
+		'  worker-docker-build    build AI_WORKER_IMAGE' \
 		'' \
 		'Docker:' \
 		'  docker-build           build DOCKER_IMAGE (default: bili-notify:local)' \
@@ -123,6 +129,21 @@ playwright-install: frontend-install
 
 frontend-e2e: frontend-quality playwright-install
 	npm --prefix web/ui run test:e2e:run
+
+worker-install:
+	python3 -m venv worker/.venv
+	worker/.venv/bin/pip install -r worker/requirements.lock -r worker/requirements-dev.lock
+
+worker-lint: worker-install
+	worker/.venv/bin/ruff check worker
+
+worker-test: worker-install
+	PYTHONPATH=worker worker/.venv/bin/pytest worker/tests
+
+worker-check: worker-lint worker-test
+
+worker-docker-build:
+	$(DOCKER_BUILD) $(DOCKER_BUILD_FLAGS) -f worker/Dockerfile --tag "$(AI_WORKER_IMAGE)" .
 
 # Playwright and Vitest replace transient directories below web/ui. Finish the
 # ordered frontend gate before `go ... ./...` walks the repository.
@@ -223,7 +244,7 @@ vet: frontend-build
 vulncheck: frontend-build
 	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go tool govulncheck $(GO_PACKAGES)
 
-ci-check: check-diff check-fmt check-mod workflow-lint go-check-ready check-coverage-race check-vet check-vulncheck
+ci-check: check-diff check-fmt check-mod workflow-lint worker-check go-check-ready check-coverage-race check-vet check-vulncheck
 
 check: build ci-check
 

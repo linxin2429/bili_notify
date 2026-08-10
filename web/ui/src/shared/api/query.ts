@@ -16,4 +16,9 @@ export const queries = {
   comments: (query: ContentQuery) => queryOptions({ queryKey: queryKeys.comments(query), queryFn: ({ signal }) => resources.comments(query, signal), staleTime: 10_000 }),
   comment: (rpid: string) => queryOptions({ queryKey: queryKeys.comment(rpid), queryFn: ({ signal }) => resources.comment(rpid, signal), enabled: Boolean(rpid) }),
   auditLogs: (query: AuditQuery) => queryOptions({ queryKey: queryKeys.auditLogs(query), queryFn: ({ signal }) => resources.auditLogs(query, signal), staleTime: 10_000 }),
+  aiStatus: () => queryOptions({ queryKey: queryKeys.aiStatus, queryFn: ({ signal }) => resources.aiStatus(signal), staleTime: 5_000, refetchInterval: 10_000 }),
+  aiProfiles: () => queryOptions({ queryKey: queryKeys.aiProfiles, queryFn: ({ signal }) => resources.aiProfiles(signal), staleTime: 30_000 }),
+  aiPrompts: () => queryOptions({ queryKey: queryKeys.aiPrompts, queryFn: ({ signal }) => resources.aiPrompts(signal), staleTime: 30_000 }),
+  aiJobs: (query: { kind?: string; state?: string; limit?: number; offset?: number } = {}) => queryOptions({ queryKey: queryKeys.aiJobs(query), queryFn: ({ signal }) => resources.aiJobs(query, signal), staleTime: 2_000, refetchInterval: 5_000 }),
+  aiJob: (id: string) => queryOptions({ queryKey: queryKeys.aiJob(id), queryFn: ({ signal }) => resources.aiJob(id, signal), enabled: Boolean(id), refetchInterval: query => query.state.data && ['queued', 'running'].includes(query.state.data.state) ? 2_000 : false }),
 }

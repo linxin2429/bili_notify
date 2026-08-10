@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package bilinotify.ai.v1;
+
+option go_package = "github.com/linxin2429/bili_notify/internal/aiworkerpb;aiworkerpb";
+
+import "google/protobuf/struct.proto";
+
+service AIWorker {
+  rpc GetCapabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+  rpc Transcribe(TranscribeRequest) returns (stream WorkerEvent);
+  rpc Summarize(SummaryRequest) returns (stream WorkerEvent);
+}
+
+message CapabilitiesRequest {}
+
+message CapabilitiesResponse {
+  string version = 1;
+  bool yt_dlp_available = 2;
+  bool ffmpeg_available = 3;
+  int32 active_transcriptions = 4;
+  int32 active_summaries = 5;
+  int64 cache_bytes = 6;
+}
+
+message ProviderConfig {
+  string base_url = 1;
+  string api_key = 2;
+  string model = 3;
+  string language = 4;
+  string prompt = 5;
+  double temperature = 6;
+  int32 max_output_tokens = 7;
+  int32 context_window_chars = 8;
+  int32 timeout_sec = 9;
+}
+
+message TranscribeRequest {
+  string job_id = 1;
+  string bvid = 2;
+  int32 page = 3;
+  map<string, string> cookies = 4;
+  ProviderConfig provider = 5;
+  int64 failure_cache_ttl_sec = 6;
+  int64 cache_max_bytes = 7;
+}
+
+message SummaryRequest {
+  string job_id = 1;
+  string text = 2;
+  ProviderConfig provider = 3;
+  string system_prompt = 4;
+  string chunk_prompt = 5;
+  string reduce_prompt = 6;
+}
+
+message Progress {
+  string stage = 1;
+  int32 percent = 2;
+  string message = 3;
+}
+
+message TranscriptSegment {
+  int64 start_ms = 1;
+  int64 end_ms = 2;
+  string text = 3;
+}
+
+message TranscriptPage {
+  int32 page = 1;
+  string cid = 2;
+  string title = 3;
+  int64 duration_ms = 4;
+  repeated TranscriptSegment segments = 5;
+}
+
+message TranscriptionResult {
+  string bvid = 1;
+  string title = 2;
+  repeated TranscriptPage pages = 3;
+  google.protobuf.Struct usage = 4;
+}
+
+message SummaryResult {
+  string markdown = 1;
+  google.protobuf.Struct usage = 2;
+}
+
+message Warning {
+  string code = 1;
+  string message = 2;
+}
+
+message WorkerEvent {
+  oneof event {
+    Progress progress = 1;
+    TranscriptionResult transcription = 2;
+    SummaryResult summary = 3;
+    Warning warning = 4;
+  }
+}

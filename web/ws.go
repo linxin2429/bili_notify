@@ -288,6 +288,7 @@ func allResourceTopics() []string {
 	return []string{
 		"runtime", "settings", "ups", "channels", "deliveries",
 		"bilibili-login", "microsoft-logins", "dynamics", "comments", "audit-logs",
+		"ai-status", "ai-jobs",
 	}
 }
 
@@ -307,6 +308,8 @@ func resourceTopics(topics service.Topic) []string {
 		{service.TopicDynamics, "dynamics"},
 		{service.TopicComments, "comments"},
 		{service.TopicAuditLogs, "audit-logs"},
+		{service.TopicAIStatus, "ai-status"},
+		{service.TopicAIJobs, "ai-jobs"},
 	} {
 		if topics&topic.mask != 0 {
 			resources = append(resources, topic.name)

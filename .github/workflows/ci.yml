@@ -81,6 +81,14 @@ jobs:
           cache: ${{ needs.select-runner.outputs.kind == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: web/ui/package-lock.json
 
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+          cache: ${{ needs.select-runner.outputs.kind == 'github-hosted' && 'pip' || '' }}
+          cache-dependency-path: |
+            worker/requirements.lock
+            worker/requirements-dev.lock
+
       - name: Cache Playwright browsers
         if: needs.select-runner.outputs.kind == 'github-hosted'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6

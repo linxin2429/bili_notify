@@ -13,6 +13,7 @@ services:
       BILI_NOTIFY_DATA_DIR: /data
       BILI_NOTIFY_ADMIN_ADDR: ":8443"
       BILI_NOTIFY_OBSERVE_ADDR: ":9090"
+      BILI_NOTIFY_AI_WORKER_SOCKET: /run/bili-notify/ai-worker.sock
       BILI_NOTIFY_LOG_LEVEL: ${BILI_NOTIFY_LOG_LEVEL:-info}
       BILI_NOTIFY_AUDIT_LOG_RETENTION: ${BILI_NOTIFY_AUDIT_LOG_RETENTION:-4320h}
       BILI_NOTIFY_POLL_INTERVAL: ${BILI_NOTIFY_POLL_INTERVAL:-30s}
@@ -26,6 +27,7 @@ services:
       BILI_NOTIFY_OTEL_DEPLOYMENT_ENVIRONMENT: production
     volumes:
       - bili-notify-data:/data
+      - bili-notify-ai-socket:/run/bili-notify
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -40,6 +42,22 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+
+  ai-worker:
+    image: dengxinlin/bili-notify-ai-worker:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      BILI_NOTIFY_AI_WORKER_SOCKET: /run/bili-notify/ai-worker.sock
+      BILI_NOTIFY_AI_CACHE_DIR: /cache
+    volumes:
+      - bili-notify-ai-socket:/run/bili-notify
+      - bili-notify-ai-cache:/cache
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.158.0
@@ -102,6 +120,8 @@ services:
 
 volumes:
   bili-notify-data:
+  bili-notify-ai-socket:
+  bili-notify-ai-cache:
   bili-notify-otelcol:
   bili-notify-prometheus:
   bili-notify-loki:

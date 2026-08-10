@@ -12,6 +12,11 @@ const (
 	authSessionID          = "session"
 	tableChannels          = "channels"
 	tableAuthSession       = "auth_session"
+	tableAIProfiles        = "ai_profiles"
+	tableAIPrompts         = "ai_prompt_templates"
+	tableAIJobInput        = "ai_jobs.input"
+	tableAIJobConfig       = "ai_jobs.config"
+	tableAIJobResult       = "ai_jobs.result"
 )
 
 type metaRow struct {
@@ -90,6 +95,52 @@ type authSessionRow struct {
 }
 
 func (authSessionRow) TableName() string { return tableAuthSession }
+
+type aiProfileRow struct {
+	ID        string `gorm:"column:id;primaryKey"`
+	Kind      string `gorm:"column:kind;not null"`
+	Name      string `gorm:"column:name;not null"`
+	Default   int    `gorm:"column:is_default;not null;default:0"`
+	Sealed    []byte `gorm:"column:sealed;not null"`
+	CreatedAt int64  `gorm:"column:created_at;not null"`
+	UpdatedAt int64  `gorm:"column:updated_at;not null"`
+}
+
+func (aiProfileRow) TableName() string { return tableAIProfiles }
+
+type aiPromptRow struct {
+	ID        string `gorm:"column:id;primaryKey"`
+	Name      string `gorm:"column:name;not null"`
+	Default   int    `gorm:"column:is_default;not null;default:0"`
+	Sealed    []byte `gorm:"column:sealed;not null"`
+	CreatedAt int64  `gorm:"column:created_at;not null"`
+	UpdatedAt int64  `gorm:"column:updated_at;not null"`
+}
+
+func (aiPromptRow) TableName() string { return tableAIPrompts }
+
+type aiJobRow struct {
+	ID              string `gorm:"column:id;primaryKey"`
+	ClientRequestID string `gorm:"column:client_request_id;not null"`
+	Kind            string `gorm:"column:kind;not null"`
+	State           string `gorm:"column:state;not null"`
+	Stage           string `gorm:"column:stage;not null;default:''"`
+	Progress        int    `gorm:"column:progress;not null;default:0"`
+	ProfileID       string `gorm:"column:profile_id;not null"`
+	PromptID        string `gorm:"column:prompt_id;not null;default:''"`
+	Attempts        int    `gorm:"column:attempts;not null;default:0"`
+	ErrorCode       string `gorm:"column:error_code;not null;default:''"`
+	LastError       string `gorm:"column:last_error;not null;default:''"`
+	InputSealed     []byte `gorm:"column:input_sealed;not null"`
+	ConfigSealed    []byte `gorm:"column:config_sealed;not null"`
+	ResultSealed    []byte `gorm:"column:result_sealed"`
+	CreatedAt       int64  `gorm:"column:created_at;not null"`
+	StartedAt       *int64 `gorm:"column:started_at"`
+	FinishedAt      *int64 `gorm:"column:finished_at"`
+	UpdatedAt       int64  `gorm:"column:updated_at;not null"`
+}
+
+func (aiJobRow) TableName() string { return "ai_jobs" }
 
 type biliFeedStateRow struct {
 	AccountUID     string `gorm:"column:account_uid;primaryKey"`

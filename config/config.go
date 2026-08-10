@@ -14,12 +14,13 @@ import (
 )
 
 const (
-	DataFileName      = "data.db"
-	LegacyStateFile   = "state.db"
-	LegacyContentFile = "content.db"
-	MasterKeyFileName = "master.key"
-	TLSFileName       = "tls.pem"
-	MediaDirName      = "media"
+	DataFileName          = "data.db"
+	LegacyStateFile       = "state.db"
+	LegacyContentFile     = "content.db"
+	MasterKeyFileName     = "master.key"
+	TLSFileName           = "tls.pem"
+	MediaDirName          = "media"
+	DefaultAIWorkerSocket = "/run/bili-notify/ai-worker.sock"
 )
 
 // Config contains process startup settings.
@@ -31,6 +32,7 @@ type Config struct {
 	DataDir                         string        `mapstructure:"data_dir"`
 	AdminAddr                       string        `mapstructure:"admin_addr"`
 	ObserveAddr                     string        `mapstructure:"observe_addr"`
+	AIWorkerSocket                  string        `mapstructure:"ai_worker_socket"`
 	PollInterval                    time.Duration `mapstructure:"poll_interval"`
 	RequestRate                     float64       `mapstructure:"request_rate"`
 	RequestConcurrency              int           `mapstructure:"request_concurrency"`
@@ -45,6 +47,13 @@ type Config struct {
 	OTelExporterOTLPMetricsProtocol string        `mapstructure:"otel_exporter_otlp_metrics_protocol"`
 	OTelExporterOTLPLogsProtocol    string        `mapstructure:"otel_exporter_otlp_logs_protocol"`
 	OTelMetricExportInterval        time.Duration `mapstructure:"otel_metric_export_interval"`
+}
+
+func (c Config) EffectiveAIWorkerSocket() string {
+	if value := strings.TrimSpace(c.AIWorkerSocket); value != "" {
+		return value
+	}
+	return DefaultAIWorkerSocket
 }
 
 func (c Config) Validate() error {

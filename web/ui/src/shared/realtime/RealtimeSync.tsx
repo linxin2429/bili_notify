@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { createContext, useContext, useEffect, useState } from 'react'
-import type { ConnectionState, RealtimeTopic } from '../api/types'
+import { parseRealtimeEnvelope } from '../api/realtime-contract'
+import type { ConnectionState } from '../api/types'
 import { sessionAPI } from '../api/session'
 import { isSessionReplacementPending } from '../api/session-cache'
 import { invalidateTopics, queryKeys } from '../api/query-keys'
@@ -36,7 +37,7 @@ export function RealtimeSync({ children, onAuthenticationLost, onProtocolError }
         const envelope = parseEnvelope(safeJSON(event.data))
         if (!envelope) {
           onProtocolError('实时消息不符合 API 契约，已切换为 REST 重新同步')
-          socket?.close(1002, 'invalid protocol')
+          socket?.close(4002, 'invalid application message')
           return
         }
         if (envelope.revision < revision) return
@@ -71,10 +72,6 @@ function safeJSON(raw: unknown): unknown {
   try { return JSON.parse(String(raw)) } catch { return null }
 }
 
-const topicSet = new Set<RealtimeTopic>(['runtime', 'settings', 'ups', 'channels', 'deliveries', 'bilibili-login', 'microsoft-logins', 'dynamics', 'comments', 'audit-logs'])
-export function parseEnvelope(value: unknown): { event: 'sync.required' | 'resources.invalidated'; revision: number; topics: RealtimeTopic[] } | null {
-  if (!value || typeof value !== 'object') return null
-  const data = value as Record<string, unknown>
-  if (Object.keys(data).some(key => !['event', 'revision', 'topics'].includes(key)) || (data.event !== 'sync.required' && data.event !== 'resources.invalidated') || !Number.isSafeInteger(data.revision) || (data.revision as number) < 0 || !Array.isArray(data.topics) || !data.topics.every(topic => typeof topic === 'string' && topicSet.has(topic as RealtimeTopic))) return null
-  return { event: data.event, revision: data.revision as number, topics: data.topics as RealtimeTopic[] }
+export function parseEnvelope(value: unknown) {
+  return parseRealtimeEnvelope(value)
 }

@@ -18,6 +18,7 @@ tags:
   - name: login
   - name: history
   - name: audit
+  - name: ai
 paths:
   /api/v2/session:
     get:
@@ -682,6 +683,146 @@ paths:
           $ref: '#/components/responses/AuthenticationError'
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/v2/ai/status:
+    get:
+      tags: [ai]
+      operationId: getAIWorkerStatus
+      responses:
+        '200': {description: Current AI Worker capabilities., content: {application/json: {schema: {$ref: '#/components/schemas/AIWorkerStatus'}}}}
+        '401': {$ref: '#/components/responses/AuthenticationError'}
+  /api/v2/ai/profiles:
+    get:
+      tags: [ai]
+      operationId: listAIProfiles
+      responses:
+        '200': {description: Model profiles without secret values., content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/AIProfile'}}}}}
+    post:
+      tags: [ai]
+      operationId: createAIProfile
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AIProfileInput'}}}}
+      responses:
+        '201': {description: Created model profile., content: {application/json: {schema: {$ref: '#/components/schemas/AIProfile'}}}}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+  /api/v2/ai/profiles/{id}:
+    parameters: [{$ref: '#/components/parameters/AIID'}]
+    put:
+      tags: [ai]
+      operationId: updateAIProfile
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AIProfileInput'}}}}
+      responses:
+        '200': {description: Updated model profile., content: {application/json: {schema: {$ref: '#/components/schemas/AIProfile'}}}}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+    delete:
+      tags: [ai]
+      operationId: deleteAIProfile
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      responses:
+        '204': {description: Profile deleted.}
+        '409': {$ref: '#/components/responses/ConflictError'}
+  /api/v2/ai/profiles/{id}/test:
+    parameters: [{$ref: '#/components/parameters/AIID'}]
+    post:
+      tags: [ai]
+      operationId: testAIProfile
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      responses:
+        '200': {description: Worker is reachable., content: {application/json: {schema: {type: object, additionalProperties: false, required: [status], properties: {status: {const: worker_reachable}}}}}}
+        '502': {$ref: '#/components/responses/InternalError'}
+  /api/v2/ai/prompts:
+    get:
+      tags: [ai]
+      operationId: listAIPrompts
+      responses:
+        '200': {description: Summary prompt templates., content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/AIPrompt'}}}}}
+    post:
+      tags: [ai]
+      operationId: createAIPrompt
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AIPromptInput'}}}}
+      responses:
+        '201': {description: Created prompt., content: {application/json: {schema: {$ref: '#/components/schemas/AIPrompt'}}}}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+  /api/v2/ai/prompts/{id}:
+    parameters: [{$ref: '#/components/parameters/AIID'}]
+    put:
+      tags: [ai]
+      operationId: updateAIPrompt
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AIPromptInput'}}}}
+      responses:
+        '200': {description: Updated prompt., content: {application/json: {schema: {$ref: '#/components/schemas/AIPrompt'}}}}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+    delete:
+      tags: [ai]
+      operationId: deleteAIPrompt
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      responses:
+        '204': {description: Prompt deleted.}
+        '409': {$ref: '#/components/responses/ConflictError'}
+  /api/v2/ai/transcriptions:
+    post:
+      tags: [ai]
+      operationId: createAITranscription
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AITranscriptionInput'}}}}
+      responses:
+        '202': {description: Durable transcription job., content: {application/json: {schema: {$ref: '#/components/schemas/AIJob'}}}}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+  /api/v2/ai/summaries:
+    post:
+      tags: [ai]
+      operationId: createAISummary
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AISummaryInput'}}}}
+      responses:
+        '202': {description: Durable summary job., content: {application/json: {schema: {$ref: '#/components/schemas/AIJob'}}}}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+  /api/v2/ai/jobs:
+    get:
+      tags: [ai]
+      operationId: listAIJobs
+      parameters:
+        - {name: kind, in: query, schema: {type: string, enum: [transcription, summary]}}
+        - {name: state, in: query, schema: {type: string, enum: [queued, running, succeeded, failed, canceled]}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
+      responses:
+        '200': {description: AI job page; list entries omit encrypted input and result., content: {application/json: {schema: {$ref: '#/components/schemas/AIJobPage'}}}}
+  /api/v2/ai/jobs/{id}:
+    parameters: [{$ref: '#/components/parameters/AIID'}]
+    get:
+      tags: [ai]
+      operationId: getAIJob
+      responses:
+        '200': {description: AI job detail including decrypted input and result., content: {application/json: {schema: {$ref: '#/components/schemas/AIJob'}}}}
+        '404': {$ref: '#/components/responses/NotFoundError'}
+    delete:
+      tags: [ai]
+      operationId: deleteAIJob
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      responses:
+        '204': {description: Terminal job deleted.}
+        '409': {$ref: '#/components/responses/ConflictError'}
+  /api/v2/ai/jobs/{id}/cancel:
+    parameters: [{$ref: '#/components/parameters/AIID'}]
+    post:
+      tags: [ai]
+      operationId: cancelAIJob
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      responses:
+        '202': {description: Cancellation accepted., content: {application/json: {schema: {type: object, additionalProperties: false, required: [status], properties: {status: {const: canceled}}}}}}
+        '409': {$ref: '#/components/responses/ConflictError'}
+  /api/v2/ai/jobs/{id}/retry:
+    parameters: [{$ref: '#/components/parameters/AIID'}]
+    post:
+      tags: [ai]
+      operationId: retryAIJob
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      responses:
+        '202': {description: Job queued again., content: {application/json: {schema: {$ref: '#/components/schemas/QueuedStatus'}}}}
+        '409': {$ref: '#/components/responses/ConflictError'}
   /api/v2/ws:
     get:
       tags: [runtime]
@@ -724,6 +865,11 @@ components:
       required: true
       schema: {type: string, minLength: 1}
     DeliveryID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, minLength: 1}
+    AIID:
       name: id
       in: path
       required: true
@@ -1404,6 +1550,154 @@ components:
         details:
           type: object
           additionalProperties: true
+    AIWorkerStatus:
+      type: object
+      additionalProperties: false
+      required: [connected, yt_dlp_available, ffmpeg_available, active_transcriptions, active_summaries, cache_bytes]
+      properties:
+        connected: {type: boolean}
+        version: {type: string}
+        yt_dlp_available: {type: boolean}
+        ffmpeg_available: {type: boolean}
+        active_transcriptions: {type: integer}
+        active_summaries: {type: integer}
+        cache_bytes: {type: integer, format: int64}
+        last_checked_at: {type: string, format: date-time}
+        last_error: {type: string}
+    AIProfileInput:
+      type: object
+      additionalProperties: false
+      required: [name, kind, base_url, model, timeout_sec, default]
+      properties:
+        name: {type: string, minLength: 1}
+        kind: {type: string, enum: [transcription, text]}
+        base_url: {type: string, format: uri}
+        model: {type: string, minLength: 1}
+        api_key: {type: string, writeOnly: true}
+        language: {type: string}
+        prompt: {type: string}
+        temperature: {type: number, minimum: 0, maximum: 2}
+        max_output_tokens: {type: integer, minimum: 0}
+        context_window_chars: {type: integer, minimum: 0}
+        timeout_sec: {type: integer, minimum: 10, maximum: 86400}
+        default: {type: boolean}
+    AIProfile:
+      allOf:
+        - $ref: '#/components/schemas/AIProfileInput'
+        - type: object
+          required: [id, configured_secrets, created_at, updated_at]
+          properties:
+            id: {type: string}
+            configured_secrets: {type: array, items: {type: string, enum: [api_key]}}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
+    AIPromptInput:
+      type: object
+      additionalProperties: false
+      required: [name, system_prompt, chunk_prompt, reduce_prompt, default]
+      properties:
+        name: {type: string, minLength: 1}
+        system_prompt: {type: string}
+        chunk_prompt: {type: string, minLength: 1}
+        reduce_prompt: {type: string, minLength: 1}
+        default: {type: boolean}
+    AIPrompt:
+      allOf:
+        - $ref: '#/components/schemas/AIPromptInput'
+        - type: object
+          required: [id, created_at, updated_at]
+          properties:
+            id: {type: string}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
+    AITranscriptionInput:
+      type: object
+      additionalProperties: false
+      required: [client_request_id, bvid, profile_id]
+      properties:
+        client_request_id: {type: string, minLength: 1}
+        bvid: {type: string, pattern: '^BV[0-9A-Za-z]{10}$'}
+        page: {type: integer, minimum: 0}
+        profile_id: {type: string, minLength: 1}
+    AISummaryInput:
+      type: object
+      additionalProperties: false
+      required: [client_request_id, profile_id, prompt_id]
+      properties:
+        client_request_id: {type: string, minLength: 1}
+        text: {type: string}
+        transcription_job_id: {type: string}
+        profile_id: {type: string, minLength: 1}
+        prompt_id: {type: string, minLength: 1}
+    AITranscriptSegment:
+      type: object
+      additionalProperties: false
+      required: [start_ms, end_ms, text]
+      properties:
+        start_ms: {type: integer, format: int64, minimum: 0}
+        end_ms: {type: integer, format: int64, minimum: 0}
+        text: {type: string}
+    AITranscriptionResult:
+      type: object
+      additionalProperties: false
+      required: [bvid, title, pages]
+      properties:
+        bvid: {type: string}
+        title: {type: string}
+        pages:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [page, title, duration_ms, segments]
+            properties:
+              page: {type: integer, minimum: 1}
+              cid: {type: string}
+              title: {type: string}
+              duration_ms: {type: integer, format: int64, minimum: 0}
+              segments: {type: array, items: {$ref: '#/components/schemas/AITranscriptSegment'}}
+        usage: {type: object, additionalProperties: true}
+    AISummaryResult:
+      type: object
+      additionalProperties: false
+      required: [markdown]
+      properties:
+        markdown: {type: string}
+        usage: {type: object, additionalProperties: true}
+    AIJob:
+      type: object
+      additionalProperties: false
+      required: [id, kind, state, stage, progress, profile_id, attempts, created_at, updated_at]
+      properties:
+        id: {type: string}
+        client_request_id: {type: string}
+        kind: {type: string, enum: [transcription, summary]}
+        state: {type: string, enum: [queued, running, succeeded, failed, canceled]}
+        stage: {type: string}
+        progress: {type: integer, minimum: 0, maximum: 100}
+        profile_id: {type: string}
+        prompt_id: {type: string}
+        attempts: {type: integer, minimum: 0}
+        error_code: {type: string}
+        last_error: {type: string}
+        input: {type: object, additionalProperties: true}
+        result:
+          oneOf:
+            - $ref: '#/components/schemas/AITranscriptionResult'
+            - $ref: '#/components/schemas/AISummaryResult'
+        created_at: {type: string, format: date-time}
+        started_at: {type: string, format: date-time}
+        finished_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AIJobPage:
+      type: object
+      additionalProperties: false
+      required: [items, total, limit, offset]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AIJob'}}
+        total: {type: integer, format: int64, minimum: 0}
+        limit: {type: integer, minimum: 1}
+        offset: {type: integer, minimum: 0}
     RealtimeEvent:
       type: object
       additionalProperties: false
@@ -1432,3 +1726,5 @@ components:
               - dynamics
               - comments
               - audit-logs
+              - ai-status
+              - ai-jobs

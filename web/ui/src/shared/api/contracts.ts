@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { components } from './generated/schema'
+import { realtimeTopics } from './realtime-contract'
 
 type Schemas = components['schemas']
 
@@ -129,9 +130,38 @@ export const sentStatusSchema = z.object({ status: z.literal('sent') }).strict()
 export const queuedStatusSchema = z.object({ status: z.literal('queued') }).strict() satisfies z.ZodType<Schemas['QueuedStatus']>
 export const emptyResponseSchema = z.undefined()
 
-export const realtimeTopicSchema = z.enum([
-  'runtime', 'settings', 'ups', 'channels', 'deliveries', 'bilibili-login', 'microsoft-logins', 'dynamics', 'comments', 'audit-logs',
-])
+export const aiWorkerStatusSchema = z.object({
+  connected: z.boolean(), version: z.string().optional(), yt_dlp_available: z.boolean(), ffmpeg_available: z.boolean(),
+  active_transcriptions: z.number().int(), active_summaries: z.number().int(), cache_bytes: z.number().int(),
+  last_checked_at: z.string().optional(), last_error: z.string().optional(),
+}).strict()
+export const aiProfileSchema = z.object({
+  id: z.string(), name: z.string(), kind: z.enum(['transcription', 'text']), base_url: z.string(), model: z.string(),
+  language: z.string().optional(), prompt: z.string().optional(), temperature: z.number().optional(), max_output_tokens: z.number().int().optional(),
+  context_window_chars: z.number().int().optional(), timeout_sec: z.number().int(), default: z.boolean(), configured_secrets: z.array(z.string()),
+  created_at: z.string(), updated_at: z.string(),
+}).strict()
+export const aiPromptSchema = z.object({
+  id: z.string(), name: z.string(), system_prompt: z.string(), chunk_prompt: z.string(), reduce_prompt: z.string(),
+  default: z.boolean(), created_at: z.string(), updated_at: z.string(),
+}).strict()
+export const aiSegmentSchema = z.object({ start_ms: z.number().int(), end_ms: z.number().int(), text: z.string() }).strict()
+export const aiTranscriptionResultSchema = z.object({
+  bvid: z.string(), title: z.string(), pages: z.array(z.object({ page: z.number().int(), cid: z.string().optional(), title: z.string(), duration_ms: z.number().int(), segments: z.array(aiSegmentSchema) }).strict()), usage: z.record(z.string(), z.unknown()).optional(),
+}).strict()
+export const aiSummaryResultSchema = z.object({ markdown: z.string(), usage: z.record(z.string(), z.unknown()).optional() }).strict()
+export const aiJobSchema = z.object({
+  id: z.string(), client_request_id: z.string().optional(), kind: z.enum(['transcription', 'summary']),
+  state: z.enum(['queued', 'running', 'succeeded', 'failed', 'canceled']), stage: z.string(), progress: z.number().int(),
+  profile_id: z.string(), prompt_id: z.string().optional(), attempts: z.number().int(), error_code: z.string().optional(), last_error: z.string().optional(),
+  input: z.unknown().optional(), result: z.union([aiTranscriptionResultSchema, aiSummaryResultSchema]).optional(),
+  created_at: z.string(), started_at: z.string().optional(), finished_at: z.string().optional(), updated_at: z.string(),
+}).strict()
+export const aiJobPageSchema = z.object({ items: z.array(aiJobSchema), total: z.number().int(), limit: z.number().int(), offset: z.number().int() }).strict()
+export const canceledStatusSchema = z.object({ status: z.literal('canceled') }).strict()
+export const workerReachableSchema = z.object({ status: z.literal('worker_reachable') }).strict()
+
+export const realtimeTopicSchema = z.enum(realtimeTopics)
 export const websocketEnvelopeSchema = z.object({
   event: z.enum(['sync.required', 'resources.invalidated']),
   revision: z.number().int().nonnegative(),

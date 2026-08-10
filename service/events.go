@@ -18,6 +18,8 @@ const (
 	TopicDynamics
 	TopicComments
 	TopicAuditLogs
+	TopicAIStatus
+	TopicAIJobs
 )
 
 type EventBus struct {

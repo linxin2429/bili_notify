@@ -134,7 +134,7 @@ func TestWebSocketPublishesEveryTopicWithOneRevision(t *testing.T) {
 
 	allTopics := service.TopicStatus | service.TopicUPs | service.TopicChannels | service.TopicDeliveries |
 		service.TopicBiliLogin | service.TopicMicrosoftLogin | service.TopicSettings | service.TopicDynamics |
-		service.TopicComments | service.TopicAuditLogs
+		service.TopicComments | service.TopicAuditLogs | service.TopicAIStatus | service.TopicAIJobs
 	revision := fixture.events.Publish(allTopics)
 	var envelope testWSEnvelope
 	require.NoError(t, wsjson.Read(ctx, connection, &envelope))

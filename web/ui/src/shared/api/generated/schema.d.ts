@@ -375,6 +375,210 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/ai/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAIWorkerStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/ai/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAIProfiles"];
+        put?: never;
+        post: operations["createAIProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/ai/profiles/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["updateAIProfile"];
+        post?: never;
+        delete: operations["deleteAIProfile"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/ai/profiles/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["testAIProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/ai/prompts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAIPrompts"];
+        put?: never;
+        post: operations["createAIPrompt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/ai/prompts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["updateAIPrompt"];
+        post?: never;
+        delete: operations["deleteAIPrompt"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/ai/transcriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createAITranscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/ai/summaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createAISummary"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/ai/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAIJobs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/ai/jobs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        get: operations["getAIJob"];
+        put?: never;
+        post?: never;
+        delete: operations["deleteAIJob"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/ai/jobs/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelAIJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/ai/jobs/{id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retryAIJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/ws": {
         parameters: {
             query?: never;
@@ -739,12 +943,138 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        AIWorkerStatus: {
+            connected: boolean;
+            version?: string;
+            yt_dlp_available: boolean;
+            ffmpeg_available: boolean;
+            active_transcriptions: number;
+            active_summaries: number;
+            /** Format: int64 */
+            cache_bytes: number;
+            /** Format: date-time */
+            last_checked_at?: string;
+            last_error?: string;
+        };
+        AIProfileInput: {
+            name: string;
+            /** @enum {string} */
+            kind: "transcription" | "text";
+            /** Format: uri */
+            base_url: string;
+            model: string;
+            api_key?: string;
+            language?: string;
+            prompt?: string;
+            temperature?: number;
+            max_output_tokens?: number;
+            context_window_chars?: number;
+            timeout_sec: number;
+            default: boolean;
+        };
+        AIProfile: components["schemas"]["AIProfileInput"] & {
+            id: string;
+            configured_secrets: "api_key"[];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AIPromptInput: {
+            name: string;
+            system_prompt: string;
+            chunk_prompt: string;
+            reduce_prompt: string;
+            default: boolean;
+        };
+        AIPrompt: components["schemas"]["AIPromptInput"] & {
+            id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AITranscriptionInput: {
+            client_request_id: string;
+            bvid: string;
+            page?: number;
+            profile_id: string;
+        };
+        AISummaryInput: {
+            client_request_id: string;
+            text?: string;
+            transcription_job_id?: string;
+            profile_id: string;
+            prompt_id: string;
+        };
+        AITranscriptSegment: {
+            /** Format: int64 */
+            start_ms: number;
+            /** Format: int64 */
+            end_ms: number;
+            text: string;
+        };
+        AITranscriptionResult: {
+            bvid: string;
+            title: string;
+            pages: {
+                page: number;
+                cid?: string;
+                title: string;
+                /** Format: int64 */
+                duration_ms: number;
+                segments: components["schemas"]["AITranscriptSegment"][];
+            }[];
+            usage?: {
+                [key: string]: unknown;
+            };
+        };
+        AISummaryResult: {
+            markdown: string;
+            usage?: {
+                [key: string]: unknown;
+            };
+        };
+        AIJob: {
+            id: string;
+            client_request_id?: string;
+            /** @enum {string} */
+            kind: "transcription" | "summary";
+            /** @enum {string} */
+            state: "queued" | "running" | "succeeded" | "failed" | "canceled";
+            stage: string;
+            progress: number;
+            profile_id: string;
+            prompt_id?: string;
+            attempts: number;
+            error_code?: string;
+            last_error?: string;
+            input?: {
+                [key: string]: unknown;
+            };
+            result?: components["schemas"]["AITranscriptionResult"] | components["schemas"]["AISummaryResult"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            started_at?: string;
+            /** Format: date-time */
+            finished_at?: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AIJobPage: {
+            items: components["schemas"]["AIJob"][];
+            /** Format: int64 */
+            total: number;
+            limit: number;
+            offset: number;
+        };
         RealtimeEvent: {
             /** @enum {string} */
             event: "sync.required" | "resources.invalidated";
             /** Format: int64 */
             revision: number;
-            topics: ("runtime" | "settings" | "ups" | "channels" | "deliveries" | "bilibili-login" | "microsoft-logins" | "dynamics" | "comments" | "audit-logs")[];
+            topics: ("runtime" | "settings" | "ups" | "channels" | "deliveries" | "bilibili-login" | "microsoft-logins" | "dynamics" | "comments" | "audit-logs" | "ai-status" | "ai-jobs")[];
         };
     };
     responses: {
@@ -885,6 +1215,7 @@ export interface components {
         UPUID: string;
         ChannelID: string;
         DeliveryID: string;
+        AIID: string;
         LoginID: string;
         DynamicID: string;
         CommentID: string;
@@ -1677,6 +2008,431 @@ export interface operations {
             400: components["responses"]["InvalidRequest"];
             401: components["responses"]["AuthenticationError"];
             500: components["responses"]["InternalError"];
+        };
+    };
+    getAIWorkerStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current AI Worker capabilities. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIWorkerStatus"];
+                };
+            };
+            401: components["responses"]["AuthenticationError"];
+        };
+    };
+    listAIProfiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Model profiles without secret values. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIProfile"][];
+                };
+            };
+        };
+    };
+    createAIProfile: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIProfileInput"];
+            };
+        };
+        responses: {
+            /** @description Created model profile. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIProfile"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+        };
+    };
+    updateAIProfile: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIProfileInput"];
+            };
+        };
+        responses: {
+            /** @description Updated model profile. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIProfile"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+        };
+    };
+    deleteAIProfile: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Profile deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: components["responses"]["ConflictError"];
+        };
+    };
+    testAIProfile: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Worker is reachable. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        status: "worker_reachable";
+                    };
+                };
+            };
+            502: components["responses"]["InternalError"];
+        };
+    };
+    listAIPrompts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Summary prompt templates. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIPrompt"][];
+                };
+            };
+        };
+    };
+    createAIPrompt: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIPromptInput"];
+            };
+        };
+        responses: {
+            /** @description Created prompt. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIPrompt"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+        };
+    };
+    updateAIPrompt: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIPromptInput"];
+            };
+        };
+        responses: {
+            /** @description Updated prompt. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIPrompt"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+        };
+    };
+    deleteAIPrompt: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Prompt deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: components["responses"]["ConflictError"];
+        };
+    };
+    createAITranscription: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AITranscriptionInput"];
+            };
+        };
+        responses: {
+            /** @description Durable transcription job. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIJob"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+        };
+    };
+    createAISummary: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AISummaryInput"];
+            };
+        };
+        responses: {
+            /** @description Durable summary job. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIJob"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+        };
+    };
+    listAIJobs: {
+        parameters: {
+            query?: {
+                kind?: "transcription" | "summary";
+                state?: "queued" | "running" | "succeeded" | "failed" | "canceled";
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description AI job page; list entries omit encrypted input and result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIJobPage"];
+                };
+            };
+        };
+    };
+    getAIJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description AI job detail including decrypted input and result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIJob"];
+                };
+            };
+            404: components["responses"]["NotFoundError"];
+        };
+    };
+    deleteAIJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Terminal job deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: components["responses"]["ConflictError"];
+        };
+    };
+    cancelAIJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancellation accepted. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        status: "canceled";
+                    };
+                };
+            };
+            409: components["responses"]["ConflictError"];
+        };
+    };
+    retryAIJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AIID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Job queued again. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueuedStatus"];
+                };
+            };
+            409: components["responses"]["ConflictError"];
         };
     };
     connectRealtime: {

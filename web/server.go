@@ -43,6 +43,7 @@ type Server struct {
 	tlsConfig      *tls.Config
 	auth           *authenticator
 	engine         *service.Engine
+	ai             *service.AIEngine
 	settings       SettingsService
 	store          *state.Store
 	events         *service.EventBus
@@ -61,7 +62,13 @@ type Server struct {
 	wsPingTimeout  time.Duration
 }
 
-func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, settings SettingsService, store *state.Store, events *service.EventBus, logger, auditLogger *slog.Logger, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, propagator propagation.TextMapPropagator, dataDir string) (*Server, error) {
+type ServerOption func(*Server)
+
+func WithAIEngine(engine *service.AIEngine) ServerOption {
+	return func(server *Server) { server.ai = engine }
+}
+
+func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, settings SettingsService, store *state.Store, events *service.EventBus, logger, auditLogger *slog.Logger, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, propagator propagation.TextMapPropagator, dataDir string, options ...ServerOption) (*Server, error) {
 	if settings == nil {
 		return nil, errors.New("settings service is required")
 	}
@@ -83,13 +90,17 @@ func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, s
 	if setupCode != "" {
 		logger.Error("administrator setup required", "event", "auth.setup_required", "setup_code", setupCode)
 	}
-	return &Server{
+	server := &Server{
 		adminAddr: adminAddr, observeAddr: observeAddr, tlsConfig: tlsConfig, auth: auth,
 		engine: engine, settings: settings, store: store, events: events, logger: logger, auditLogger: auditLogger, metrics: engine.Metrics(),
 		tracer: tracerProvider.Tracer("github.com/linxin2429/bili_notify/web"), tracerProvider: tracerProvider, meterProvider: meterProvider, propagator: propagator,
 		dataDir: dataDir, static: static,
 		connections: make(map[string]map[*websocket.Conn]struct{}),
-	}, nil
+	}
+	for _, option := range options {
+		option(server)
+	}
+	return server, nil
 }
 
 func (s *Server) Run(ctx context.Context) error {

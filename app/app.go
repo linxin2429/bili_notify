@@ -167,14 +167,16 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	}
 	engineOptions = append(engineOptions, service.WithTracerProvider(telemetryRuntime.TracerProvider))
 	engine := service.NewEngine(store, client, logger.With("component", "engine"), metrics, settings, events, downloader, engineOptions...)
+	aiEngine := service.NewAIEngine(store, cfg.EffectiveAIWorkerSocket(), logger.With("component", "ai"), events)
 	settingsManager := newRuntimeSettingsManager(store, engine, loggers, events)
-	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator, cfg.DataDir)
+	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator, cfg.DataDir, web.WithAIEngine(aiEngine))
 	if err != nil {
 		return err
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return engine.Run(gctx) })
+	g.Go(func() error { return aiEngine.Run(gctx) })
 	g.Go(func() error {
 		return runAuditRetention(gctx, store, settingsManager.Settings, appLogger, telemetryRuntime.Tracer(), metrics)
 	})

@@ -1,5 +1,7 @@
 # Bili Notify
 
+除动态采集与通知外，AI 工作台可把 B 站视频音频转成带时间位置的文字，并异步总结直接输入或转写得到的文本。耗时、依赖多且处理不可信媒体的工作由独立 Python Worker 执行；Go 主进程只负责任务持久化、鉴权、调度和管理 API，因此 Worker 暂停时普通采集与通知仍然可用，待处理 AI 任务保留在 SQLite 队列中。
+
 Bili Notify 是一个单实例 Go 服务，通过登录后的 B 站网页接口采集 UP 主动态，并可靠投递到 SMTP 邮件、Microsoft Outlook/Microsoft 365、钉钉、飞书和企业微信群机器人。已关注的监控 UP 使用账号综合动态流及时发现，并定期通过空间动态校验；未关注或关系未知的 UP 直接轮询空间动态。React 管理台与 Go 后端通过同源 WebSocket 实时通信，状态、待投递通知与内容档案持久化到单一 SQLite 数据库。
 
 > B 站未提供面向任意公开 UP 主动态的稳定推送接口。本项目使用非官方网页接口，可能因接口变化、风控或平台规则而不可用；它不会绕过验证码、限流或风控。请仅在你有权使用的场景中部署。
@@ -52,6 +54,7 @@ docker run -d --name bili-notify \
 2. 添加至少一个通知渠道并发送测试通知。
 3. 添加需要监控的 UID。首次拉取只建立基线，不通知历史动态；基线内容仍会写入“历史”页。
 4. 在“历史”中按 UP、时间与关键字浏览已采集内容。
+5. 如需 AI 功能，在“AI 设置”创建转写/总结模型配置档和总结提示词，然后在“AI 工作台”提交 BVID 或文本。配置档支持任意 OpenAI 兼容的 HTTPS Base URL、API Key 和模型名；API Key 加密保存且不会回传浏览器。默认示例可使用 OpenRouter 的 `https://openrouter.ai/api/v1` 与 `openai/gpt-transcribe`。
 
 “设置”页可热更新基础与高级采集策略、投递并发与重试、积压告警、日志级别和审计日志保留期。保存的是一份完整运行设置：后续任务立即读取新策略，正在执行的任务和已经排定的重试不会被取消或改写。`BILI_NOTIFY_POLL_INTERVAL`、`BILI_NOTIFY_REQUEST_RATE`、`BILI_NOTIFY_REQUEST_CONCURRENCY`、`BILI_NOTIFY_LOG_LEVEL` 和 `BILI_NOTIFY_AUDIT_LOG_RETENTION` 只在新数据目录首次启动时播种默认值，之后以 `data.db` 中的管理台设置为准。
 
@@ -128,6 +131,15 @@ Trace 在这个项目中有必要：一次采集或投递会跨越 B 站 HTTP、
 本版本不兼容旧的外置主密钥数据库，也不会自动删除或迁移旧卷。升级前请备份；切换新版时必须显式创建全新数据卷。
 
 ## 本地开发
+
+AI Worker 需要 Python 3.12+、FFmpeg 和 yt-dlp。`make worker-check` 会在 `worker/.venv` 安装锁定依赖并执行 Ruff 与 pytest；`make worker-docker-build` 构建独立 Worker 镜像。本地分别运行时，Go 服务与 Worker 必须配置同一个 Unix Socket：
+
+```bash
+make worker-install
+BILI_NOTIFY_AI_WORKER_SOCKET=/tmp/bili-notify-ai.sock \
+  PYTHONPATH=worker worker/.venv/bin/python -m bili_ai_worker.server
+make run ARGS='serve --ai-worker-socket /tmp/bili-notify-ai.sock'
+```
 
 克隆仓库后先启用项目内置的 Git hook：
 

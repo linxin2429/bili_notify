@@ -55,10 +55,11 @@ test('runs resource administration, audit, and session security workflows', asyn
     await auditResponse
     await expect(page.getByRole('button', { name: '查看详情' })).toHaveCount(1)
     await page.getByRole('button', { name: '查看详情' }).click()
-    await expect(page.getByText('安全变更摘要')).toBeVisible()
+    const dialog = page.getByRole('dialog', { name: '安全变更摘要' })
+    await expect(dialog).toBeVisible()
     expect(await page.locator('main').innerText()).not.toContain(harness.manifest.webhook_url)
     await assertAccessible(page)
-    await page.getByRole('button', { name: '关闭' }).click()
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
   })
 
   await test.step('replace the current session and invalidate other sessions after a password change', async () => {
