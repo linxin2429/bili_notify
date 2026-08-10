@@ -16,7 +16,7 @@ import { AuditLogsPage } from './AuditLogsPage'
 import { SettingsPage } from './SettingsPage'
 
 const api = vi.hoisted(() => ({
-  runtime: vi.fn(), settings: vi.fn(), ups: vi.fn(), channels: vi.fn(), deliveries: vi.fn(), biliLogin: vi.fn(), microsoftLogins: vi.fn(), dynamics: vi.fn(), comments: vi.fn(), comment: vi.fn(), auditLogs: vi.fn(),
+  runtime: vi.fn(), settings: vi.fn(), ups: vi.fn(), channels: vi.fn(), deliveries: vi.fn(), biliLogin: vi.fn(), microsoftLogins: vi.fn(), dynamics: vi.fn(), dynamic: vi.fn(), comments: vi.fn(), comment: vi.fn(), auditLogs: vi.fn(),
   createUP: vi.fn(), updateUP: vi.fn(), deleteUP: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), deleteChannel: vi.fn(), testChannel: vi.fn(), retryDelivery: vi.fn(), startBiliLogin: vi.fn(), cancelBiliLogin: vi.fn(), startMicrosoftLogin: vi.fn(), cancelMicrosoftLogin: vi.fn(), updateSettings: vi.fn(),
 }))
 const session = vi.hoisted(() => ({ changePassword: vi.fn() }))
@@ -34,6 +34,7 @@ describe('resource pages', () => {
     api.runtime.mockResolvedValue(runtime); api.settings.mockResolvedValue(settings); api.ups.mockResolvedValue([up]); api.channels.mockResolvedValue([channel])
     api.deliveries.mockResolvedValue({ items: [makeDelivery({ state: 'blocked' })], page: { next_cursor: '', has_more: false } }); api.biliLogin.mockResolvedValue(null); api.microsoftLogins.mockResolvedValue([])
     api.dynamics.mockResolvedValue({ items: [dynamic], page: { next_cursor: '', has_more: false } }); api.comments.mockResolvedValue({ items: [], page: { next_cursor: '', has_more: false } }); api.auditLogs.mockResolvedValue({ items: [makeAudit()], page: { next_cursor: '', has_more: false } })
+    api.dynamic.mockResolvedValue({ ...dynamic, ai_pipeline: [] })
     api.startBiliLogin.mockResolvedValue({ id: 'login', status: 'waiting', expires_at: '2026-08-09T10:05:00Z' }); api.createUP.mockResolvedValue(up); api.retryDelivery.mockResolvedValue({ status: 'queued' }); api.updateSettings.mockResolvedValue(settings)
     api.updateUP.mockResolvedValue(up); api.deleteUP.mockResolvedValue(undefined); api.createChannel.mockResolvedValue(channel); api.updateChannel.mockResolvedValue(channel); api.deleteChannel.mockResolvedValue(undefined); api.testChannel.mockResolvedValue({ status: 'sent' }); session.changePassword.mockResolvedValue({ csrf_token: 'replacement-csrf' })
   })
@@ -70,6 +71,30 @@ describe('resource pages', () => {
     renderPage(<HistoryPage />, '/history')
     expect(await screen.findByText('一条测试动态')).toBeInTheDocument()
     expect(screen.getAllByText('测试 UP')).toHaveLength(2)
+  })
+
+  it('opens automatic AI results from dynamic history', async () => {
+    const pipeline = [
+      { id: 'transcription', kind: 'transcription', state: 'succeeded', stage: 'completed', progress: 100, profile_id: 'transcription', origin: 'dynamic', attempts: 1, created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:01:00Z', result: { bvid: 'BV1xx411c7mD', title: '视频标题', pages: [{ page: 1, cid: '1', title: 'P1', duration_ms: 1000, segments: [{ start_ms: 0, end_ms: 1000, text: '完整转写内容' }] }] } },
+      { id: 'summary', kind: 'summary', state: 'succeeded', stage: 'completed', progress: 100, profile_id: 'summary', prompt_id: 'prompt', origin: 'dynamic', attempts: 1, created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:02:00Z', result: { markdown: '总结正文' } },
+      { id: 'running', kind: 'summary', state: 'running', stage: 'reducing', progress: 75, profile_id: 'summary', prompt_id: 'prompt', origin: 'dynamic', attempts: 1, created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:02:00Z' },
+      { id: 'failed', kind: 'summary', state: 'failed', stage: 'failed', progress: 20, profile_id: 'summary', prompt_id: 'prompt', origin: 'dynamic', attempts: 1, error_code: 'provider_error', last_error: '供应商失败', created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:02:00Z' },
+      { id: 'skipped', kind: 'summary', state: 'skipped', stage: 'skipped', progress: 0, profile_id: 'summary', prompt_id: 'prompt', origin: 'dynamic', attempts: 0, last_error: '依赖失败', result: 'invalid', created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:02:00Z' },
+    ] as const
+    api.dynamics.mockResolvedValue({ items: [{ ...dynamic, title: '视频动态', ai_pipeline: pipeline }], page: { next_cursor: '', has_more: false } })
+    api.dynamic.mockResolvedValue({ ...dynamic, title: '视频动态', ai_pipeline: pipeline })
+    const user = userEvent.setup(); renderPage(<HistoryPage />, '/history')
+
+    await user.click(await screen.findByRole('button', { name: 'AI 结果 · 75%' }))
+    expect(await screen.findByRole('dialog', { name: '视频动态' })).toBeInTheDocument()
+    expect(api.dynamic).toHaveBeenCalledWith('dynamic', expect.anything())
+    expect(screen.getByText('完整转写内容')).toBeInTheDocument()
+    expect(screen.getByText('总结正文')).toBeInTheDocument()
+    expect(screen.getByText('进度 75% · reducing')).toBeInTheDocument()
+    expect(screen.getByText('provider_error：供应商失败')).toBeInTheDocument()
+    expect(screen.getByText('依赖失败')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '关闭' }))
+    expect(screen.queryByRole('dialog', { name: '视频动态' })).not.toBeInTheDocument()
   })
 
   it('filters, paginates and inspects audit records', async () => {

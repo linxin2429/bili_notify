@@ -16,6 +16,7 @@ export type BiliLogin = Schemas['BilibiliLogin'] | null
 export type MicrosoftLogin = Schemas['MicrosoftLogin']
 export type RuntimeSettings = Schemas['RuntimeSettings']
 export type DynamicHistoryItem = Schemas['DynamicHistory']
+export type DynamicDetail = Schemas['DynamicDetail']
 export type DynamicMedia = Schemas['DynamicMedia']
 export type DynamicPreview = Schemas['DynamicOriginal']
 export type DynamicStats = Schemas['DynamicStats']

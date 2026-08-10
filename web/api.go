@@ -355,6 +355,7 @@ type runtimeSettingsRequest struct {
 	BacklogAlertCount       *int     `json:"backlog_alert_count"`
 	BacklogAlertAgeSec      *int     `json:"backlog_alert_age_sec"`
 	DeliveryRetryDelaysSec  *[]int   `json:"delivery_retry_delays_sec"`
+	AIAutoProcessingEnabled *bool    `json:"ai_auto_processing_enabled"`
 }
 
 func (input runtimeSettingsRequest) settings() (model.RuntimeSettings, error) {
@@ -369,7 +370,8 @@ func (input runtimeSettingsRequest) settings() (model.RuntimeSettings, error) {
 		"space_reconcile_interval_sec":  input.SpaceReconcileSec != nil, "max_dynamic_pages": input.MaxDynamicPages != nil,
 		"risk_pause_sec": input.RiskPauseSec != nil, "delivery_concurrency": input.DeliveryConcurrency != nil,
 		"backlog_alert_count": input.BacklogAlertCount != nil, "backlog_alert_age_sec": input.BacklogAlertAgeSec != nil,
-		"delivery_retry_delays_sec": input.DeliveryRetryDelaysSec != nil,
+		"delivery_retry_delays_sec":  input.DeliveryRetryDelaysSec != nil,
+		"ai_auto_processing_enabled": input.AIAutoProcessingEnabled != nil,
 	} {
 		if !present {
 			missing = append(missing, name)
@@ -390,6 +392,7 @@ func (input runtimeSettingsRequest) settings() (model.RuntimeSettings, error) {
 		RelationRefreshSec: *input.RelationRefreshSec, SpaceReconcileSec: *input.SpaceReconcileSec, MaxDynamicPages: *input.MaxDynamicPages,
 		RiskPauseSec: *input.RiskPauseSec, DeliveryConcurrency: *input.DeliveryConcurrency,
 		BacklogAlertCount: *input.BacklogAlertCount, BacklogAlertAgeSec: *input.BacklogAlertAgeSec,
+		AIAutoProcessingEnabled: *input.AIAutoProcessingEnabled,
 	}
 	copy(settings.DeliveryRetryDelaysSec[:], *input.DeliveryRetryDelaysSec)
 	return settings, nil
@@ -568,7 +571,13 @@ func (s *Server) queryContentAPI(w http.ResponseWriter, r *http.Request, dynamic
 		}
 		views := make([]dynamicHistoryView, 0, len(items))
 		for _, item := range items {
-			views = append(views, toDynamicHistoryView(item))
+			view := toDynamicHistoryView(item)
+			view.AIPipeline, err = s.store.WithContext(r.Context()).AIJobsForDynamic(item.ID, false)
+			if err != nil {
+				s.writeAPIResult(w, http.StatusOK, nil, err)
+				return
+			}
+			views = append(views, view)
 		}
 		next := ""
 		if hasMore && len(items) > 0 {
@@ -657,7 +666,12 @@ func (s *Server) getDynamicAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dynamic, err := s.store.WithContext(r.Context()).GetDynamic(id)
-	s.writeAPIResult(w, http.StatusOK, dynamic, err)
+	if err != nil {
+		s.writeAPIResult(w, http.StatusOK, nil, err)
+		return
+	}
+	jobs, err := s.store.WithContext(r.Context()).AIJobsForDynamic(id, true)
+	s.writeAPIResult(w, http.StatusOK, dynamicDetailView{Dynamic: dynamic, AIPipeline: jobs}, err)
 }
 
 func (s *Server) getDynamicMediaAPI(w http.ResponseWriter, r *http.Request) {

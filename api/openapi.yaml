@@ -564,7 +564,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Dynamic'
+                $ref: '#/components/schemas/DynamicDetail'
         '401':
           $ref: '#/components/responses/AuthenticationError'
         '404':
@@ -1160,6 +1160,7 @@ components:
         - backlog_alert_count
         - backlog_alert_age_sec
         - delivery_retry_delays_sec
+        - ai_auto_processing_enabled
       properties:
         poll_interval_sec: {type: integer, minimum: 10, maximum: 86400}
         request_rate: {type: number, exclusiveMinimum: 0, maximum: 10}
@@ -1184,6 +1185,9 @@ components:
           minItems: 5
           maxItems: 5
           items: {type: integer, minimum: 1, maximum: 86400}
+        ai_auto_processing_enabled:
+          type: boolean
+          description: Automatically transcribe and summarize newly discovered top-level video dynamics using the enabled default AI profiles and prompt.
     CreateUPRequest:
       type: object
       additionalProperties: false
@@ -1272,11 +1276,13 @@ components:
       required: [id, kind, channel_id, state, attempts, next_at, created_at]
       properties:
         id: {type: string}
-        kind: {type: string, enum: [dynamic, comment]}
+        kind: {type: string, enum: [dynamic, comment, ai]}
         dynamic:
           $ref: '#/components/schemas/DynamicPreview'
         comment:
           $ref: '#/components/schemas/CommentPreview'
+        ai:
+          $ref: '#/components/schemas/AIDeliveryPreview'
         channel_id: {type: string}
         state: {type: string, enum: [pending, blocked]}
         attempts: {type: integer, minimum: 0}
@@ -1308,6 +1314,19 @@ components:
         content_title: {type: string}
         content_url: {type: string}
         published_at: {type: string, format: date-time}
+    AIDeliveryPreview:
+      type: object
+      additionalProperties: false
+      required: [job_id, dynamic_id, stage, succeeded, summary]
+      properties:
+        job_id: {type: string}
+        dynamic_id: {type: string}
+        up_name: {type: string}
+        title: {type: string}
+        stage: {type: string, enum: [transcription, summary]}
+        succeeded: {type: boolean}
+        summary: {type: string}
+        error_message: {type: string}
     SentStatus:
       type: object
       additionalProperties: false
@@ -1360,11 +1379,24 @@ components:
           properties:
             discovered_at: {type: string, format: date-time}
             baseline: {type: boolean}
+            ai_pipeline:
+              type: array
+              items: {$ref: '#/components/schemas/AIJob'}
+    DynamicDetail:
+      allOf:
+        - $ref: '#/components/schemas/Dynamic'
+        - type: object
+          required: [ai_pipeline]
+          properties:
+            ai_pipeline:
+              type: array
+              items: {$ref: '#/components/schemas/AIJob'}
     Dynamic:
       type: object
       required: [id, uid, up_name, type, published_at, summary, url]
       properties:
         id: {type: string}
+        bvid: {type: string}
         uid: {type: string}
         up_name: {type: string}
         type: {type: string}
@@ -1696,16 +1728,19 @@ components:
     AIJob:
       type: object
       additionalProperties: false
-      required: [id, kind, state, stage, progress, profile_id, attempts, created_at, updated_at]
+      required: [id, kind, state, stage, progress, profile_id, origin, attempts, created_at, updated_at]
       properties:
         id: {type: string}
         client_request_id: {type: string}
         kind: {type: string, enum: [transcription, summary]}
-        state: {type: string, enum: [queued, running, succeeded, failed, canceled]}
+        state: {type: string, enum: [queued, running, succeeded, failed, canceled, skipped]}
         stage: {type: string}
         progress: {type: integer, minimum: 0, maximum: 100}
         profile_id: {type: string}
         prompt_id: {type: string}
+        origin: {type: string, enum: [workbench, dynamic]}
+        source_dynamic_id: {type: string}
+        depends_on_job_id: {type: string}
         attempts: {type: integer, minimum: 0}
         error_code: {type: string}
         last_error: {type: string}

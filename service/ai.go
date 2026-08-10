@@ -15,8 +15,16 @@ import (
 	"github.com/linxin2429/bili_notify/internal/aiworkerpb"
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/state"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 )
 
@@ -47,21 +55,41 @@ type AIProfileTestResult struct {
 }
 
 type AIEngine struct {
-	store      *state.Store
-	socketPath string
-	logger     *slog.Logger
-	events     *EventBus
-	wake       chan struct{}
-	statusMu   sync.RWMutex
-	status     AIWorkerStatus
-	clientMu   sync.RWMutex
-	client     aiworkerpb.AIWorkerClient
-	runningMu  sync.Mutex
-	running    map[string]context.CancelFunc
+	store          *state.Store
+	socketPath     string
+	logger         *slog.Logger
+	events         *EventBus
+	wake           chan struct{}
+	statusMu       sync.RWMutex
+	status         AIWorkerStatus
+	clientMu       sync.RWMutex
+	client         aiworkerpb.AIWorkerClient
+	runningMu      sync.Mutex
+	running        map[string]context.CancelFunc
+	tracerProvider trace.TracerProvider
+	meterProvider  metric.MeterProvider
+	tracer         trace.Tracer
+	propagator     propagation.TextMapPropagator
 }
 
-func NewAIEngine(store *state.Store, socketPath string, logger *slog.Logger, events *EventBus) *AIEngine {
-	return &AIEngine{store: store, socketPath: socketPath, logger: logger, events: events, wake: make(chan struct{}, 1), running: make(map[string]context.CancelFunc)}
+type AIEngineOption func(*AIEngine)
+
+// WithAITelemetry connects AI scheduling and gRPC calls to the process providers.
+func WithAITelemetry(tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, propagator propagation.TextMapPropagator) AIEngineOption {
+	return func(engine *AIEngine) {
+		engine.tracerProvider, engine.meterProvider, engine.propagator = tracerProvider, meterProvider, propagator
+		engine.tracer = tracerProvider.Tracer("github.com/linxin2429/bili_notify/service/ai")
+	}
+}
+
+func NewAIEngine(store *state.Store, socketPath string, logger *slog.Logger, events *EventBus, options ...AIEngineOption) *AIEngine {
+	tp, mp := tracenoop.NewTracerProvider(), metricnoop.NewMeterProvider()
+	engine := &AIEngine{store: store, socketPath: socketPath, logger: logger, events: events, wake: make(chan struct{}, 1), running: make(map[string]context.CancelFunc),
+		tracerProvider: tp, meterProvider: mp, tracer: tp.Tracer("github.com/linxin2429/bili_notify/service/ai"), propagator: propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})}
+	for _, option := range options {
+		option(engine)
+	}
+	return engine
 }
 
 func (e *AIEngine) Status() AIWorkerStatus {
@@ -150,6 +178,10 @@ func (e *AIEngine) Run(ctx context.Context) error {
 			return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "unix", e.socketPath)
 		}),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16<<20), grpc.MaxCallSendMsgSize(16<<20)),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler(
+			otelgrpc.WithTracerProvider(e.tracerProvider), otelgrpc.WithMeterProvider(e.meterProvider), otelgrpc.WithPropagators(e.propagator),
+			otelgrpc.WithFilter(func(info *stats.RPCTagInfo) bool { return !strings.HasSuffix(info.FullMethodName, "/GetCapabilities") }),
+		)),
 	)
 	if err != nil {
 		return fmt.Errorf("creating AI worker client: %w", err)
@@ -249,20 +281,32 @@ func (e *AIEngine) dispatch(ctx context.Context, client aiworkerpb.AIWorkerClien
 }
 
 func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerClient, job model.AIJob) {
-	ctx, cancel := context.WithCancel(parent)
+	carrier := propagation.MapCarrier{"traceparent": job.OriginTraceparent, "tracestate": job.OriginTracestate}
+	parent = e.propagator.Extract(parent, carrier)
+	ctx, span := e.tracer.Start(parent, "ai.job.execute", trace.WithAttributes(
+		attribute.String("ai.job.id", job.ID), attribute.String("ai.job.kind", string(job.Kind)),
+		attribute.String("ai.job.origin", string(job.Origin)), attribute.String("content.dynamic.id", job.SourceDynamicID),
+	))
+	ctx, cancel := context.WithCancel(ctx)
 	e.runningMu.Lock()
 	e.running[job.ID] = cancel
 	e.runningMu.Unlock()
 	defer func() {
+		span.End()
 		cancel()
 		e.runningMu.Lock()
 		delete(e.running, job.ID)
 		e.runningMu.Unlock()
 		e.events.Publish(TopicAIJobs | TopicAIStatus)
 	}()
+	dependentCarrier := propagation.MapCarrier{}
+	e.propagator.Inject(ctx, dependentCarrier)
+	if err := e.store.WithContext(ctx).UpdateDependentAITrace(job.ID, dependentCarrier.Get("traceparent"), dependentCarrier.Get("tracestate")); err != nil {
+		e.logger.ErrorContext(ctx, "updating dependent AI trace failed", "event", "ai.job.trace_update_failed", "job_id", job.ID, "error", err)
+	}
 	profile, prompt, err := e.store.AIJobConfig(job.ID)
 	if err != nil {
-		e.fail(job.ID, "config_unavailable", "AI 任务配置快照不可用")
+		e.fail(ctx, job.ID, "config_unavailable", "AI 任务配置快照不可用")
 		return
 	}
 	provider := profileProto(profile)
@@ -271,12 +315,12 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 	case model.AIJobTranscription:
 		input, ok := job.Input.(model.AITranscriptionInput)
 		if !ok {
-			e.fail(job.ID, "invalid_input", "转写任务输入无效")
+			e.fail(ctx, job.ID, "invalid_input", "转写任务输入无效")
 			return
 		}
 		session, sessionErr := e.store.Session()
 		if sessionErr != nil {
-			e.fail(job.ID, "bilibili_authentication", "B站登录不可用")
+			e.fail(ctx, job.ID, "bilibili_authentication", "B站登录不可用")
 			return
 		}
 		stream, err = client.Transcribe(ctx, &aiworkerpb.TranscribeRequest{
@@ -286,25 +330,25 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 	case model.AIJobSummary:
 		input, ok := job.Input.(model.AISummaryInput)
 		if !ok {
-			e.fail(job.ID, "invalid_input", "总结任务输入无效")
+			e.fail(ctx, job.ID, "invalid_input", "总结任务输入无效")
 			return
 		}
 		text := input.Text
 		if input.TranscriptionID != "" {
 			source, sourceErr := e.store.AIJob(input.TranscriptionID)
 			if sourceErr != nil || source.State != model.AIJobSucceeded {
-				e.fail(job.ID, "source_unavailable", "来源转写任务不可用")
+				e.fail(ctx, job.ID, "source_unavailable", "来源转写任务不可用")
 				return
 			}
 			result, ok := source.Result.(model.AITranscriptionResult)
 			if !ok {
-				e.fail(job.ID, "source_unavailable", "来源转写结果无效")
+				e.fail(ctx, job.ID, "source_unavailable", "来源转写结果无效")
 				return
 			}
 			text = result.Text()
 		}
 		if prompt == nil {
-			e.fail(job.ID, "prompt_unavailable", "提示词模板不可用")
+			e.fail(ctx, job.ID, "prompt_unavailable", "提示词模板不可用")
 			return
 		}
 		stream, err = client.Summarize(ctx, &aiworkerpb.SummaryRequest{
@@ -312,7 +356,7 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 		})
 	}
 	if err != nil {
-		e.failRPC(job.ID, err)
+		e.failRPC(ctx, job.ID, err)
 		return
 	}
 	for {
@@ -325,7 +369,7 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 			if currentErr == nil && current.State == model.AIJobCanceled {
 				return
 			}
-			e.failRPC(job.ID, recvErr)
+			e.failRPC(ctx, job.ID, recvErr)
 			return
 		}
 		if progress := event.GetProgress(); progress != nil {
@@ -334,7 +378,7 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 			}
 		}
 		if result := event.GetTranscription(); result != nil {
-			if err := e.store.FinishAIJob(job.ID, transcriptionModel(result)); err != nil {
+			if err := e.store.WithContext(ctx).FinishAIJob(job.ID, transcriptionModel(result)); err != nil {
 				e.logger.ErrorContext(ctx, "persisting transcription failed", "event", "ai.job.persist_failed", "job_id", job.ID, "error", err)
 			}
 			return
@@ -344,13 +388,13 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 			if result.Usage != nil {
 				usage = result.Usage.AsMap()
 			}
-			if err := e.store.FinishAIJob(job.ID, model.AISummaryResult{Markdown: result.Markdown, Usage: usage}); err != nil {
+			if err := e.store.WithContext(ctx).FinishAIJob(job.ID, model.AISummaryResult{Markdown: result.Markdown, Usage: usage}); err != nil {
 				e.logger.ErrorContext(ctx, "persisting summary failed", "event", "ai.job.persist_failed", "job_id", job.ID, "error", err)
 			}
 			return
 		}
 	}
-	e.fail(job.ID, "worker_incomplete", "AI Worker 未返回结果")
+	e.fail(ctx, job.ID, "worker_incomplete", "AI Worker 未返回结果")
 }
 
 func profileProto(profile model.AIProfile) *aiworkerpb.ProviderConfig {
@@ -376,13 +420,13 @@ func transcriptionModel(result *aiworkerpb.TranscriptionResult) model.AITranscri
 	return model.AITranscriptionResult{BVID: result.Bvid, Title: result.Title, Pages: pages, Usage: usage}
 }
 
-func (e *AIEngine) fail(id, code, message string) {
-	if err := e.store.FailAIJob(id, code, message); err != nil && !errors.Is(err, state.ErrNotFound) {
+func (e *AIEngine) fail(ctx context.Context, id, code, message string) {
+	if err := e.store.WithContext(ctx).FailAIJob(id, code, message); err != nil && !errors.Is(err, state.ErrNotFound) {
 		e.logger.Error("failing AI job failed", "event", "ai.job.fail_failed", "job_id", id, "error", err)
 	}
 }
 
-func (e *AIEngine) failRPC(id string, err error) {
+func (e *AIEngine) failRPC(ctx context.Context, id string, err error) {
 	code, message := "worker_lost", "AI Worker 连接中断"
 	if current, ok := status.FromError(err); ok {
 		var detail struct {
@@ -398,5 +442,5 @@ func (e *AIEngine) failRPC(id string, err error) {
 			}
 		}
 	}
-	e.fail(id, code, message)
+	e.fail(ctx, id, code, message)
 }

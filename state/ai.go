@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -62,10 +63,13 @@ func (s *Store) PutAIProfile(profile model.AIProfile) (model.AIProfile, error) {
 				return err
 			}
 		}
-		return tx.Save(&aiProfileRow{
+		if err := tx.Save(&aiProfileRow{
 			ID: profile.ID, Kind: string(profile.Kind), Name: profile.Name, Default: boolToInt(profile.Default), Enabled: boolToInt(profile.Enabled), Sealed: sealed,
 			CreatedAt: profile.CreatedAt.Unix(), UpdatedAt: profile.UpdatedAt.Unix(),
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		return s.ensureAutoAIInvariantTx(tx)
 	})
 	return profile, err
 }
@@ -125,7 +129,7 @@ func (s *Store) SetAIProfileEnabled(id string, enabled bool) (model.AIProfile, e
 		if result.RowsAffected == 0 {
 			return ErrNotFound
 		}
-		return nil
+		return s.ensureAutoAIInvariantTx(tx)
 	})
 	if err != nil {
 		return model.AIProfile{}, err
@@ -134,14 +138,16 @@ func (s *Store) SetAIProfileEnabled(id string, enabled bool) (model.AIProfile, e
 }
 
 func (s *Store) DeleteAIProfile(id string) error {
-	res := s.db.Where("id = ?", id).Delete(&aiProfileRow{})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Where("id = ?", id).Delete(&aiProfileRow{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return s.ensureAutoAIInvariantTx(tx)
+	})
 }
 
 func (s *Store) PutAIPrompt(prompt model.AIPromptTemplate) (model.AIPromptTemplate, error) {
@@ -175,7 +181,10 @@ func (s *Store) PutAIPrompt(prompt model.AIPromptTemplate) (model.AIPromptTempla
 				return err
 			}
 		}
-		return tx.Save(&aiPromptRow{ID: prompt.ID, Name: prompt.Name, Default: boolToInt(prompt.Default), Sealed: sealed, CreatedAt: prompt.CreatedAt.Unix(), UpdatedAt: prompt.UpdatedAt.Unix()}).Error
+		if err := tx.Save(&aiPromptRow{ID: prompt.ID, Name: prompt.Name, Default: boolToInt(prompt.Default), Sealed: sealed, CreatedAt: prompt.CreatedAt.Unix(), UpdatedAt: prompt.UpdatedAt.Unix()}).Error; err != nil {
+			return err
+		}
+		return s.ensureAutoAIInvariantTx(tx)
 	})
 	return prompt, err
 }
@@ -224,14 +233,42 @@ func (s *Store) DeleteAIPrompt(id string) error {
 	if count > 0 {
 		return errors.New("prompt is referenced by AI jobs")
 	}
-	res := s.db.Where("id = ?", id).Delete(&aiPromptRow{})
-	if res.Error != nil {
-		return res.Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Where("id = ?", id).Delete(&aiPromptRow{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return s.ensureAutoAIInvariantTx(tx)
+	})
+}
+
+func (s *Store) ensureAutoAIInvariantTx(tx *gorm.DB) error {
+	enabled, err := automaticAIEnabledTx(tx)
+	if err != nil || !enabled {
+		return err
 	}
-	if res.RowsAffected == 0 {
-		return ErrNotFound
+	_, _, _, err = s.defaultAIConfigTx(tx)
+	return err
+}
+
+func automaticAIEnabledTx(tx *gorm.DB) (bool, error) {
+	var row metaRow
+	if err := tx.Where("key = ?", metaKeyRuntimeSettings).Take(&row).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	} else if err != nil {
+		return false, err
 	}
-	return nil
+	var record runtimeSettingsRecord
+	if err := json.Unmarshal([]byte(row.Value), &record); err != nil {
+		return false, err
+	}
+	if record.Version != runtimeSettingsVersion {
+		return false, ErrRuntimeSettingsVersionMismatch
+	}
+	return record.AIAutoProcessingEnabled, nil
 }
 
 func (s *Store) CreateAIJob(job model.AIJob) (model.AIJob, bool, error) {
@@ -241,29 +278,60 @@ func (s *Store) CreateAIJob(job model.AIJob) (model.AIJob, bool, error) {
 	if strings.TrimSpace(job.ClientRequestID) == "" {
 		return model.AIJob{}, false, errors.New("client_request_id is required")
 	}
-	profile, err := s.AIProfile(job.ProfileID)
-	if err != nil {
-		return model.AIJob{}, false, fmt.Errorf("loading AI profile: %w", err)
+	if job.Origin == "" {
+		job.Origin = model.AIJobOriginWorkbench
+	}
+	job.OriginTraceparent = originTraceparent(s.db.Statement.Context)
+	job.OriginTracestate = originTracestate(s.db.Statement.Context)
+	var created model.AIJob
+	var wasCreated bool
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var createErr error
+		created, wasCreated, createErr = s.createAIJobTx(tx, job, nil, nil)
+		return createErr
+	})
+	return created, wasCreated, err
+}
+
+func (s *Store) createAIJobTx(tx *gorm.DB, job model.AIJob, suppliedProfile *model.AIProfile, suppliedPrompt *model.AIPromptTemplate) (model.AIJob, bool, error) {
+	var existing aiJobRow
+	if err := tx.Where("client_request_id = ?", job.ClientRequestID).Take(&existing).Error; err == nil {
+		decoded, decodeErr := s.aiJob(existing, true)
+		return decoded, false, decodeErr
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.AIJob{}, false, err
+	}
+	profile := model.AIProfile{}
+	if suppliedProfile != nil {
+		profile = *suppliedProfile
+	} else {
+		var row aiProfileRow
+		if err := tx.Where("id = ?", job.ProfileID).Take(&row).Error; err != nil {
+			return model.AIJob{}, false, fmt.Errorf("loading AI profile: %w", err)
+		}
+		var err error
+		profile, err = decodeAIProfile(s, row)
+		if err != nil {
+			return model.AIJob{}, false, err
+		}
 	}
 	if job.Kind == model.AIJobSummary && job.PromptID == "" {
 		return model.AIJob{}, false, errors.New("prompt_id is required for summary jobs")
 	}
 	var prompt *model.AIPromptTemplate
-	if job.PromptID != "" {
-		value, promptErr := s.AIPrompt(job.PromptID)
-		if promptErr != nil {
-			return model.AIJob{}, false, fmt.Errorf("loading AI prompt: %w", promptErr)
+	if suppliedPrompt != nil {
+		value := *suppliedPrompt
+		prompt = &value
+	} else if job.PromptID != "" {
+		var row aiPromptRow
+		if err := tx.Where("id = ?", job.PromptID).Take(&row).Error; err != nil {
+			return model.AIJob{}, false, fmt.Errorf("loading AI prompt: %w", err)
+		}
+		value, err := decodeAIPrompt(s, row)
+		if err != nil {
+			return model.AIJob{}, false, err
 		}
 		prompt = &value
-	}
-	var existing aiJobRow
-	err = s.db.Where("client_request_id = ?", job.ClientRequestID).Take(&existing).Error
-	if err == nil {
-		decoded, decodeErr := s.aiJob(existing, true)
-		return decoded, false, decodeErr
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return model.AIJob{}, false, err
 	}
 	id, err := randomID()
 	if err != nil {
@@ -280,15 +348,94 @@ func (s *Store) CreateAIJob(job model.AIJob) (model.AIJob, bool, error) {
 	if err != nil {
 		return model.AIJob{}, false, err
 	}
-	row := aiJobRow{ID: id, ClientRequestID: job.ClientRequestID, Kind: string(job.Kind), State: string(job.State), Stage: job.Stage, ProfileID: job.ProfileID, PromptID: job.PromptID, InputSealed: input, ConfigSealed: config, CreatedAt: now.Unix(), UpdatedAt: now.Unix()}
-	if err := s.db.Create(&row).Error; err != nil {
-		if lookupErr := s.db.Where("client_request_id = ?", job.ClientRequestID).Take(&existing).Error; lookupErr == nil {
+	channels, err := json.Marshal(job.TargetChannelIDs)
+	if err != nil {
+		return model.AIJob{}, false, err
+	}
+	row := aiJobRow{
+		ID: id, ClientRequestID: job.ClientRequestID, Kind: string(job.Kind), State: string(job.State), Stage: job.Stage,
+		ProfileID: job.ProfileID, PromptID: job.PromptID, Origin: string(job.Origin), SourceDynamicID: job.SourceDynamicID,
+		DependsOnJobID: job.DependsOnJobID, OriginTraceparent: job.OriginTraceparent, OriginTracestate: job.OriginTracestate,
+		TargetChannelIDs: string(channels), InputSealed: input, ConfigSealed: config, CreatedAt: now.Unix(), UpdatedAt: now.Unix(),
+	}
+	if err := tx.Create(&row).Error; err != nil {
+		if lookupErr := tx.Where("client_request_id = ?", job.ClientRequestID).Take(&existing).Error; lookupErr == nil {
 			decoded, decodeErr := s.aiJob(existing, true)
 			return decoded, false, decodeErr
 		}
 		return model.AIJob{}, false, err
 	}
 	return job, true, nil
+}
+
+// ValidateAutoAIConfiguration verifies the three defaults required by automatic processing.
+func (s *Store) ValidateAutoAIConfiguration() error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		_, _, _, err := s.defaultAIConfigTx(tx)
+		return err
+	})
+}
+
+func (s *Store) defaultAIConfigTx(tx *gorm.DB) (model.AIProfile, model.AIProfile, model.AIPromptTemplate, error) {
+	var transcriptionRow, summaryRow aiProfileRow
+	if err := tx.Where("kind = ? AND is_default = 1 AND is_enabled = 1", model.AIProfileTranscription).Take(&transcriptionRow).Error; err != nil {
+		return model.AIProfile{}, model.AIProfile{}, model.AIPromptTemplate{}, errors.New("enabled default transcription profile is required")
+	}
+	if err := tx.Where("kind = ? AND is_default = 1 AND is_enabled = 1", model.AIProfileText).Take(&summaryRow).Error; err != nil {
+		return model.AIProfile{}, model.AIProfile{}, model.AIPromptTemplate{}, errors.New("enabled default summary profile is required")
+	}
+	var promptRow aiPromptRow
+	if err := tx.Where("is_default = 1").Take(&promptRow).Error; err != nil {
+		return model.AIProfile{}, model.AIProfile{}, model.AIPromptTemplate{}, errors.New("default AI prompt is required")
+	}
+	transcription, err := decodeAIProfile(s, transcriptionRow)
+	if err != nil {
+		return model.AIProfile{}, model.AIProfile{}, model.AIPromptTemplate{}, err
+	}
+	summary, err := decodeAIProfile(s, summaryRow)
+	if err != nil {
+		return model.AIProfile{}, model.AIProfile{}, model.AIPromptTemplate{}, err
+	}
+	prompt, err := decodeAIPrompt(s, promptRow)
+	return transcription, summary, prompt, err
+}
+
+func (s *Store) createAutomaticAIJobsTx(tx *gorm.DB, dynamic model.Dynamic, channelIDs []string) (int, error) {
+	if dynamic.Type != "DYNAMIC_TYPE_AV" || strings.TrimSpace(dynamic.BVID) == "" {
+		return 0, nil
+	}
+	transcriptionProfile, summaryProfile, prompt, err := s.defaultAIConfigTx(tx)
+	if err != nil {
+		return 0, err
+	}
+	traceparent, tracestate := originTraceparent(tx.Statement.Context), originTracestate(tx.Statement.Context)
+	transcription, created, err := s.createAIJobTx(tx, model.AIJob{
+		ClientRequestID: "dynamic:" + dynamic.ID + ":transcription", Kind: model.AIJobTranscription,
+		ProfileID: transcriptionProfile.ID, Origin: model.AIJobOriginDynamic, SourceDynamicID: dynamic.ID,
+		OriginTraceparent: traceparent, OriginTracestate: tracestate, TargetChannelIDs: channelIDs,
+		Input: model.AITranscriptionInput{BVID: dynamic.BVID},
+	}, &transcriptionProfile, nil)
+	if err != nil {
+		return 0, err
+	}
+	_, summaryCreated, err := s.createAIJobTx(tx, model.AIJob{
+		ClientRequestID: "dynamic:" + dynamic.ID + ":summary", Kind: model.AIJobSummary,
+		ProfileID: summaryProfile.ID, PromptID: prompt.ID, Origin: model.AIJobOriginDynamic,
+		SourceDynamicID: dynamic.ID, DependsOnJobID: transcription.ID, OriginTraceparent: traceparent,
+		OriginTracestate: tracestate, TargetChannelIDs: channelIDs,
+		Input: model.AISummaryInput{TranscriptionID: transcription.ID},
+	}, &summaryProfile, &prompt)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	if created {
+		count++
+	}
+	if summaryCreated {
+		count++
+	}
+	return count, nil
 }
 
 func (s *Store) AIJobConfig(id string) (model.AIProfile, *model.AIPromptTemplate, error) {
@@ -357,9 +504,15 @@ func (s *Store) ListAIJobs(query model.AIJobQuery) (model.AIJobPage, error) {
 }
 
 func (s *Store) aiJob(row aiJobRow, detail bool) (model.AIJob, error) {
+	var channels []string
+	if err := json.Unmarshal([]byte(row.TargetChannelIDs), &channels); err != nil {
+		return model.AIJob{}, fmt.Errorf("decoding AI job target channels: %w", err)
+	}
 	job := model.AIJob{
 		ID: row.ID, ClientRequestID: row.ClientRequestID, Kind: model.AIJobKind(row.Kind), State: model.AIJobState(row.State),
 		Stage: row.Stage, Progress: row.Progress, ProfileID: row.ProfileID, PromptID: row.PromptID, Attempts: row.Attempts,
+		Origin: model.AIJobOrigin(row.Origin), SourceDynamicID: row.SourceDynamicID, DependsOnJobID: row.DependsOnJobID,
+		OriginTraceparent: row.OriginTraceparent, OriginTracestate: row.OriginTracestate, TargetChannelIDs: channels,
 		ErrorCode: row.ErrorCode, LastError: row.LastError, CreatedAt: time.Unix(row.CreatedAt, 0), UpdatedAt: time.Unix(row.UpdatedAt, 0),
 	}
 	if row.StartedAt != nil {
@@ -405,7 +558,9 @@ func (s *Store) aiJob(row aiJobRow, detail bool) (model.AIJob, error) {
 func (s *Store) ClaimAIJob(kind model.AIJobKind) (model.AIJob, error) {
 	var claimed aiJobRow
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("state = ? AND kind = ?", model.AIJobQueued, kind).Order("created_at, id").Take(&claimed).Error; err != nil {
+		query := `state = ? AND kind = ? AND (depends_on_job_id = '' OR EXISTS (
+			SELECT 1 FROM ai_jobs dependency WHERE dependency.id = ai_jobs.depends_on_job_id AND dependency.state = ?))`
+		if err := tx.Where(query, model.AIJobQueued, kind, model.AIJobSucceeded).Order("created_at, id").Take(&claimed).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -429,6 +584,12 @@ func (s *Store) ClaimAIJob(kind model.AIJobKind) (model.AIJob, error) {
 	return s.aiJob(claimed, true)
 }
 
+// UpdateDependentAITrace makes a dependent job continue the current execution span.
+func (s *Store) UpdateDependentAITrace(id, traceparent, tracestate string) error {
+	return s.db.Model(&aiJobRow{}).Where("depends_on_job_id = ? AND state = ?", id, model.AIJobQueued).
+		Updates(map[string]any{"origin_traceparent": traceparent, "origin_tracestate": tracestate, "updated_at": time.Now().Unix()}).Error
+}
+
 func (s *Store) UpdateAIJobProgress(id, stage string, progress int) error {
 	if progress < 0 || progress > 100 || strings.TrimSpace(stage) == "" {
 		return errors.New("invalid AI job progress")
@@ -448,62 +609,93 @@ func (s *Store) FinishAIJob(id string, result any) error {
 	if err != nil {
 		return err
 	}
-	now := time.Now().Unix()
-	res := s.db.Model(&aiJobRow{}).Where("id = ? AND state = ?", id, model.AIJobRunning).Updates(map[string]any{
-		"state": model.AIJobSucceeded, "stage": "completed", "progress": 100, "result_sealed": sealed, "finished_at": now, "updated_at": now,
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var row aiJobRow
+		if err := tx.Where("id = ? AND state = ?", id, model.AIJobRunning).Take(&row).Error; err != nil {
+			return ErrNotFound
+		}
+		now := time.Now().Unix()
+		res := tx.Model(&aiJobRow{}).Where("id = ? AND state = ?", id, model.AIJobRunning).Updates(map[string]any{
+			"state": model.AIJobSucceeded, "stage": "completed", "progress": 100, "result_sealed": sealed, "finished_at": now, "updated_at": now,
+		})
+		if res.Error != nil {
+			return res.Error
+		}
+		return s.enqueueAINotificationTx(tx, row, result, true, "", "")
 	})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
 }
 
 func (s *Store) FailAIJob(id, code, message string) error {
-	now := time.Now().Unix()
-	res := s.db.Model(&aiJobRow{}).Where("id = ? AND state = ?", id, model.AIJobRunning).Updates(map[string]any{
-		"state": model.AIJobFailed, "stage": "failed", "error_code": code, "last_error": message, "finished_at": now, "updated_at": now,
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var row aiJobRow
+		if err := tx.Where("id = ? AND state = ?", id, model.AIJobRunning).Take(&row).Error; err != nil {
+			return ErrNotFound
+		}
+		now := time.Now().Unix()
+		if err := tx.Model(&aiJobRow{}).Where("id = ? AND state = ?", id, model.AIJobRunning).Updates(map[string]any{
+			"state": model.AIJobFailed, "stage": "failed", "error_code": code, "last_error": message, "finished_at": now, "updated_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&aiJobRow{}).Where("depends_on_job_id = ? AND state = ?", id, model.AIJobQueued).Updates(map[string]any{
+			"state": model.AIJobSkipped, "stage": "skipped", "error_code": "dependency_failed", "last_error": "source transcription failed", "finished_at": now, "updated_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		return s.enqueueAINotificationTx(tx, row, nil, false, code, message)
 	})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
 }
 
 func (s *Store) CancelAIJob(id string) error {
-	now := time.Now().Unix()
-	res := s.db.Model(&aiJobRow{}).Where("id = ? AND state IN ?", id, []model.AIJobState{model.AIJobQueued, model.AIJobRunning}).Updates(map[string]any{
-		"state": model.AIJobCanceled, "stage": "canceled", "finished_at": now, "updated_at": now,
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		now := time.Now().Unix()
+		res := tx.Model(&aiJobRow{}).Where("id = ? AND state IN ?", id, []model.AIJobState{model.AIJobQueued, model.AIJobRunning}).Updates(map[string]any{
+			"state": model.AIJobCanceled, "stage": "canceled", "finished_at": now, "updated_at": now,
+		})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrAIJobNotCancelable
+		}
+		return tx.Model(&aiJobRow{}).Where("depends_on_job_id = ? AND state = ?", id, model.AIJobQueued).Updates(map[string]any{
+			"state": model.AIJobSkipped, "stage": "skipped", "error_code": "dependency_canceled", "last_error": "source transcription was canceled", "finished_at": now, "updated_at": now,
+		}).Error
 	})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return ErrAIJobNotCancelable
-	}
-	return nil
 }
 
 func (s *Store) RetryAIJob(id string) error {
-	res := s.db.Model(&aiJobRow{}).Where("id = ? AND state IN ?", id, []model.AIJobState{model.AIJobFailed, model.AIJobCanceled}).Updates(map[string]any{
-		"state": model.AIJobQueued, "stage": "queued", "progress": 0, "error_code": "", "last_error": "", "started_at": nil, "finished_at": nil, "updated_at": time.Now().Unix(),
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var row aiJobRow
+		if err := tx.Select("id", "origin").Where("id = ? AND state IN ?", id, []model.AIJobState{model.AIJobFailed, model.AIJobCanceled, model.AIJobSkipped}).Take(&row).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrAIJobNotRetryable
+		} else if err != nil {
+			return err
+		}
+		now := time.Now().Unix()
+		updates := map[string]any{
+			"state": model.AIJobQueued, "stage": "queued", "progress": 0, "error_code": "", "last_error": "", "started_at": nil, "finished_at": nil,
+			"updated_at": now,
+		}
+		if row.Origin != string(model.AIJobOriginDynamic) {
+			updates["origin_traceparent"] = originTraceparent(tx.Statement.Context)
+			updates["origin_tracestate"] = originTracestate(tx.Statement.Context)
+		}
+		res := tx.Model(&aiJobRow{}).Where("id = ? AND state IN ?", id, []model.AIJobState{model.AIJobFailed, model.AIJobCanceled, model.AIJobSkipped}).Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrAIJobNotRetryable
+		}
+		return tx.Model(&aiJobRow{}).Where("depends_on_job_id = ? AND state = ?", id, model.AIJobSkipped).Updates(map[string]any{
+			"state": model.AIJobQueued, "stage": "queued", "progress": 0, "error_code": "", "last_error": "", "finished_at": nil, "updated_at": now,
+		}).Error
 	})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return ErrAIJobNotRetryable
-	}
-	return nil
 }
 
 func (s *Store) DeleteAIJob(id string) error {
-	res := s.db.Where("id = ? AND state IN ?", id, []model.AIJobState{model.AIJobSucceeded, model.AIJobFailed, model.AIJobCanceled}).Delete(&aiJobRow{})
+	res := s.db.Where("id = ? AND state IN ? AND NOT EXISTS (SELECT 1 FROM ai_jobs dependency WHERE dependency.depends_on_job_id = ai_jobs.id)", id, []model.AIJobState{model.AIJobSucceeded, model.AIJobFailed, model.AIJobCanceled, model.AIJobSkipped}).Delete(&aiJobRow{})
 	if res.Error != nil {
 		return res.Error
 	}
@@ -511,6 +703,83 @@ func (s *Store) DeleteAIJob(id string) error {
 		return ErrAIJobNotTerminal
 	}
 	return nil
+}
+
+func (s *Store) enqueueAINotificationTx(tx *gorm.DB, row aiJobRow, result any, succeeded bool, code, message string) error {
+	if row.Origin != string(model.AIJobOriginDynamic) || row.SourceDynamicID == "" {
+		return nil
+	}
+	var channels []string
+	if err := json.Unmarshal([]byte(row.TargetChannelIDs), &channels); err != nil {
+		return err
+	}
+	var dynamicRow dynamicRow
+	if err := tx.Where("id = ?", row.SourceDynamicID).Take(&dynamicRow).Error; err != nil {
+		return err
+	}
+	var dynamic model.Dynamic
+	if err := json.Unmarshal([]byte(dynamicRow.PayloadJSON), &dynamic); err != nil {
+		return err
+	}
+	body, title := "", dynamic.Title
+	switch value := result.(type) {
+	case model.AITranscriptionResult:
+		body, title = transcriptionNotificationText(value), value.Title
+	case model.AISummaryResult:
+		body = value.Markdown
+	}
+	notification := &model.AINotification{
+		JobID: row.ID, DynamicID: row.SourceDynamicID, BVID: dynamic.BVID, UPName: dynamic.UPName, Title: title,
+		Stage: model.AIJobKind(row.Kind), Succeeded: succeeded, Body: body, ErrorCode: code, ErrorMessage: message,
+		SourceURL: dynamic.TargetURL,
+	}
+	if notification.SourceURL == "" {
+		notification.SourceURL = dynamic.URL
+	}
+	now := time.Now()
+	for _, channelID := range channels {
+		delivery := model.Delivery{
+			ID: fmt.Sprintf("ai:%s:%d:%s", row.ID, row.Attempts, channelID), Kind: model.DeliveryKindAI, AI: notification,
+			ChannelID: channelID, State: model.DeliveryPending, NextAt: now, CreatedAt: now,
+			OriginTraceparent: originTraceparent(tx.Statement.Context),
+		}
+		if err := putDeliveryTx(tx, delivery); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func transcriptionNotificationText(result model.AITranscriptionResult) string {
+	var body strings.Builder
+	for _, page := range result.Pages {
+		if len(result.Pages) > 1 {
+			fmt.Fprintf(&body, "P%d %s\n", page.Page, page.Title)
+		}
+		for _, segment := range page.Segments {
+			minutes, seconds := segment.StartMS/60000, (segment.StartMS/1000)%60
+			fmt.Fprintf(&body, "[%02d:%02d] %s\n", minutes, seconds, segment.Text)
+		}
+	}
+	return strings.TrimSpace(body.String())
+}
+
+// AIJobsForDynamic returns the automatic pipeline in execution order.
+func (s *Store) AIJobsForDynamic(dynamicID string, detail bool) ([]model.AIJob, error) {
+	var rows []aiJobRow
+	if err := s.db.Where("source_dynamic_id = ?", dynamicID).
+		Order("CASE kind WHEN 'transcription' THEN 0 ELSE 1 END, created_at, id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	jobs := make([]model.AIJob, 0, len(rows))
+	for _, row := range rows {
+		job, err := s.aiJob(row, detail)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, nil
 }
 
 func (s *Store) InterruptRunningAIJobs() (int64, error) {

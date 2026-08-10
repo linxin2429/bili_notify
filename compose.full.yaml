@@ -50,6 +50,13 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       BILI_NOTIFY_AI_WORKER_SOCKET: /run/bili-notify/ai-worker.sock
       BILI_NOTIFY_AI_CACHE_DIR: /cache
+      BILI_NOTIFY_AI_LOG_LEVEL: ${BILI_NOTIFY_AI_LOG_LEVEL:-info}
+      BILI_NOTIFY_OTEL_SDK_DISABLED: "false"
+      BILI_NOTIFY_OTEL_SERVICE_NAME: bili-notify-ai-worker
+      BILI_NOTIFY_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      BILI_NOTIFY_OTEL_METRIC_EXPORT_INTERVAL_SEC: "15"
+      BILI_NOTIFY_OTEL_DEPLOYMENT_ENVIRONMENT: ${BILI_NOTIFY_OTEL_DEPLOYMENT_ENVIRONMENT:-production}
     volumes:
       - bili-notify-ai-socket:/run/bili-notify
       - bili-notify-ai-cache:/cache
@@ -58,6 +65,7 @@ services:
       - /tmp:size=32m,mode=1777
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
+    depends_on: [otel-collector]
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.158.0

@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -384,6 +385,26 @@ func TestRuntimeSettingsRejectsVersionMismatch(t *testing.T) {
 			assert.Contains(t, err.Error(), "fresh data volume")
 		})
 	}
+}
+
+func TestRuntimeSettingsVersionTwoDefaultsMissingAutomaticAIFlagToDisabled(t *testing.T) {
+	t.Parallel()
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 9))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	raw, err := json.Marshal(runtimeSettingsRecord{Version: 2, RuntimeSettings: model.DefaultRuntimeSettings()})
+	require.NoError(t, err)
+	var stored map[string]any
+	require.NoError(t, json.Unmarshal(raw, &stored))
+	delete(stored, "ai_auto_processing_enabled")
+	raw, err = json.Marshal(stored)
+	require.NoError(t, err)
+	require.NoError(t, store.db.Create(&metaRow{Key: metaKeyRuntimeSettings, Value: string(raw)}).Error)
+
+	settings, err := store.RuntimeSettings()
+	require.NoError(t, err)
+	assert.False(t, settings.AIAutoProcessingEnabled)
 }
 
 func TestRuntimeSettingsRejectsInvalidRecords(t *testing.T) {

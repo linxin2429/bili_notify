@@ -106,6 +106,14 @@ const (
 	AIJobSucceeded AIJobState = "succeeded"
 	AIJobFailed    AIJobState = "failed"
 	AIJobCanceled  AIJobState = "canceled"
+	AIJobSkipped   AIJobState = "skipped"
+)
+
+type AIJobOrigin string
+
+const (
+	AIJobOriginWorkbench AIJobOrigin = "workbench"
+	AIJobOriginDynamic   AIJobOrigin = "dynamic"
 )
 
 type AITranscriptionInput struct {
@@ -158,27 +166,33 @@ type AISummaryResult struct {
 }
 
 type AIJob struct {
-	ID              string     `json:"id"`
-	ClientRequestID string     `json:"client_request_id,omitempty"`
-	Kind            AIJobKind  `json:"kind"`
-	State           AIJobState `json:"state"`
-	Stage           string     `json:"stage"`
-	Progress        int        `json:"progress"`
-	ProfileID       string     `json:"profile_id"`
-	PromptID        string     `json:"prompt_id,omitempty"`
-	Attempts        int        `json:"attempts"`
-	ErrorCode       string     `json:"error_code,omitempty"`
-	LastError       string     `json:"last_error,omitempty"`
-	Input           any        `json:"input,omitempty"`
-	Result          any        `json:"result,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	StartedAt       time.Time  `json:"started_at,omitzero"`
-	FinishedAt      time.Time  `json:"finished_at,omitzero"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID                string      `json:"id"`
+	ClientRequestID   string      `json:"client_request_id,omitempty"`
+	Kind              AIJobKind   `json:"kind"`
+	State             AIJobState  `json:"state"`
+	Stage             string      `json:"stage"`
+	Progress          int         `json:"progress"`
+	ProfileID         string      `json:"profile_id"`
+	PromptID          string      `json:"prompt_id,omitempty"`
+	Origin            AIJobOrigin `json:"origin"`
+	SourceDynamicID   string      `json:"source_dynamic_id,omitempty"`
+	DependsOnJobID    string      `json:"depends_on_job_id,omitempty"`
+	OriginTraceparent string      `json:"-"`
+	OriginTracestate  string      `json:"-"`
+	TargetChannelIDs  []string    `json:"-"`
+	Attempts          int         `json:"attempts"`
+	ErrorCode         string      `json:"error_code,omitempty"`
+	LastError         string      `json:"last_error,omitempty"`
+	Input             any         `json:"input,omitempty"`
+	Result            any         `json:"result,omitempty"`
+	CreatedAt         time.Time   `json:"created_at"`
+	StartedAt         time.Time   `json:"started_at,omitzero"`
+	FinishedAt        time.Time   `json:"finished_at,omitzero"`
+	UpdatedAt         time.Time   `json:"updated_at"`
 }
 
 func (j AIJob) Terminal() bool {
-	return j.State == AIJobSucceeded || j.State == AIJobFailed || j.State == AIJobCanceled
+	return j.State == AIJobSucceeded || j.State == AIJobFailed || j.State == AIJobCanceled || j.State == AIJobSkipped
 }
 
 type AIJobQuery struct {

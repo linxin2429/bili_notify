@@ -81,7 +81,7 @@ class FakeWebSocket {
 }
 
 const runtime = { status: { auth_valid: true, bili_account: { uid: '1', name: '账号' }, up_count: 1, channel_count: 1, outbox_depth: 0, ready: true }, timezone: 'Asia/Shanghai', updated_at: '2026-08-09T10:00:00Z' }
-const settings = { poll_interval_sec: 30, request_rate: 1, request_concurrency: 2, comment_enabled: true, comment_track_n: 10, comment_root_pages: 2, comment_reply_pages: 3, comment_batch_interval_sec: 60, log_level: 'info', audit_log_retention_days: 90, relation_refresh_interval_sec: 3600, space_reconcile_interval_sec: 3600, max_dynamic_pages: 5, risk_pause_sec: 300, delivery_concurrency: 4, backlog_alert_count: 100, backlog_alert_age_sec: 600, delivery_retry_delays_sec: [5, 30, 120, 600, 3600] }
+const settings = { poll_interval_sec: 30, request_rate: 1, request_concurrency: 2, comment_enabled: true, comment_track_n: 10, comment_root_pages: 2, comment_reply_pages: 3, comment_batch_interval_sec: 60, log_level: 'info', audit_log_retention_days: 90, relation_refresh_interval_sec: 3600, space_reconcile_interval_sec: 3600, max_dynamic_pages: 5, risk_pause_sec: 300, delivery_concurrency: 4, backlog_alert_count: 100, backlog_alert_age_sec: 600, delivery_retry_delays_sec: [5, 30, 120, 600, 3600], ai_auto_processing_enabled: false }
 const up = { uid: '42', name: 'UP', enabled: true, baseline_ready: true, consecutive_fail: 0, follow_state: 'followed', collection_route: 'feed_all' }
 const channel = { id: 'mail', name: '邮件', type: 'email', enabled: true, settings: {}, configured_secrets: [], created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:00:00Z' }
 const emptyPage = { next_cursor: '', has_more: false }
@@ -91,8 +91,8 @@ const aiProfiles = [
 ]
 const aiPrompts = [{ id: 'prompt', name: '默认', system_prompt: 'system', chunk_prompt: '{{text}}', reduce_prompt: '{{summaries}}', default: true, created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:00:00Z' }]
 const aiJobs = [
-  { id: 'job-done', kind: 'transcription', state: 'succeeded', stage: 'completed', progress: 100, profile_id: 'transcribe', attempts: 1, created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:00:00Z' },
-  { id: 'job-failed', kind: 'summary', state: 'failed', stage: 'failed', progress: 10, profile_id: 'summary', prompt_id: 'prompt', attempts: 1, error_code: 'provider_failure', last_error: 'failed', created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:00:00Z' },
+  { id: 'job-done', kind: 'transcription', state: 'succeeded', stage: 'completed', progress: 100, profile_id: 'transcribe', origin: 'workbench', attempts: 1, created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:00:00Z' },
+  { id: 'job-failed', kind: 'summary', state: 'failed', stage: 'failed', progress: 10, profile_id: 'summary', prompt_id: 'prompt', origin: 'workbench', attempts: 1, error_code: 'provider_failure', last_error: 'failed', created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:00:00Z' },
 ]
 const aiJobDetail = { ...aiJobs[0], result: { bvid: 'BV1xx411c7mD', title: '视频', pages: [{ page: 1, title: 'P1', duration_ms: 3000, segments: [{ start_ms: 1000, end_ms: 2000, text: '内容' }] }] } }
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }) }

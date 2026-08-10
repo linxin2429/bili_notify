@@ -12,6 +12,17 @@ services:
     depends_on:
       - otel-collector
 
+  ai-worker:
+    environment:
+      BILI_NOTIFY_OTEL_SDK_DISABLED: "false"
+      BILI_NOTIFY_OTEL_SERVICE_NAME: bili-notify-ai-worker
+      BILI_NOTIFY_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      BILI_NOTIFY_OTEL_METRIC_EXPORT_INTERVAL_SEC: "15"
+      BILI_NOTIFY_OTEL_DEPLOYMENT_ENVIRONMENT: production
+    depends_on:
+      - otel-collector
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.158.0
     profiles: ["observability"]

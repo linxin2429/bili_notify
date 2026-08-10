@@ -121,24 +121,30 @@ type aiPromptRow struct {
 func (aiPromptRow) TableName() string { return tableAIPrompts }
 
 type aiJobRow struct {
-	ID              string `gorm:"column:id;primaryKey"`
-	ClientRequestID string `gorm:"column:client_request_id;not null"`
-	Kind            string `gorm:"column:kind;not null"`
-	State           string `gorm:"column:state;not null"`
-	Stage           string `gorm:"column:stage;not null;default:''"`
-	Progress        int    `gorm:"column:progress;not null;default:0"`
-	ProfileID       string `gorm:"column:profile_id;not null"`
-	PromptID        string `gorm:"column:prompt_id;not null;default:''"`
-	Attempts        int    `gorm:"column:attempts;not null;default:0"`
-	ErrorCode       string `gorm:"column:error_code;not null;default:''"`
-	LastError       string `gorm:"column:last_error;not null;default:''"`
-	InputSealed     []byte `gorm:"column:input_sealed;not null"`
-	ConfigSealed    []byte `gorm:"column:config_sealed;not null"`
-	ResultSealed    []byte `gorm:"column:result_sealed"`
-	CreatedAt       int64  `gorm:"column:created_at;not null"`
-	StartedAt       *int64 `gorm:"column:started_at"`
-	FinishedAt      *int64 `gorm:"column:finished_at"`
-	UpdatedAt       int64  `gorm:"column:updated_at;not null"`
+	ID                string `gorm:"column:id;primaryKey"`
+	ClientRequestID   string `gorm:"column:client_request_id;not null"`
+	Kind              string `gorm:"column:kind;not null"`
+	State             string `gorm:"column:state;not null"`
+	Stage             string `gorm:"column:stage;not null;default:''"`
+	Progress          int    `gorm:"column:progress;not null;default:0"`
+	ProfileID         string `gorm:"column:profile_id;not null"`
+	PromptID          string `gorm:"column:prompt_id;not null;default:''"`
+	Origin            string `gorm:"column:origin;not null;default:'workbench'"`
+	SourceDynamicID   string `gorm:"column:source_dynamic_id;not null;default:''"`
+	DependsOnJobID    string `gorm:"column:depends_on_job_id;not null;default:''"`
+	OriginTraceparent string `gorm:"column:origin_traceparent;not null;default:''"`
+	OriginTracestate  string `gorm:"column:origin_tracestate;not null;default:''"`
+	TargetChannelIDs  string `gorm:"column:target_channel_ids;not null;default:'[]'"`
+	Attempts          int    `gorm:"column:attempts;not null;default:0"`
+	ErrorCode         string `gorm:"column:error_code;not null;default:''"`
+	LastError         string `gorm:"column:last_error;not null;default:''"`
+	InputSealed       []byte `gorm:"column:input_sealed;not null"`
+	ConfigSealed      []byte `gorm:"column:config_sealed;not null"`
+	ResultSealed      []byte `gorm:"column:result_sealed"`
+	CreatedAt         int64  `gorm:"column:created_at;not null"`
+	StartedAt         *int64 `gorm:"column:started_at"`
+	FinishedAt        *int64 `gorm:"column:finished_at"`
+	UpdatedAt         int64  `gorm:"column:updated_at;not null"`
 }
 
 func (aiJobRow) TableName() string { return "ai_jobs" }
@@ -265,6 +271,7 @@ func (deliveryRow) TableName() string { return "deliveries" }
 
 type dynamicRow struct {
 	ID           string `gorm:"column:id;primaryKey"`
+	BVID         string `gorm:"column:bvid;not null;default:''"`
 	UID          string `gorm:"column:uid;not null"`
 	UPName       string `gorm:"column:up_name;not null"`
 	Type         string `gorm:"column:type;not null"`

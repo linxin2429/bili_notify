@@ -13,6 +13,7 @@ require (
 	github.com/wneessen/go-mail v0.7.2
 	github.com/yeqown/go-qrcode/v2 v2.2.5
 	github.com/yeqown/go-qrcode/writer/standard v1.3.0
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0
 	go.opentelemetry.io/proto/otlp v1.11.0
 	golang.org/x/crypto v0.54.0

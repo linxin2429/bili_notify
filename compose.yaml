@@ -64,6 +64,8 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       BILI_NOTIFY_AI_WORKER_SOCKET: /run/bili-notify/ai-worker.sock
       BILI_NOTIFY_AI_CACHE_DIR: /cache
+      BILI_NOTIFY_AI_LOG_LEVEL: ${BILI_NOTIFY_AI_LOG_LEVEL:-info}
+      BILI_NOTIFY_OTEL_SDK_DISABLED: "true"
     volumes:
       - bili-notify-ai-socket:/run/bili-notify
       - bili-notify-ai-cache:/cache

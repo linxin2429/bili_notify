@@ -5,7 +5,7 @@ export const queryKeys = {
   session: ['session'] as const, runtime: ['runtime'] as const, settings: ['settings'] as const, ups: ['ups'] as const,
   channels: ['channels'] as const, deliveries: (after = '') => ['deliveries', { after }] as const,
   biliLogin: ['bilibili-login'] as const, microsoftLogins: ['microsoft-logins'] as const,
-  dynamics: (query: ContentQuery) => ['dynamics', query] as const, comments: (query: ContentQuery) => ['comments', query] as const,
+  dynamics: (query: ContentQuery) => ['dynamics', query] as const, dynamic: (id: string) => ['dynamics', 'detail', id] as const, comments: (query: ContentQuery) => ['comments', query] as const,
   comment: (rpid: string) => ['comments', 'detail', rpid] as const, auditLogs: (query: AuditQuery) => ['audit-logs', query] as const,
   aiStatus: ['ai-status'] as const, aiProfiles: ['ai-profiles'] as const, aiPrompts: ['ai-prompts'] as const,
   aiJobs: (query: object = {}) => ['ai-jobs', query] as const, aiJob: (id: string) => ['ai-jobs', 'detail', id] as const,

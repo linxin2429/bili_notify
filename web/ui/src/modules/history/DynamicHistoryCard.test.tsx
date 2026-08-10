@@ -55,4 +55,26 @@ describe('DynamicHistoryCard', () => {
     render(<DynamicHistoryCard item={{ ...base, type: 'DYNAMIC_TYPE_COMMON_SQUARE', title: '卡片', summary: '', url: 'javascript:bad', media: [{ kind: 'cover', url: 'https://i.example/card.jpg' }], original: { summary: '', media: [] } }} timeZone="UTC" />)
     await user.click(screen.getByRole('button', { name: '放大内容封面' })); expect(screen.getByRole('dialog', { name: '图片预览' })).toBeInTheDocument(); expect(screen.getByText('原动态内容未被归档')).toBeInTheDocument()
   })
+
+  it('shows automatic AI pipeline status and opens its result', async () => {
+    const user = userEvent.setup(); const onOpenAI = vi.fn()
+    render(<DynamicHistoryCard item={{ ...base, ai_pipeline: [
+      { id: 'transcription', kind: 'transcription', state: 'succeeded', stage: 'completed', progress: 100, profile_id: 'transcription', origin: 'dynamic', attempts: 1, created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:01:00Z' },
+      { id: 'summary', kind: 'summary', state: 'running', stage: 'reducing_summary', progress: 82, profile_id: 'summary', prompt_id: 'prompt', origin: 'dynamic', depends_on_job_id: 'transcription', attempts: 1, created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:01:00Z' },
+    ] }} timeZone="UTC" onOpenAI={onOpenAI} />)
+    await user.click(screen.getByRole('button', { name: 'AI 结果 · 82%' }))
+    expect(onOpenAI).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    { state: 'queued', progress: 0, expected: 'AI 结果 · 排队中' },
+    { state: 'failed', progress: 0, expected: 'AI 结果 · 失败' },
+    { state: 'succeeded', progress: 100, expected: 'AI 结果 · 已完成' },
+    { state: 'skipped', progress: 0, expected: 'AI 结果 · 已停止' },
+  ] as const)('labels a $state automatic AI pipeline', ({ state, progress, expected }) => {
+    render(<DynamicHistoryCard item={{ ...base, ai_pipeline: [
+      { id: state, kind: 'transcription', state, stage: state, progress, profile_id: 'transcription', origin: 'dynamic', attempts: 1, created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:01:00Z' },
+    ] }} timeZone="UTC" />)
+    expect(screen.getByRole('button', { name: expected })).toBeInTheDocument()
+  })
 })

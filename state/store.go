@@ -138,6 +138,12 @@ func originTraceparent(ctx context.Context) string {
 	return carrier.Get("traceparent")
 }
 
+func originTracestate(ctx context.Context) string {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+	return carrier.Get("tracestate")
+}
+
 // WithContext returns a lightweight view whose database spans inherit ctx.
 func (s *Store) WithContext(ctx context.Context) *Store {
 	copy := *s
@@ -226,10 +232,17 @@ func (s *Store) PutRuntimeSettings(settings model.RuntimeSettings) error {
 	if err != nil {
 		return fmt.Errorf("encoding runtime settings: %w", err)
 	}
-	return s.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "key"}},
-		DoUpdates: clause.AssignmentColumns([]string{"value"}),
-	}).Create(&metaRow{Key: metaKeyRuntimeSettings, Value: string(raw)}).Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if settings.AIAutoProcessingEnabled {
+			if _, _, _, err := s.defaultAIConfigTx(tx); err != nil {
+				return fmt.Errorf("enabling automatic AI processing: %w", err)
+			}
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "key"}},
+			DoUpdates: clause.AssignmentColumns([]string{"value"}),
+		}).Create(&metaRow{Key: metaKeyRuntimeSettings, Value: string(raw)}).Error
+	})
 }
 
 func (s *Store) ListUPs() ([]model.UP, error) {
@@ -303,6 +316,14 @@ func (s *Store) PutUP(up model.UP) error {
 
 func (s *Store) DeleteUP(uid string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var dynamicIDs []string
+		if err := tx.Model(&dynamicRow{}).Where("uid = ?", uid).Pluck("id", &dynamicIDs).Error; err != nil {
+			return err
+		}
+		dynamicSet := make(map[string]struct{}, len(dynamicIDs))
+		for _, id := range dynamicIDs {
+			dynamicSet[id] = struct{}{}
+		}
 		var deliveryRows []deliveryRow
 		if err := tx.Find(&deliveryRows).Error; err != nil {
 			return err
@@ -315,6 +336,9 @@ func (s *Store) DeleteUP(uid string) error {
 			belongsToUP := delivery.EffectiveKind() == model.DeliveryKindDynamic && delivery.Dynamic.UID == uid
 			if delivery.EffectiveKind() == model.DeliveryKindComment && delivery.Comment != nil {
 				belongsToUP = delivery.Comment.UPUID == uid
+			}
+			if delivery.EffectiveKind() == model.DeliveryKindAI && delivery.AI != nil {
+				_, belongsToUP = dynamicSet[delivery.AI.DynamicID]
 			}
 			if belongsToUP {
 				if err := tx.Where("id = ?", row.ID).Delete(&deliveryRow{}).Error; err != nil {
@@ -333,6 +357,11 @@ func (s *Store) DeleteUP(uid string) error {
 		}
 		if err := tx.Where("uid = ?", uid).Delete(&commentTargetRow{}).Error; err != nil {
 			return err
+		}
+		if len(dynamicIDs) > 0 {
+			if err := tx.Where("source_dynamic_id IN ?", dynamicIDs).Delete(&aiJobRow{}).Error; err != nil {
+				return err
+			}
 		}
 		if err := tx.Where("uid = ?", uid).Delete(&dynamicRow{}).Error; err != nil {
 			return err
@@ -559,6 +588,10 @@ func (m DynamicBaselineMode) includes(dynamic model.Dynamic) bool {
 func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs []string, baselineMode DynamicBaselineMode) (int, error) {
 	created := 0
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		autoAI, err := automaticAIEnabledTx(tx)
+		if err != nil {
+			return err
+		}
 		if err := archiveDynamicsTx(tx, dynamics, baselineMode); err != nil {
 			return err
 		}
@@ -595,6 +628,11 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 				}
 				if err := putDeliveryTx(tx, d); err != nil {
 					return err
+				}
+			}
+			if autoAI {
+				if _, err := s.createAutomaticAIJobsTx(tx, dynamic, channelIDs); err != nil {
+					return fmt.Errorf("creating automatic AI pipeline for dynamic %s: %w", dynamic.ID, err)
 				}
 			}
 			created++

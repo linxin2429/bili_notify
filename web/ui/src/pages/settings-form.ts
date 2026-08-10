@@ -19,6 +19,7 @@ export interface RuntimeSettingsForm {
   backlogAlertCount: string
   backlogAlertAgeSec: string
   retryDelaysSec: [string, string, string, string, string]
+  aiAutoProcessingEnabled: boolean
 }
 
 export type RuntimeSettingsParseResult = { ok: true; value: RuntimeSettings } | { ok: false; error: string }
@@ -33,6 +34,7 @@ export function runtimeSettingsToForm(settings: RuntimeSettings): RuntimeSetting
     maxDynamicPages: String(settings.max_dynamic_pages), riskPauseSec: String(settings.risk_pause_sec),
     deliveryConcurrency: String(settings.delivery_concurrency), backlogAlertCount: String(settings.backlog_alert_count),
     backlogAlertAgeSec: String(settings.backlog_alert_age_sec), retryDelaysSec: settings.delivery_retry_delays_sec.map(String) as RuntimeSettingsForm['retryDelaysSec'],
+    aiAutoProcessingEnabled: settings.ai_auto_processing_enabled,
   }
 }
 
@@ -50,6 +52,7 @@ export function parseRuntimeSettingsForm(input: RuntimeSettingsForm): RuntimeSet
     max_dynamic_pages: Number(input.maxDynamicPages), risk_pause_sec: Number(input.riskPauseSec),
     delivery_concurrency: Number(input.deliveryConcurrency), backlog_alert_count: Number(input.backlogAlertCount),
     backlog_alert_age_sec: Number(input.backlogAlertAgeSec), delivery_retry_delays_sec: retryDelays,
+    ai_auto_processing_enabled: input.aiAutoProcessingEnabled,
   }
   if (!integerIn(value.poll_interval_sec, 10, 86400)) return failure('轮询间隔必须是 10 到 86400 秒的整数')
   if (!Number.isFinite(value.request_rate) || !(value.request_rate > 0 && value.request_rate <= 10)) return failure('请求速率必须在 (0, 10] 内')

@@ -55,7 +55,7 @@ docker run -d --name bili-notify \
 2. 添加至少一个通知渠道并发送测试通知。
 3. 添加需要监控的 UID。首次拉取只建立基线，不通知历史动态；基线内容仍会写入“历史”页。
 4. 在“历史”中按 UP、时间与关键字浏览已采集内容。
-5. 如需 AI 功能，在“AI 设置”创建转写/总结模型配置档和总结提示词，然后在“AI 工作台”提交 BVID 或文本。配置档支持任意 OpenAI 兼容的 HTTPS Base URL、API Key 和模型名；API Key 加密保存且不会回传浏览器。默认示例可使用 OpenRouter 的 `https://openrouter.ai/api/v1` 与 `openai/gpt-transcribe`。
+5. 如需 AI 功能，在“AI 设置”创建转写/总结模型配置档和总结提示词，然后在“AI 工作台”提交 BVID 或文本。若要让新视频动态自动按“转写 → 总结”处理，请把三个配置分别设为默认且保持模型启用，再到“设置”开启“自动处理新视频动态”；该开关默认关闭，首次基线和转发中嵌套的视频不会触发。结果可在 AI 工作台和动态历史中查看。配置档支持任意 OpenAI 兼容的 HTTPS Base URL、API Key 和模型名；API Key 加密保存且不会回传浏览器。默认示例可使用 OpenRouter 的 `https://openrouter.ai/api/v1` 与 `openai/gpt-transcribe`。
 
 “设置”页可热更新基础与高级采集策略、投递并发与重试、积压告警、日志级别和审计日志保留期。保存的是一份完整运行设置：后续任务立即读取新策略，正在执行的任务和已经排定的重试不会被取消或改写。`BILI_NOTIFY_POLL_INTERVAL`、`BILI_NOTIFY_REQUEST_RATE`、`BILI_NOTIFY_REQUEST_CONCURRENCY`、`BILI_NOTIFY_LOG_LEVEL` 和 `BILI_NOTIFY_AUDIT_LOG_RETENTION` 只在新数据目录首次启动时播种默认值，之后以 `data.db` 中的管理台设置为准。
 
@@ -113,9 +113,9 @@ ssh -L 3000:127.0.0.1:3000 your-server
 # 浏览器打开 http://127.0.0.1:3000
 ```
 
-应用使用 Cobra/Viper 管理的 `BILI_NOTIFY_OTEL_*` 配置把 logs、metrics 和 100% 采样的 traces 发送到 OpenTelemetry Collector。Collector 把日志写入 Loki、在 `:9464` 导出 Prometheus metrics、把 trace 写入 Tempo；Prometheus 和 Loki 保留 30 天，Tempo 保留 7 天。Collector 出口使用持久化队列与无限时重试，后端短暂故障不阻塞业务。Grafana 预置了 Prometheus、Loki、Tempo 数据源、两个面板和 metrics/logs/traces 关联。
+主服务和 AI Worker 都使用 `BILI_NOTIFY_OTEL_*` 配置把 logs、metrics 和 100% 采样的 traces 发送到 OpenTelemetry Collector。Worker 在完整 Compose 中使用 OTLP HTTP/protobuf 和独立的 `service.name=bili-notify-ai-worker`；基础 Compose 默认禁用两个进程的 SDK。Collector 把日志写入 Loki、在 `:9464` 导出 Prometheus metrics、把 trace 写入 Tempo；Prometheus 和 Loki 保留 30 天，Tempo 保留 7 天。Collector 出口使用持久化队列与无限时重试，后端短暂故障不阻塞业务。Grafana 预置了 Prometheus、Loki、Tempo 数据源、两个面板和 metrics/logs/traces 关联。
 
-Trace 在这个项目中有必要：一次采集或投递会跨越 B 站 HTTP、SQLite 事务、媒体下载和通知渠道，仅靠日志和指标无法稳定定位慢点与失败链路。采集创建 Outbox 任务时会持久化 W3C Trace Context，异步投递恢复同一 Trace，因此可以在 Tempo 的一条 waterfall 中查看从内容发现、入队到通知渠道发送的完整因果链。本服务流量低，100% 采样的成本可控；空闲 Outbox 轮询、探针、静态资源和 WebSocket 长连接生命周期不采集，只记录 WebSocket 握手。
+Trace 在这个项目中有必要：一次自动视频处理会跨越 B 站动态采集、SQLite 队列、Go 调度、Unix Socket gRPC、Worker、模型供应商 HTTP 和多渠道通知，仅靠日志和指标无法稳定定位慢点与失败链路。自动任务持久化采集时的 W3C Trace Context，Go 调度恢复后经 gRPC 注入 Worker，总结继承转写执行上下文，终态通知继续同一 Trace；AI 工作台创建的任务则从用户提交任务的后端 HTTP span 开始。Tempo 因而可以在一条 waterfall 中查看完整因果链。本服务流量低，100% 采样的成本可控；浏览器、空闲 Outbox 轮询、探针、静态资源和 WebSocket 长连接生命周期不采集，只记录 WebSocket 握手。
 
 在 Explore 中可使用：
 
@@ -123,9 +123,10 @@ Trace 在这个项目中有必要：一次采集或投递会跨越 B 站 HTTP、
 {service_name="bili-notify"} | category="system"
 {service_name="bili-notify"} | category="system" | severity_text=~"WARN|ERROR"
 {service_name="bili-notify"} | trace_id="Trace ID"
+{service_name="bili-notify-ai-worker"} | trace_id="Trace ID"
 ```
 
-基础 `compose.yaml` 显式设置 `BILI_NOTIFY_OTEL_SDK_DISABLED=true`，不依赖观测栈。若手工部署 Collector，至少设置 `BILI_NOTIFY_OTEL_SDK_DISABLED=false`、`BILI_NOTIFY_OTEL_EXPORTER_OTLP_ENDPOINT` 和 `BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL=grpc|http/protobuf`。非法 OpenTelemetry 配置会使启动失败；运行时导出或关闭 flush 失败仅记日志，不使业务退出。
+基础 `compose.yaml` 显式设置 `BILI_NOTIFY_OTEL_SDK_DISABLED=true`，不依赖观测栈。若手工部署 Collector，至少设置 `BILI_NOTIFY_OTEL_SDK_DISABLED=false`、`BILI_NOTIFY_OTEL_EXPORTER_OTLP_ENDPOINT` 和 `BILI_NOTIFY_OTEL_EXPORTER_OTLP_PROTOCOL=grpc|http/protobuf`；AI Worker 当前要求 `http/protobuf`。非法 OpenTelemetry 配置会使启动失败；运行时导出或关闭 flush 失败仅记日志，不使业务退出。
 
 管理员密码可在“设置”中修改，修改后所有现有会话与 WebSocket 会立即失效。本版本不提供忘记密码恢复；密码丢失后只能使用新的数据卷重新初始化。
 
@@ -141,6 +142,8 @@ BILI_NOTIFY_AI_WORKER_SOCKET=/tmp/bili-notify-ai.sock \
   PYTHONPATH=worker worker/.venv/bin/python -m bili_ai_worker.server
 make run ARGS='serve --ai-worker-socket /tmp/bili-notify-ai.sock'
 ```
+
+Worker 向标准输出写 JSON 结构化日志；启用 OTel 时同一日志也导出到 Collector，且 stdout 和 OTLP 记录都关联当前 trace/span。它还导出任务结果与耗时、供应商请求与耗时、音频字节和缓存体积指标，并为 gRPC server 与供应商 HTTP 调用创建 span。Compose 部署可用 `docker compose logs -f ai-worker` 查看；转写和总结任务会记录任务 ID、模型、音频切片字节数、HTTP 状态、耗时和供应商请求 ID，模型连通性检测会记录模型、状态和耗时，但不会记录 API Key、Cookie、音频、提示词或转写正文。默认日志级别为 `info`，可通过 `BILI_NOTIFY_AI_LOG_LEVEL=debug` 调整。
 
 克隆仓库后先启用项目内置的 Git hook：
 

@@ -34,6 +34,7 @@ type ContentQuery struct {
 // DynamicRecord is a list-row projection of an archived dynamic.
 type DynamicRecord struct {
 	ID           string               `json:"id"`
+	BVID         string               `json:"bvid,omitempty"`
 	UID          string               `json:"uid"`
 	UPName       string               `json:"up_name"`
 	Type         string               `json:"type"`
@@ -98,6 +99,7 @@ func archiveDynamicsTx(tx *gorm.DB, dynamics []model.Dynamic, baselineMode Dynam
 		}
 		row := dynamicRow{
 			ID:           d.ID,
+			BVID:         d.BVID,
 			UID:          d.UID,
 			UPName:       d.UPName,
 			Type:         d.Type,
@@ -167,7 +169,7 @@ func (s *Store) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, error) {
 		return nil, 0, err
 	}
 
-	listSQL := `SELECT id, uid, up_name, type, published_at, discovered_at, baseline,
+	listSQL := `SELECT id, bvid, uid, up_name, type, published_at, discovered_at, baseline,
 		title, summary, description, url, target_url, badge, payload_json
 		FROM dynamics` + where + ` ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?`
 	listArgs := append(append([]any{}, args...), limit, offset)
@@ -180,7 +182,7 @@ func (s *Store) QueryDynamics(q ContentQuery) ([]DynamicRecord, int, error) {
 		// List projection prefers denormalized text columns. Media/original come from
 		// payload_json when present; a corrupt archive must not blank the whole page.
 		record := DynamicRecord{
-			ID:           r.ID,
+			ID: r.ID, BVID: r.BVID,
 			UID:          r.UID,
 			UPName:       r.UPName,
 			Type:         r.Type,

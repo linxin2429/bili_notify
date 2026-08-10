@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import struct
+import time
 import wave
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
+
+from bili_ai_worker.telemetry import provider_duration, provider_requests
+
+logger = logging.getLogger("bili_ai_worker.provider")
 
 
 class ProviderError(RuntimeError):
@@ -45,6 +52,8 @@ def _raise_for_status(response: httpx.Response, label: str) -> None:
         code, message = "provider_authentication", f"{label} provider rejected the API key"
     elif response.status_code == 404:
         code, message = "provider_model_not_found", f"{label} provider endpoint or model was not found"
+    elif response.status_code == 413:
+        code, message = "provider_payload_too_large", f"{label} provider returned HTTP 413 (payload too large)"
     elif response.status_code == 429:
         code, message = "provider_rate_limited", f"{label} provider rate limited the request"
     else:
@@ -57,7 +66,9 @@ def _timeout(config: Any, *, probe: bool = False) -> httpx.Timeout:
     return httpx.Timeout(total, connect=min(15.0, total))
 
 
-async def transcribe(path: Path, config: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+async def transcribe(
+    path: Path, config: Any, *, job_id: str = ""
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     fields = {
         "model": config.model,
         "response_format": "verbose_json",
@@ -69,21 +80,44 @@ async def transcribe(path: Path, config: Any) -> tuple[list[dict[str, Any]], dic
         fields["prompt"] = config.prompt
     headers = {"Authorization": f"Bearer {config.api_key}"}
     timeout = _timeout(config)
+    endpoint = f"{config.base_url.rstrip('/')}/audio/transcriptions"
+    audio_bytes = path.stat().st_size
+    started = time.monotonic()
+    request_fields = {
+        "event": "provider.transcription.request",
+        "job_id": job_id,
+        "provider_origin": _origin(endpoint),
+        "model": config.model,
+        "audio_bytes": audio_bytes,
+        "audio_format": path.suffix.removeprefix(".").lower(),
+        "timeout_sec": config.timeout_sec,
+    }
+    logger.info("sending transcription request", extra=request_fields)
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             with path.open("rb") as audio:
                 response = await client.post(
-                    f"{config.base_url.rstrip('/')}/audio/transcriptions",
+                    endpoint,
                     headers=headers,
                     data=fields,
                     files={"file": (path.name, audio, "audio/flac")},
                 )
     except httpx.TimeoutException as exc:
+        _log_transport_failure("transcription", "timeout", request_fields, started, exc)
         raise ProviderError("provider_timeout", "transcription provider timed out", provider_error=str(exc)) from exc
     except httpx.HTTPError as exc:
+        _log_transport_failure("transcription", "unreachable", request_fields, started, exc)
         raise ProviderError(
             "provider_unreachable", "transcription provider is unreachable", provider_error=str(exc)
         ) from exc
+    _log_response("transcription", response, request_fields, started, config.api_key)
+    if response.status_code == 413:
+        raise ProviderError(
+            "provider_payload_too_large",
+            f"transcription provider rejected a {audio_bytes}-byte audio chunk with HTTP 413 (payload too large)",
+            status_code=response.status_code,
+            provider_error=_error_message(response),
+        )
     _raise_for_status(response, "transcription")
     try:
         payload = response.json()
@@ -108,7 +142,9 @@ async def transcribe(path: Path, config: Any) -> tuple[list[dict[str, Any]], dic
     return normalized, usage
 
 
-async def complete(messages: list[dict[str, str]], config: Any) -> tuple[str, dict[str, Any]]:
+async def complete(
+    messages: list[dict[str, str]], config: Any, *, job_id: str = ""
+) -> tuple[str, dict[str, Any]]:
     body: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
@@ -118,15 +154,28 @@ async def complete(messages: list[dict[str, str]], config: Any) -> tuple[str, di
         body["max_tokens"] = config.max_output_tokens
     headers = {"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}
     timeout = _timeout(config)
+    endpoint = f"{config.base_url.rstrip('/')}/chat/completions"
+    started = time.monotonic()
+    request_fields = {
+        "event": "provider.text.request",
+        "job_id": job_id,
+        "provider_origin": _origin(endpoint),
+        "model": config.model,
+        "message_count": len(messages),
+        "input_chars": sum(len(message.get("content", "")) for message in messages),
+        "timeout_sec": config.timeout_sec,
+    }
+    logger.info("sending text completion request", extra=request_fields)
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-            response = await client.post(
-                f"{config.base_url.rstrip('/')}/chat/completions", headers=headers, json=body
-            )
+            response = await client.post(endpoint, headers=headers, json=body)
     except httpx.TimeoutException as exc:
+        _log_transport_failure("text", "timeout", request_fields, started, exc)
         raise ProviderError("provider_timeout", "text provider timed out", provider_error=str(exc)) from exc
     except httpx.HTTPError as exc:
+        _log_transport_failure("text", "unreachable", request_fields, started, exc)
         raise ProviderError("provider_unreachable", "text provider is unreachable", provider_error=str(exc)) from exc
+    _log_response("text", response, request_fields, started, config.api_key)
     _raise_for_status(response, "text")
     try:
         payload = response.json()
@@ -225,3 +274,74 @@ def _probe_wav() -> bytes:
         audio.setframerate(sample_rate)
         audio.writeframes(frames)
     return output.getvalue()
+
+
+def _origin(url: str) -> str:
+    parsed = urlsplit(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _elapsed_ms(started: float) -> int:
+    return round((time.monotonic() - started) * 1000)
+
+
+def _request_id(response: httpx.Response) -> str:
+    for name in ("x-generation-id", "x-request-id", "request-id", "cf-ray"):
+        if value := response.headers.get(name):
+            return value[:200]
+    return ""
+
+
+def _redacted_error_message(response: httpx.Response, api_key: str) -> str:
+    detail = " ".join(_error_message(response).split())
+    if api_key:
+        detail = detail.replace(api_key, "[REDACTED]")
+    return detail[:500]
+
+
+def _log_response(
+    label: str,
+    response: httpx.Response,
+    request_fields: dict[str, Any],
+    started: float,
+    api_key: str,
+) -> None:
+    attributes = {"provider.operation": label, "http.response.status_code": response.status_code}
+    provider_requests.add(1, attributes)
+    provider_duration.record(time.monotonic() - started, attributes)
+    response_fields = {
+        **request_fields,
+        "event": f"provider.{label}.response",
+        "http_status": response.status_code,
+        "duration_ms": _elapsed_ms(started),
+        "response_bytes": len(response.content),
+        "provider_request_id": _request_id(response),
+    }
+    if 200 <= response.status_code < 300:
+        logger.info(f"{label} provider accepted request", extra=response_fields)
+        return
+    logger.warning(
+        f"{label} provider rejected request",
+        extra={**response_fields, "provider_error": _redacted_error_message(response, api_key)},
+    )
+
+
+def _log_transport_failure(
+    label: str,
+    failure: str,
+    request_fields: dict[str, Any],
+    started: float,
+    error: httpx.HTTPError,
+) -> None:
+    attributes = {"provider.operation": label, "result": failure}
+    provider_requests.add(1, attributes)
+    provider_duration.record(time.monotonic() - started, attributes)
+    logger.warning(
+        f"{label} provider request failed",
+        extra={
+            **request_fields,
+            "event": f"provider.{label}.{failure}",
+            "duration_ms": _elapsed_ms(started),
+            "error_type": type(error).__name__,
+        },
+    )

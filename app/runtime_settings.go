@@ -34,6 +34,11 @@ func (m *runtimeSettingsManager) UpdateSettings(settings model.RuntimeSettings) 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if settings.AIAutoProcessingEnabled {
+		if err := m.store.ValidateAutoAIConfiguration(); err != nil {
+			return fmt.Errorf("enabling automatic AI processing: %w", err)
+		}
+	}
 	if m.engine.Settings() == settings {
 		return nil
 	}

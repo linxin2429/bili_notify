@@ -6,13 +6,13 @@ import { bilibiliPlayerEmbedURL, composePreviewBody, dynamicTypeLabel, formatDat
 
 type HistoryContent = DynamicHistoryItem | DynamicPreview
 
-export function DynamicHistoryCard({ item, timeZone }: { item: DynamicHistoryItem; timeZone: string }) {
+export function DynamicHistoryCard({ item, timeZone, onOpenAI }: { item: DynamicHistoryItem; timeZone: string; onOpenAI?: () => void }) {
   const [expanded, setExpanded] = useState(false); const [now] = useState(() => Date.now())
   const contentCard = isContentCardType(item.type); const body = contentCard ? (item.summary || '').trim() : composePreviewBody(item.summary, item.description); const title = contentCard ? '' : (item.title || '').trim(); const targetURL = safeBilibiliURL(item.target_url || item.url)
   const expandable = body.length > 180
   return <Card className="history-card"><div className="history-card__header"><span className="avatar">{Array.from((item.up_name || item.uid).trim())[0] || 'UP'}</span><div><strong className="history-author">{item.up_name || item.uid}</strong><p title={formatDate(item.published_at, timeZone)}>{formatRelativeDate(item.published_at, now, timeZone)} · {dynamicTypeLabel(item.type)}</p></div><div className="badge-row">{item.badge && <Badge>{item.badge}</Badge>}{item.baseline && <Badge>基线</Badge>}</div></div>
     <div className="history-body">{title && <h2>{title}</h2>}{body && <><p className={expanded ? '' : 'history-text-clamp'}>{body}</p>{(expanded || expandable) && <Button onPress={() => setExpanded(value => !value)}>{expanded ? '收起' : '展开全文'}</Button>}</>}<DynamicContentPreview item={item} />{item.original && <OriginalPreview item={item.original} />}{!title && !body && !item.media?.length && !item.original && <p className="muted">（该归档没有可预览的正文或媒体）</p>}</div>
-    <footer className="history-footer"><div className="history-stats">{item.stats && <><Stat icon="↗" value={item.stats.forwards} empty="转发" label="转发" /><Stat icon="◌" value={item.stats.comments} empty="评论" label="评论" /><Stat icon="♡" value={item.stats.likes} empty="点赞" label="点赞" /></>}</div>{targetURL && <a className="button button--ghost" href={targetURL} target="_blank" rel="noopener noreferrer">↗ 查看原内容</a>}</footer>
+    <footer className="history-footer"><div className="history-stats">{item.stats && <><Stat icon="↗" value={item.stats.forwards} empty="转发" label="转发" /><Stat icon="◌" value={item.stats.comments} empty="评论" label="评论" /><Stat icon="♡" value={item.stats.likes} empty="点赞" label="点赞" /></>}</div><div className="button-row">{item.ai_pipeline?.length ? <Button variant="outline" onPress={onOpenAI}>AI 结果 · {pipelineLabel(item.ai_pipeline)}</Button> : null}{targetURL && <a className="button button--ghost" href={targetURL} target="_blank" rel="noopener noreferrer">↗ 查看原内容</a>}</div></footer>
   </Card>
 }
 
@@ -54,3 +54,4 @@ function MediaLightbox({ media, selected, onSelect, onClose }: { media: DynamicM
 
 function Stat({ icon, value, empty, label }: { icon: string; value: number; empty: string; label: string }) { return <span aria-label={`${label} ${value}`}>{icon} {formatInteractionCount(value, empty)}</span> }
 function isContentCardType(type?: string) { return ['DYNAMIC_TYPE_AV', 'DYNAMIC_TYPE_ARTICLE', 'DYNAMIC_TYPE_PGC', 'DYNAMIC_TYPE_COMMON_SQUARE'].includes(type || '') }
+function pipelineLabel(jobs: NonNullable<DynamicHistoryItem['ai_pipeline']>) { const running = jobs.find(job => ['queued', 'running'].includes(job.state)); if (running) return running.state === 'running' ? `${running.progress}%` : '排队中'; if (jobs.some(job => job.state === 'failed')) return '失败'; if (jobs.every(job => job.state === 'succeeded')) return '已完成'; return '已停止' }

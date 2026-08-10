@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import {
   auditLogPageSchema, biliLoginSchema, channelSchema, commentDetailSchema, commentHistoryPageSchema,
-  deliveryPageSchema, dynamicHistoryPageSchema, emptyResponseSchema, microsoftLoginSchema, queuedStatusSchema,
+  deliveryPageSchema, dynamicDetailSchema, dynamicHistoryPageSchema, emptyResponseSchema, microsoftLoginSchema, queuedStatusSchema,
   runtimeSchema, runtimeSettingsSchema, sentStatusSchema, upSchema,
   aiWorkerStatusSchema, aiProfileSchema, aiProfileTestResultSchema, aiPromptSchema, aiJobSchema, aiJobPageSchema, canceledStatusSchema,
 } from './contracts'
@@ -20,6 +20,7 @@ export const resources = {
   biliLogin: (signal?: AbortSignal) => requestJSON(`${apiRoot}/bilibili-login`, biliLoginSchema, { signal }),
   microsoftLogins: (signal?: AbortSignal) => requestJSON(`${apiRoot}/microsoft-logins`, array(microsoftLoginSchema), { signal }),
   dynamics: (query: ContentQuery, signal?: AbortSignal) => requestJSON(`${apiRoot}/dynamics${queryString(query)}`, dynamicHistoryPageSchema, { signal }),
+  dynamic: (id: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/dynamics/${encodeURIComponent(id)}`, dynamicDetailSchema, { signal }),
   comments: (query: ContentQuery, signal?: AbortSignal) => requestJSON(`${apiRoot}/comments${queryString(query)}`, commentHistoryPageSchema, { signal }),
   comment: (rpid: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/comments/${encodeURIComponent(rpid)}`, commentDetailSchema, { signal }),
   auditLogs: (query: AuditQuery, signal?: AbortSignal) => requestJSON(`${apiRoot}/audit-logs${queryString(query)}`, auditLogPageSchema, { signal }),
