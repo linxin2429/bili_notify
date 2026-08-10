@@ -9,6 +9,7 @@ from bili_ai_worker.media import (
     DOWNLOAD_SOCKET_TIMEOUT_SEC,
     _download_options,
     _retry_delay,
+    _split_audio_command,
     cleanup_cache,
     write_cookie_file,
 )
@@ -71,6 +72,14 @@ def test_download_network_budget_is_resilient(tmp_path: Path) -> None:
     assert set(retry_sleep) == {"http", "fragment", "extractor"}
 
 
+def test_split_audio_forces_16_bit_flac() -> None:
+    command = _split_audio_command(Path("input.flac"), Path("chunk-%04d.flac"))
+
+    assert command[command.index("-sample_fmt") + 1] == "s16"
+    assert command[command.index("-ar") + 1] == "16000"
+    assert command[command.index("-ac") + 1] == "1"
+
+
 @pytest.mark.asyncio
 async def test_provider_probe_returns_structured_provider_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -85,7 +94,9 @@ async def test_provider_probe_returns_structured_provider_error(
 
     monkeypatch.setattr(server, "test_provider", failed_probe)
     worker = server.AIWorker(tmp_path)
-    result = await worker.TestProvider(SimpleNamespace(kind="text", provider=object()), None)
+    result = await worker.TestProvider(
+        SimpleNamespace(kind="text", provider=SimpleNamespace(model="test-model")), None
+    )
 
     assert not result.ok
     assert result.error_code == "provider_authentication"

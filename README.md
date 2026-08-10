@@ -142,6 +142,8 @@ BILI_NOTIFY_AI_WORKER_SOCKET=/tmp/bili-notify-ai.sock \
 make run ARGS='serve --ai-worker-socket /tmp/bili-notify-ai.sock'
 ```
 
+Worker 向标准输出写 JSON 结构化日志。Compose 部署可用 `docker compose logs -f ai-worker` 查看；转写和总结任务会记录任务 ID、模型、音频切片字节数、HTTP 状态、耗时和供应商请求 ID，模型连通性检测会记录模型、状态和耗时，但不会记录 API Key、Cookie、音频、提示词或转写正文。默认日志级别为 `info`，可通过 `BILI_NOTIFY_AI_LOG_LEVEL=debug` 调整。
+
 克隆仓库后先启用项目内置的 Git hook：
 
 ```bash

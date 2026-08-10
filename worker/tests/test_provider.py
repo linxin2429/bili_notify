@@ -56,7 +56,13 @@ async def test_transcribe_normalizes_segments(tmp_path: Path, monkeypatch: pytes
 
 @pytest.mark.parametrize(
     ("status", "code"),
-    [(401, "provider_authentication"), (404, "provider_model_not_found"), (429, "provider_rate_limited"), (500, "provider_failure")],
+    [
+        (401, "provider_authentication"),
+        (404, "provider_model_not_found"),
+        (413, "provider_payload_too_large"),
+        (429, "provider_rate_limited"),
+        (500, "provider_failure"),
+    ],
 )
 @pytest.mark.asyncio
 async def test_complete_classifies_provider_errors(status: int, code: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,6 +75,48 @@ async def test_complete_classifies_provider_errors(status: int, code: str, monke
     assert caught.value.code == code
     assert caught.value.status_code == status
     assert caught.value.provider_error == "provider detail"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_reports_payload_size_for_http_413(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    audio = tmp_path / "audio.flac"
+    audio.write_bytes(b"audio")
+    FakeClient.response = httpx.Response(
+        413,
+        headers={"x-request-id": "request-123"},
+        json={"error": {"message": "request body exceeds the provider limit"}},
+    )
+    monkeypatch.setattr(provider.httpx, "AsyncClient", FakeClient)
+
+    with pytest.raises(provider.ProviderError) as caught:
+        await provider.transcribe(audio, config(), job_id="job-123")
+
+    assert caught.value.code == "provider_payload_too_large"
+    assert caught.value.status_code == 413
+    assert "5-byte audio chunk" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_provider_log_redacts_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    audio = tmp_path / "audio.flac"
+    audio.write_bytes(b"audio")
+    FakeClient.response = httpx.Response(
+        413,
+        headers={"x-generation-id": "generation-123"},
+        json={"error": {"message": "secret exceeds the provider limit"}},
+    )
+    monkeypatch.setattr(provider.httpx, "AsyncClient", FakeClient)
+
+    with pytest.raises(provider.ProviderError):
+        await provider.transcribe(audio, config(), job_id="job-123")
+
+    response_log = next(record for record in caplog.records if record.event == "provider.transcription.response")
+    assert response_log.provider_error == "[REDACTED] exceeds the provider limit"
+    assert response_log.provider_request_id == "generation-123"
+    assert response_log.audio_bytes == 5
+    assert response_log.job_id == "job-123"
 
 
 @pytest.mark.parametrize(("value", "included"), [(0, False), (1 << 40, True)])

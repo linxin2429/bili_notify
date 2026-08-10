@@ -115,9 +115,7 @@ async def split_audio(page: DownloadedPage) -> list[tuple[Path, int]]:
     chunk_dir.mkdir(mode=0o700, exist_ok=True)
     pattern = chunk_dir / "chunk-%04d.flac"
     process = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(page.audio_path),
-        "-vn", "-ac", "1", "-ar", "16000", "-f", "segment", "-segment_time", "600",
-        "-reset_timestamps", "1", str(pattern),
+        *_split_audio_command(page.audio_path, pattern),
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
     )
     try:
@@ -132,6 +130,32 @@ async def split_audio(page: DownloadedPage) -> list[tuple[Path, int]]:
     if not chunks:
         raise DownloadError("ffmpeg produced no audio chunks")
     return [(chunk, index * 600_000) for index, chunk in enumerate(chunks)]
+
+
+def _split_audio_command(audio_path: Path, pattern: Path) -> tuple[str, ...]:
+    return (
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(audio_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-sample_fmt",
+        "s16",
+        "-f",
+        "segment",
+        "-segment_time",
+        "600",
+        "-reset_timestamps",
+        "1",
+        str(pattern),
+    )
 
 
 def cleanup_cache(cache_dir: Path, ttl_sec: int, max_bytes: int) -> int:
