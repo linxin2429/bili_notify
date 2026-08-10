@@ -1,7 +1,7 @@
 # Bili Notify — pull from Docker Hub
 #
-# 镜像：dengxinlin/bili-notify（tag 由 git tag vX.Y.Z 发布时推送）
-#   0.2.0 / 0.2 / 0 / latest
+# 镜像：dengxinlin/bili-notify 与 dengxinlin/bili-notify-ai-worker
+# 同一个 git tag vX.Y.Z 发布 X.Y.Z / X.Y / X / latest。
 #
 # 数据卷首次启动自动创建：
 #   /data/data.db     SQLite（配置、Outbox、内容档案；启动 goose 迁移）
@@ -17,11 +17,9 @@
 #   docker-compose logs -f bili-notify
 #   # 打开 https://localhost:8443 ，用日志中的 setup_code 初始化管理员
 
-version: "3.8"
-
 services:
   bili-notify:
-    image: dengxinlin/bili-notify:${IMAGE_TAG:-0.2.0}
+    image: dengxinlin/bili-notify:${IMAGE_TAG:-latest}
     container_name: bili-notify
     restart: unless-stopped
     ports:
@@ -59,10 +57,7 @@ services:
       retries: 3
 
   ai-worker:
-    image: dengxinlin/bili-notify-ai-worker:${IMAGE_TAG:-0.2.0}
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
+    image: dengxinlin/bili-notify-ai-worker:${IMAGE_TAG:-latest}
     container_name: bili-notify-ai-worker
     restart: unless-stopped
     environment:

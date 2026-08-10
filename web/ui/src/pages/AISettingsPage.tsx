@@ -28,7 +28,21 @@ function ProfileEditor({ initial }: { initial: AIProfile[] }) {
   const remove = useMutation({ mutationFn: (id: string) => resources.deleteAIProfile(csrf, id), onSuccess: () => { notify('模型配置档已删除', 'success'); refresh() }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const test = useMutation({ mutationFn: (id: string) => resources.testAIProfile(csrf, id), onSuccess: () => notify('Worker 连接正常', 'success'), onError: error => notify(apiErrorMessage(error), 'danger') })
   const patch = <K extends keyof AIProfileDraft>(key: K, value: AIProfileDraft[K]) => setForm(state => ({ ...state, [key]: value }))
-  const edit = (value: AIProfile) => setForm({ ...value, api_key: '' })
+  const edit = (value: AIProfile) => setForm({
+    id: value.id,
+    name: value.name,
+    kind: value.kind,
+    base_url: value.base_url,
+    model: value.model,
+    api_key: '',
+    language: value.language,
+    prompt: value.prompt,
+    temperature: value.temperature,
+    max_output_tokens: value.max_output_tokens,
+    context_window_chars: value.context_window_chars,
+    timeout_sec: value.timeout_sec,
+    default: value.default,
+  })
   return <Card><h2>模型配置档</h2><p className="muted">转写和文本模型分开配置。Base URL 使用 OpenAI 兼容 API 根地址；API Key 留空表示编辑时保留原密钥。</p>
     <div className="settings-grid"><SelectField label="用途" value={form.kind} onChange={value => setForm(blankProfile(value as AIProfile['kind']))} options={[{ value: 'transcription', label: '音频转写' }, { value: 'text', label: '文本总结' }]} /><TextField label="名称" value={form.name} onChange={value => patch('name', value)} required /><TextField label="Base URL" value={form.base_url} onChange={value => patch('base_url', value)} required /><TextField label="模型" value={form.model} onChange={value => patch('model', value)} required /><TextField label="API Key" type="password" value={form.api_key || ''} onChange={value => patch('api_key', value)} autoComplete="off" description={form.id ? '留空即保留现有密钥' : '创建时必填'} /><TextField label="超时（秒）" type="number" value={String(form.timeout_sec)} onChange={value => patch('timeout_sec', Number(value))} /></div>
     {form.kind === 'transcription' ? <div className="settings-grid"><TextField label="语言" value={form.language || ''} onChange={value => patch('language', value)} description="例如 zh；留空让模型自动判断。" /><TextField label="转写提示词" value={form.prompt || ''} onChange={value => patch('prompt', value)} /></div> : <div className="settings-grid"><TextField label="温度" type="number" value={String(form.temperature || 0)} onChange={value => patch('temperature', Number(value))} /><TextField label="最大输出 Token" type="number" value={String(form.max_output_tokens || 0)} onChange={value => patch('max_output_tokens', Number(value))} /><TextField label="单段上下文字符数" type="number" value={String(form.context_window_chars || 0)} onChange={value => patch('context_window_chars', Number(value))} /></div>}
