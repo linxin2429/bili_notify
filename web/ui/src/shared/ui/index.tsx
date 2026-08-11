@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useId, useState } from 'react'
+import { createContext, useCallback, useContext, useId, useRef, useState } from 'react'
 
 interface ButtonProps { variant?: 'primary' | 'ghost' | 'outline'; danger?: boolean; busy?: boolean; children: React.ReactNode; className?: string; isDisabled?: boolean; onPress?: () => void; type?: 'button' | 'submit' | 'reset'; role?: string; 'aria-selected'?: boolean }
 export function Button({ variant = 'ghost', danger = false, busy = false, children, className = '', isDisabled, onPress, type = 'button', ...aria }: ButtonProps) {
@@ -46,13 +46,42 @@ export function EmptyState({ icon = '○', title, action }: { icon?: React.React
 export function PageHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: React.ReactNode }) { return <header className="page-header"><div><h1>{title}</h1><p>{subtitle}</p></div>{action}</header> }
 export function PageError({ error, retry }: { error: unknown; retry?: () => void }) { return <Alert tone="danger"><strong>加载失败</strong><p>{error instanceof Error ? error.message : '发生未知错误'}</p>{retry && <Button variant="outline" onPress={retry}>重试</Button>}</Alert> }
 
-type Notify = (message: string, tone?: 'info' | 'success' | 'danger') => void
+type ToastTone = 'info' | 'success' | 'danger'
+type Toast = { id: number; message: string; tone: ToastTone }
+type Notify = (message: string, tone?: ToastTone) => void
+
+const MAX_TOASTS = 3
+const TOAST_TIMEOUT_MS = 6_000
+
 const NotificationContext = createContext<Notify>(() => undefined)
 export function useNotify() { return useContext(NotificationContext) }
+
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
-  const [toast, setToast] = useState<{ message: string; tone: 'info' | 'success' | 'danger' } | null>(null)
-  const notify: Notify = useCallback((message, tone = 'info') => { setToast({ message, tone }); window.setTimeout(() => setToast(null), 6_000) }, [])
-  return <NotificationContext value={notify}>{children}{toast && <div className={`toast toast--${toast.tone}`} role="status"><span>{toast.message}</span><IconButton label="关闭提示" onPress={() => setToast(null)}>×</IconButton></div>}</NotificationContext>
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const seq = useRef(0)
+
+  const dismiss = useCallback((id: number) => {
+    setToasts(current => current.filter(toast => toast.id !== id))
+  }, [])
+
+  const notify: Notify = useCallback((message, tone = 'info') => {
+    const id = ++seq.current
+    setToasts(current => [...current, { id, message, tone }].slice(-MAX_TOASTS))
+    // danger stays until the user dismisses; other tones auto-expire
+    if (tone !== 'danger') {
+      window.setTimeout(() => setToasts(current => current.filter(toast => toast.id !== id)), TOAST_TIMEOUT_MS)
+    }
+  }, [])
+
+  return <NotificationContext value={notify}>
+    {children}
+    {toasts.length > 0 && <div className="toast-stack" style={{ position: 'fixed', zIndex: 100, right: '1rem', bottom: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', maxWidth: 'min(420px, calc(100vw - 2rem))' }}>
+      {toasts.map(toast => <div key={toast.id} className={`toast toast--${toast.tone}`} role="status" style={{ position: 'static', maxWidth: 'none' }}>
+        <span>{toast.message}</span>
+        <IconButton label="关闭提示" onPress={() => dismiss(toast.id)}>×</IconButton>
+      </div>)}
+    </div>}
+  </NotificationContext>
 }
 
 export const Icon = ({ children }: { children: React.ReactNode }) => <span className="icon" aria-hidden="true">{children}</span>

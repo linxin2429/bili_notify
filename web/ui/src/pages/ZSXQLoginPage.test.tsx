@@ -41,11 +41,26 @@ describe('Knowledge Planet login', () => {
       agreement_accepted: true,
     }))
     expect(await screen.findByText('验证码已发送至 +852 5****678')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /重新发送/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '更换手机号' })).toBeInTheDocument()
 
     await user.type(screen.getByLabelText('短信验证码'), '123456')
     await user.click(screen.getByRole('button', { name: '登录并同步星球' }))
     await waitFor(() => expect(api.createZSXQSession).toHaveBeenCalledWith('csrf', 'transaction', '123456'))
     expect(await screen.findByRole('heading', { name: '采集源列表' })).toBeInTheDocument()
+    expect(screen.getByText('知识星球登录成功')).toBeInTheDocument()
+  })
+
+  it('allows changing the phone number after SMS is sent', async () => {
+    const user = userEvent.setup()
+    renderLogin()
+    await user.type(screen.getByLabelText('手机号'), '13800138000')
+    await user.click(screen.getByRole('checkbox'))
+    await user.click(screen.getByRole('button', { name: '启动滑块并发送验证码' }))
+    expect(await screen.findByText(/验证码已发送至/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '更换手机号' }))
+    expect(screen.getByLabelText('手机号')).toBeInTheDocument()
+    expect(screen.queryByLabelText('短信验证码')).not.toBeInTheDocument()
   })
 
   it('shows captcha and upstream failures without advancing the transaction', async () => {

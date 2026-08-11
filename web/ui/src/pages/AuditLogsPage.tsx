@@ -5,21 +5,72 @@ import type { AuditLog, AuditQuery } from '../shared/api/types'
 import { queries } from '../shared/api/query'
 import { Badge, Button, Card, EmptyState, LoadingState, NativeDateTimeField, PageError, PageHeader, SelectField, TextField } from '../shared/ui'
 import { Dialog } from '../shared/ui/Dialog'
-import { auditActionLabel, auditResult, formatDate, localInputToRFC3339 } from '../shared/lib/presentation'
+import { auditActionFilterOptions, auditActionLabel, auditResult, formatDate, localInputToRFC3339 } from '../shared/lib/presentation'
+import { advanceCursor, rewindCursor } from '../shared/lib/cursor-params'
 
 export function AuditLogsPage() {
-  const [params, setParams] = useSearchParams(); const action = params.get('action') || ''; const outcome = params.get('outcome') || ''; const resourceType = params.get('resource_type') || ''; const q = params.get('q') || ''; const from = params.get('from') || ''; const to = params.get('to') || ''; const after = params.get('after') || ''; const [draftQ, setDraftQ] = useState(q)
+  const [params, setParams] = useSearchParams()
+  const action = params.get('action') || ''
+  const outcome = params.get('outcome') || ''
+  const resourceType = params.get('resource_type') || ''
+  const q = params.get('q') || ''
+  const from = params.get('from') || ''
+  const to = params.get('to') || ''
+  const after = params.get('after') || ''
+  const stack = params.get('stack') || ''
+  const [draftQ, setDraftQ] = useState(q)
   const [detail, setDetail] = useState<AuditLog | null>(null)
-  const query: AuditQuery = { ...(action && { action }), ...(outcome && { outcome }), ...(resourceType && { resource_type: resourceType }), ...(q && { q }), ...(from && { from: localInputToRFC3339(from) }), ...(to && { to: localInputToRFC3339(to) }), ...(after && { after }), limit: 50 }
-  const logs = useQuery(queries.auditLogs(query)); const runtime = useQuery(queries.runtime())
-  const update = useCallback((patch: Record<string, string | undefined>, resetCursor = true) => { const next = new URLSearchParams(params); for (const [key, value] of Object.entries(patch)) { if (value) next.set(key, value); else next.delete(key) } if (resetCursor && !('after' in patch)) next.delete('after'); setParams(next) }, [params, setParams])
-  useEffect(() => { const timer = window.setTimeout(() => { if (draftQ !== q) update({ q: draftQ || undefined }) }, 300); return () => clearTimeout(timer) }, [draftQ, q, update])
+  const query: AuditQuery = {
+    ...(action && { action }), ...(outcome && { outcome }), ...(resourceType && { resource_type: resourceType }),
+    ...(q && { q }), ...(from && { from: localInputToRFC3339(from) }), ...(to && { to: localInputToRFC3339(to) }),
+    ...(after && { after }), limit: 50,
+  }
+  const logs = useQuery(queries.auditLogs(query))
+  const runtime = useQuery(queries.runtime())
+  const update = useCallback((patch: Record<string, string | undefined>, resetCursor = true) => {
+    const next = new URLSearchParams(params)
+    for (const [key, value] of Object.entries(patch)) {
+      if (value) next.set(key, value)
+      else next.delete(key)
+    }
+    if (resetCursor && !('after' in patch) && !('stack' in patch)) {
+      next.delete('after')
+      next.delete('stack')
+    }
+    setParams(next)
+  }, [params, setParams])
+  useEffect(() => {
+    const timer = window.setTimeout(() => { if (draftQ !== q) update({ q: draftQ || undefined }) }, 300)
+    return () => clearTimeout(timer)
+  }, [draftQ, q, update])
   if (logs.isPending || runtime.isPending) return <LoadingState />
   if (logs.error || runtime.error) return <PageError error={logs.error || runtime.error} retry={() => { void logs.refetch(); void runtime.refetch() }} />
-  return <div className="page-stack"><PageHeader title="操作日志" subtitle="追踪管理端写操作、鉴权结果与请求标识。" />
-    <Card><div className="filter-grid"><TextField label="关键字" value={draftQ} onChange={setDraftQ} /><SelectField label="操作" value={action} onChange={value => update({ action: value || undefined })} options={[{ value: '', label: '全部操作' }, { value: 'settings.update', label: auditActionLabel('settings.update') }, { value: 'up.create', label: auditActionLabel('up.create') }, { value: 'channel.update', label: auditActionLabel('channel.update') }, { value: 'auth.password.change', label: auditActionLabel('auth.password.change') }]} /><SelectField label="结果" value={outcome} onChange={value => update({ outcome: value || undefined })} options={[{ value: '', label: '全部' }, { value: 'success', label: '成功' }, { value: 'failure', label: '失败' }, { value: 'denied', label: '已拒绝' }]} /><TextField label="资源类型" value={resourceType} onChange={value => update({ resource_type: value || undefined })} /><NativeDateTimeField label="开始时间" value={from} onChange={value => update({ from: value || undefined })} /><NativeDateTimeField label="结束时间" value={to} onChange={value => update({ to: value || undefined })} /></div></Card>
-    {logs.data.items.length === 0 ? <EmptyState icon="≡" title="当前筛选下没有操作日志" /> : <div className="list-stack">{logs.data.items.map(item => { const result = auditResult(item); return <Card key={item.id}><div className="audit-row"><div><div className="card-title-inline"><strong>{auditActionLabel(item.action)}</strong><Badge tone={result.color === 'error' ? 'danger' : result.color}>{result.label}</Badge></div><p>{item.resource_type}{item.resource_id ? ` · ${item.resource_id}` : ''}</p><p className="muted">{item.http_method} {item.route} · HTTP {item.status_code} · {item.duration_ms} ms</p><Button onPress={() => setDetail(item)}>查看详情</Button></div><div><time>{formatDate(item.occurred_at, runtime.data.timezone)}</time><small>请求 {item.request_id}</small><small>{item.remote_ip}</small></div></div></Card> })}</div>}
-    <div className="pagination"><Button isDisabled={!after} onPress={() => history.back()}>← 上一页</Button><Button isDisabled={!logs.data.page.has_more} onPress={() => update({ after: logs.data.page.next_cursor }, false)}>下一页 →</Button></div>
-    <Dialog open={Boolean(detail)} title="安全变更摘要" onClose={() => setDetail(null)} actions={<Button onPress={() => setDetail(null)}>关闭</Button>}><dl className="summary-list"><div><dt>操作</dt><dd>{detail && auditActionLabel(detail.action)}</dd></div><div><dt>请求 ID</dt><dd>{detail?.request_id}</dd></div><div><dt>会话</dt><dd>{detail?.session_id}</dd></div><div><dt>错误代码</dt><dd>{detail?.error_code || '—'}</dd></div></dl><pre className="audit-details" tabIndex={0} aria-label="审计详情 JSON">{JSON.stringify(detail?.details || {}, null, 2)}</pre></Dialog>
+  return <div className="page-stack">
+    <PageHeader title="操作日志" subtitle="追踪管理端写操作、鉴权结果与请求标识。" />
+    <Card><div className="filter-grid">
+      <TextField label="关键字" value={draftQ} onChange={setDraftQ} />
+      <SelectField label="操作" value={action} onChange={value => update({ action: value || undefined })} options={[...auditActionFilterOptions]} />
+      <SelectField label="结果" value={outcome} onChange={value => update({ outcome: value || undefined })} options={[{ value: '', label: '全部' }, { value: 'success', label: '成功' }, { value: 'failure', label: '失败' }, { value: 'denied', label: '已拒绝' }]} />
+      <TextField label="资源类型" value={resourceType} onChange={value => update({ resource_type: value || undefined })} />
+      <NativeDateTimeField label="开始时间" value={from} onChange={value => update({ from: value || undefined })} />
+      <NativeDateTimeField label="结束时间" value={to} onChange={value => update({ to: value || undefined })} />
+    </div></Card>
+    {logs.data.items.length === 0 ? <EmptyState icon="≡" title="当前筛选下没有操作日志" /> : <div className="list-stack">{logs.data.items.map(item => {
+      const result = auditResult(item)
+      return <Card key={item.id}><div className="audit-row"><div><div className="card-title-inline"><strong>{auditActionLabel(item.action)}</strong><Badge tone={result.color === 'error' ? 'danger' : result.color}>{result.label}</Badge></div><p>{item.resource_type}{item.resource_id ? ` · ${item.resource_id}` : ''}</p><p className="muted">{item.http_method} {item.route} · HTTP {item.status_code} · {item.duration_ms} ms</p><Button onPress={() => setDetail(item)}>查看详情</Button></div><div><time>{formatDate(item.occurred_at, runtime.data.timezone)}</time><small>请求 {item.request_id}</small><small>{item.remote_ip}</small></div></div></Card>
+    })}</div>}
+    <div className="pagination">
+      <Button isDisabled={!after && !stack} onPress={() => update(rewindCursor(stack), false)}>← 上一页</Button>
+      <Button isDisabled={!logs.data.page.has_more} onPress={() => update(advanceCursor(after, stack, logs.data.page.next_cursor), false)}>下一页 →</Button>
+    </div>
+    <Dialog open={Boolean(detail)} title="安全变更摘要" onClose={() => setDetail(null)} actions={<Button onPress={() => setDetail(null)}>关闭</Button>}>
+      <dl className="summary-list">
+        <div><dt>操作</dt><dd>{detail && auditActionLabel(detail.action)}</dd></div>
+        <div><dt>请求 ID</dt><dd>{detail?.request_id}</dd></div>
+        <div><dt>会话</dt><dd>{detail?.session_id}</dd></div>
+        <div><dt>错误代码</dt><dd>{detail?.error_code || '—'}</dd></div>
+      </dl>
+      <pre className="audit-details" tabIndex={0} aria-label="审计详情 JSON">{JSON.stringify(detail?.details || {}, null, 2)}</pre>
+    </Dialog>
   </div>
 }

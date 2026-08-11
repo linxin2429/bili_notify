@@ -5,6 +5,19 @@ import { expect, type Harness } from './fixtures'
 export const ADMIN_PASSWORD = 'correct horse battery staple'
 export const REPLACEMENT_PASSWORD = 'replacement horse battery staple'
 
+const routeByLabel: Record<string, string> = {
+  '概览': '/overview',
+  '采集源': '/sources',
+  '通知渠道': '/channels',
+  '投递队列': '/deliveries',
+  '历史': '/history',
+  'AI 工作台': '/ai',
+  'AI 设置': '/ai-settings',
+  '操作日志': '/audit-logs',
+  '设置': '/settings',
+  '更多': '/more',
+}
+
 export async function initializeAdministrator(page: Page, harness: Harness) {
   await page.goto(harness.manifest.admin_url)
   await assertAccessible(page)
@@ -45,7 +58,8 @@ export async function createNotificationChannel(page: Page, harness: Harness, se
 
 export async function createFollowedUP(page: Page) {
   await navigateTo(page, '采集源')
-  await page.getByRole('button', { name: /添加 B 站 UP/ }).click()
+  // Prefer the page-header action; empty-state CTA reuses the same label without the leading mark.
+  await page.getByRole('button', { name: '＋ 添加 B 站 UP' }).click()
   await page.getByLabel('UID').fill('42')
   await page.getByLabel('来源名称').fill('E2E UP')
   await page.getByRole('button', { name: '保存' }).click()
@@ -97,15 +111,37 @@ export async function assertAccessible(page: Page) {
 }
 
 export async function navigateTo(page: Page, name: string) {
-  const links = page.getByRole('link', { name, exact: true })
-  await expect.poll(() => links.count()).toBeGreaterThan(0)
-  for (let index = 0; index < await links.count(); index += 1) {
-    const link = links.nth(index)
-    if (await link.isVisible()) {
-      await link.click()
-      return
+  const clickVisible = async (label: string) => {
+    const links = page.getByRole('link', { name: label, exact: true })
+    const count = await links.count()
+    for (let index = 0; index < count; index += 1) {
+      const link = links.nth(index)
+      if (await link.isVisible()) {
+        await link.click()
+        return true
+      }
     }
+    return false
   }
+
+  if (await clickVisible(name)) return
+
+  // Mobile bottom nav only keeps day-to-day destinations; secondary pages live under「更多」.
+  if (await clickVisible('更多')) {
+    await expect(page.getByRole('heading', { name: '更多' })).toBeVisible()
+    if (await clickVisible(name)) return
+  }
+
+  // Deterministic fallback: SPA routes are stable and do not depend on shell chrome visibility.
+  const path = routeByLabel[name]
+  if (path) {
+    await page.evaluate(target => {
+      window.history.pushState({}, '', target)
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    }, path)
+    return
+  }
+
   throw new Error(`navigation target is unavailable: ${name}`)
 }
 

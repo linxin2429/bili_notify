@@ -17,6 +17,7 @@ export const appRouter = createBrowserRouter([{
     { path: 'ai', lazy: async () => ({ Component: (await import('../pages/AIWorkbenchPage')).AIWorkbenchPage }) },
     { path: 'ai-settings', lazy: async () => ({ Component: (await import('../pages/AISettingsPage')).AISettingsPage }) },
     { path: 'settings', lazy: async () => ({ Component: (await import('../pages/SettingsPage')).SettingsPage }) },
+    { path: 'more', lazy: async () => ({ Component: (await import('../pages/MorePage')).MorePage }) },
     { path: '*', element: <Navigate to="/overview" replace /> },
   ],
 }])

@@ -182,12 +182,41 @@ export function dynamicTypeLabel(value: string) {
 export function auditActionLabel(action: string) {
   const labels: Record<string, string> = {
     'auth.setup': '初始化管理员', 'auth.login': '管理员登录', 'auth.logout': '管理员退出', 'auth.password.change': '修改管理员密码',
-    'up.create': '添加 UP 主', 'up.update': '修改 UP 主', 'up.delete': '删除 UP 主',
+    'source.create': '添加采集源', 'source.update': '修改采集源', 'source.delete': '删除采集源',
+    'up.create': '添加采集源', 'up.update': '修改采集源', 'up.delete': '删除采集源',
     'channel.create': '添加通知渠道', 'channel.update': '修改通知渠道', 'channel.delete': '删除通知渠道', 'channel.test': '测试通知渠道',
-    'delivery.retry': '重试投递', 'bilibili.login.start': '开始 B 站登录', 'bilibili.login.cancel': '取消 B 站登录',
-    'microsoft.login.start': '开始 Microsoft 授权', 'microsoft.login.cancel': '取消 Microsoft 授权', 'settings.update': '修改采集参数',
+    'delivery.retry': '重试投递',
+    'bilibili.login.start': '开始 B 站登录', 'bilibili.login.cancel': '取消 B 站登录', 'bilibili.logout': '退出 B 站登录',
+    'zsxq.login': '知识星球登录', 'zsxq.logout': '退出知识星球', 'zsxq.sync-sources': '刷新知识星球来源',
+    'microsoft.login.start': '开始 Microsoft 授权', 'microsoft.login.cancel': '取消 Microsoft 授权',
+    'settings.update': '修改运行参数',
+    'ai.profile.create': '添加 AI 模型配置', 'ai.profile.update': '修改 AI 模型配置', 'ai.profile.delete': '删除 AI 模型配置',
+    'ai.prompt.create': '添加 AI 提示词', 'ai.prompt.update': '修改 AI 提示词', 'ai.prompt.delete': '删除 AI 提示词',
+    'ai.job.create': '提交 AI 任务', 'ai.job.cancel': '取消 AI 任务', 'ai.job.retry': '重试 AI 任务', 'ai.job.delete': '删除 AI 任务',
   }
   return labels[action] || action
+}
+
+/** Common audit action filter options for the admin log page. */
+export const auditActionFilterOptions = [
+  { value: '', label: '全部操作' },
+  { value: 'settings.update', label: auditActionLabel('settings.update') },
+  { value: 'source.create', label: auditActionLabel('source.create') },
+  { value: 'source.update', label: auditActionLabel('source.update') },
+  { value: 'source.delete', label: auditActionLabel('source.delete') },
+  { value: 'channel.create', label: auditActionLabel('channel.create') },
+  { value: 'channel.update', label: auditActionLabel('channel.update') },
+  { value: 'channel.delete', label: auditActionLabel('channel.delete') },
+  { value: 'channel.test', label: auditActionLabel('channel.test') },
+  { value: 'delivery.retry', label: auditActionLabel('delivery.retry') },
+  { value: 'bilibili.logout', label: auditActionLabel('bilibili.logout') },
+  { value: 'zsxq.login', label: auditActionLabel('zsxq.login') },
+  { value: 'zsxq.logout', label: auditActionLabel('zsxq.logout') },
+  { value: 'auth.password.change', label: auditActionLabel('auth.password.change') },
+] as const
+
+export function accountStatusLabel(status?: string) {
+  return ({ connected: '已连接', disconnected: '未连接', expired: '已失效', error: '异常' } as Record<string, string>)[status || ''] || status || '未连接'
 }
 
 export function auditResult(item: AuditLog) {

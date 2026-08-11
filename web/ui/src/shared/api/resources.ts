@@ -49,6 +49,7 @@ export const resources = {
   retryDelivery: (csrf: string, id: string) => write(`${apiRoot}/deliveries/${encodeURIComponent(id)}/retry`, queuedStatusSchema, 'POST', csrf),
   startBiliLogin: (csrf: string) => write(`${apiRoot}/accounts/bilibili/qr`, biliLoginSchema.unwrap(), 'POST', csrf),
   cancelBiliLogin: (csrf: string, id: string) => write(`${apiRoot}/accounts/bilibili/qr/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
+  deleteBilibiliSession: (csrf: string) => write(`${apiRoot}/accounts/bilibili/session`, emptyResponseSchema, 'DELETE', csrf),
   startMicrosoftLogin: (csrf: string, channelID: string) => write(`${apiRoot}/channels/${encodeURIComponent(channelID)}/microsoft-login`, microsoftLoginSchema, 'POST', csrf),
   cancelMicrosoftLogin: (csrf: string, channelID: string) => write(`${apiRoot}/channels/${encodeURIComponent(channelID)}/microsoft-login`, emptyResponseSchema, 'DELETE', csrf),
   updateSettings: (csrf: string, settings: RuntimeSettings) => write(`${apiRoot}/settings`, runtimeSettingsSchema, 'PUT', csrf, settings),

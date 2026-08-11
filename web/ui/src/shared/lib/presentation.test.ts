@@ -25,7 +25,11 @@ describe('presentation helpers', () => {
     expect(channelTypeLabel('feishu')).toBe('飞书机器人'); expect(settingLabel('webhook')).toBe('Webhook'); expect(settingLabel('custom')).toBe('custom')
     expect(loginLabel('scanned')).toBe('已扫码，请确认'); expect(loginLabel('custom')).toBe('custom')
     expect(dynamicTypeLabel('DYNAMIC_TYPE_AV')).toBe('视频'); expect(dynamicTypeLabel('CUSTOM')).toBe('CUSTOM'); expect(dynamicTypeLabel('')).toBe('内容')
-    expect(auditActionLabel('channel.update')).toBe('修改通知渠道'); expect(auditActionLabel('custom')).toBe('custom')
+    expect(auditActionLabel('channel.update')).toBe('修改通知渠道')
+    expect(auditActionLabel('source.create')).toBe('添加采集源')
+    expect(auditActionLabel('up.create')).toBe('添加采集源')
+    expect(auditActionLabel('bilibili.logout')).toBe('退出 B 站登录')
+    expect(auditActionLabel('custom')).toBe('custom')
   })
 
   it.each([

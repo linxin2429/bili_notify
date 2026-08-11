@@ -33,9 +33,9 @@ test('runs resource administration, audit, and session security workflows', asyn
     await expect(page.getByText('E2E 企业微信 已修改')).toBeVisible()
 
     await navigateTo(page, '设置')
-    await page.getByLabel('动态轮询（秒）').first().fill('45')
-    await page.getByText('日志与保留', { exact: true }).click()
-    await page.getByLabel('日志级别').selectOption('debug')
+    await page.getByRole('textbox', { name: '动态轮询（秒）', exact: true }).fill('45')
+    await page.getByLabel('日志级别', { exact: true }).selectOption('debug')
+    await expect(page.getByRole('button', { name: '保存运行设置' })).toBeEnabled()
     const settingsResponse = page.waitForResponse(response => response.url().endsWith('/api/v3/settings') && response.request().method() === 'PUT')
     await page.getByRole('button', { name: '保存运行设置' }).click()
     expect((await (await settingsResponse).json()).bilibili_dynamic_interval_sec).toBe(45)
@@ -43,9 +43,8 @@ test('runs resource administration, audit, and session security workflows', asyn
     await page.reload({ waitUntil: 'domcontentloaded' })
     await expect(page.getByText('实时', { exact: true }).first()).toBeVisible()
     await navigateTo(page, '设置')
-    await expect(page.getByLabel('动态轮询（秒）').first()).toHaveValue('45')
-    await page.getByText('日志与保留', { exact: true }).click()
-    await expect(page.getByLabel('日志级别')).toHaveValue('debug')
+    await expect(page.getByRole('textbox', { name: '动态轮询（秒）', exact: true })).toHaveValue('45')
+    await expect(page.getByLabel('日志级别', { exact: true })).toHaveValue('debug')
   })
 
   await test.step('expose safe audit evidence for real mutations', async () => {
@@ -95,7 +94,7 @@ test('runs resource administration, audit, and session security workflows', asyn
 
     await navigateTo(page, '采集源')
     await page.getByRole('button', { name: /删除/ }).click()
-    await page.getByRole('button', { name: '删除归档' }).click()
+    await page.getByRole('button', { name: '删除采集源' }).click()
     await expect(page.getByText('尚未添加 B 站 UP')).toBeVisible()
     expect((await harness.state()).unexpected || []).toEqual([])
   })
