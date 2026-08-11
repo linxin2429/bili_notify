@@ -116,7 +116,7 @@ describe('resource pages', () => {
     await user.click(screen.getByRole('tab', { name: '等待重试' }))
     expect(screen.queryByRole('button', { name: /立即重试/ })).not.toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: '全部' }))
-    await user.click(screen.getByRole('button', { name: '下一页 →' }))
+    await user.click(screen.getByRole('button', { name: '下一页' }))
     await waitFor(() => expect(api.deliveries).toHaveBeenLastCalledWith('cursor-2', expect.anything()))
   })
 
@@ -127,6 +127,24 @@ describe('resource pages', () => {
     expect(screen.getByText(/B 站 · 测试 UP · 文字/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '媒体与附件' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '查看评论：一条测试动态' })).toBeInTheDocument()
+  })
+
+  it('keeps keyword search visible and clears progressive history filters', async () => {
+    const user = userEvent.setup()
+    renderPage(<HistoryPage />, '/history?platform=bilibili&q=正文')
+
+    const keyword = await screen.findByLabelText('关键字')
+    expect(keyword).toHaveValue('正文')
+    expect(screen.getByLabelText('平台')).toHaveValue('bilibili')
+    expect(screen.getByRole('button', { name: /更多筛选/ })).toHaveTextContent('1')
+
+    await user.click(screen.getByRole('button', { name: '清除筛选' }))
+    expect(keyword).toHaveValue('')
+    await waitFor(() => {
+      const lastQuery = api.contents.mock.calls[api.contents.mock.calls.length - 1]?.[0]
+      expect(lastQuery).not.toHaveProperty('platform')
+      expect(lastQuery).not.toHaveProperty('q')
+    })
   })
 
   it('expands a nested cross-platform comment tree on the feed card', async () => {
@@ -188,7 +206,7 @@ describe('resource pages', () => {
     await user.type(screen.getByLabelText('关键字'), 'request')
     await waitFor(() => expect(api.auditLogs).toHaveBeenLastCalledWith(expect.objectContaining({ action: 'source.create', outcome: 'failure', resource_type: 'channel', q: 'request' }), expect.anything()))
 
-    await user.click(screen.getByRole('button', { name: '下一页 →' }))
+    await user.click(screen.getByRole('button', { name: '下一页' }))
     await waitFor(() => expect(api.auditLogs).toHaveBeenLastCalledWith(expect.objectContaining({ after: 'cursor-2' }), expect.anything()))
     await user.click(screen.getByRole('button', { name: '查看详情' }))
     expect(screen.getByRole('heading', { name: '安全变更摘要' })).toBeInTheDocument()

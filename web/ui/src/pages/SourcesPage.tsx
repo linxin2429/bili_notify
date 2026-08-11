@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Database, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Source } from '../shared/api/types'
@@ -29,7 +30,7 @@ export function SourcesPage() {
   const bili = sources.data.filter(item => item.platform === 'bilibili'); const planets = sources.data.filter(item => item.platform === 'zsxq')
   const zsxqAccount = accounts.data.find(item => item.platform === 'zsxq')
   const timeZone = runtime.data?.timezone || ''
-  return <div className="page-stack"><PageHeader title="采集源" subtitle="平台账号决定访问权限；来源决定需要归档哪些内容。首次启用只建立历史基线，不发送旧内容通知。" action={<Button variant="primary" onPress={() => setEditing(null)}>＋ 添加 B 站 UP</Button>} />
+  return <div className="page-stack"><PageHeader title="采集源" subtitle="平台账号决定访问权限；来源决定需要归档哪些内容。首次启用只建立历史基线，不发送旧内容通知。" action={<Button variant="primary" onPress={() => setEditing(null)}><Plus aria-hidden="true" />添加 B 站 UP</Button>} />
     <Card>
       <div className="card-title">
         <div>
@@ -54,7 +55,7 @@ export function SourcesPage() {
 }
 
 function SourceSection({ title, empty, emptyAction, sources, edit, remove, timeZone }: { title: string; empty: string; emptyAction?: React.ReactNode; sources: Source[]; edit: (source: Source) => void; remove: (source: Source) => void; timeZone: string }) {
-  return <section className="page-stack"><h2>{title}</h2>{sources.length === 0 ? <EmptyState icon="◎" title={empty} action={emptyAction} /> : <div className="card-grid">{sources.map(source => <Card key={source.id}><div className="card-title"><div><h2>{source.note || source.name}</h2><p>{source.name} · {source.external_id}</p></div><Badge tone={source.enabled ? 'success' : 'neutral'}>{source.enabled ? '已启用' : '已停用'}</Badge></div><div className="badge-row"><Badge>{baselineLabel(source.baseline_state)}</Badge>{source.owner_name && <Badge tone="info">星主 {source.owner_name}</Badge>}<Badge>已回补 {source.backfill_done}</Badge>{source.consecutive_fails > 0 && <Badge tone="danger">连续失败 {source.consecutive_fails}</Badge>}</div>{source.last_success_at && <p className="muted">最近成功 {formatDate(source.last_success_at, timeZone)}</p>}{source.last_error && <Alert tone="danger">{source.last_error}</Alert>}<div className="button-row"><Button onPress={() => edit(source)}>✎ 编辑</Button><Button danger onPress={() => remove(source)}>⌫ 删除</Button></div></Card>)}</div>}</section>
+  return <section className="page-stack"><h2>{title}</h2>{sources.length === 0 ? <EmptyState icon={<Database />} title={empty} action={emptyAction} /> : <div className="card-grid">{sources.map(source => <Card key={source.id}><div className="card-title"><div><h2>{source.note || source.name}</h2><p>{source.name} · {source.external_id}</p></div><Badge tone={source.enabled ? 'success' : 'neutral'}>{source.enabled ? '已启用' : '已停用'}</Badge></div><div className="badge-row"><Badge>{baselineLabel(source.baseline_state)}</Badge>{source.owner_name && <Badge tone="info">星主 {source.owner_name}</Badge>}<Badge>已回补 {source.backfill_done}</Badge>{source.consecutive_fails > 0 && <Badge tone="danger">连续失败 {source.consecutive_fails}</Badge>}</div>{source.last_success_at && <p className="muted">最近成功 {formatDate(source.last_success_at, timeZone)}</p>}{source.last_error && <Alert tone="danger">{source.last_error}</Alert>}<div className="button-row"><Button onPress={() => edit(source)}><Pencil aria-hidden="true" />编辑</Button><Button danger onPress={() => remove(source)}><Trash2 aria-hidden="true" />删除</Button></div></Card>)}</div>}</section>
 }
 
 function SourceDialog({ value, busy, error, onClose, onSave }: { value?: Source; busy: boolean; error: string; onClose: () => void; onSave: (value: { uid: string; name: string; note: string; enabled: boolean }) => void }) {

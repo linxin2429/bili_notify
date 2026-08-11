@@ -1,4 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
+import {
+  ExternalLink,
+  FileText,
+  Heart,
+  MessageCircle,
+  Paperclip,
+  Play,
+  Repeat2,
+  Star,
+  type LucideIcon,
+} from 'lucide-react'
 import { useState } from 'react'
 import type { Attachment, CommentTreeNode, UnifiedContent } from '../../shared/api/types'
 import { queries } from '../../shared/api/query'
@@ -94,10 +105,10 @@ export function HistoryCard({ item, timeZone, sourceName }: {
     <footer className="history-footer">
       <div className="history-stats">
         {item.stats && <>
-          {item.stats.forwards !== undefined && <Stat icon="↗" value={item.stats.forwards} empty="转发" label="转发" />}
-          {item.stats.comments !== undefined && <Stat icon="◌" value={item.stats.comments} empty="评论" label="评论" />}
-          {item.stats.likes !== undefined && <Stat icon="♡" value={item.stats.likes} empty="点赞" label="点赞" />}
-          {item.stats.rewards !== undefined && item.stats.rewards > 0 && <Stat icon="☆" value={item.stats.rewards} empty="赞赏" label="赞赏" />}
+          {item.stats.forwards !== undefined && <Stat icon={Repeat2} value={item.stats.forwards} empty="转发" label="转发" />}
+          {item.stats.comments !== undefined && <Stat icon={MessageCircle} value={item.stats.comments} empty="评论" label="评论" />}
+          {item.stats.likes !== undefined && <Stat icon={Heart} value={item.stats.likes} empty="点赞" label="点赞" />}
+          {item.stats.rewards !== undefined && item.stats.rewards > 0 && <Stat icon={Star} value={item.stats.rewards} empty="赞赏" label="赞赏" />}
         </>}
       </div>
       <div className="badge-row">
@@ -107,7 +118,7 @@ export function HistoryCard({ item, timeZone, sourceName }: {
           aria-expanded={panel === 'media'}
           onClick={() => setPanel(value => value === 'media' ? 'none' : 'media')}
         >
-          媒体与附件
+          <Paperclip aria-hidden="true" />媒体与附件
         </button>
         <button
           type="button"
@@ -116,10 +127,10 @@ export function HistoryCard({ item, timeZone, sourceName }: {
           aria-label={commentLabel}
           onClick={() => setPanel(value => value === 'comments' ? 'none' : 'comments')}
         >
-          评论
+          <MessageCircle aria-hidden="true" />评论
         </button>
         {targetURL && (
-          <a className="button button--ghost" href={targetURL} target="_blank" rel="noopener noreferrer">↗ 查看原内容</a>
+          <a className="button button--ghost" href={targetURL} target="_blank" rel="noopener noreferrer"><ExternalLink aria-hidden="true" />查看原内容</a>
         )}
       </div>
     </footer>
@@ -148,10 +159,10 @@ function ContentLandingPreview({ item, description }: { item: UnifiedContent; de
           disabled={!embed && !target}
         >
           <span className="media-fallback" aria-hidden="true">
-            {isVideoLike(item) ? '▶' : '▦'}
+            {isVideoLike(item) ? <Play /> : <FileText />}
             <small>{isVideoLike(item) ? '视频' : '内容卡片'}</small>
           </span>
-          {(embed || target) && isVideoLike(item) && <span className="play">▶</span>}
+          {(embed || target) && isVideoLike(item) && <span className="play"><Play aria-hidden="true" /></span>}
         </button>
       </div>
       <div className="content-preview__meta">
@@ -174,7 +185,7 @@ function VideoDialog({ open, title, embed, target, onClose }: {
     onClose={onClose}
     ariaLabel="视频预览"
     actions={<>
-      {target && <a className="button button--primary" href={target} target="_blank" rel="noreferrer">在 B 站打开 ↗</a>}
+      {target && <a className="button button--primary" href={target} target="_blank" rel="noreferrer">在 B 站打开<ExternalLink aria-hidden="true" /></a>}
       <Button onPress={onClose}>关闭</Button>
     </>}
   >
@@ -238,7 +249,7 @@ function CommentsPanel({ timeZone, commentsPending, commentsError, commentsData,
         ? <p className="muted">暂无评论</p>
         : <div className="comment-thread">{commentsData.children.map(node => <CommentBranch key={node.id} node={node} timeZone={timeZone} />)}</div>}
     </>}
-    {targetURL && <a className="button button--outline" href={targetURL} target="_blank" rel="noreferrer">查看原内容 ↗</a>}
+    {targetURL && <a className="button button--outline" href={targetURL} target="_blank" rel="noreferrer">查看原内容<ExternalLink aria-hidden="true" /></a>}
   </div>
 }
 
@@ -261,6 +272,6 @@ export function CommentBranch({ node, timeZone }: { node: CommentTreeNode; timeZ
   </article>
 }
 
-function Stat({ icon, value, empty, label }: { icon: string; value: number; empty: string; label: string }) {
-  return <span aria-label={`${label} ${value}`}>{icon} {formatInteractionCount(value, empty)}</span>
+function Stat({ icon: StatIcon, value, empty, label }: { icon: LucideIcon; value: number; empty: string; label: string }) {
+  return <span aria-label={`${label} ${value}`}><StatIcon aria-hidden="true" />{formatInteractionCount(value, empty)}</span>
 }
