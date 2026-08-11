@@ -30,6 +30,9 @@ func TestClientClassifiesUpstreamFailuresWithoutLeakingBodies(t *testing.T) {
 		{name: "rate limit", status: http.StatusTooManyRequests, body: `private-topic`, want: ErrRateLimited},
 		{name: "deleted", status: http.StatusNotFound, body: `signed-url`, want: ErrRemoteNotFound},
 		{name: "schema drift", status: http.StatusOK, body: `{`, want: ErrSchemaDrift},
+		{name: "legacy succeed false string", status: http.StatusOK, body: `{"code":1059,"succeed":"false"}`, want: ErrAuthentication},
+		{name: "invalid SMS code", status: http.StatusOK, body: `{"succeeded":false,"code":10022,"resp_data":{}}`, want: ErrInvalidCode},
+		{name: "consumed SMS code", status: http.StatusOK, body: `{"succeeded":false,"code":90012,"resp_data":{}}`, want: ErrInvalidCode},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -47,6 +50,21 @@ func TestClientClassifiesUpstreamFailuresWithoutLeakingBodies(t *testing.T) {
 			assert.NotContains(t, err.Error(), tt.body)
 		})
 	}
+}
+
+func TestEncryptedLoginAcceptsPlainJSONBusinessFailures(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v3/access_tokens", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"succeeded":false,"code":10022,"resp_data":{}}`))
+	}))
+	t.Cleanup(server.Close)
+	client, err := New(server.Client(), "test", WithBaseURL(server.URL+"/v2"))
+	require.NoError(t, err)
+	_, err = client.Login(t.Context(), "+86", "13800138000", "123456")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidCode)
 }
 
 func TestLoginCapturesCookieAndSynchronizesVisiblePlanets(t *testing.T) {
@@ -180,6 +198,75 @@ func (store *loginStoreStub) MergeVisibleSources(_ model.Platform, sources []mod
 func writeEnvelope(t *testing.T, writer http.ResponseWriter, data any) {
 	t.Helper()
 	require.NoError(t, json.NewEncoder(writer).Encode(map[string]any{"succeeded": true, "code": 0, "resp_data": data}))
+}
+
+func TestMeAcceptsUIDField(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		body    string
+		id      string
+		wantErr error
+	}{
+		{name: "uid", body: `{"succeeded":true,"code":0,"resp_data":{"user":{"uid":42,"name":"Member"}}}`, id: "42"},
+		{name: "user_id fallback", body: `{"succeeded":true,"code":0,"resp_data":{"user":{"user_id":7,"name":"Legacy"}}}`, id: "7"},
+		{name: "missing identity is schema drift", body: `{"succeeded":true,"code":0,"resp_data":{"user":{"name":"NoID"}}}`, wantErr: ErrSchemaDrift},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(server.Close)
+			client, err := New(server.Client(), "test", WithBaseURL(server.URL+"/v2"))
+			require.NoError(t, err)
+			user, err := client.Me(t.Context())
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.id, user.ID)
+		})
+	}
+}
+
+func TestClassifyBusinessCodesFromEnvelope(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+		want error
+	}{
+		{name: "invalid phone", body: `{"succeeded":false,"code":1004,"resp_data":{}}`, want: ErrInvalidPhone},
+		{name: "phone unbound", body: `{"succeeded":false,"code":1031,"resp_data":{}}`, want: ErrPhoneUnbound},
+		{name: "phone unbound alias", body: `{"succeeded":false,"code":10013,"resp_data":{}}`, want: ErrPhoneUnbound},
+		{name: "invalid code", body: `{"succeeded":false,"code":10022,"resp_data":{}}`, want: ErrInvalidCode},
+		{name: "consumed code", body: `{"succeeded":false,"code":90012,"resp_data":{}}`, want: ErrInvalidCode},
+		{name: "rate limited", body: `{"succeeded":false,"code":429,"resp_data":{}}`, want: ErrRateLimited},
+		{name: "risk control", body: `{"succeeded":false,"code":1006,"resp_data":{}}`, want: ErrRiskControl},
+		{name: "authentication", body: `{"succeeded":false,"code":1059,"resp_data":{}}`, want: ErrAuthentication},
+		{name: "zero code upstream", body: `{"succeeded":false,"code":0,"resp_data":{}}`, want: ErrUpstream},
+		{name: "unknown business code", body: `{"succeeded":false,"code":55555,"resp_data":{}}`, want: ErrUpstream},
+		{name: "legacy succeed string false", body: `{"succeed":"false","code":1059}`, want: ErrAuthentication},
+		{name: "true string succeeds with empty data", body: `{"succeed":"true","code":0}`, want: ErrSchemaDrift},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(server.Close)
+			client, err := New(server.Client(), "test", WithBaseURL(server.URL+"/v2"))
+			require.NoError(t, err)
+			_, err = client.Me(t.Context())
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tt.want)
+			assert.NotContains(t, err.Error(), tt.body)
+		})
+	}
 }
 
 func Example_publicError() {

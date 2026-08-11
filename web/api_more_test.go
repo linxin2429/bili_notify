@@ -20,6 +20,7 @@ import (
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
+	"github.com/linxin2429/bili_notify/zsxq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
@@ -703,6 +704,136 @@ func assertAPIError(t *testing.T, response *httptest.ResponseRecorder, status in
 	}
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
 	assert.Equal(t, code, body.Error.Code)
+}
+
+func TestZSXQAPIErrorMappingAndSMSLoginFlow(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{name: "invalid phone", err: zsxq.ErrInvalidPhone, status: http.StatusBadRequest, code: "invalid_phone"},
+		{name: "invalid code", err: zsxq.ErrInvalidCode, status: http.StatusBadRequest, code: "invalid_code"},
+		{name: "phone unbound", err: zsxq.ErrPhoneUnbound, status: http.StatusConflict, code: "phone_unbound"},
+		{name: "rate limited", err: zsxq.ErrRateLimited, status: http.StatusTooManyRequests, code: "rate_limited"},
+		{name: "login expired", err: zsxq.ErrLoginExpired, status: http.StatusGone, code: "login_expired"},
+		{name: "login not found", err: zsxq.ErrLoginNotFound, status: http.StatusNotFound, code: "not_found"},
+		{name: "authentication", err: zsxq.ErrAuthentication, status: http.StatusBadGateway, code: "authentication_failed"},
+		{name: "schema drift", err: zsxq.ErrSchemaDrift, status: http.StatusBadGateway, code: "upstream_failure"},
+		{name: "upstream", err: zsxq.ErrUpstream, status: http.StatusBadGateway, code: "upstream_failure"},
+		{name: "internal", err: assert.AnError, status: http.StatusInternalServerError, code: "internal"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			response := httptest.NewRecorder()
+			writeZSXQAPIError(response, tt.err)
+			assertAPIError(t, response, tt.status, tt.code)
+		})
+	}
+
+	t.Run("sms and session endpoints", func(t *testing.T) {
+		t.Parallel()
+		mode := "invalid-code"
+		var loginClient *zsxq.Client
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v3/verify_codes":
+				if mode == "auth-failed" {
+					_ = json.NewEncoder(w).Encode(map[string]any{"succeeded": false, "code": 1059, "resp_data": map[string]any{}})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"succeeded": true, "code": 0, "resp_data": map[string]any{}})
+			case "/v3/access_tokens":
+				switch mode {
+				case "invalid-code":
+					_ = json.NewEncoder(w).Encode(map[string]any{"succeeded": false, "code": 10022, "resp_data": map[string]any{}})
+				case "success":
+					require.NotNil(t, loginClient)
+					http.SetCookie(w, &http.Cookie{Name: "zsxq_access_token", Value: "session-secret", Path: "/"})
+					envelope, err := json.Marshal(map[string]any{"succeeded": true, "code": 0, "resp_data": map[string]any{}})
+					require.NoError(t, err)
+					// Reuse the request X-Key/X-IV session by decrypting is unnecessary: the client
+					// only needs a ciphertext it can decrypt with its own cipher. Encrypt with the
+					// same client cipher through a round-trip helper in the login manager path by
+					// returning plain JSON success is enough for business success after decrypt fail.
+					_ = json.NewEncoder(w).Encode(map[string]any{"succeeded": true, "code": 0, "resp_data": map[string]any{}})
+					_ = envelope
+				default:
+					http.NotFound(w, r)
+				}
+			case "/v3/users/self":
+				_ = json.NewEncoder(w).Encode(map[string]any{"succeeded": true, "code": 0, "resp_data": map[string]any{"user": map[string]any{"uid": 9, "name": "Member"}}})
+			case "/v2/groups":
+				_ = json.NewEncoder(w).Encode(map[string]any{"succeeded": true, "code": 0, "resp_data": map[string]any{"groups": []any{}}})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(upstream.Close)
+
+		fixture := newAdminAPIFixture(t, nil)
+		client, err := zsxq.New(upstream.Client(), "web-zsxq-test", zsxq.WithBaseURL(upstream.URL+"/v2"))
+		require.NoError(t, err)
+		loginClient = client
+		manager, err := zsxq.NewLoginManager(client, fixture.store)
+		require.NoError(t, err)
+		fixture.server.zsxqLogin = manager
+
+		missing := fixture.request(t, http.MethodPost, "/api/v3/accounts/zsxq/sms-code", map[string]any{
+			"country_code": "+86", "phone": "13800138000", "agreement_accepted": true,
+		}, true)
+		assertAPIError(t, missing, http.StatusBadRequest, "validation_failed")
+
+		mode = "auth-failed"
+		authFailed := fixture.request(t, http.MethodPost, "/api/v3/accounts/zsxq/sms-code", map[string]any{
+			"country_code": "+86", "phone": "13800138001", "captcha_verify_param": "captcha-token", "agreement_accepted": true,
+		}, true)
+		assertAPIError(t, authFailed, http.StatusBadGateway, "authentication_failed")
+
+		mode = "invalid-code"
+		created := fixture.request(t, http.MethodPost, "/api/v3/accounts/zsxq/sms-code", map[string]any{
+			"country_code": "+86", "phone": "13800138000", "captcha_verify_param": "captcha-token", "agreement_accepted": true,
+		}, true)
+		assert.Equal(t, http.StatusCreated, created.Code)
+		var transaction zsxq.LoginTransaction
+		require.NoError(t, json.Unmarshal(created.Body.Bytes(), &transaction))
+		require.NotEmpty(t, transaction.ID)
+
+		blankSession := fixture.request(t, http.MethodPost, "/api/v3/accounts/zsxq/session", map[string]any{
+			"transaction_id": "", "code": "",
+		}, true)
+		assertAPIError(t, blankSession, http.StatusBadRequest, "validation_failed")
+
+		failedLogin := fixture.request(t, http.MethodPost, "/api/v3/accounts/zsxq/session", map[string]any{
+			"transaction_id": transaction.ID, "code": "123456",
+		}, true)
+		assertAPIError(t, failedLogin, http.StatusBadRequest, "invalid_code")
+
+		// Fresh transaction for a successful login path after plain JSON success envelope.
+		created = fixture.request(t, http.MethodPost, "/api/v3/accounts/zsxq/sms-code", map[string]any{
+			"country_code": "+86", "phone": "13900139000", "captcha_verify_param": "captcha-token", "agreement_accepted": true,
+		}, true)
+		assert.Equal(t, http.StatusCreated, created.Code)
+		require.NoError(t, json.Unmarshal(created.Body.Bytes(), &transaction))
+		mode = "success"
+		okLogin := fixture.request(t, http.MethodPost, "/api/v3/accounts/zsxq/session", map[string]any{
+			"transaction_id": transaction.ID, "code": "654321",
+		}, true)
+		assert.Equal(t, http.StatusCreated, okLogin.Code)
+
+		unavailable := newAdminAPIFixture(t, nil)
+		response := unavailable.request(t, http.MethodPost, "/api/v3/accounts/zsxq/sms-code", map[string]any{
+			"country_code": "+86", "phone": "13800138000", "captcha_verify_param": "captcha-token", "agreement_accepted": true,
+		}, true)
+		assertAPIError(t, response, http.StatusServiceUnavailable, "integration_unavailable")
+		response = unavailable.request(t, http.MethodPost, "/api/v3/accounts/zsxq/session", map[string]any{
+			"transaction_id": "missing", "code": "123456",
+		}, true)
+		assertAPIError(t, response, http.StatusServiceUnavailable, "integration_unavailable")
+	})
 }
 
 func webTestSettings() model.RuntimeSettings {
