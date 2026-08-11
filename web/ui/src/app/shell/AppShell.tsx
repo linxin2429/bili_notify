@@ -1,33 +1,50 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  BellRing,
+  Bot,
+  Database,
+  History,
+  LayoutDashboard,
+  LogOut,
+  Moon,
+  Monitor,
+  MoreHorizontal,
+  ScrollText,
+  Send,
+  Settings,
+  SlidersHorizontal,
+  Sun,
+  type LucideIcon,
+} from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useThemePreference } from '../../shared/ui/theme'
 import { useSession } from '../../modules/session'
 import { sessionAPI } from '../../shared/api/session'
 import { replaceSessionState } from '../../shared/api/session-cache'
 import { useConnectionState } from '../../shared/realtime/RealtimeSync'
-import { Badge, IconButton } from '../../shared/ui'
+import { IconButton } from '../../shared/ui'
 import type { ConnectionState, ThemePreference } from '../../shared/api/types'
 import { shellOutboxQuery } from './outbox'
 
-type NavItem = { path: string; label: string; icon: string; shortLabel?: string }
+type NavItem = { path: string; label: string; icon: LucideIcon; shortLabel?: string }
 
 const primaryNav: NavItem[] = [
-  { path: '/overview', label: '概览', icon: '◫' },
-  { path: '/sources', label: '采集源', icon: '♟' },
-  { path: '/channels', label: '通知渠道', icon: '◉', shortLabel: '渠道' },
-  { path: '/deliveries', label: '投递队列', icon: '↗', shortLabel: '队列' },
-  { path: '/history', label: '历史', icon: '◷' },
+  { path: '/overview', label: '概览', icon: LayoutDashboard },
+  { path: '/sources', label: '采集源', icon: Database },
+  { path: '/channels', label: '通知渠道', icon: BellRing, shortLabel: '渠道' },
+  { path: '/deliveries', label: '投递队列', icon: Send, shortLabel: '队列' },
+  { path: '/history', label: '历史', icon: History },
 ]
 
 const systemNav: NavItem[] = [
-  { path: '/ai', label: 'AI 工作台', icon: '✦' },
-  { path: '/ai-settings', label: 'AI 设置', icon: '⚒' },
-  { path: '/audit-logs', label: '操作日志', icon: '≡' },
-  { path: '/settings', label: '设置', icon: '⚙' },
+  { path: '/ai', label: 'AI 工作台', icon: Bot },
+  { path: '/ai-settings', label: 'AI 设置', icon: SlidersHorizontal },
+  { path: '/audit-logs', label: '操作日志', icon: ScrollText },
+  { path: '/settings', label: '设置', icon: Settings },
 ]
 
-const morePaths = ['/history', '/ai', '/ai-settings', '/audit-logs', '/settings']
-const mobilePrimaryNav: NavItem[] = primaryNav.filter(item => item.path !== '/history')
+const morePaths = ['/channels', '/ai', '/ai-settings', '/audit-logs', '/settings']
+const mobilePrimaryNav: NavItem[] = [primaryNav[0], primaryNav[4], primaryNav[3], primaryNav[1]]
 const themes: ThemePreference[] = ['system', 'light', 'dark']
 const themeLabels: Record<ThemePreference, string> = { system: '跟随系统', light: '亮色', dark: '暗色' }
 
@@ -43,13 +60,14 @@ function connectionLabel(state: ConnectionState) {
 
 function NavEntry({ item, badge }: { item: NavItem; badge?: number }) {
   const showBadge = typeof badge === 'number' && badge > 0
+  const ItemIcon = item.icon
   return (
     <NavLink
       to={item.path}
       aria-label={item.label}
       className={({ isActive }) => `nav-item${isActive ? ' nav-item--active' : ''}`}
     >
-      <span aria-hidden="true">{item.icon}</span>
+      <ItemIcon className="nav-item__icon" aria-hidden="true" />
       <span className="nav-item__label">{item.label}</span>
       {showBadge && <span className="nav-item__badge" aria-hidden="true">{badge}</span>}
     </NavLink>
@@ -58,6 +76,7 @@ function NavEntry({ item, badge }: { item: NavItem; badge?: number }) {
 
 function MobileNavEntry({ item, badge, isActive }: { item: NavItem; badge?: number; isActive?: boolean }) {
   const showBadge = typeof badge === 'number' && badge > 0
+  const ItemIcon = item.icon
   return (
     <NavLink
       to={item.path}
@@ -68,7 +87,7 @@ function MobileNavEntry({ item, badge, isActive }: { item: NavItem; badge?: numb
       }}
     >
       <span className="mobile-nav__icon" aria-hidden="true">
-        {item.icon}
+        <ItemIcon />
         {showBadge && <span className="mobile-nav__badge">{badge}</span>}
       </span>
       <small>{item.shortLabel || item.label}</small>
@@ -92,24 +111,28 @@ export function AppShell() {
   const live = connection === 'live'
   const connLabel = connectionLabel(connection)
   const moreActive = location.pathname === '/more' || morePaths.some(path => pathMatches(location.pathname, path))
+  const ThemeIcon = preference === 'dark' ? Moon : preference === 'light' ? Sun : Monitor
 
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand">
+        <div className="brand topbar__brand">
           <span className="brand__mark">BN</span>
           <strong>Bili Notify</strong>
         </div>
         <div className="topbar__actions">
-          <Badge tone={live ? 'success' : 'warning'}>{connLabel}</Badge>
           <IconButton label={`主题：${themeLabels[preference]}`} onPress={cycleTheme}>
-            {preference === 'dark' ? '☾' : preference === 'light' ? '☀' : '◐'}
+            <ThemeIcon aria-hidden="true" />
           </IconButton>
-          <IconButton label="退出登录" onPress={() => logout.mutate()}>⇥</IconButton>
+          <IconButton label="退出登录" onPress={() => logout.mutate()}><LogOut aria-hidden="true" /></IconButton>
         </div>
       </header>
 
       <aside className="sidebar">
+        <div className="brand sidebar__brand">
+          <span className="brand__mark">BN</span>
+          <span><strong>Bili Notify</strong><small>采集与投递管理台</small></span>
+        </div>
         <nav aria-label="主导航">
           <div className="nav-section">
             {primaryNav.map(item => (
@@ -127,7 +150,11 @@ export function AppShell() {
             ))}
           </div>
         </nav>
+        <div className="sidebar__footer">
+          <small>{live ? '状态实时同步' : '通过 REST 轮询'}</small>
+        </div>
       </aside>
+      <aside className={`connection-state shell-connection connection-state--${live ? 'live' : 'degraded'}`} aria-label="连接状态"><span aria-hidden="true" />{connLabel}</aside>
 
       <main className="main-content">
         {!live && (
@@ -148,7 +175,7 @@ export function AppShell() {
             badge={item.path === '/deliveries' ? outboxDepth : undefined}
           />
         ))}
-        <MobileNavEntry item={{ path: '/more', label: '更多', icon: '⋯' }} isActive={moreActive} />
+        <MobileNavEntry item={{ path: '/more', label: '更多', icon: MoreHorizontal }} isActive={moreActive} />
       </nav>
     </div>
   )

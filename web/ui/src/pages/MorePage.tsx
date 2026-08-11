@@ -1,12 +1,13 @@
+import { BellRing, Bot, ScrollText, Settings, SlidersHorizontal, type LucideIcon } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 
-const moreNav = [
-  { path: '/history', label: '历史', icon: '◷' },
-  { path: '/ai', label: 'AI 工作台', icon: '✦' },
-  { path: '/ai-settings', label: 'AI 设置', icon: '⚒' },
-  { path: '/audit-logs', label: '操作日志', icon: '≡' },
-  { path: '/settings', label: '设置', icon: '⚙' },
-] as const
+const moreNav: Array<{ path: string; label: string; icon: LucideIcon }> = [
+  { path: '/channels', label: '通知渠道', icon: BellRing },
+  { path: '/ai', label: 'AI 工作台', icon: Bot },
+  { path: '/ai-settings', label: 'AI 设置', icon: SlidersHorizontal },
+  { path: '/audit-logs', label: '操作日志', icon: ScrollText },
+  { path: '/settings', label: '设置', icon: Settings },
+]
 
 export function MorePage() {
   return (
@@ -25,7 +26,7 @@ export function MorePage() {
             aria-label={item.label}
             className={({ isActive }) => `nav-item${isActive ? ' nav-item--active' : ''}`}
           >
-            <span aria-hidden="true">{item.icon}</span>
+            <item.icon className="nav-item__icon" aria-hidden="true" />
             <span>{item.label}</span>
           </NavLink>
         ))}

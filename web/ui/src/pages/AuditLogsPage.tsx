@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { ChevronLeft, ChevronRight, ScrollText } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { AuditLog, AuditQuery } from '../shared/api/types'
@@ -55,13 +56,13 @@ export function AuditLogsPage() {
       <NativeDateTimeField label="开始时间" value={from} onChange={value => update({ from: value || undefined })} />
       <NativeDateTimeField label="结束时间" value={to} onChange={value => update({ to: value || undefined })} />
     </div></Card>
-    {logs.data.items.length === 0 ? <EmptyState icon="≡" title="当前筛选下没有操作日志" /> : <div className="list-stack">{logs.data.items.map(item => {
+    {logs.data.items.length === 0 ? <EmptyState icon={<ScrollText />} title="当前筛选下没有操作日志" /> : <div className="list-stack">{logs.data.items.map(item => {
       const result = auditResult(item)
       return <Card key={item.id}><div className="audit-row"><div><div className="card-title-inline"><strong>{auditActionLabel(item.action)}</strong><Badge tone={result.color === 'error' ? 'danger' : result.color}>{result.label}</Badge></div><p>{item.resource_type}{item.resource_id ? ` · ${item.resource_id}` : ''}</p><p className="muted">{item.http_method} {item.route} · HTTP {item.status_code} · {item.duration_ms} ms</p><Button onPress={() => setDetail(item)}>查看详情</Button></div><div><time>{formatDate(item.occurred_at, runtime.data.timezone)}</time><small>请求 {item.request_id}</small><small>{item.remote_ip}</small></div></div></Card>
     })}</div>}
     <div className="pagination">
-      <Button isDisabled={!after && !stack} onPress={() => update(rewindCursor(stack), false)}>← 上一页</Button>
-      <Button isDisabled={!logs.data.page.has_more} onPress={() => update(advanceCursor(after, stack, logs.data.page.next_cursor), false)}>下一页 →</Button>
+      <Button isDisabled={!after && !stack} onPress={() => update(rewindCursor(stack), false)}><ChevronLeft aria-hidden="true" />上一页</Button>
+      <Button isDisabled={!logs.data.page.has_more} onPress={() => update(advanceCursor(after, stack, logs.data.page.next_cursor), false)}>下一页<ChevronRight aria-hidden="true" /></Button>
     </div>
     <Dialog open={Boolean(detail)} title="安全变更摘要" onClose={() => setDetail(null)} actions={<Button onPress={() => setDetail(null)}>关闭</Button>}>
       <dl className="summary-list">

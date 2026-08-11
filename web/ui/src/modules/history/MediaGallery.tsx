@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ChevronLeft, ChevronRight, ImageOff } from 'lucide-react'
 import type { Attachment } from '../../shared/api/types'
 import { historyMediaURL } from '../../shared/lib/presentation'
 import { Button, IconButton } from '../../shared/ui'
@@ -53,7 +54,7 @@ function MediaTile({ image, index, single, extra, onOpen }: {
   const [failed, setFailed] = useState(false)
   return <div className="media-tile" style={single && image.width && image.height ? { aspectRatio: `${image.width} / ${image.height}` } : undefined}>
     {failed
-      ? <span className="media-fallback">▧<small>媒体加载失败</small></span>
+      ? <span className="media-fallback"><ImageOff aria-hidden="true" /><small>媒体加载失败</small></span>
       : <button type="button" onClick={onOpen} aria-label={`放大第 ${index + 1} 张图片`}>
         <img
           src={historyMediaURL(image.url, single ? 720 : 480)}
@@ -105,9 +106,9 @@ export function MediaLightbox({ images, selected, onSelect, onClose }: {
     onClose={onClose}
     ariaLabel="图片预览"
     actions={<>
-      <IconButton label="上一张图片" isDisabled={selected === 0} onPress={() => move(-1)}>←</IconButton>
+      <IconButton label="上一张图片" isDisabled={selected === 0} onPress={() => move(-1)}><ChevronLeft aria-hidden="true" /></IconButton>
       <span>{selected === null ? 0 : selected + 1} / {images.length}</span>
-      <IconButton label="下一张图片" isDisabled={selected === null || selected === images.length - 1} onPress={() => move(1)}>→</IconButton>
+      <IconButton label="下一张图片" isDisabled={selected === null || selected === images.length - 1} onPress={() => move(1)}><ChevronRight aria-hidden="true" /></IconButton>
       <Button onPress={onClose}>关闭</Button>
     </>}
   >

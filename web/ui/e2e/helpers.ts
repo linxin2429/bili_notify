@@ -58,8 +58,7 @@ export async function createNotificationChannel(page: Page, harness: Harness, se
 
 export async function createFollowedUP(page: Page) {
   await navigateTo(page, '采集源')
-  // Prefer the page-header action; empty-state CTA reuses the same label without the leading mark.
-  await page.getByRole('button', { name: '＋ 添加 B 站 UP' }).click()
+  await page.locator('header.page-header').getByRole('button', { name: '添加 B 站 UP', exact: true }).click()
   await page.getByLabel('UID').fill('42')
   await page.getByLabel('来源名称').fill('E2E UP')
   await page.getByRole('button', { name: '保存' }).click()

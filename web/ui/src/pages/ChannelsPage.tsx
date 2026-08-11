@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { BellRing, Pencil, Plus, Send, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import type { Channel, ChannelDraft, ChannelType } from '../shared/api/types'
 import { queries, queryKeys } from '../shared/api/query'
@@ -59,8 +60,8 @@ export function ChannelsPage() {
   }
   if (channels.isPending || logins.isPending) return <LoadingState />
   if (channels.error || logins.error) return <PageError error={channels.error || logins.error} retry={() => { void channels.refetch(); void logins.refetch() }} />
-  return <div className="page-stack"><PageHeader title="通知渠道" subtitle="秘密字段只写入服务端保险库，不会返回浏览器。" action={<Button variant="primary" onPress={() => setEditing(null)}>＋ 添加渠道</Button>} />
-    {channels.data.length === 0 ? <EmptyState icon="◉" title="尚未配置通知渠道" action={<Button variant="primary" onPress={() => setEditing(null)}>添加第一个渠道</Button>} /> : <div className="card-grid">{channels.data.map(channel => {
+  return <div className="page-stack"><PageHeader title="通知渠道" subtitle="秘密字段只写入服务端保险库，不会返回浏览器。" action={<Button variant="primary" onPress={() => setEditing(null)}><Plus aria-hidden="true" />添加渠道</Button>} />
+    {channels.data.length === 0 ? <EmptyState icon={<BellRing />} title="尚未配置通知渠道" action={<Button variant="primary" onPress={() => setEditing(null)}>添加第一个渠道</Button>} /> : <div className="card-grid">{channels.data.map(channel => {
       const login = logins.data.find(item => item.channel_id === channel.id)
       const authorized = channel.settings.authorized === 'true'
       const pending = login?.status === 'pending'
@@ -76,7 +77,7 @@ export function ChannelsPage() {
           <p>{login?.error || (authorized ? 'Microsoft 账户已授权。' : '必须完成 Microsoft 授权后才能启用。')} <Button onPress={() => authorize.mutate(channel.id)}>{authorized ? '重新授权' : '开始授权'}</Button></p>
           {authLinks[channel.id] && <p><a href={authLinks[channel.id]} target="_blank" rel="noopener noreferrer">打开验证页面</a></p>}
         </div>}</Alert>}
-        <div className="button-row"><Button onPress={() => setEditing(channel)}>✎ 编辑</Button><Button onPress={() => test.mutate(channel.id)}>⌁ 发送测试</Button><Button danger onPress={() => setRemoving(channel)}>⌫ 删除</Button></div>
+        <div className="button-row"><Button onPress={() => setEditing(channel)}><Pencil aria-hidden="true" />编辑</Button><Button onPress={() => test.mutate(channel.id)}><Send aria-hidden="true" />发送测试</Button><Button danger onPress={() => setRemoving(channel)}><Trash2 aria-hidden="true" />删除</Button></div>
       </Card>
     })}</div>}
     {editing !== undefined && <ChannelDialog key={editing?.id || 'new'} channel={editing || undefined} busy={save.isPending} error={save.error ? apiErrorMessage(save.error) : ''} onClose={() => setEditing(undefined)} onSave={draft => save.mutate(draft)} />}

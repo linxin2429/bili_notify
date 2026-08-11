@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useId, useRef, useState } from 'react'
+import { CircleDashed, X } from 'lucide-react'
 
 interface ButtonProps { variant?: 'primary' | 'ghost' | 'outline'; danger?: boolean; busy?: boolean; children: React.ReactNode; className?: string; isDisabled?: boolean; onPress?: () => void; type?: 'button' | 'submit' | 'reset'; role?: string; 'aria-selected'?: boolean }
 export function Button({ variant = 'ghost', danger = false, busy = false, children, className = '', isDisabled, onPress, type = 'button', ...aria }: ButtonProps) {
@@ -42,7 +43,7 @@ export function Badge({ children, tone = 'neutral' }: { children: React.ReactNod
 export function Alert({ children, tone = 'info' }: { children: React.ReactNode; tone?: 'info' | 'success' | 'warning' | 'danger' }) { return <div role={tone === 'danger' ? 'alert' : 'status'} className={`alert alert--${tone}`}>{children}</div> }
 export function Spinner() { return <span className="spinner" aria-hidden="true" /> }
 export function LoadingState({ label = '正在加载' }: { label?: string }) { return <div className="page-state"><Spinner /><p>{label}</p></div> }
-export function EmptyState({ icon = '○', title, action }: { icon?: React.ReactNode; title: string; action?: React.ReactNode }) { return <div className="empty-state"><span className="empty-state__icon">{icon}</span><h2>{title}</h2>{action}</div> }
+export function EmptyState({ icon = <CircleDashed />, title, action }: { icon?: React.ReactNode; title: string; action?: React.ReactNode }) { return <div className="empty-state"><span className="empty-state__icon" aria-hidden="true">{icon}</span><h2>{title}</h2>{action}</div> }
 export function PageHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: React.ReactNode }) { return <header className="page-header"><div><h1>{title}</h1><p>{subtitle}</p></div>{action}</header> }
 export function PageError({ error, retry }: { error: unknown; retry?: () => void }) { return <Alert tone="danger"><strong>加载失败</strong><p>{error instanceof Error ? error.message : '发生未知错误'}</p>{retry && <Button variant="outline" onPress={retry}>重试</Button>}</Alert> }
 
@@ -78,7 +79,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     {toasts.length > 0 && <div className="toast-stack" style={{ position: 'fixed', zIndex: 100, right: '1rem', bottom: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', maxWidth: 'min(420px, calc(100vw - 2rem))' }}>
       {toasts.map(toast => <div key={toast.id} className={`toast toast--${toast.tone}`} role="status" style={{ position: 'static', maxWidth: 'none' }}>
         <span>{toast.message}</span>
-        <IconButton label="关闭提示" onPress={() => dismiss(toast.id)}>×</IconButton>
+        <IconButton label="关闭提示" onPress={() => dismiss(toast.id)}><X aria-hidden="true" /></IconButton>
       </div>)}
     </div>}
   </NotificationContext>

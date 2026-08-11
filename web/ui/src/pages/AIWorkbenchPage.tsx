@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Sparkles } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSession } from '../modules/session'
@@ -46,7 +47,7 @@ export function AIWorkbenchPage() {
       <SelectField label="模型配置档" value={profileID} onChange={setProfile} disabled={!candidates.length} options={candidates.map(item => ({ value: item.id, label: `${item.name} · ${item.model}` }))} />{kind === 'summary' && <SelectField label="提示词模板" value={promptID} onChange={setPrompt} disabled={!prompts.data.length} options={prompts.data.map(item => ({ value: item.id, label: item.name }))} />}
       {!candidates.length || (kind === 'summary' && !prompts.data.length) ? <Alert tone="warning">请先在 <Link to="/ai-settings">AI 设置</Link> 中补齐模型配置档和提示词。</Alert> : <Button type="submit" variant="primary" busy={submit.isPending}>提交任务</Button>}
     </form></Card>
-    <section><h2>任务记录</h2>{!jobs.data.items.length ? <EmptyState title="还没有 AI 任务" icon="✦" /> : <div className="list-stack">{jobs.data.items.map(job => <Card key={job.id} className="ai-job-card"><button type="button" className="ai-job-card__main" onClick={() => setSelected(selected === job.id ? '' : job.id)}><div><div className="card-title-inline"><Badge tone={tone(job)}>{labels[job.state]}</Badge><strong>{job.kind === 'transcription' ? '视频转写' : '文本总结'}</strong></div><p className="muted">{job.stage} · 尝试 {job.attempts} 次</p></div><progress max="100" value={job.progress} aria-label={`任务进度 ${job.progress}%`} /></button>{selected === job.id && <JobDetail job={job} onAction={verb => { if (verb === 'delete') setDeleting(job.id); else action.mutate({ id: job.id, verb }) }} />}</Card>)}</div>}</section>
+    <section><h2>任务记录</h2>{!jobs.data.items.length ? <EmptyState title="还没有 AI 任务" icon={<Sparkles />} /> : <div className="list-stack">{jobs.data.items.map(job => <Card key={job.id} className="ai-job-card"><button type="button" className="ai-job-card__main" onClick={() => setSelected(selected === job.id ? '' : job.id)}><div><div className="card-title-inline"><Badge tone={tone(job)}>{labels[job.state]}</Badge><strong>{job.kind === 'transcription' ? '视频转写' : '文本总结'}</strong></div><p className="muted">{job.stage} · 尝试 {job.attempts} 次</p></div><progress max="100" value={job.progress} aria-label={`任务进度 ${job.progress}%`} /></button>{selected === job.id && <JobDetail job={job} onAction={verb => { if (verb === 'delete') setDeleting(job.id); else action.mutate({ id: job.id, verb }) }} />}</Card>)}</div>}</section>
     <Dialog open={Boolean(deleting)} title="删除 AI 任务记录" onClose={() => setDeleting(null)} actions={<><Button onPress={() => setDeleting(null)}>取消</Button><Button variant="primary" danger busy={action.isPending} onPress={() => deleting && action.mutate({ id: deleting, verb: 'delete' })}>确认删除</Button></>}><p>删除后无法从管理台恢复该任务结果。</p></Dialog>
   </div>
 }
