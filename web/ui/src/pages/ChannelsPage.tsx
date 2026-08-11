@@ -12,16 +12,73 @@ import { channelTypeLabel, settingLabel } from '../shared/lib/presentation'
 export function ChannelsPage() {
   const channels = useQuery(queries.channels()); const logins = useQuery(queries.microsoftLogins()); const { csrf } = useSession(); const client = useQueryClient(); const notify = useNotify()
   const [editing, setEditing] = useState<Channel | null | undefined>(undefined); const [removing, setRemoving] = useState<Channel | null>(null)
+  const [authLinks, setAuthLinks] = useState<Record<string, string>>({})
   const refresh = async () => { await client.invalidateQueries({ queryKey: queryKeys.channels }); void client.invalidateQueries({ queryKey: queryKeys.runtime }) }
   const save = useMutation({ mutationFn: (draft: ChannelDraft) => draft.id ? resources.updateChannel(csrf, draft as ChannelDraft & { id: string }) : resources.createChannel(csrf, draft), onMutate: () => client.cancelQueries({ queryKey: queryKeys.channels }), onSuccess: async () => { await refresh(); setEditing(undefined) }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const remove = useMutation({ mutationFn: (id: string) => resources.deleteChannel(csrf, id), onMutate: () => client.cancelQueries({ queryKey: queryKeys.channels }), onSuccess: async () => { await refresh(); setRemoving(null) }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const test = useMutation({ mutationFn: (id: string) => resources.testChannel(csrf, id), onSuccess: () => notify('测试通知已发送', 'success'), onError: error => notify(apiErrorMessage(error), 'danger') })
-  const authorize = useMutation({ mutationFn: (id: string) => resources.startMicrosoftLogin(csrf, id), onSuccess: login => { void client.invalidateQueries({ queryKey: queryKeys.microsoftLogins }); const url = login.verification_uri_complete || login.verification_uri; if (url) window.open(url, '_blank', 'noopener,noreferrer') }, onError: error => notify(apiErrorMessage(error), 'danger') })
-  const cancelAuthorization = useMutation({ mutationFn: (id: string) => resources.cancelMicrosoftLogin(csrf, id), onSuccess: () => void client.invalidateQueries({ queryKey: queryKeys.microsoftLogins }), onError: error => notify(apiErrorMessage(error), 'danger') })
+  const authorize = useMutation({
+    mutationFn: (id: string) => resources.startMicrosoftLogin(csrf, id),
+    onSuccess: login => {
+      void client.invalidateQueries({ queryKey: queryKeys.microsoftLogins })
+      const url = login.verification_uri_complete || login.verification_uri
+      if (!url) return
+      const opened = window.open(url, '_blank', 'noopener,noreferrer')
+      if (!opened) {
+        setAuthLinks(current => ({ ...current, [login.channel_id]: url }))
+        notify('无法自动打开验证页，请点击页面上的链接完成授权', 'info')
+      } else {
+        setAuthLinks(current => {
+          const next = { ...current }
+          delete next[login.channel_id]
+          return next
+        })
+      }
+    },
+    onError: error => notify(apiErrorMessage(error), 'danger'),
+  })
+  const cancelAuthorization = useMutation({
+    mutationFn: (id: string) => resources.cancelMicrosoftLogin(csrf, id),
+    onSuccess: (_value, id) => {
+      setAuthLinks(current => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
+      void client.invalidateQueries({ queryKey: queryKeys.microsoftLogins })
+    },
+    onError: error => notify(apiErrorMessage(error), 'danger'),
+  })
+  const copyCode = async (code: string) => {
+    try {
+      await navigator.clipboard.writeText(code)
+      notify('设备码已复制', 'success')
+    } catch {
+      notify('复制失败，请手动选择设备码', 'danger')
+    }
+  }
   if (channels.isPending || logins.isPending) return <LoadingState />
   if (channels.error || logins.error) return <PageError error={channels.error || logins.error} retry={() => { void channels.refetch(); void logins.refetch() }} />
   return <div className="page-stack"><PageHeader title="通知渠道" subtitle="秘密字段只写入服务端保险库，不会返回浏览器。" action={<Button variant="primary" onPress={() => setEditing(null)}>＋ 添加渠道</Button>} />
-    {channels.data.length === 0 ? <EmptyState icon="◉" title="尚未配置通知渠道" action={<Button variant="primary" onPress={() => setEditing(null)}>添加第一个渠道</Button>} /> : <div className="card-grid">{channels.data.map(channel => { const login = logins.data.find(item => item.channel_id === channel.id); const authorized = channel.settings.authorized === 'true'; return <Card key={channel.id}><div className="card-title"><div><h2>{channel.name}</h2><p>{channelTypeLabel(channel.type)}</p></div><Badge tone={channel.enabled ? 'success' : 'neutral'}>{channel.enabled ? '已启用' : '已停用'}</Badge></div><dl className="summary-list">{Object.entries(channel.settings).filter(([key]) => !['authorized', 'token_type', 'token_expiry'].includes(key)).map(([key, value]) => <div key={key}><dt>{settingLabel(key)}</dt><dd>{value}</dd></div>)}{channel.configured_secrets.map(key => <div key={key}><dt>{settingLabel(key)}</dt><dd><Badge>已安全保存</Badge></dd></div>)}</dl>{channel.type === 'microsoft' && <Alert tone={authorized ? 'success' : login?.status === 'pending' ? 'info' : 'warning'}>{login?.status === 'pending' ? <p>打开 Microsoft 登录页并输入代码 <strong>{login.user_code}</strong>。<Button onPress={() => cancelAuthorization.mutate(channel.id)}>取消</Button></p> : <p>{login?.error || (authorized ? 'Microsoft 账户已授权。' : '必须完成 Microsoft 授权后才能启用。')} <Button onPress={() => authorize.mutate(channel.id)}>{authorized ? '重新授权' : '开始授权'}</Button></p>}</Alert>}<div className="button-row"><Button onPress={() => setEditing(channel)}>✎ 编辑</Button><Button onPress={() => test.mutate(channel.id)}>⌁ 发送测试</Button><Button danger onPress={() => setRemoving(channel)}>⌫ 删除</Button></div></Card>})}</div>}
+    {channels.data.length === 0 ? <EmptyState icon="◉" title="尚未配置通知渠道" action={<Button variant="primary" onPress={() => setEditing(null)}>添加第一个渠道</Button>} /> : <div className="card-grid">{channels.data.map(channel => {
+      const login = logins.data.find(item => item.channel_id === channel.id)
+      const authorized = channel.settings.authorized === 'true'
+      const pending = login?.status === 'pending'
+      const verificationURL = login?.verification_uri_complete || login?.verification_uri || authLinks[channel.id]
+      return <Card key={channel.id}><div className="card-title"><div><h2>{channel.name}</h2><p>{channelTypeLabel(channel.type)}</p></div><Badge tone={channel.enabled ? 'success' : 'neutral'}>{channel.enabled ? '已启用' : '已停用'}</Badge></div>
+        <dl className="summary-list">{Object.entries(channel.settings).filter(([key]) => !['authorized', 'token_type', 'token_expiry'].includes(key)).map(([key, value]) => <div key={key}><dt>{settingLabel(key)}</dt><dd>{value}</dd></div>)}{channel.configured_secrets.map(key => <div key={key}><dt>{settingLabel(key)}</dt><dd><Badge>已安全保存</Badge></dd></div>)}</dl>
+        {channel.type === 'microsoft' && <Alert tone={authorized ? 'success' : pending ? 'info' : 'warning'}>{pending ? <div className="form-stack">
+          <p>在 Microsoft 登录页输入设备码完成授权：</p>
+          <p className="button-row"><strong style={{ fontSize: '1.25rem', letterSpacing: '0.08em' }}>{login?.user_code}</strong><Button variant="outline" onPress={() => login?.user_code && void copyCode(login.user_code)}>复制</Button></p>
+          {verificationURL && <p><a href={verificationURL} target="_blank" rel="noopener noreferrer">打开验证页面</a></p>}
+          <div className="button-row"><Button onPress={() => cancelAuthorization.mutate(channel.id)}>取消</Button></div>
+        </div> : <div className="form-stack">
+          <p>{login?.error || (authorized ? 'Microsoft 账户已授权。' : '必须完成 Microsoft 授权后才能启用。')} <Button onPress={() => authorize.mutate(channel.id)}>{authorized ? '重新授权' : '开始授权'}</Button></p>
+          {authLinks[channel.id] && <p><a href={authLinks[channel.id]} target="_blank" rel="noopener noreferrer">打开验证页面</a></p>}
+        </div>}</Alert>}
+        <div className="button-row"><Button onPress={() => setEditing(channel)}>✎ 编辑</Button><Button onPress={() => test.mutate(channel.id)}>⌁ 发送测试</Button><Button danger onPress={() => setRemoving(channel)}>⌫ 删除</Button></div>
+      </Card>
+    })}</div>}
     {editing !== undefined && <ChannelDialog key={editing?.id || 'new'} channel={editing || undefined} busy={save.isPending} error={save.error ? apiErrorMessage(save.error) : ''} onClose={() => setEditing(undefined)} onSave={draft => save.mutate(draft)} />}
     <Dialog open={Boolean(removing)} title="删除通知渠道" onClose={() => setRemoving(null)} actions={<><Button onPress={() => setRemoving(null)}>取消</Button><Button variant="primary" danger busy={remove.isPending} onPress={() => removing && remove.mutate(removing.id)}>确认删除</Button></>}><p>存在待投递任务时服务端会拒绝删除“{removing?.name}”。</p></Dialog>
   </div>
@@ -30,10 +87,22 @@ export function ChannelsPage() {
 function ChannelDialog({ channel, busy, error, onClose, onSave }: { channel?: Channel; busy: boolean; error: string; onClose: () => void; onSave: (draft: ChannelDraft) => void }) {
   const [name, setName] = useState(channel?.name || ''); const [type, setType] = useState<ChannelType>(channel?.type || 'email'); const [enabled, setEnabled] = useState(channel?.enabled ?? true); const [fields, setFields] = useState<Record<string, string>>(channel?.settings || {}); const [secrets, setSecrets] = useState<Record<string, string>>({})
   const field = (key: string, value: string) => setFields(current => ({ ...current, [key]: value })); const secret = (key: string, value: string) => setSecrets(current => ({ ...current, [key]: value }))
-  const submit = () => onSave(buildDraft(channel?.id, name, type, enabled, fields, secrets))
-  return <Dialog open onClose={onClose} title={channel ? '编辑通知渠道' : '添加通知渠道'} actions={<><Button onPress={onClose}>取消</Button><Button variant="primary" busy={busy} isDisabled={!name} onPress={submit}>保存</Button></>}><div className="form-stack">{error && <Alert tone="danger">{error}</Alert>}<TextField label="渠道名称" value={name} onChange={setName} required /><SelectField label="渠道类型" value={type} disabled={Boolean(channel)} onChange={value => { setType(value as ChannelType); setFields({}); setSecrets({}); if (value === 'microsoft') setEnabled(false) }} options={(['email', 'microsoft', 'dingtalk', 'feishu', 'wecom'] as ChannelType[]).map(value => ({ value, label: channelTypeLabel(value) }))} />
-    {type === 'email' && <EmailFields fields={fields} secrets={secrets} configured={channel?.configured_secrets || []} setField={field} setSecret={secret} />}{type === 'microsoft' && <MicrosoftFields fields={fields} setField={field} />}{type === 'dingtalk' && <DingTalkFields secrets={secrets} configured={channel?.configured_secrets || []} setSecret={secret} />}{type === 'feishu' && <FeishuFields fields={fields} secrets={secrets} configured={channel?.configured_secrets || []} setField={field} setSecret={secret} />}{type === 'wecom' && <SecretField label="Webhook URL" name="webhook" values={secrets} configured={channel?.configured_secrets || []} onChange={secret} />}
-    <SwitchField checked={enabled} onChange={setEnabled}>启用渠道</SwitchField>{type === 'microsoft' && <Alert>保存后需要完成 Microsoft 设备码授权，再启用渠道。</Alert>}</div></Dialog>
+  const submit = () => { if (!name) return; onSave(buildDraft(channel?.id, name, type, enabled, fields, secrets)) }
+  return <Dialog open onClose={onClose} title={channel ? '编辑通知渠道' : '添加通知渠道'} actions={<><Button onPress={onClose}>取消</Button><Button variant="primary" busy={busy} isDisabled={!name} onPress={submit}>保存</Button></>}>
+    <form className="form-stack" onSubmit={event => { event.preventDefault(); submit() }}>
+      {error && <Alert tone="danger">{error}</Alert>}
+      <TextField label="渠道名称" value={name} onChange={setName} required />
+      <SelectField label="渠道类型" value={type} disabled={Boolean(channel)} onChange={value => { setType(value as ChannelType); setFields({}); setSecrets({}); if (value === 'microsoft') setEnabled(false) }} options={(['email', 'microsoft', 'dingtalk', 'feishu', 'wecom'] as ChannelType[]).map(value => ({ value, label: channelTypeLabel(value) }))} />
+      {type === 'email' && <EmailFields fields={fields} secrets={secrets} configured={channel?.configured_secrets || []} setField={field} setSecret={secret} />}
+      {type === 'microsoft' && <MicrosoftFields fields={fields} setField={field} />}
+      {type === 'dingtalk' && <DingTalkFields secrets={secrets} configured={channel?.configured_secrets || []} setSecret={secret} />}
+      {type === 'feishu' && <FeishuFields fields={fields} secrets={secrets} configured={channel?.configured_secrets || []} setField={field} setSecret={secret} />}
+      {type === 'wecom' && <SecretField label="Webhook URL" name="webhook" values={secrets} configured={channel?.configured_secrets || []} onChange={secret} />}
+      <SwitchField checked={enabled} onChange={setEnabled}>启用渠道</SwitchField>
+      {type === 'microsoft' && <Alert>保存后需要完成 Microsoft 设备码授权，再启用渠道。</Alert>}
+      <button type="submit" hidden tabIndex={-1} aria-hidden="true" />
+    </form>
+  </Dialog>
 }
 
 type FieldSetter = (key: string, value: string) => void

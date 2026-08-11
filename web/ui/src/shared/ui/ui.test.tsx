@@ -43,7 +43,25 @@ describe('shared UI primitives', () => {
     render(<NotificationProvider><NotifyProbe /></NotificationProvider>)
     fireEvent.click(screen.getByRole('button', { name: '通知' })); expect(screen.getByRole('status')).toHaveTextContent('已保存')
     fireEvent.click(screen.getByLabelText('关闭提示')); expect(screen.queryByText('已保存')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '通知' })); await vi.advanceTimersByTimeAsync(6_000); expect(screen.queryByText('已保存')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '通知' })); expect(screen.getByText('已保存')).toBeInTheDocument()
+    await vi.runOnlyPendingTimersAsync()
+    expect(screen.queryByText('已保存')).not.toBeInTheDocument()
+  })
+
+  it('keeps up to three concurrent toasts and leaves danger sticky until dismissed', async () => {
+    vi.useFakeTimers()
+    render(<NotificationProvider><MultiNotifyProbe /></NotificationProvider>)
+    fireEvent.click(screen.getByRole('button', { name: '连发' }))
+    expect(screen.getAllByRole('status')).toHaveLength(3)
+    expect(screen.queryByText('t1')).not.toBeInTheDocument()
+    expect(screen.getByText('t2')).toBeInTheDocument()
+    expect(screen.getByText('danger')).toBeInTheDocument()
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(screen.queryByText('t2')).not.toBeInTheDocument()
+    expect(screen.queryByText('t3')).not.toBeInTheDocument()
+    expect(screen.getByText('danger')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('关闭提示'))
+    expect(screen.queryByText('danger')).not.toBeInTheDocument()
   })
 
   it('opens dialogs, handles backdrop close and renders default and custom actions', async () => {
@@ -78,4 +96,8 @@ describe('theme state', () => {
 })
 
 function NotifyProbe() { const notify = useNotify(); return <Button onPress={() => notify('已保存', 'success')}>通知</Button> }
+function MultiNotifyProbe() {
+  const notify = useNotify()
+  return <Button onPress={() => { notify('t1', 'info'); notify('t2', 'info'); notify('t3', 'success'); notify('danger', 'danger') }}>连发</Button>
+}
 function ThemeProbe() { const { preference, setPreference } = useThemePreference(); return <><span>{preference}</span><Button onPress={() => setPreference('light')}>设为亮色</Button></> }

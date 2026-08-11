@@ -15,6 +15,7 @@ export default defineConfig({
   },
   reporter: process.env.CI ? [['line'], ['html', { open: 'never' }]] : 'list',
   use: {
+    actionTimeout: 10_000,
     ignoreHTTPSErrors: true,
     locale: 'zh-CN',
     timezoneId: 'Asia/Shanghai',

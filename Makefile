@@ -111,13 +111,18 @@ frontend-test: frontend-install
 frontend-coverage: frontend-install
 	npm --prefix web/ui run test:coverage
 
+# Audit must hit a registry that implements the security advisories API.
+# Domestic package mirrors (e.g. npmmirror) often return NOT_IMPLEMENTED for
+# /-/npm/v1/security/*; install/build continue to use the default registry.
+NPM_AUDIT_REGISTRY ?= https://registry.npmjs.org
+
 frontend-audit: frontend-install
-	npm --prefix web/ui audit --audit-level=high
+	npm --prefix web/ui audit --audit-level=high --registry=$(NPM_AUDIT_REGISTRY)
 
 # Keep generation, static analysis, tests, build and the manifest budget in this
 # order so no check observes stale generated code or stale production assets.
 frontend-quality: frontend-install
-	npm --prefix web/ui audit --audit-level=high
+	npm --prefix web/ui audit --audit-level=high --registry=$(NPM_AUDIT_REGISTRY)
 	OPENAPI_GENERATED_PATHS="$(OPENAPI_GENERATED_PATHS)" npm --prefix web/ui run api:check
 	npm --prefix web/ui run typecheck
 	npm --prefix web/ui run lint
@@ -131,9 +136,18 @@ playwright-install: frontend-install
 frontend-e2e: frontend-quality playwright-install
 	npm --prefix web/ui run test:e2e:run
 
+# Worker installs may run behind corporate pip mirrors that time out or omit
+# packages. Prefer a public index only for this Makefile target; leave the
+# user's global pip config alone for interactive use.
+PIP_INDEX_URL ?= https://pypi.org/simple
+PIP_TRUSTED_HOST ?= pypi.org files.pythonhosted.org
+
 worker-install:
 	python3 -m venv worker/.venv
-	worker/.venv/bin/pip install -r worker/requirements.lock -r worker/requirements-dev.lock
+	worker/.venv/bin/pip install \
+		--index-url "$(PIP_INDEX_URL)" \
+		$(foreach host,$(PIP_TRUSTED_HOST),--trusted-host $(host)) \
+		-r worker/requirements.lock -r worker/requirements-dev.lock
 
 worker-lint: worker-install
 	worker/.venv/bin/ruff check worker

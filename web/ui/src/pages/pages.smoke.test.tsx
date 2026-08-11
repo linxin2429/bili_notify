@@ -17,7 +17,7 @@ import { SettingsPage } from './SettingsPage'
 
 const api = vi.hoisted(() => ({
   runtime: vi.fn(), settings: vi.fn(), accounts: vi.fn(), sources: vi.fn(), contents: vi.fn(), content: vi.fn(), contentComments: vi.fn(), channels: vi.fn(), deliveries: vi.fn(), biliLogin: vi.fn(), microsoftLogins: vi.fn(), auditLogs: vi.fn(),
-  createSource: vi.fn(), updateSource: vi.fn(), deleteSource: vi.fn(), syncZSXQSources: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), deleteChannel: vi.fn(), testChannel: vi.fn(), retryDelivery: vi.fn(), startBiliLogin: vi.fn(), cancelBiliLogin: vi.fn(), startMicrosoftLogin: vi.fn(), cancelMicrosoftLogin: vi.fn(), updateSettings: vi.fn(),
+  createSource: vi.fn(), updateSource: vi.fn(), deleteSource: vi.fn(), syncZSXQSources: vi.fn(), deleteZSXQSession: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), deleteChannel: vi.fn(), testChannel: vi.fn(), retryDelivery: vi.fn(), startBiliLogin: vi.fn(), cancelBiliLogin: vi.fn(), deleteBilibiliSession: vi.fn(), startMicrosoftLogin: vi.fn(), cancelMicrosoftLogin: vi.fn(), updateSettings: vi.fn(),
 }))
 const session = vi.hoisted(() => ({ changePassword: vi.fn() }))
 vi.mock('../shared/api/resources', () => ({ resources: api }))
@@ -36,7 +36,30 @@ describe('resource pages', () => {
     api.deliveries.mockResolvedValue({ items: [makeDelivery({ state: 'blocked' })], page: { next_cursor: '', has_more: false } }); api.biliLogin.mockResolvedValue(null); api.microsoftLogins.mockResolvedValue([])
     api.auditLogs.mockResolvedValue({ items: [makeAudit()], page: { next_cursor: '', has_more: false } })
     api.startBiliLogin.mockResolvedValue({ id: 'login', status: 'waiting', expires_at: '2026-08-09T10:05:00Z' }); api.createSource.mockResolvedValue(source); api.retryDelivery.mockResolvedValue({ status: 'queued' }); api.updateSettings.mockResolvedValue(settings)
-    api.updateSource.mockResolvedValue(source); api.deleteSource.mockResolvedValue(undefined); api.syncZSXQSources.mockResolvedValue([]); api.createChannel.mockResolvedValue(channel); api.updateChannel.mockResolvedValue(channel); api.deleteChannel.mockResolvedValue(undefined); api.testChannel.mockResolvedValue({ status: 'sent' }); session.changePassword.mockResolvedValue({ csrf_token: 'replacement-csrf' })
+    api.updateSource.mockResolvedValue(source); api.deleteSource.mockResolvedValue(undefined); api.syncZSXQSources.mockResolvedValue([]); api.createChannel.mockResolvedValue(channel); api.updateChannel.mockResolvedValue(channel); api.deleteChannel.mockResolvedValue(undefined); api.testChannel.mockResolvedValue({ status: 'sent' }); api.deleteBilibiliSession.mockResolvedValue(undefined); session.changePassword.mockResolvedValue({ csrf_token: 'replacement-csrf' })
+  })
+
+  it('starts Bilibili QR login and confirms logout from overview', async () => {
+    const user = userEvent.setup()
+    renderPage(<OverviewPage />, '/overview')
+    expect(await screen.findByRole('heading', { name: '运行概览' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '生成登录二维码' }))
+    expect(api.startBiliLogin).toHaveBeenCalledWith('csrf')
+    await user.click(screen.getByRole('button', { name: '退出登录' }))
+    await user.click(screen.getByRole('button', { name: '确认退出' }))
+    await waitFor(() => expect(api.deleteBilibiliSession).toHaveBeenCalledWith('csrf'))
+    expect(await screen.findByText('已退出 B 站登录')).toBeInTheDocument()
+  })
+
+  it('keeps overview usable when secondary resources fail', async () => {
+    api.accounts.mockRejectedValue(new Error('accounts down'))
+    api.sources.mockRejectedValue(new Error('sources down'))
+    api.channels.mockRejectedValue(new Error('channels down'))
+    api.settings.mockRejectedValue(new Error('settings down'))
+    renderPage(<OverviewPage />, '/overview')
+    expect(await screen.findByRole('heading', { name: '运行概览' })).toBeInTheDocument()
+    expect(await screen.findByText(/部分检查项依赖的数据加载失败/)).toBeInTheDocument()
+    expect(screen.getByText(/运行参数加载失败/)).toBeInTheDocument()
   })
 
   it.each([
@@ -61,30 +84,63 @@ describe('resource pages', () => {
     expect(api.createSource).toHaveBeenCalledWith('csrf', { platform: 'bilibili', external_id: '99', name: '新 UP', note: '', enabled: true })
   })
 
+  it('shows empty source CTAs and logs out the Knowledge Planet account', async () => {
+    api.sources.mockResolvedValue([])
+    api.accounts.mockResolvedValue([{ platform: 'zsxq', status: 'connected', display_name: '星球号', masked_phone: '138****0000' }])
+    api.syncZSXQSources.mockResolvedValue([])
+    api.deleteZSXQSession.mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    renderPage(<SourcesPage />, '/sources')
+    expect(await screen.findByText('尚未添加 B 站 UP')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: '刷新可见星球' }).length).toBeGreaterThan(0)
+    expect(screen.getByText('已连接')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '退出登录' }))
+    await user.click(screen.getByRole('button', { name: '确认退出' }))
+    await waitFor(() => expect(api.deleteZSXQSession).toHaveBeenCalledWith('csrf'))
+  })
+
   it('retries a blocked delivery through a mutation', async () => {
     const user = userEvent.setup(); renderPage(<DeliveriesPage />, '/deliveries')
     await user.click(await screen.findByRole('button', { name: /立即重试/ }))
     expect(api.retryDelivery).toHaveBeenCalledWith('csrf', 'delivery')
   })
 
-  it('renders archived dynamic content without a global dashboard snapshot', async () => {
-    renderPage(<HistoryPage />, '/history')
-    expect(await screen.findByText('一条测试动态')).toBeInTheDocument()
-    expect(screen.getByText(/B 站 · 测试 UP · 测试 UP/)).toBeInTheDocument()
+  it('filters deliveries by state and pages with a cursor stack', async () => {
+    api.deliveries.mockResolvedValue({
+      items: [makeDelivery({ id: 'blocked', state: 'blocked' }), makeDelivery({ id: 'pending', state: 'pending', next_at: '2026-08-09T11:00:00Z' })],
+      page: { next_cursor: 'cursor-2', has_more: true },
+    })
+    const user = userEvent.setup()
+    renderPage(<DeliveriesPage />, '/deliveries')
+    expect(await screen.findByRole('button', { name: /立即重试/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '等待重试' }))
+    expect(screen.queryByRole('button', { name: /立即重试/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '全部' }))
+    await user.click(screen.getByRole('button', { name: '下一页 →' }))
+    await waitFor(() => expect(api.deliveries).toHaveBeenLastCalledWith('cursor-2', expect.anything()))
   })
 
-  it('opens a nested cross-platform comment tree', async () => {
+  it('renders archived dynamic content as a readable feed card', async () => {
+    renderPage(<HistoryPage />, '/history')
+    expect(await screen.findByRole('heading', { level: 2, name: '一条测试动态' })).toBeInTheDocument()
+    expect(screen.getByText('正文')).toBeInTheDocument()
+    expect(screen.getByText(/B 站 · 测试 UP · 文字/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '媒体与附件' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '查看评论：一条测试动态' })).toBeInTheDocument()
+  })
+
+  it('expands a nested cross-platform comment tree on the feed card', async () => {
     api.contentComments.mockResolvedValue({ children: [{ id: 'bilibili:comment:root', platform: 'bilibili', content_id: content.id, rpid: 'root', mid: '7', name: '观众', message: '问题', time: '2026-08-09T10:00:00Z', author_role: 'member', children: [{ id: 'bilibili:comment:reply', platform: 'bilibili', content_id: content.id, rpid: 'reply', mid: '42', name: '测试 UP', message: '回答', time: '2026-08-09T10:01:00Z', author_role: 'up', children: [] }] }], incomplete: false })
     const user = userEvent.setup(); renderPage(<HistoryPage />, '/history')
 
-    await user.click(await screen.findByRole('button', { name: '查看内容：一条测试动态' }))
-    expect(await screen.findByRole('dialog', { name: '一条测试动态' })).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: '查看评论：一条测试动态' }))
+    expect(await screen.findByText('问题')).toBeInTheDocument()
     expect(api.content).toHaveBeenCalledWith(content.id, expect.anything())
-    expect(screen.getByText('问题')).toBeInTheDocument()
+    expect(api.contentComments).toHaveBeenCalledWith(content.id, expect.anything())
     expect(screen.getByText('回答')).toBeInTheDocument()
     expect(screen.getByText('UP 主')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '关闭' }))
-    expect(screen.queryByRole('dialog', { name: '一条测试动态' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '收起' }))
+    expect(screen.queryByText('问题')).not.toBeInTheDocument()
   })
 
   it('shows Knowledge Planet archive state, attachment outcomes and an incomplete owner thread', async () => {
@@ -100,14 +156,20 @@ describe('resource pages', () => {
     const user = userEvent.setup()
     renderPage(<HistoryPage />, '/history?platform=zsxq')
 
-    await user.click(await screen.findByRole('button', { name: '查看内容：正文' }))
+    expect(await screen.findByText('正文')).toBeInTheDocument()
+    expect(screen.getByText('已删除')).toBeInTheDocument()
+    expect(screen.getByText('基线')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /查看原内容/ })).toHaveAttribute('href', topic.url)
+
+    await user.click(screen.getByRole('button', { name: '媒体与附件' }))
+    expect(await screen.findByRole('link', { name: '资料.pdf' })).toHaveAttribute('href', expect.stringContaining('/attachments/local'))
+    expect(screen.getByText(/超过下载预算/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '查看评论：正文' }))
     expect(await screen.findByText('上游分页或父子关系不完整，当前树可能缺少节点。')).toBeInTheDocument()
     expect(screen.getAllByText('星球主').length).toBeGreaterThan(0)
     expect(screen.getByText('新增触发')).toBeInTheDocument()
-    expect(screen.getAllByText('已删除').length).toBeGreaterThan(0)
-    expect(screen.getByRole('link', { name: '资料.pdf' })).toHaveAttribute('href', expect.stringContaining('/attachments/local'))
-    expect(screen.getByText(/超过下载预算/)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '查看原内容 ↗' })).toHaveAttribute('href', topic.url)
+    expect(screen.getByText('补充说明')).toBeInTheDocument()
   })
 
   it('filters, paginates and inspects audit records', async () => {
@@ -115,7 +177,7 @@ describe('resource pages', () => {
     const user = userEvent.setup(); renderPage(<AuditLogsPage />, '/audit-logs')
     expect(await screen.findByRole('button', { name: '查看详情' })).toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText('操作'), 'up.create')
+    await user.selectOptions(screen.getByLabelText('操作'), 'source.create')
     await screen.findByRole('button', { name: '查看详情' })
     await user.selectOptions(screen.getByLabelText('结果'), 'failure')
     await screen.findByRole('button', { name: '查看详情' })
@@ -124,7 +186,7 @@ describe('resource pages', () => {
     fireEvent.change(screen.getByLabelText('开始时间'), { target: { value: '2026-08-01T08:00' } })
     await screen.findByRole('button', { name: '查看详情' })
     await user.type(screen.getByLabelText('关键字'), 'request')
-    await waitFor(() => expect(api.auditLogs).toHaveBeenLastCalledWith(expect.objectContaining({ action: 'up.create', outcome: 'failure', resource_type: 'channel', q: 'request' }), expect.anything()))
+    await waitFor(() => expect(api.auditLogs).toHaveBeenLastCalledWith(expect.objectContaining({ action: 'source.create', outcome: 'failure', resource_type: 'channel', q: 'request' }), expect.anything()))
 
     await user.click(screen.getByRole('button', { name: '下一页 →' }))
     await waitFor(() => expect(api.auditLogs).toHaveBeenLastCalledWith(expect.objectContaining({ after: 'cursor-2' }), expect.anything()))
@@ -140,7 +202,7 @@ describe('resource pages', () => {
     await user.click((await screen.findAllByRole('button', { name: /编辑/ }))[0]); await user.type(screen.getByLabelText('备注'), '已修改')
     await user.click(screen.getByLabelText('启用采集')); await user.click(screen.getByRole('button', { name: '保存' }))
     await waitFor(() => expect(api.updateSource).toHaveBeenCalledWith('csrf', { id: source.id, name: source.name, note: '已修改', enabled: false }))
-    await user.click((await screen.findAllByRole('button', { name: /删除/ }))[0]); await user.click(screen.getByRole('button', { name: '删除归档' }))
+    await user.click((await screen.findAllByRole('button', { name: /删除/ }))[0]); await user.click(screen.getByRole('button', { name: '删除采集源' }))
     await waitFor(() => expect(api.deleteSource).toHaveBeenCalledWith('csrf', source.id))
   })
 
@@ -174,10 +236,20 @@ describe('resource pages', () => {
 
   it('updates every settings group, validates bad input and changes password', async () => {
     const user = userEvent.setup(); renderPage(<SettingsPage />, '/settings'); expect(await screen.findByRole('heading', { name: '设置' })).toBeInTheDocument()
+    // Open advanced knobs used later in the scenario.
+    await user.click(screen.getByText('高级'))
     for (const input of screen.getAllByRole('textbox')) fireEvent.change(input, { target: { value: input.getAttribute('inputmode') === 'decimal' ? '10' : input.getAttribute('value') || '' } })
     fireEvent.click(screen.getByLabelText('启用 B 站评论监控')); await user.selectOptions(screen.getByLabelText('日志级别'), 'debug'); await user.click(screen.getByRole('button', { name: '保存运行设置' }))
     expect(api.updateSettings).not.toHaveBeenCalled(); expect(screen.getByRole('alert')).toBeInTheDocument()
-    const dynamics = screen.getAllByLabelText('动态轮询（秒）'); fireEvent.change(dynamics[0], { target: { value: '30' } }); fireEvent.change(dynamics[1], { target: { value: '60' } }); fireEvent.change(screen.getByLabelText('关注关系刷新（秒）'), { target: { value: '3600' } }); fireEvent.change(screen.getByLabelText('空间校验间隔（秒）'), { target: { value: '3600' } }); const pauses = screen.getAllByLabelText('风控暂停（秒）'); fireEvent.change(pauses[0], { target: { value: '300' } }); fireEvent.change(pauses[1], { target: { value: '600' } }); fireEvent.change(screen.getByLabelText('评论跟踪内容数 N'), { target: { value: '10' } }); fireEvent.change(screen.getByLabelText('评论同步间隔（秒）'), { target: { value: '60' } }); fireEvent.change(screen.getByLabelText('评论同步（秒）'), { target: { value: '600' } }); fireEvent.change(screen.getByLabelText('积压时长阈值（秒）'), { target: { value: '600' } })
+    fireEvent.change(screen.getByLabelText('动态轮询（秒）'), { target: { value: '30' } })
+    fireEvent.change(screen.getByLabelText('知识星球动态轮询（秒）'), { target: { value: '60' } })
+    fireEvent.change(screen.getByLabelText('关注关系刷新（秒）'), { target: { value: '3600' } })
+    fireEvent.change(screen.getByLabelText('空间校验间隔（秒）'), { target: { value: '3600' } })
+    const pauses = screen.getAllByLabelText('风控暂停（秒）'); fireEvent.change(pauses[0], { target: { value: '300' } }); fireEvent.change(pauses[1], { target: { value: '600' } })
+    fireEvent.change(screen.getByLabelText('评论跟踪内容数 N'), { target: { value: '10' } })
+    fireEvent.change(screen.getByLabelText('评论同步间隔（秒）'), { target: { value: '60' } })
+    fireEvent.change(screen.getByLabelText('评论同步（秒）'), { target: { value: '600' } })
+    fireEvent.change(screen.getByLabelText('积压时长阈值（秒）'), { target: { value: '600' } })
     const retryFields = screen.getAllByLabelText(/阶段重试/); ['5', '30', '120', '600', '3600'].forEach((value, index) => fireEvent.change(retryFields[index], { target: { value } }))
     await user.click(screen.getByRole('button', { name: '保存运行设置' })); await waitFor(() => expect(api.updateSettings).toHaveBeenCalled())
     await user.type(screen.getByLabelText('当前密码'), 'current'); await user.type(screen.getByLabelText(/^新密码/), 'replacement'); await user.type(screen.getByLabelText('确认新密码'), 'different'); await user.click(screen.getByRole('button', { name: '修改密码' })); expect(await screen.findByText('两次输入的新密码不一致')).toBeInTheDocument()
