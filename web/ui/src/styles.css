@@ -32,7 +32,7 @@
 }
 
 @layer base {
-  body { background: var(--color-bg); color: var(--color-text); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif; line-height: 1.55; }
+  body { background: var(--color-bg); color: var(--color-text); font-family: "Noto Sans SC Variable", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif; line-height: 1.55; }
   h1, h2, h3, p { margin-top: 0; }
   h1 { margin-bottom: .25rem; font-size: clamp(1.75rem, 3vw, 2.1rem); line-height: 1.2; letter-spacing: 0; }
   h2 { margin-bottom: .35rem; font-size: 1.15rem; }

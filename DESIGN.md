@@ -17,7 +17,7 @@ Bili Notify is a compact operations ledger: calm, direct, and optimized for repe
 
 ## Typography Rules
 
-Use the Chinese system stack: `-apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif`. Page titles are 28-34px at weight 760; compact section titles are 16-18px at weight 700; body copy is 14-15px; labels and metadata are 12-13px. Chinese text always uses zero letter spacing. Operational numbers use `font-variant-numeric: tabular-nums`; identifiers may use the system monospace stack.
+Prefer the self-hosted `Noto Sans SC Variable` webfont for deterministic Chinese metrics, then fall back to the system stack: `"Noto Sans SC Variable", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif`. Page titles are 28-34px at weight 760; compact section titles are 16-18px at weight 700; body copy is 14-15px; labels and metadata are 12-13px. Chinese text always uses zero letter spacing. Operational numbers use `font-variant-numeric: tabular-nums`; identifiers may use the system monospace stack.
 
 ## Component Stylings
 

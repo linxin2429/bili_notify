@@ -31,7 +31,7 @@ test('retains the operational workflow on a phone viewport', async ({ page, harn
     await expect(page).toHaveScreenshot('history-phone.png', {
       animations: 'disabled',
       fullPage: true,
-      maxDiffPixels: 4_000,
+      maxDiffPixels: 1_200,
     })
     expect((await harness.state()).unexpected || []).toEqual([])
   })
