@@ -31,7 +31,10 @@ export async function requestJSON<T>(path: string, schema: ResponseSchema<T>, in
       const detail = parsed.success ? parsed.data.error : undefined
       const message = detail?.message || (typeof body === 'string' && body.trim()) || response.statusText || `HTTP ${response.status}`
       const error = new ApiError(message, 'http', { status: response.status, code: detail?.code, fields: detail?.fields, requestId })
-      if (response.status === 401) authenticationLost?.()
+      // Only admin-session failures force a global logout. Platform integrations
+      // (e.g. Knowledge Planet captcha/SMS) may also return 401 with a different
+      // code and must stay on the current page so the operator can retry.
+      if (response.status === 401 && isAdminSessionFailure(detail?.code)) authenticationLost?.()
       throw error
     }
     return parseContract(schema, body, requestId)
@@ -50,6 +53,10 @@ function parseContract<T>(schema: ResponseSchema<T>, body: unknown, requestId?: 
   const parsed = schema.safeParse(body)
   if (!parsed.success) throw new ApiError('服务器响应不符合 API 契约', 'contract', { requestId, retryable: false })
   return parsed.data
+}
+
+function isAdminSessionFailure(code?: string): boolean {
+  return code === 'authentication_required' || code === 'invalid_csrf' || code === 'session_expired'
 }
 
 export function queryString(values: object): string {

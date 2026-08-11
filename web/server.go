@@ -199,17 +199,33 @@ func (s *Server) adminHandler() http.Handler {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow the admin UI to embed the official Bilibili player for history video previews,
-		// and load remote cover/media fallbacks from Bilibili CDNs when local media is absent.
+		// The admin UI is a SPA: client-side navigation keeps the document CSP from the first HTML
+		// response. Knowledge Planet login needs Aliyun captcha origins on every page document so
+		// in-app links to /integrations/zsxq-login can load the slider without a full reload.
+		// CSP host wildcards only match one DNS label, so multi-level captcha endpoints
+		// (*.captcha-open.aliyuncs.com, *.device.saf.aliyuncs.com) need explicit entries.
+		// font-src data: is required for the captcha icon font embedded as a data: URI.
+		// Also allow the official Bilibili player and CDN covers for history previews.
 		// Child frame CSP still applies on player.bilibili.com; this only relaxes our own frame-src/img-src.
-		if r.URL.Path == "/integrations/zsxq-login" {
-			w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self' https://*.aliyun.com https://*.aliyuncs.com https://*.alicdn.com; img-src 'self' data: https://*.alicdn.com; style-src 'self' 'unsafe-inline'; script-src 'self' https://o.alicdn.com https://g.alicdn.com; frame-src https://*.aliyun.com https://*.alicdn.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-		} else {
-			w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data: https://*.hdslb.com https://*.biliimg.com; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src https://player.bilibili.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-		}
+		w.Header().Set("Content-Security-Policy", strings.Join([]string{
+			"default-src 'self'",
+			"connect-src 'self' https://*.aliyun.com https://*.aliyuncs.com https://*.captcha-open.aliyuncs.com https://*.device.saf.aliyuncs.com https://*.saf.aliyuncs.com https://*.ap-southeast-1.aliyuncs.com https://*.alicdn.com https://static-captcha.aliyuncs.com",
+			"img-src 'self' data: https://*.hdslb.com https://*.biliimg.com https://*.alicdn.com",
+			"style-src 'self' 'unsafe-inline'",
+			"font-src 'self' data:",
+			"script-src 'self' https://o.alicdn.com https://g.alicdn.com https://x.alicdn.com",
+			"frame-src https://player.bilibili.com https://*.aliyun.com https://*.alicdn.com",
+			"worker-src 'self' blob:",
+			"frame-ancestors 'none'",
+			"base-uri 'none'",
+			"form-action 'self'",
+		}, "; "))
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
+		// no-referrer breaks Aliyun captcha device fingerprinting (cross-origin
+		// captcha-open/device endpoints receive an empty Referer and reject tokens).
+		// Same-origin API calls still only expose the origin, not path/query.
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		next.ServeHTTP(w, r)
 	})
 }

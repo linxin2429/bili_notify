@@ -73,6 +73,8 @@ func (s *Server) zsxqSMSCodeV3(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	transaction, err := s.zsxqLogin.SendCode(ctx, input)
 	if err != nil {
+		// Class only — never log phone, captcha tokens, or upstream bodies.
+		s.logger.Warn("Knowledge Planet SMS send failed", "event", "zsxq.sms.failed", "error", err.Error())
 		writeZSXQAPIError(w, err)
 		return
 	}
@@ -99,6 +101,8 @@ func (s *Server) zsxqSessionV3(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	account, err := s.zsxqLogin.SubmitCode(ctx, input.TransactionID, input.Code)
 	if err != nil {
+		// Class only — never log phone, SMS code, captcha tokens, or upstream bodies.
+		s.logger.Warn("Knowledge Planet login failed", "event", "zsxq.login.failed", "error", err.Error())
 		writeZSXQAPIError(w, err)
 		return
 	}
@@ -142,6 +146,9 @@ func writeZSXQAPIError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, zsxq.ErrInvalidPhone):
 		writeAPIError(w, http.StatusBadRequest, "invalid_phone", "phone number is invalid")
+	case errors.Is(err, zsxq.ErrInvalidCode):
+		// Not an admin-session failure; keep 400 so the SPA does not force logout.
+		writeAPIError(w, http.StatusBadRequest, "invalid_code", "SMS verification code is invalid or expired")
 	case errors.Is(err, zsxq.ErrPhoneUnbound):
 		writeAPIError(w, http.StatusConflict, "phone_unbound", "phone number is not bound to a Knowledge Planet account")
 	case errors.Is(err, zsxq.ErrSMSCooldown), errors.Is(err, zsxq.ErrAttemptsExceeded), errors.Is(err, zsxq.ErrRateLimited), errors.Is(err, zsxq.ErrRiskControl):
@@ -151,8 +158,12 @@ func writeZSXQAPIError(w http.ResponseWriter, err error) {
 	case errors.Is(err, zsxq.ErrLoginNotFound):
 		writeAPIError(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, zsxq.ErrAuthentication):
-		writeAPIError(w, http.StatusUnauthorized, "authentication_failed", "Knowledge Planet authentication failed")
-	case errors.Is(err, zsxq.ErrSchemaDrift), errors.Is(err, zsxq.ErrUpstream):
+		// Upstream captcha/signature/device rejection (often business code 1059).
+		// Use 502 (not 401) so the admin session stays valid and the operator can retry.
+		writeAPIError(w, http.StatusBadGateway, "authentication_failed", "Knowledge Planet rejected the captcha or device check; refresh the page, complete the slider again, then resend the SMS code")
+	case errors.Is(err, zsxq.ErrSchemaDrift):
+		writeAPIError(w, http.StatusBadGateway, "upstream_failure", "Knowledge Planet response schema changed")
+	case errors.Is(err, zsxq.ErrUpstream):
 		writeAPIError(w, http.StatusBadGateway, "upstream_failure", "Knowledge Planet upstream request failed")
 	default:
 		writeAPIError(w, http.StatusInternalServerError, "internal", "internal server error")

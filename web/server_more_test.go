@@ -143,7 +143,11 @@ func TestAdminSecurityHeaders(t *testing.T) {
 		name string
 		path string
 	}{
-		{name: "HTML", path: "/"},
+		{name: "HTML root", path: "/"},
+		// SPA client navigation keeps the document CSP from the first HTML response, so
+		// captcha origins must be present even when the user first lands on another page.
+		{name: "HTML sources", path: "/sources"},
+		{name: "HTML zsxq login", path: "/integrations/zsxq-login"},
 		{name: "API", path: "/api/v3/session"},
 		{name: "missing API", path: "/api/v3/missing"},
 	}
@@ -155,11 +159,19 @@ func TestAdminSecurityHeaders(t *testing.T) {
 			fixture.server.adminHandler().ServeHTTP(response, request)
 			assert.Equal(t, "max-age=31536000", response.Header().Get("Strict-Transport-Security"))
 			assert.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
-			assert.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
+			assert.Equal(t, "strict-origin-when-cross-origin", response.Header().Get("Referrer-Policy"))
 			csp := response.Header().Get("Content-Security-Policy")
 			assert.Contains(t, csp, "default-src 'self'")
 			assert.Contains(t, csp, "frame-ancestors 'none'")
 			assert.Contains(t, csp, "form-action 'self'")
+			assert.Contains(t, csp, "https://o.alicdn.com")
+			assert.Contains(t, csp, "https://g.alicdn.com")
+			assert.Contains(t, csp, "https://*.aliyun.com")
+			assert.Contains(t, csp, "https://*.captcha-open.aliyuncs.com")
+			assert.Contains(t, csp, "https://*.device.saf.aliyuncs.com")
+			assert.Contains(t, csp, "font-src 'self' data:")
+			assert.Contains(t, csp, "https://player.bilibili.com")
+			assert.Contains(t, csp, "https://*.hdslb.com")
 		})
 	}
 }

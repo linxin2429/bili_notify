@@ -33,6 +33,7 @@ var (
 	ErrUpstream       = errors.New("zsxq upstream request failed")
 	ErrInvalidPhone   = errors.New("zsxq phone number is invalid")
 	ErrPhoneUnbound   = errors.New("zsxq phone number is not bound")
+	ErrInvalidCode    = errors.New("zsxq SMS verification code is invalid")
 )
 
 type Client struct {
@@ -182,8 +183,11 @@ type User struct {
 }
 
 func (c *Client) Me(ctx context.Context) (User, error) {
+	// Knowledge Planet's DWeb /users/self payload uses user.uid. Older fixtures and
+	// some nested objects still expose user_id; accept either without guessing names.
 	var response struct {
 		User struct {
+			UID    json.Number `json:"uid"`
 			UserID json.Number `json:"user_id"`
 			Name   string      `json:"name"`
 		} `json:"user"`
@@ -191,10 +195,14 @@ func (c *Client) Me(ctx context.Context) (User, error) {
 	if err := c.doJSON(ctx, http.MethodGet, "/users/self", nil, nil, &response); err != nil {
 		return User{}, err
 	}
-	if response.User.UserID.String() == "" || response.User.Name == "" {
+	id := response.User.UID.String()
+	if id == "" {
+		id = response.User.UserID.String()
+	}
+	if id == "" || response.User.Name == "" {
 		return User{}, ErrSchemaDrift
 	}
-	return User{ID: response.User.UserID.String(), Name: response.User.Name}, nil
+	return User{ID: id, Name: response.User.Name}, nil
 }
 
 type Group struct {
@@ -373,8 +381,11 @@ func classifyStatus(status int) error {
 }
 
 func decodeEnvelope(body []byte, output any) error {
+	// Knowledge Planet uses both "succeeded" (bool) and the older "succeed"
+	// field (bool or string) across login/SMS endpoints. Accept either.
 	var envelope struct {
-		Succeeded bool            `json:"succeeded"`
+		Succeeded *flexibleBool   `json:"succeeded"`
+		Succeed   *flexibleBool   `json:"succeed"`
 		Code      int             `json:"code"`
 		RespData  json.RawMessage `json:"resp_data"`
 	}
@@ -383,21 +394,15 @@ func decodeEnvelope(body []byte, output any) error {
 	if err := decoder.Decode(&envelope); err != nil {
 		return ErrSchemaDrift
 	}
-	if !envelope.Succeeded {
-		switch envelope.Code {
-		case 401, 1059:
-			return ErrAuthentication
-		case 1004:
-			return ErrInvalidPhone
-		case 1031, 10013:
-			return ErrPhoneUnbound
-		case 429:
-			return ErrRateLimited
-		case 403, 1006:
-			return ErrRiskControl
-		default:
-			return ErrUpstream
-		}
+	ok := false
+	switch {
+	case envelope.Succeeded != nil:
+		ok = bool(*envelope.Succeeded)
+	case envelope.Succeed != nil:
+		ok = bool(*envelope.Succeed)
+	}
+	if !ok {
+		return classifyBusinessCode(envelope.Code)
 	}
 	if output == nil {
 		return nil
@@ -411,6 +416,51 @@ func decodeEnvelope(body []byte, output any) error {
 		return ErrSchemaDrift
 	}
 	return nil
+}
+
+func classifyBusinessCode(code int) error {
+	switch code {
+	case 401, 1059:
+		// 1059 is signature/device validation failure on some endpoints (including
+		// incomplete captcha device fingerprints) and forces a full captcha restart.
+		return fmt.Errorf("%w: business code %d", ErrAuthentication, code)
+	case 1004:
+		return fmt.Errorf("%w: business code %d", ErrInvalidPhone, code)
+	case 1031, 10013:
+		return fmt.Errorf("%w: business code %d", ErrPhoneUnbound, code)
+	case 10022, 90012:
+		// 10022 is the documented invalid SMS payload; 90012 is returned after a
+		// one-time code has already been consumed or is no longer acceptable.
+		return fmt.Errorf("%w: business code %d", ErrInvalidCode, code)
+	case 429:
+		return fmt.Errorf("%w: business code %d", ErrRateLimited, code)
+	case 403, 1006:
+		return fmt.Errorf("%w: business code %d", ErrRiskControl, code)
+	case 0:
+		// Missing/zero code with a failed envelope still means upstream rejected
+		// the request; keep the public mapping generic.
+		return ErrUpstream
+	default:
+		return fmt.Errorf("%w: business code %d", ErrUpstream, code)
+	}
+}
+
+// flexibleBool accepts JSON booleans and the string forms "true"/"false" used by
+// some Knowledge Planet envelopes.
+type flexibleBool bool
+
+func (value *flexibleBool) UnmarshalJSON(raw []byte) error {
+	raw = bytes.TrimSpace(raw)
+	switch {
+	case bytes.Equal(raw, []byte("true")), bytes.Equal(raw, []byte(`"true"`)), bytes.Equal(raw, []byte(`"True"`)):
+		*value = true
+		return nil
+	case bytes.Equal(raw, []byte("false")), bytes.Equal(raw, []byte(`"false"`)), bytes.Equal(raw, []byte(`"False"`)):
+		*value = false
+		return nil
+	default:
+		return fmt.Errorf("invalid boolean %s", string(raw))
+	}
 }
 
 func (c *Client) doEncryptedLogin(ctx context.Context, input any) error {
@@ -448,11 +498,16 @@ func (c *Client) doEncryptedLogin(ctx context.Context, input any) error {
 	if err != nil {
 		return ErrUpstream
 	}
-	decrypted, err := c.login.decrypt(strings.TrimSpace(string(encoded)))
-	if err != nil {
+	trimmed := bytes.TrimSpace(encoded)
+	// Success responses are AES ciphertext. Business failures often come back as
+	// plain JSON envelopes; try decrypt first, then fall back without leaking the body.
+	if decrypted, err := c.login.decrypt(string(trimmed)); err == nil {
+		return decodeEnvelope(decrypted, nil)
+	}
+	if err := decodeEnvelope(trimmed, nil); err == nil || !errors.Is(err, ErrSchemaDrift) {
 		return err
 	}
-	return decodeEnvelope(decrypted, nil)
+	return ErrSchemaDrift
 }
 
 func (c *Client) resolveURL(path string) url.URL {

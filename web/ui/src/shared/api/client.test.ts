@@ -14,12 +14,18 @@ describe('requestJSON', () => {
     await expect(requestJSON('/resource', z.object({ ok: z.boolean() }))).rejects.toMatchObject({ kind, message })
   })
 
-  it('invalidates authentication from any 401 response', async () => {
+  it('invalidates authentication only for admin session 401 responses', async () => {
     const lost = vi.fn(); setAuthenticationLostHandler(lost)
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { code: 'session_expired', message: '请重新登录' } }), { status: 401, headers: { 'Content-Type': 'application/json', 'X-Request-ID': 'req-401' } })))
     const error = await requestJSON('/protected', z.object({ ok: z.boolean() })).catch(value => value as ApiError)
     expect(error).toMatchObject({ kind: 'http', status: 401, code: 'session_expired', requestId: 'req-401' })
     expect(lost).toHaveBeenCalledOnce()
+
+    lost.mockClear()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { code: 'authentication_failed', message: 'Knowledge Planet authentication failed' } }), { status: 401, headers: { 'Content-Type': 'application/json', 'X-Request-ID': 'req-platform' } })))
+    const platform = await requestJSON('/api/v3/accounts/zsxq/sms-code', z.object({ ok: z.boolean() })).catch(value => value as ApiError)
+    expect(platform).toMatchObject({ kind: 'http', status: 401, code: 'authentication_failed' })
+    expect(lost).not.toHaveBeenCalled()
   })
 
   it('supports empty responses, JSON headers and caller cancellation', async () => {
