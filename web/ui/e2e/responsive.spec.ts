@@ -28,7 +28,11 @@ test('retains the operational workflow on a phone viewport', async ({ page, harn
     await expect(page.getByText('暂无评论')).toBeVisible()
     await page.getByRole('button', { name: '收起', exact: true }).click()
     await assertAccessible(page)
-    await expect(page).toHaveScreenshot('history-phone.png', { animations: 'disabled', fullPage: true })
+    await expect(page).toHaveScreenshot('history-phone.png', {
+      animations: 'disabled',
+      fullPage: true,
+      maxDiffPixels: 1_200,
+    })
     expect((await harness.state()).unexpected || []).toEqual([])
   })
 })

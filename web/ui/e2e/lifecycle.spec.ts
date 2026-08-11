@@ -104,6 +104,7 @@ test('runs the collection, durable outbox, restart, and retry journey', async ({
     await expect.poll(async () => (await harness.state()).counts.comment_root || 0).toBeGreaterThan(0)
 
     await harness.setComments(true)
+    await page.getByRole('heading', { name: '高级', exact: true }).click()
     await page.getByLabel('评论同步间隔（秒）', { exact: true }).fill('31')
     await page.getByRole('button', { name: '保存运行设置' }).click()
     await expect(page.getByText('运行参数已保存')).toBeVisible()

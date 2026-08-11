@@ -34,7 +34,7 @@ test('runs resource administration, audit, and session security workflows', asyn
 
     await navigateTo(page, '设置')
     await page.getByRole('textbox', { name: '动态轮询（秒）', exact: true }).fill('45')
-    await page.getByLabel('日志级别', { exact: true }).selectOption('debug')
+    await page.getByRole('combobox', { name: '日志级别', exact: true }).selectOption('debug')
     await expect(page.getByRole('button', { name: '保存运行设置' })).toBeEnabled()
     const settingsResponse = page.waitForResponse(response => response.url().endsWith('/api/v3/settings') && response.request().method() === 'PUT')
     await page.getByRole('button', { name: '保存运行设置' }).click()
@@ -44,13 +44,13 @@ test('runs resource administration, audit, and session security workflows', asyn
     await expect(page.getByText('实时', { exact: true }).first()).toBeVisible()
     await navigateTo(page, '设置')
     await expect(page.getByRole('textbox', { name: '动态轮询（秒）', exact: true })).toHaveValue('45')
-    await expect(page.getByLabel('日志级别', { exact: true })).toHaveValue('debug')
+    await expect(page.getByRole('combobox', { name: '日志级别', exact: true })).toHaveValue('debug')
   })
 
   await test.step('expose safe audit evidence for real mutations', async () => {
     await navigateTo(page, '操作日志')
     const auditResponse = page.waitForResponse(response => response.url().includes('/api/v3/audit-logs?action=settings.update'))
-    await page.getByLabel('操作').selectOption('settings.update')
+    await page.getByRole('combobox', { name: '操作', exact: true }).selectOption('settings.update')
     await auditResponse
     await expect(page.getByRole('button', { name: '查看详情' })).toHaveCount(1)
     await page.getByRole('button', { name: '查看详情' }).click()
