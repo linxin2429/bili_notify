@@ -23,6 +23,11 @@ func TestParseTopicTypesAndStrictUnknowns(t *testing.T) {
 			topic.Answer = &apiBody{Owner: userFixture(), Text: "answer"}
 			return topic
 		}(), wantType: model.ContentQuestion},
+		{name: "anonymous question", topic: func() apiTopic {
+			topic := topicFixture("question", &apiBody{Anonymous: true, Text: "private question"})
+			topic.Answer = &apiBody{Owner: userFixture(), Text: "answer"}
+			return topic
+		}(), wantType: model.ContentQuestion},
 		{name: "task", topic: topicFixture("task", &apiBody{Owner: userFixture(), Text: "task"}), wantType: model.ContentTask},
 		{name: "long article", topic: topicFixture("article", &apiBody{Owner: userFixture(), Text: "article"}), wantType: model.ContentLongArticle},
 		{name: "unknown is rejected", topic: topicFixture("new_type", &apiBody{Owner: userFixture()}), wantErr: ErrSchemaDrift},
@@ -41,6 +46,10 @@ func TestParseTopicTypesAndStrictUnknowns(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantType, content.Type)
 			assert.NotContains(t, content.SafeHTML, "<script>")
+			if tt.name == "anonymous question" {
+				assert.Equal(t, "anonymous:1", content.AuthorID)
+				assert.Equal(t, "匿名用户", content.AuthorName)
+			}
 			if tt.name == "question and answer" {
 				assert.Contains(t, content.Text, "回答")
 			}

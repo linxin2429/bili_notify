@@ -28,13 +28,14 @@ const (
 )
 
 var (
-	ErrAuthentication = errors.New("zsxq authentication failed")
-	ErrRateLimited    = errors.New("zsxq request rate limited")
-	ErrRiskControl    = errors.New("zsxq risk control triggered")
-	ErrPermission     = errors.New("zsxq source permission denied")
-	ErrRemoteNotFound = errors.New("zsxq remote content not found")
-	ErrSchemaDrift    = errors.New("zsxq response schema changed")
-	ErrUpstream       = errors.New("zsxq upstream request failed")
+	ErrAuthentication    = errors.New("zsxq authentication failed")
+	ErrRateLimited       = errors.New("zsxq request rate limited")
+	ErrRiskControl       = errors.New("zsxq risk control triggered")
+	ErrPermission        = errors.New("zsxq source permission denied")
+	ErrUnsupportedClient = errors.New("zsxq rejected non-official client access")
+	ErrRemoteNotFound    = errors.New("zsxq remote content not found")
+	ErrSchemaDrift       = errors.New("zsxq response schema changed")
+	ErrUpstream          = errors.New("zsxq upstream request failed")
 )
 
 type Client struct {
@@ -406,6 +407,8 @@ func classifyBusinessCode(code int) error {
 		return fmt.Errorf("%w: business code %d", ErrRateLimited, code)
 	case 403, 1006:
 		return fmt.Errorf("%w: business code %d", ErrPermission, code)
+	case 1059:
+		return fmt.Errorf("%w: business code %d", ErrUnsupportedClient, code)
 	case 404:
 		return fmt.Errorf("%w: business code %d", ErrRemoteNotFound, code)
 	case 0:

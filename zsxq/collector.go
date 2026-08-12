@@ -498,6 +498,8 @@ func publicError(err error) string {
 		return "upstream response schema changed"
 	case errors.Is(err, ErrRemoteNotFound):
 		return "upstream content deleted"
+	case errors.Is(err, ErrUnsupportedClient):
+		return "知识星球已拒绝 Cookie/非官方工具访问；需迁移到官方 OAuth Skill"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err.Error()
 	default:

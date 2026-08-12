@@ -14,6 +14,7 @@ import { DeliveriesPage } from './DeliveriesPage'
 import { HistoryPage } from './HistoryPage'
 import { AuditLogsPage } from './AuditLogsPage'
 import { SettingsPage } from './SettingsPage'
+import { MorePage } from './MorePage'
 
 const api = vi.hoisted(() => ({
   runtime: vi.fn(), settings: vi.fn(), accounts: vi.fn(), zsxqGroups: vi.fn(), sources: vi.fn(), contents: vi.fn(), content: vi.fn(), contentComments: vi.fn(), channels: vi.fn(), deliveries: vi.fn(), biliLogin: vi.fn(), microsoftLogins: vi.fn(), auditLogs: vi.fn(),
@@ -70,9 +71,24 @@ describe('resource pages', () => {
     { name: 'history', path: '/history', heading: '历史内容', view: <HistoryPage /> },
     { name: 'audit', path: '/audit-logs', heading: '操作日志', view: <AuditLogsPage /> },
     { name: 'settings', path: '/settings', heading: '设置', view: <SettingsPage /> },
+    { name: 'more', path: '/more', heading: '更多', view: <MorePage /> },
   ])('renders $name from its own resource queries', async ({ path, heading, view }) => {
     renderPage(view, path)
     expect(await screen.findByRole('heading', { name: heading })).toBeInTheDocument()
+  })
+
+  it.each([
+    { path: '/more', activeLabel: undefined },
+    { path: '/channels', activeLabel: '通知渠道' },
+  ])('renders more navigation at $path', ({ path, activeLabel }) => {
+    renderPage(<MorePage />, path)
+
+    const navigation = screen.getByRole('navigation', { name: '更多导航' })
+    expect(navigation).toBeInTheDocument()
+    expect(screen.getAllByRole('link')).toHaveLength(5)
+    expect(screen.getByRole('link', { name: 'AI 工作台' })).toHaveAttribute('href', '/ai')
+    if (activeLabel) expect(screen.getByRole('link', { name: activeLabel })).toHaveClass('nav-item--active')
+    else expect(navigation.querySelector('.nav-item--active')).not.toBeInTheDocument()
   })
 
   it('creates a Bilibili source', async () => {

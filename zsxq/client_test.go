@@ -272,3 +272,12 @@ func Example_publicError() {
 	fmt.Println(publicError(errors.Join(ErrAuthentication, errors.New("token=secret"))))
 	// Output: authentication expired
 }
+
+func TestUnsupportedClientBusinessCode(t *testing.T) {
+	t.Parallel()
+	err := decodeEnvelope([]byte(`{"succeeded":false,"code":1059,"error":"must-not-leak","info":"must-not-leak"}`), nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnsupportedClient)
+	assert.NotContains(t, publicError(err), "1059")
+	assert.Contains(t, publicError(err), "官方 OAuth Skill")
+}

@@ -42,12 +42,13 @@ type apiFile struct {
 }
 
 type apiBody struct {
-	Owner  apiUser    `json:"owner"`
-	Title  string     `json:"title"`
-	Text   string     `json:"text"`
-	Images []apiImage `json:"images"`
-	Files  []apiFile  `json:"files"`
-	Audio  *struct {
+	Owner     apiUser    `json:"owner"`
+	Anonymous bool       `json:"anonymous"`
+	Title     string     `json:"title"`
+	Text      string     `json:"text"`
+	Images    []apiImage `json:"images"`
+	Files     []apiFile  `json:"files"`
+	Audio     *struct {
 		AudioID  json.Number `json:"audio_id"`
 		Name     string      `json:"name"`
 		URL      string      `json:"url"`
@@ -111,7 +112,14 @@ func parseTopic(source model.Source, topic apiTopic) (model.Content, []model.Att
 	default:
 		return model.Content{}, nil, fmt.Errorf("%w: unknown topic type %q", ErrSchemaDrift, topic.Type)
 	}
-	if body == nil || body.Owner.UserID.String() == "" {
+	if body == nil {
+		return model.Content{}, nil, ErrSchemaDrift
+	}
+	authorID, authorName := body.Owner.UserID.String(), body.Owner.Name
+	if authorID == "" && body.Anonymous && (topic.Type == "q&a" || topic.Type == "question") {
+		authorID, authorName = "anonymous:"+id, "匿名用户"
+	}
+	if authorID == "" {
 		return model.Content{}, nil, ErrSchemaDrift
 	}
 	created, err := parseTime(topic.CreateTime)
@@ -137,7 +145,7 @@ func parseTopic(source model.Source, topic apiTopic) (model.Content, []model.Att
 	contentID := model.ContentID(model.PlatformZSXQ, id)
 	content := model.Content{
 		ID: contentID, Platform: model.PlatformZSXQ, SourceID: source.ID, ExternalID: id,
-		AuthorID: body.Owner.UserID.String(), AuthorName: body.Owner.Name, UpstreamType: topic.Type,
+		AuthorID: authorID, AuthorName: authorName, UpstreamType: topic.Type,
 		Type: contentType, Title: title, Text: renderRichText(text), SafeHTML: sanitizeRichText(text),
 		URL: "https://wx.zsxq.com/dweb2/index/topic_detail/" + id, PublishedAt: created, UpdatedAt: updated,
 		Stats: map[string]int64{"likes": topic.LikesCount, "comments": topic.CommentsCount, "rewards": topic.RewardsCount},
