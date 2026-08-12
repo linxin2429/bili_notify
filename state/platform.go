@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -945,6 +946,7 @@ func contentDeliverySnapshotTx(tx *gorm.DB, content model.Content, attachments [
 	dynamic := model.Dynamic{ID: content.ID, Platform: content.Platform, SourceName: source.Name, UID: content.SourceID,
 		UPName: content.AuthorName, Type: string(content.Type), PublishedAt: content.PublishedAt, Summary: content.Text,
 		Description: content.Text, URL: content.URL, Title: content.Title}
+	fileIndex := 0
 	for _, attachment := range attachments {
 		if attachment.Type == model.AttachmentImage && attachment.LocalPath != "" {
 			dynamic.Media = append(dynamic.Media, model.DynamicMedia{Kind: model.DynamicMediaImage, Width: attachment.Width,
@@ -959,8 +961,32 @@ func contentDeliverySnapshotTx(tx *gorm.DB, content model.Content, attachments [
 			label += fmt.Sprintf(" (%s)", humanBytes(attachment.Size))
 		}
 		dynamic.Links = append(dynamic.Links, model.DynamicLink{Text: label, URL: content.URL})
+		if content.Platform == model.PlatformZSXQ && attachment.Type != model.AttachmentImage && attachment.Type != model.AttachmentLink {
+			fileIndex++
+			name := deliveryFileName(attachment, fileIndex)
+			dynamic.Files = append(dynamic.Files, model.DeliveryFile{ID: attachment.ID, Name: name, MIME: attachment.MIME,
+				Size: attachment.Size, LocalPath: attachment.LocalPath, LocalizeError: attachment.LocalizeError})
+		}
 	}
 	return dynamic, nil
+}
+
+func deliveryFileName(attachment model.Attachment, index int) string {
+	if name := strings.TrimSpace(filepath.Base(strings.ReplaceAll(attachment.FileName, `\`, "/"))); name != "" && name != "." {
+		return name
+	}
+	ext := filepath.Ext(filepath.Base(attachment.LocalPath))
+	if ext == "" {
+		switch strings.ToLower(attachment.MIME) {
+		case "audio/mpeg":
+			ext = ".mp3"
+		case "video/mp4":
+			ext = ".mp4"
+		case "application/pdf":
+			ext = ".pdf"
+		}
+	}
+	return fmt.Sprintf("附件-%d%s", index, ext)
 }
 
 func commentDigestNotificationTx(tx *gorm.DB, digest model.CommentDigest, key string, now time.Time) (model.CommentNotification, error) {

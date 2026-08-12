@@ -184,7 +184,7 @@ func TestJSONBodySizeAndEncodingBoundaries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			request := httptest.NewRequest(http.MethodPost, "/api/v4/sources", bytes.NewReader(tt.body))
+			request := httptest.NewRequest(http.MethodPost, "/api/v4/sources/bilibili", bytes.NewReader(tt.body))
 			request.AddCookie(&http.Cookie{Name: sessionCookie, Value: fixture.token})
 			request.Header.Set("X-CSRF-Token", fixture.csrf)
 			response := httptest.NewRecorder()

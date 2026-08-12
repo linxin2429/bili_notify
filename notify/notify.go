@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -46,6 +48,7 @@ type Message struct {
 	Sections   []Section
 	Action     Link
 	AllowSplit bool
+	Files      []model.DeliveryFile
 }
 
 type Section struct {
@@ -110,7 +113,7 @@ func NewSender(ch model.Channel, client *http.Client, dataDir string, updateSett
 		return nil, err
 	}
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = defaultHTTPClient()
 	}
 	switch ch.Type {
 	case model.ChannelEmail:
@@ -121,7 +124,7 @@ func NewSender(ch model.Channel, client *http.Client, dataDir string, updateSett
 		return &robotSender{kind: ch.Type, webhook: ch.Settings["webhook"], secret: ch.Settings["secret"], client: client, dataDir: dataDir}, nil
 	case model.ChannelFeishu:
 		return &robotSender{
-			kind: ch.Type, webhook: ch.Settings["webhook"], secret: ch.Settings["secret"], client: client, dataDir: dataDir,
+			kind: ch.Type, client: client, dataDir: dataDir, chatID: ch.Settings["chat_id"],
 			appID: ch.Settings["app_id"], appSecret: ch.Settings["app_secret"],
 		}, nil
 	case model.ChannelWeCom:
@@ -129,6 +132,14 @@ func NewSender(ch model.Channel, client *http.Client, dataDir string, updateSett
 	default:
 		return nil, fmt.Errorf("unsupported channel type %q", ch.Type)
 	}
+}
+
+func defaultHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	transport.TLSHandshakeTimeout = 5 * time.Second
+	transport.ResponseHeaderTimeout = 8 * time.Second
+	return &http.Client{Transport: transport}
 }
 
 func DynamicMessage(d model.Dynamic) Message {
@@ -145,6 +156,7 @@ func DynamicMessage(d model.Dynamic) Message {
 		Subject:  subject,
 		Sections: []Section{dynamicSection(d, false)},
 		Action:   Link{Label: "查看原动态", URL: d.URL},
+		Files:    slices.Clone(d.Files),
 	}
 	for original := d.Original; original != nil; original = original.Original {
 		message.Sections = append(message.Sections, dynamicSection(*original, true))
@@ -360,7 +372,7 @@ func newEmailSenderWithTLSConfig(settings map[string]string, dataDir string, tls
 	}
 	opts := []mail.Option{
 		mail.WithPort(port),
-		mail.WithTimeout(10 * time.Second),
+		mail.WithTimeout(15 * time.Minute),
 		mail.WithTLSPolicy(mail.TLSMandatory),
 		mail.WithTLSConfig(tlsConfig),
 	}
@@ -382,6 +394,7 @@ func newEmailSenderWithTLSConfig(settings map[string]string, dataDir string, tls
 }
 
 func (s *emailSender) Send(ctx context.Context, message Message) error {
+	message, files := classifyFiles(message, s.dataDir, 1, 0)
 	msg := mail.NewMsg()
 	if err := msg.From(s.from); err != nil {
 		return &PermanentError{Err: fmt.Errorf("setting sender: %w", err)}
@@ -419,8 +432,32 @@ func (s *emailSender) Send(ctx context.Context, message Message) error {
 	})
 	msg.SetBodyString(mail.TypeTextPlain, renderPlainText(message))
 	msg.AddAlternativeString(mail.TypeTextHTML, htmlBody)
+	opened := make([]io.Closer, 0, len(files))
+	for _, attachment := range files {
+		file, _, detected, err := media.OpenFile(s.dataDir, attachment.LocalPath)
+		if err != nil {
+			for _, closer := range opened {
+				_ = closer.Close()
+			}
+			return fmt.Errorf("opening email attachment %q: %w", attachment.Name, err)
+		}
+		opened = append(opened, file)
+		contentType := firstNonEmpty(attachment.MIME, detected, "application/octet-stream")
+		if err := msg.AttachReader(attachment.Name, file, mail.WithFileName(attachment.Name), mail.WithFileContentType(mail.ContentType(contentType))); err != nil {
+			for _, closer := range opened {
+				_ = closer.Close()
+			}
+			return &PermanentError{Err: fmt.Errorf("attaching %q: %w", attachment.Name, err)}
+		}
+	}
 	if err := s.client.DialAndSendWithContext(ctx, msg); err != nil {
+		for _, closer := range opened {
+			_ = closer.Close()
+		}
 		return fmt.Errorf("sending email: %w", err)
+	}
+	for _, closer := range opened {
+		_ = closer.Close()
 	}
 	return nil
 }
@@ -433,6 +470,7 @@ type robotSender struct {
 	dataDir           string
 	appID             string
 	appSecret         string
+	chatID            string
 	feishuTokenCaches *sync.Map
 }
 
@@ -445,6 +483,13 @@ func (s *robotSender) SendProgressive(ctx context.Context, message Message, prog
 	current := model.DeliveryProgress{}
 	if progress != nil {
 		current = *progress
+	}
+	if s.kind == model.ChannelFeishu {
+		return s.sendFeishuProgressive(ctx, message, &current)
+	}
+	var files []model.DeliveryFile
+	if s.kind == model.ChannelWeCom {
+		message, files = classifyFiles(message, s.dataDir, 5, media.WeComMaxFileSize)
 	}
 	parts := splitRobotMessage(message, s.kind)
 	for index := current.TextPartsSent; index < len(parts); index++ {
@@ -480,6 +525,16 @@ func (s *robotSender) SendProgressive(ctx context.Context, message Message, prog
 			return &current, err
 		}
 		current.ImagesSent = i + 1
+	}
+	for i := current.FilesSent; i < len(files); i++ {
+		mediaID, err := s.uploadWeComFile(ctx, files[i])
+		if err != nil {
+			return &current, err
+		}
+		if err := s.postJSON(ctx, s.webhook, map[string]any{"msgtype": "file", "file": map[string]string{"media_id": mediaID}}); err != nil {
+			return &current, err
+		}
+		current.FilesSent = i + 1
 	}
 	return &current, nil
 }
@@ -608,7 +663,7 @@ func collectLocalImages(message Message, dataDir string, maxSize int64) []localI
 	return out
 }
 
-func (s *robotSender) buildPayload(ctx context.Context, message Message) (endpoint string, payload any, err error) {
+func (s *robotSender) buildPayload(_ context.Context, message Message) (endpoint string, payload any, err error) {
 	endpoint = s.webhook
 	switch s.kind {
 	case model.ChannelDingTalk:
@@ -624,15 +679,6 @@ func (s *robotSender) buildPayload(ctx context.Context, message Message) (endpoi
 		u.RawQuery = q.Encode()
 		endpoint = u.String()
 		payload = map[string]any{"msgtype": "markdown", "markdown": map[string]string{"title": message.Subject, "text": renderMarkdown(message, 20_000, false, true)}}
-	case model.ChannelFeishu:
-		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
-		key := []byte(timestamp + "\n" + s.secret)
-		sign := hmacBase64(key, nil)
-		keys, uploadErr := s.uploadFeishuImages(ctx, message)
-		if uploadErr != nil {
-			return "", nil, uploadErr
-		}
-		payload = renderFeishuPayload(message, timestamp, sign, keys)
 	default:
 		return "", nil, &PermanentError{Err: fmt.Errorf("unsupported robot type %q", s.kind)}
 	}
@@ -688,42 +734,6 @@ type feishuTokenCache struct {
 }
 
 var feishuTokens sync.Map // appID -> *feishuTokenCache
-
-func (s *robotSender) uploadFeishuImages(ctx context.Context, message Message) (map[string]string, error) {
-	if strings.TrimSpace(s.appID) == "" || strings.TrimSpace(s.appSecret) == "" || s.dataDir == "" {
-		return nil, nil
-	}
-	token, err := s.feishuTenantToken(ctx)
-	if err != nil {
-		return nil, err
-	}
-	keys := make(map[string]string)
-	for _, section := range message.Sections {
-		for _, image := range section.Images {
-			if image.LocalPath == "" {
-				continue
-			}
-			if _, ok := keys[image.LocalPath]; ok {
-				continue
-			}
-			data, contentType, err := media.ReadFile(s.dataDir, image.LocalPath)
-			if err != nil || len(data) == 0 {
-				continue
-			}
-			if image.ContentType != "" {
-				contentType = image.ContentType
-			}
-			key, err := s.uploadFeishuImage(ctx, token, localImage{
-				data: data, contentType: contentType, name: filepath.Base(image.LocalPath),
-			})
-			if err != nil {
-				return nil, err
-			}
-			keys[image.LocalPath] = key
-		}
-	}
-	return keys, nil
-}
 
 func (s *robotSender) feishuTenantToken(ctx context.Context) (string, error) {
 	caches := s.feishuTokenCaches
@@ -834,6 +844,241 @@ func (s *robotSender) uploadFeishuImage(ctx context.Context, token string, img l
 		return "", &PermanentError{Err: fmt.Errorf("feishu image upload failed: code=%d", result.Code)}
 	}
 	return result.Data.ImageKey, nil
+}
+
+func (s *robotSender) sendFeishuProgressive(ctx context.Context, message Message, current *model.DeliveryProgress) (*model.DeliveryProgress, error) {
+	message, files := classifyFiles(message, s.dataDir, 1, media.FeishuMaxFileSize)
+	token, err := s.feishuTenantToken(ctx)
+	if err != nil {
+		return current, err
+	}
+	parts := splitRobotMessage(message, model.ChannelFeishu)
+	for index := current.TextPartsSent; index < len(parts); index++ {
+		keys, err := s.uploadFeishuImagesWithToken(ctx, token, parts[index])
+		if err != nil {
+			return current, err
+		}
+		payload := renderFeishuPayload(parts[index], "", "", keys)
+		contentContainer, ok := payload["content"].(map[string]any)
+		if !ok {
+			return current, &PermanentError{Err: errors.New("encoding feishu post: invalid content")}
+		}
+		content, err := json.Marshal(contentContainer["post"])
+		if err != nil {
+			return current, &PermanentError{Err: fmt.Errorf("encoding feishu post: %w", err)}
+		}
+		if err := s.postFeishuMessage(ctx, token, "post", string(content)); err != nil {
+			return current, err
+		}
+		current.TextPartsSent = index + 1
+		current.ImagesSent += len(keys)
+	}
+	current.TextSent = current.TextPartsSent == len(parts)
+	for index := current.FilesSent; index < len(files); index++ {
+		key, err := s.uploadFeishuFile(ctx, token, files[index])
+		if err != nil {
+			return current, err
+		}
+		content, err := json.Marshal(map[string]string{"file_key": key})
+		if err != nil {
+			return current, &PermanentError{Err: err}
+		}
+		if err := s.postFeishuMessage(ctx, token, "file", string(content)); err != nil {
+			return current, err
+		}
+		current.FilesSent = index + 1
+	}
+	return current, nil
+}
+
+func (s *robotSender) uploadFeishuImagesWithToken(ctx context.Context, token string, message Message) (map[string]string, error) {
+	keys := make(map[string]string)
+	for _, section := range message.Sections {
+		for _, item := range section.Images {
+			if item.LocalPath == "" || keys[item.LocalPath] != "" {
+				continue
+			}
+			data, contentType, err := media.ReadFile(s.dataDir, item.LocalPath)
+			if err != nil || len(data) == 0 {
+				continue
+			}
+			key, err := s.uploadFeishuImage(ctx, token, localImage{name: filepath.Base(item.LocalPath), data: data, contentType: firstNonEmpty(item.ContentType, contentType)})
+			if err != nil {
+				return nil, err
+			}
+			keys[item.LocalPath] = key
+		}
+	}
+	return keys, nil
+}
+
+func (s *robotSender) postFeishuMessage(ctx context.Context, token, msgType, content string) error {
+	payload := map[string]string{"receive_id": s.chatID, "msg_type": msgType, "content": content}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return &PermanentError{Err: err}
+	}
+	endpoint := "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return &PermanentError{Err: err}
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	return doBusinessRequest(ctx, s.client, req, "feishu message", "code")
+}
+
+func (s *robotSender) uploadFeishuFile(ctx context.Context, token string, item model.DeliveryFile) (string, error) {
+	fields := map[string]string{"file_type": "stream", "file_name": item.Name}
+	req, err := multipartFileRequest(ctx, http.MethodPost, "https://open.feishu.cn/open-apis/im/v1/files", "file", item, s.dataDir, fields)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	var result struct {
+		Code int `json:"code"`
+		Data struct {
+			FileKey string `json:"file_key"`
+		} `json:"data"`
+	}
+	if err := doJSONRequest(ctx, s.client, req, "feishu file upload", &result); err != nil {
+		return "", err
+	}
+	if result.Code != 0 || result.Data.FileKey == "" {
+		return "", &PermanentError{Err: fmt.Errorf("feishu file upload failed: code=%d", result.Code)}
+	}
+	return result.Data.FileKey, nil
+}
+
+func (s *robotSender) uploadWeComFile(ctx context.Context, item model.DeliveryFile) (string, error) {
+	u, err := url.Parse(s.webhook)
+	if err != nil {
+		return "", &PermanentError{Err: errors.New("invalid WeCom webhook")}
+	}
+	key := u.Query().Get("key")
+	if key == "" {
+		return "", &PermanentError{Err: errors.New("WeCom webhook key is required")}
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/send") + "/upload_media"
+	u.RawQuery = url.Values{"key": []string{key}, "type": []string{"file"}}.Encode()
+	req, err := multipartFileRequest(ctx, http.MethodPost, u.String(), "media", item, s.dataDir, nil)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		ErrCode int    `json:"errcode"`
+		MediaID string `json:"media_id"`
+	}
+	if err := doJSONRequest(ctx, s.client, req, "wecom file upload", &result); err != nil {
+		return "", err
+	}
+	if result.ErrCode != 0 || result.MediaID == "" {
+		return "", &PermanentError{Err: fmt.Errorf("wecom file upload failed: code=%d", result.ErrCode)}
+	}
+	return result.MediaID, nil
+}
+
+func multipartFileRequest(ctx context.Context, method, endpoint, field string, item model.DeliveryFile, dataDir string, fields map[string]string) (*http.Request, error) {
+	file, size, _, err := media.OpenFile(dataDir, item.LocalPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening attachment %q: %w", item.Name, err)
+	}
+	reader, writer := io.Pipe()
+	multipartWriter := multipart.NewWriter(writer)
+	go func() {
+		var writeErr error
+		for key, value := range fields {
+			if writeErr == nil {
+				writeErr = multipartWriter.WriteField(key, value)
+			}
+		}
+		if writeErr == nil {
+			var part io.Writer
+			part, writeErr = multipartWriter.CreateFormFile(field, safeAttachmentName(item.Name))
+			if writeErr == nil {
+				_, writeErr = io.Copy(part, file)
+			}
+		}
+		_ = file.Close()
+		if closeErr := multipartWriter.Close(); writeErr == nil {
+			writeErr = closeErr
+		}
+		_ = writer.CloseWithError(writeErr)
+	}()
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+	if err != nil {
+		_ = reader.Close()
+		return nil, &PermanentError{Err: err}
+	}
+	req.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	if overhead, err := multipartBodyOverhead(multipartWriter.Boundary(), field, safeAttachmentName(item.Name), fields); err == nil {
+		req.ContentLength = size + overhead
+	}
+	return req, nil
+}
+
+func multipartBodyOverhead(boundary, field, name string, fields map[string]string) (int64, error) {
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+	if err := writer.SetBoundary(boundary); err != nil {
+		return 0, err
+	}
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return 0, err
+		}
+	}
+	if _, err := writer.CreateFormFile(field, name); err != nil {
+		return 0, err
+	}
+	if err := writer.Close(); err != nil {
+		return 0, err
+	}
+	return int64(buffer.Len()), nil
+}
+
+func doBusinessRequest(ctx context.Context, client *http.Client, req *http.Request, operation, codeKey string) error {
+	var result map[string]any
+	if err := doJSONRequest(ctx, client, req, operation, &result); err != nil {
+		return err
+	}
+	value, ok := result[codeKey]
+	if !ok {
+		return &PermanentError{Err: fmt.Errorf("%s response is missing business code", operation)}
+	}
+	code, ok := value.(float64)
+	if !ok || code != float64(int64(code)) {
+		return &PermanentError{Err: fmt.Errorf("%s returned invalid business code", operation)}
+	}
+	if code != 0 {
+		return &PermanentError{Err: fmt.Errorf("%s returned business code %d", operation, int64(code))}
+	}
+	return nil
+}
+
+func doJSONRequest(ctx context.Context, client *http.Client, req *http.Request, operation string, target any) error {
+	resp, err := client.Do(req)
+	if err != nil {
+		return sanitizedHTTPTransportError(operation, err)
+	}
+	defer resp.Body.Close()
+	body, oversized, err := readProtocolResponse(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading %s response: %w", operation, err)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return retryableHTTPError(operation, resp)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &PermanentError{Err: fmt.Errorf("%s returned HTTP %d", operation, resp.StatusCode)}
+	}
+	if oversized {
+		return &PermanentError{Err: fmt.Errorf("%s response exceeds %d bytes", operation, maxProtocolResponseBytes)}
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		return &PermanentError{Err: fmt.Errorf("decoding %s response: %w", operation, err)}
+	}
+	return nil
 }
 
 func readProtocolResponse(reader io.Reader) ([]byte, bool, error) {

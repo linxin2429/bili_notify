@@ -77,6 +77,7 @@ export function ChannelsPage() {
           <p>{login?.error || (authorized ? 'Microsoft 账户已授权。' : '必须完成 Microsoft 授权后才能启用。')} <Button onPress={() => authorize.mutate(channel.id)}>{authorized ? '重新授权' : '开始授权'}</Button></p>
           {authLinks[channel.id] && <p><a href={authLinks[channel.id]} target="_blank" rel="noopener noreferrer">打开验证页面</a></p>}
         </div>}</Alert>}
+        {channel.type === 'feishu' && !channel.settings.chat_id && <Alert tone="warning">飞书已改用应用机器人。请编辑渠道并填写目标群 Chat ID 后再启用。</Alert>}
         <div className="button-row"><Button onPress={() => setEditing(channel)}><Pencil aria-hidden="true" />编辑</Button><Button onPress={() => test.mutate(channel.id)}><Send aria-hidden="true" />发送测试</Button><Button danger onPress={() => setRemoving(channel)}><Trash2 aria-hidden="true" />删除</Button></div>
       </Card>
     })}</div>}
@@ -100,7 +101,8 @@ function ChannelDialog({ channel, busy, error, onClose, onSave }: { channel?: Ch
       {type === 'feishu' && <FeishuFields fields={fields} secrets={secrets} configured={channel?.configured_secrets || []} setField={field} setSecret={secret} />}
       {type === 'wecom' && <SecretField label="Webhook URL" name="webhook" values={secrets} configured={channel?.configured_secrets || []} onChange={secret} />}
       <SwitchField checked={enabled} onChange={setEnabled}>启用渠道</SwitchField>
-      {type === 'microsoft' && <Alert>保存后需要完成 Microsoft 设备码授权，再启用渠道。</Alert>}
+      {type === 'microsoft' && <Alert>附件投递需要 Mail.ReadWrite 权限；升级后的已有渠道也必须重新完成设备码授权，再启用渠道。</Alert>}
+	  {type === 'feishu' && <Alert>应用必须启用机器人，拥有消息发送、图片与文件上传权限，并已加入目标群。</Alert>}
       <button type="submit" hidden tabIndex={-1} aria-hidden="true" />
     </form>
   </Dialog>
@@ -110,7 +112,7 @@ type FieldSetter = (key: string, value: string) => void
 function EmailFields({ fields, secrets, configured, setField, setSecret }: { fields: Record<string, string>; secrets: Record<string, string>; configured: string[]; setField: FieldSetter; setSecret: FieldSetter }) { return <><TextField label="SMTP 主机" value={fields.host || ''} onChange={value => setField('host', value)} required /><TextField label="端口" value={fields.port || '465'} onChange={value => setField('port', value)} required inputMode="numeric" /><SelectField label="TLS 模式" value={fields.tls || 'tls'} onChange={value => setField('tls', value)} options={[{ value: 'tls', label: 'TLS' }, { value: 'starttls', label: 'STARTTLS' }]} /><TextField label="用户名" value={fields.username || ''} onChange={value => setField('username', value)} /><SecretField label="密码" name="password" values={secrets} configured={configured} onChange={setSecret} /><TextField label="发件人" value={fields.from || ''} onChange={value => setField('from', value)} required /><TextField label="收件人" value={fields.to || ''} onChange={value => setField('to', value)} required description="多个地址使用英文逗号分隔" /></> }
 function MicrosoftFields({ fields, setField }: { fields: Record<string, string>; setField: FieldSetter }) { return <><TextField label="应用程序（客户端）ID" value={fields.client_id || ''} onChange={value => setField('client_id', value)} required /><TextField label="租户" value={fields.tenant || 'common'} onChange={value => setField('tenant', value)} /><TextField label="收件人" value={fields.to || ''} onChange={value => setField('to', value)} required /></> }
 function DingTalkFields({ secrets, configured, setSecret }: { secrets: Record<string, string>; configured: string[]; setSecret: FieldSetter }) { return <><SecretField label="Webhook URL" name="webhook" values={secrets} configured={configured} onChange={setSecret} /><SecretField label="签名密钥" name="secret" values={secrets} configured={configured} onChange={setSecret} /></> }
-function FeishuFields({ fields, secrets, configured, setField, setSecret }: { fields: Record<string, string>; secrets: Record<string, string>; configured: string[]; setField: FieldSetter; setSecret: FieldSetter }) { return <><SecretField label="Webhook URL" name="webhook" values={secrets} configured={configured} onChange={setSecret} /><SecretField label="签名密钥" name="secret" values={secrets} configured={configured} onChange={setSecret} /><TextField label="应用 App ID" value={fields.app_id || ''} onChange={value => setField('app_id', value)} /><SecretField label="应用 App Secret" name="app_secret" values={secrets} configured={configured} onChange={setSecret} /></> }
+function FeishuFields({ fields, secrets, configured, setField, setSecret }: { fields: Record<string, string>; secrets: Record<string, string>; configured: string[]; setField: FieldSetter; setSecret: FieldSetter }) { return <><TextField label="应用 App ID" value={fields.app_id || ''} onChange={value => setField('app_id', value)} required /><SecretField label="应用 App Secret" name="app_secret" values={secrets} configured={configured} onChange={setSecret} /><TextField label="目标群 Chat ID" value={fields.chat_id || ''} onChange={value => setField('chat_id', value)} required description="群聊标识，例如 oc_xxx；应用机器人必须已加入该群" /></> }
 function SecretField({ label, name, values, configured, onChange }: { label: string; name: string; values: Record<string, string>; configured: string[]; onChange: FieldSetter }) { return <TextField label={label} type="password" value={values[name] || ''} onChange={value => onChange(name, value)} required={!configured.includes(name)} description={configured.includes(name) ? '已安全保存；留空表示保留原值' : undefined} /> }
 
 function buildDraft(id: string | undefined, name: string, type: ChannelType, enabled: boolean, fields: Record<string, string>, secrets: Record<string, string>): ChannelDraft {
@@ -118,6 +120,6 @@ function buildDraft(id: string | undefined, name: string, type: ChannelType, ena
   if (type === 'email') return { id, name, type, enabled, settings: { host: fields.host || '', port: fields.port || '465', tls: fields.tls || 'tls', username: fields.username || '', from: fields.from || '', to: fields.to || '' }, ...(Object.keys(changed).length ? { secrets: changed } : {}) }
   if (type === 'microsoft') return { id, name, type, enabled, settings: { client_id: fields.client_id || '', tenant: fields.tenant || 'common', to: fields.to || '' } }
   if (type === 'dingtalk') return { id, name, type, enabled, settings: {}, ...(Object.keys(changed).length ? { secrets: changed } : {}) }
-  if (type === 'feishu') return { id, name, type, enabled, settings: { app_id: fields.app_id || '' }, ...(Object.keys(changed).length ? { secrets: changed } : {}) }
+  if (type === 'feishu') return { id, name, type, enabled, settings: { app_id: fields.app_id || '', chat_id: fields.chat_id || '' }, ...(Object.keys(changed).length ? { secrets: changed } : {}) }
   return { id, name, type, enabled, settings: {}, ...(Object.keys(changed).length ? { secrets: changed } : {}) }
 }

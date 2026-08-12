@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/mail"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -79,6 +80,20 @@ func (c Channel) Validate() error {
 		return errors.New("channel name is required")
 	}
 	s := c.Settings
+	allowed := map[ChannelType][]string{
+		ChannelEmail:     {"host", "port", "tls", "from", "to", "username", "password"},
+		ChannelMicrosoft: {"client_id", "tenant", "to", "access_token", "refresh_token", "token_type", "token_expiry", "authorized"},
+		ChannelDingTalk:  {"webhook", "secret"},
+		ChannelFeishu:    {"app_id", "app_secret", "chat_id"},
+		ChannelWeCom:     {"webhook"},
+	}
+	if keys, ok := allowed[c.Type]; ok {
+		for key := range s {
+			if !slices.Contains(keys, key) {
+				return fmt.Errorf("%s setting %q is not supported", c.Type, key)
+			}
+		}
+	}
 	switch c.Type {
 	case ChannelEmail:
 		for _, key := range []string{"host", "port", "tls", "from", "to"} {
@@ -119,20 +134,17 @@ func (c Channel) Validate() error {
 		if c.Enabled && s["refresh_token"] == "" {
 			return errors.New("microsoft channel must be authorized before it is enabled")
 		}
-	case ChannelDingTalk, ChannelFeishu, ChannelWeCom:
+	case ChannelFeishu:
+		if strings.TrimSpace(s["app_id"]) == "" || strings.TrimSpace(s["app_secret"]) == "" || strings.TrimSpace(s["chat_id"]) == "" {
+			return errors.New("feishu app_id, app_secret and chat_id are required")
+		}
+	case ChannelDingTalk, ChannelWeCom:
 		u, err := url.Parse(s["webhook"])
 		if err != nil || u.Scheme != "https" || u.Host == "" {
 			return errors.New("webhook must be an absolute HTTPS URL")
 		}
-		if (c.Type == ChannelDingTalk || c.Type == ChannelFeishu) && s["secret"] == "" {
+		if c.Type == ChannelDingTalk && s["secret"] == "" {
 			return errors.New("signed robot secret is required")
-		}
-		if c.Type == ChannelFeishu {
-			appID := strings.TrimSpace(s["app_id"])
-			appSecret := strings.TrimSpace(s["app_secret"])
-			if (appID == "") != (appSecret == "") {
-				return errors.New("feishu app_id and app_secret must both be set or both empty")
-			}
 		}
 	default:
 		return fmt.Errorf("unsupported channel type %q", c.Type)
@@ -192,6 +204,9 @@ type Dynamic struct {
 	Stats       *DynamicStats  `json:"stats,omitempty"`
 	Video       *DynamicVideo  `json:"video,omitempty"`
 	Original    *Dynamic       `json:"original,omitempty"`
+	// Files is the immutable non-image attachment snapshot captured when the
+	// content is enqueued. It is intentionally independent of the archive row.
+	Files []DeliveryFile `json:"files,omitempty"`
 	// Exclusive is internal collection metadata used to baseline paid dynamics.
 	Exclusive bool `json:"-"`
 	// Comment coordinates for UP-reply monitoring. Commentable is true only when
@@ -280,7 +295,7 @@ type Delivery struct {
 	NextAt    time.Time            `json:"next_at"`
 	LastError string               `json:"last_error,omitempty"`
 	CreatedAt time.Time            `json:"created_at"`
-	// Progress tracks multi-part channel sends (e.g. WeCom text + images).
+	// Progress tracks confirmed text, image, file, and draft operations.
 	Progress *DeliveryProgress `json:"progress,omitempty"`
 	// OriginTraceparent is the W3C traceparent captured when the outbox row was
 	// created (collection/comment/feed). Delivery restores it as its parent so
@@ -290,9 +305,22 @@ type Delivery struct {
 
 // DeliveryProgress records which parts of a multi-message delivery already succeeded.
 type DeliveryProgress struct {
-	TextSent      bool `json:"text_sent,omitempty"`
-	TextPartsSent int  `json:"text_parts_sent,omitempty"`
-	ImagesSent    int  `json:"images_sent,omitempty"`
+	TextSent         bool   `json:"text_sent,omitempty"`
+	TextPartsSent    int    `json:"text_parts_sent,omitempty"`
+	ImagesSent       int    `json:"images_sent,omitempty"`
+	FilesSent        int    `json:"files_sent,omitempty"`
+	MicrosoftDraftID string `json:"microsoft_draft_id,omitempty"`
+}
+
+// DeliveryFile is the immutable metadata needed to deliver one archived file.
+// LocalPath is relative to data_dir and is revalidated whenever it is opened.
+type DeliveryFile struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	MIME          string `json:"mime,omitempty"`
+	Size          int64  `json:"size,omitempty"`
+	LocalPath     string `json:"local_path,omitempty"`
+	LocalizeError string `json:"localize_error,omitempty"`
 }
 
 // CommentTarget is one UP-owned content area tracked for UP-reply discovery.

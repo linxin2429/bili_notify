@@ -18,7 +18,7 @@ describe('shared UI primitives', () => {
       <TextField label="名称" value="old" onChange={changed} description="帮助" error="错误" />
       <TextField label="正文" value="body" onChange={changed} multiline disabled />
       <NativeDateTimeField label="时间" value="2026-08-09T12:00" onChange={changed} />
-      <SelectField label="选项" value="a" options={[{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }]} onChange={selected} />
+      <SelectField label="选项" value="a" options={[{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }, { value: 'c', label: 'C', disabled: true }]} onChange={selected} />
       <SwitchField checked={false} onChange={switched}>开关</SwitchField>
       <Button variant="primary" danger className="extra" onPress={pressed}>提交</Button>
       <Button busy>保存</Button><IconButton label="禁用图标" isDisabled>×</IconButton>
@@ -28,6 +28,7 @@ describe('shared UI primitives', () => {
     await user.click(screen.getByLabelText('开关')); await user.click(screen.getByRole('button', { name: '提交' }))
     fireEvent.change(screen.getByLabelText('时间'), { target: { value: '2026-08-10T10:00' } })
     expect(changed).toHaveBeenCalled(); expect(selected).toHaveBeenCalledWith('b'); expect(switched).toHaveBeenCalledWith(true); expect(pressed).toHaveBeenCalledOnce()
+    expect(screen.getByRole('option', { name: 'C' })).toBeDisabled()
     expect(screen.getByRole('button', { name: /处理中/ })).toBeDisabled(); expect(screen.getByLabelText('禁用图标')).toBeDisabled()
   })
 

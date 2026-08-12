@@ -3,7 +3,7 @@ import type { AuditQuery, ContentQuery, RealtimeTopic } from './types'
 
 export const queryKeys = {
   session: ['session'] as const, runtime: ['runtime'] as const, settings: ['settings'] as const,
-  accounts: ['accounts'] as const, sources: (platform = '') => ['sources', platform] as const,
+  accounts: ['accounts'] as const, zsxqGroups: ['accounts', 'zsxq', 'groups'] as const, sources: (platform = '') => ['sources', platform] as const,
   contents: (query: ContentQuery) => ['contents', query] as const, content: (id: string) => ['contents', 'detail', id] as const,
   contentComments: (id: string) => ['contents', 'comments', id] as const,
   channels: ['channels'] as const, deliveries: (after = '') => ['deliveries', { after }] as const,

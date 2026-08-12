@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/linxin2429/bili_notify/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -58,6 +59,8 @@ func TestEmailSenderRealSMTPContracts(t *testing.T) {
 			absolute := filepath.Join(dataDir, relative)
 			require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o700))
 			require.NoError(t, os.WriteFile(absolute, []byte("\x89PNG\r\n\x1a\ninline-image"), 0o600))
+			fileRelative := filepath.Join("media", "1", "2", "archived-report.txt")
+			require.NoError(t, os.WriteFile(filepath.Join(dataDir, fileRelative), []byte("attachment-body"), 0o600))
 			mode := "starttls"
 			if tt.implicit {
 				mode = "tls"
@@ -71,7 +74,7 @@ func TestEmailSenderRealSMTPContracts(t *testing.T) {
 			message := Message{Subject: "协议测试", Sections: []Section{{
 				Paragraphs: []string{"plain and html"},
 				Images:     []Image{{Label: "inline", URL: "https://example.invalid/fallback.png", LocalPath: filepath.ToSlash(relative), ContentType: "image/png"}},
-			}}}
+			}}, Files: []model.DeliveryFile{{ID: "file-1", Name: "original-report.txt", MIME: "text/plain", LocalPath: filepath.ToSlash(fileRelative)}}}
 			sendErr := sender.Send(t.Context(), message)
 			capture := receiveSMTPCapture(t, captures)
 			require.NoError(t, sendErr, "SMTP capture: %+v", capture)
@@ -82,6 +85,8 @@ func TestEmailSenderRealSMTPContracts(t *testing.T) {
 			assert.Contains(t, capture.message, "multipart/alternative")
 			assert.Contains(t, capture.message, "Content-Id: image-0")
 			assert.Contains(t, capture.message, "cid:image-0")
+			assert.Contains(t, capture.message, "original-report.txt")
+			assert.Contains(t, capture.message, base64.StdEncoding.EncodeToString([]byte("attachment-body")))
 			assert.NotContains(t, capture.message, "smtp-password")
 		})
 	}

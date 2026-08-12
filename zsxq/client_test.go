@@ -40,6 +40,59 @@ func TestClientSignsExplicitTokenRequest(t *testing.T) {
 	assert.Equal(t, User{ID: "42", Name: "Member"}, user)
 }
 
+func TestClientGroups(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		groups  []map[string]any
+		want    []Group
+		wantErr error
+	}{
+		{name: "visible groups preserve numeric identifiers", groups: []map[string]any{{"group_id": json.Number("28882581855851"), "name": "研究星球", "owner": map[string]any{"user_id": json.Number("548818848124544"), "name": "星主"}}}, want: []Group{{ID: "28882581855851", Name: "研究星球", OwnerID: "548818848124544", OwnerName: "星主"}}},
+		{name: "owner is optional", groups: []map[string]any{{"group_id": 9, "name": "普通星球"}}, want: []Group{{ID: "9", Name: "普通星球"}}},
+		{name: "owner uid variant", groups: []map[string]any{{"group_id": 10, "name": "UID 星球", "owner": map[string]any{"uid": 7, "name": "星主"}}}, want: []Group{{ID: "10", Name: "UID 星球", OwnerID: "7", OwnerName: "星主"}}},
+		{name: "missing group name", groups: []map[string]any{{"group_id": 9}}, wantErr: ErrSchemaDrift},
+		{name: "invalid group identifier", groups: []map[string]any{{"group_id": "not-a-number", "name": "错误星球"}}, wantErr: ErrSchemaDrift},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/v2/groups", r.URL.Path)
+				assert.Equal(t, "secret-token", r.Header.Get("Authorization"))
+				writeEnvelope(t, w, map[string]any{"groups": tt.groups})
+			}))
+			t.Cleanup(server.Close)
+			client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+			require.NoError(t, err)
+			groups, err := client.Groups(t.Context(), "secret-token")
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, groups)
+		})
+	}
+}
+
+func TestAccountManagerGroupsInvalidatesRejectedSession(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+	client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+	require.NoError(t, err)
+	store := &accountStoreStub{account: model.PlatformAccount{Platform: model.PlatformZSXQ, Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: "rejected"}}}
+	manager, err := NewAccountManager(client, store)
+	require.NoError(t, err)
+	_, err = manager.Groups(t.Context())
+	require.ErrorIs(t, err, ErrAuthentication)
+	assert.Equal(t, model.AccountInvalid, store.account.Status)
+	assert.Empty(t, store.account.Session)
+}
+
 func TestClientClassifiesFailuresWithoutLeakingBodies(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -196,6 +249,13 @@ func FuzzParseAccessToken(f *testing.F) {
 
 type accountStoreStub struct {
 	account model.PlatformAccount
+}
+
+func (store *accountStoreStub) PlatformAccount(model.Platform) (model.PlatformAccount, error) {
+	if store.account.Platform == "" {
+		return model.PlatformAccount{}, errors.New("not found")
+	}
+	return store.account, nil
 }
 
 func (store *accountStoreStub) PutPlatformAccount(account model.PlatformAccount) error {

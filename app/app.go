@@ -266,7 +266,9 @@ func newHTTPClient() *http.Client {
 		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConns:          20,
 	}
-	return &http.Client{Transport: transport, Timeout: 10 * time.Second}
+	// Streaming attachment uploads are bounded by the delivery context. A
+	// client-wide deadline would abort healthy large transfers mid-body.
+	return &http.Client{Transport: transport}
 }
 
 func cloneHTTPClientWithTransport(client *http.Client, transport http.RoundTripper) *http.Client {

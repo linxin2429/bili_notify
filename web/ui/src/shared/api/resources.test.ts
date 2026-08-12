@@ -4,6 +4,7 @@ import { settings, makeAudit, makeDelivery } from '../../test/fixtures'
 
 const runtime = { status: { auth_valid: true, up_count: 1, channel_count: 1, outbox_depth: 0, ready: true }, timezone: 'Asia/Shanghai', updated_at: '2026-08-09T10:00:00Z' }
 const account = { platform: 'bilibili' as const, external_id: '42', display_name: 'UP', status: 'connected' as const }
+const group = { id: '9', name: '星球', owner_id: '8', owner_name: '星主' }
 const source = { id: 'bilibili:up:42', platform: 'bilibili' as const, type: 'up' as const, external_id: '42', name: 'UP', enabled: true, baseline_state: 'complete' as const, backfill_done: 0, backfill_total: 0, sync_lag_sec: 0, consecutive_fails: 0 }
 const content = { id: 'bilibili:content:d', platform: 'bilibili' as const, source_id: source.id, external_id: 'd', upstream_type: 'DYNAMIC_TYPE_WORD', type: 'dynamic' as const, published_at: '2026-08-09T10:00:00Z', first_seen_at: '2026-08-09T10:00:01Z', last_synced_at: '2026-08-09T10:00:01Z', baseline: false }
 const channel = { id: 'mail', name: '邮件', type: 'email' as const, enabled: true, settings: {}, configured_secrets: [], created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:00:00Z' }
@@ -16,7 +17,7 @@ describe('resource transport', () => {
 
   it('builds every read endpoint from typed resource parameters', async () => {
     const responses = new Map<string, unknown>([
-      ['/api/v4/runtime', runtime], ['/api/v4/settings', settings], ['/api/v4/accounts', [account]], ['/api/v4/sources?platform=bilibili', [source]],
+      ['/api/v4/runtime', runtime], ['/api/v4/settings', settings], ['/api/v4/accounts', [account]], ['/api/v4/accounts/zsxq/groups', [group]], ['/api/v4/sources?platform=bilibili', [source]],
       ['/api/v4/contents?platform=bilibili&limit=20', page([content])], ['/api/v4/contents/bilibili%3Acontent%3Ad', contentDetail],
       ['/api/v4/contents/bilibili%3Acontent%3Ad/comments', commentTree], ['/api/v4/channels', [channel]],
       ['/api/v4/deliveries?limit=20&after=cursor', page([makeDelivery()])], ['/api/v4/accounts/bilibili/qr', null], ['/api/v4/microsoft-logins', []],
@@ -29,6 +30,7 @@ describe('resource transport', () => {
     await expect(resources.runtime(signal)).resolves.toEqual(runtime)
     await expect(resources.settings(signal)).resolves.toEqual(settings)
     await expect(resources.accounts(signal)).resolves.toEqual([account])
+    await expect(resources.zsxqGroups(signal)).resolves.toEqual([group])
     await expect(resources.sources('bilibili', signal)).resolves.toEqual([source])
     await expect(resources.contents({ platform: 'bilibili', limit: 20 }, signal)).resolves.toEqual(page([content]))
     await expect(resources.content(content.id, signal)).resolves.toEqual(contentDetail)
@@ -38,7 +40,7 @@ describe('resource transport', () => {
     await expect(resources.biliLogin(signal)).resolves.toBeNull()
     await expect(resources.microsoftLogins(signal)).resolves.toEqual([])
     await expect(resources.auditLogs({ action: 'up.create' }, signal)).resolves.toEqual(page([makeAudit({ action: 'up.create' })]))
-    expect(fetch).toHaveBeenCalledTimes(12)
+    expect(fetch).toHaveBeenCalledTimes(13)
   })
 
   it('sends mutations with method, CSRF token, escaped ids and exact JSON bodies', async () => {
@@ -56,7 +58,8 @@ describe('resource transport', () => {
     })
     vi.stubGlobal('fetch', fetch)
 
-    await resources.createSource('csrf', { platform: 'bilibili', type: 'up', external_id: '42', name: 'UP', note: '', enabled: true })
+    await resources.createBilibiliSource('csrf', { uid: '42', name: 'UP', note: '', enabled: true })
+    await resources.createZSXQSource('csrf', { group_id: '9', note: '', enabled: true })
     await resources.updateSource('csrf', { id: 'bilibili:up:4/2', name: '改名', note: '备注', enabled: false })
     await resources.deleteSource('csrf', 'bilibili:up:4/2')
     const draft = { name: '邮件', type: 'email' as const, enabled: true, settings: { host: 'smtp', port: '465', tls: 'tls', username: '', from: 'a', to: 'b' } }
@@ -71,13 +74,15 @@ describe('resource transport', () => {
     await resources.cancelMicrosoftLogin('csrf', 'c/1')
     await resources.updateSettings('csrf', settings)
 
-    expect(fetch).toHaveBeenCalledTimes(13)
+    expect(fetch).toHaveBeenCalledTimes(14)
     for (const [, init] of fetch.mock.calls) expect(new Headers(init?.headers).get('X-CSRF-Token')).toBe('csrf')
     expect(fetch.mock.calls.map(([path]) => requestPath(path))).toEqual(expect.arrayContaining([
       '/api/v4/sources/bilibili%3Aup%3A4%2F2', '/api/v4/channels/c%2F1', '/api/v4/deliveries/d%2F1/retry', '/api/v4/accounts/bilibili/qr/login%2F1',
     ]))
-    expect(fetch.mock.calls[1]?.[1]).toMatchObject({ method: 'PUT', body: JSON.stringify({ name: '改名', note: '备注', enabled: false }) })
-    expect(fetch.mock.calls[4]?.[1]).toMatchObject({
+    expect(fetch).toHaveBeenCalledWith('/api/v4/sources/bilibili', expect.objectContaining({ method: 'POST', body: JSON.stringify({ uid: '42', name: 'UP', note: '', enabled: true }) }))
+    expect(fetch).toHaveBeenCalledWith('/api/v4/sources/zsxq', expect.objectContaining({ method: 'POST', body: JSON.stringify({ group_id: '9', note: '', enabled: true }) }))
+    expect(fetch).toHaveBeenCalledWith('/api/v4/sources/bilibili%3Aup%3A4%2F2', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ name: '改名', note: '备注', enabled: false }) }))
+    expect(fetch.mock.calls[5]?.[1]).toMatchObject({
       method: 'PUT',
       body: JSON.stringify(draft),
     })

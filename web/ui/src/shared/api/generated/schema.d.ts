@@ -558,6 +558,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v4/accounts/zsxq/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listZSXQGroups"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v4/sources": {
         parameters: {
             query?: never;
@@ -567,7 +583,39 @@ export interface paths {
         };
         get: operations["listSources"];
         put?: never;
-        post: operations["createSource"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v4/sources/bilibili": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createBilibiliSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v4/sources/zsxq": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createZSXQSource"];
         delete?: never;
         options?: never;
         head?: never;
@@ -728,6 +776,12 @@ export interface components {
             risk_paused_until?: string;
             last_error?: string;
         };
+        ZSXQGroup: {
+            id: string;
+            name: string;
+            owner_id?: string;
+            owner_name?: string;
+        };
         Source: {
             id: string;
             /** @enum {string} */
@@ -759,16 +813,14 @@ export interface components {
             last_error?: string;
             consecutive_fails: number;
         };
-        CreateSourceRequest: {
-            /** @enum {string} */
-            platform: "bilibili" | "zsxq";
-            /**
-             * @description Must be up for bilibili and planet for zsxq.
-             * @enum {string}
-             */
-            type: "up" | "planet";
-            external_id: string;
+        CreateBilibiliSourceRequest: {
+            uid: string;
             name: string;
+            note: string;
+            enabled: boolean;
+        };
+        CreateZSXQSourceRequest: {
+            group_id: string;
             note: string;
             enabled: boolean;
         };
@@ -887,9 +939,11 @@ export interface components {
             /** @enum {string} */
             type: "email" | "microsoft" | "dingtalk" | "feishu" | "wecom";
             enabled: boolean;
+            /** @description Public channel settings. Feishu accepts only app_id and chat_id; its legacy webhook settings are not supported. */
             settings: {
                 [key: string]: string;
             };
+            /** @description Write-only channel secrets. Feishu accepts only app_secret; Microsoft OAuth tokens are managed by device authorization. */
             secrets?: {
                 [key: string]: string;
             };
@@ -2385,6 +2439,29 @@ export interface operations {
             };
         };
     };
+    listZSXQGroups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Knowledge Planet groups visible to the connected account. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ZSXQGroup"][];
+                };
+            };
+            409: components["responses"]["ConflictError"];
+            429: components["responses"]["RateLimitError"];
+            502: components["responses"]["UpstreamError"];
+        };
+    };
     listSources: {
         parameters: {
             query?: {
@@ -2407,7 +2484,7 @@ export interface operations {
             };
         };
     };
-    createSource: {
+    createBilibiliSource: {
         parameters: {
             query?: never;
             header: {
@@ -2418,7 +2495,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateSourceRequest"];
+                "application/json": components["schemas"]["CreateBilibiliSourceRequest"];
             };
         };
         responses: {
@@ -2431,6 +2508,34 @@ export interface operations {
                     "application/json": components["schemas"]["Source"];
                 };
             };
+        };
+    };
+    createZSXQSource: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateZSXQSourceRequest"];
+            };
+        };
+        responses: {
+            /** @description Source created from a group visible to the connected account */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Source"];
+                };
+            };
+            409: components["responses"]["ConflictError"];
+            422: components["responses"]["InvalidRequest"];
         };
     };
     updateSource: {

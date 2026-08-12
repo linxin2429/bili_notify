@@ -81,8 +81,8 @@ func TestApplicationHTTPIntegration(t *testing.T) {
 	assert.NotEmpty(t, channel["id"])
 	assert.NotContains(t, channel, "secrets")
 
-	response = integrationRequest(t, client, http.MethodPost, adminURL+"/api/v4/sources", csrf, map[string]any{
-		"platform": "bilibili", "type": "up", "external_id": "42", "name": "integration UP", "note": "", "enabled": true,
+	response = integrationRequest(t, client, http.MethodPost, adminURL+"/api/v4/sources/bilibili", csrf, map[string]any{
+		"uid": "42", "name": "integration UP", "note": "", "enabled": true,
 	})
 	assert.Equal(t, http.StatusCreated, response.StatusCode)
 	closeIntegrationResponse(t, response)

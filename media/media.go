@@ -27,11 +27,62 @@ const (
 	// MaxFileSize is the hard download limit per media item.
 	MaxFileSize int64 = 10 << 20
 	// WeComMaxImageSize is the WeCom robot image payload limit (raw bytes).
-	WeComMaxImageSize int64 = 2 << 20
+	WeComMaxImageSize    int64 = 2 << 20
+	FeishuMaxFileSize    int64 = 30 << 20
+	WeComMaxFileSize     int64 = 20 << 20
+	MicrosoftMaxFileSize int64 = 150 << 20
 )
 
 // ErrTooLarge is returned when a remote object exceeds MaxFileSize.
 var ErrTooLarge = errors.New("media exceeds size limit")
+
+// OpenFile opens an archived media file without following symbolic links out
+// of data_dir/media. The caller owns the returned file.
+func OpenFile(dataDir, relative string) (*os.File, int64, string, error) {
+	abs, err := Resolve(dataDir, relative)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	mediaRoot, err := filepath.Abs(filepath.Join(dataDir, "media"))
+	if err != nil {
+		return nil, 0, "", err
+	}
+	rel, err := filepath.Rel(mediaRoot, abs)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, 0, "", errors.New("media path is outside media directory")
+	}
+	if err := rejectSymlinkPath(dataDir, abs, false); err != nil {
+		return nil, 0, "", err
+	}
+	file, err := os.Open(abs)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, 0, "", err
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, 0, "", errors.New("media path is not a regular file")
+	}
+	buffer := make([]byte, 512)
+	read, readErr := file.Read(buffer)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		_ = file.Close()
+		return nil, 0, "", readErr
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		_ = file.Close()
+		return nil, 0, "", err
+	}
+	contentType := "application/octet-stream"
+	if read > 0 {
+		contentType = http.DetectContentType(buffer[:read])
+	}
+	return file, info.Size(), contentType, nil
+}
 
 // Downloader fetches Bilibili CDN media into the platform/source/content tree.
 type Downloader struct {

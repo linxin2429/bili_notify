@@ -3,6 +3,7 @@ package zsxq
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ const AccessTokenKey = "zsxq_access_token"
 var ErrInvalidCookie = errors.New("invalid Knowledge Planet cookie")
 
 type AccountStore interface {
+	PlatformAccount(model.Platform) (model.PlatformAccount, error)
 	PutPlatformAccount(model.PlatformAccount) error
 }
 
@@ -80,4 +82,30 @@ func (manager *AccountManager) ImportCookie(ctx context.Context, rawCookie strin
 	}
 	account.Session = nil
 	return account, nil
+}
+
+func (manager *AccountManager) Groups(ctx context.Context) ([]Group, error) {
+	account, err := manager.store.PlatformAccount(model.PlatformZSXQ)
+	if err != nil {
+		return nil, fmt.Errorf("loading Knowledge Planet account: %w", err)
+	}
+	if account.Status != model.AccountConnected {
+		return nil, ErrAuthentication
+	}
+	token, err := AccessToken(account)
+	if err != nil {
+		return nil, err
+	}
+	groups, err := manager.client.Groups(ctx, token)
+	if !errors.Is(err, ErrAuthentication) {
+		return groups, err
+	}
+	account.Status = model.AccountInvalid
+	account.Session = map[string]string{}
+	account.LastError = "session import required"
+	account.UpdatedAt = manager.now()
+	if storeErr := manager.store.PutPlatformAccount(account); storeErr != nil {
+		return nil, fmt.Errorf("invalidating rejected Knowledge Planet session: %w", storeErr)
+	}
+	return nil, err
 }

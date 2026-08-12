@@ -2,6 +2,7 @@ package state
 
 import (
 	"errors"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -10,6 +11,36 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestKnowledgePlanetOutboxSnapshotsNonImageAttachments(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 199)
+	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "planet"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "planet", Name: "Planet", Enabled: true}
+	require.NoError(t, store.PutSource(source))
+	putEnabledTestChannel(t, store)
+	content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "topic"), Platform: model.PlatformZSXQ, SourceID: source.ID, ExternalID: "topic", UpstreamType: "talk", Type: model.ContentDiscussion, AuthorName: "Author", PublishedAt: time.Now(), URL: "https://example.test/topic"}
+	attachments := []model.Attachment{
+		{ID: "file", ContentID: content.ID, ExternalID: "f", Type: model.AttachmentFile, FileName: "original.pdf", MIME: "application/pdf", Size: 9, LocalPath: "media/zsxq/file-local.pdf"},
+		{ID: "audio", ContentID: content.ID, ExternalID: "a", Type: model.AttachmentAudio, MIME: "audio/mpeg", LocalPath: "media/zsxq/local.mp3"},
+		{ID: "video", ContentID: content.ID, ExternalID: "v", Type: model.AttachmentVideo, FileName: "clip.mp4", LocalizeError: "attachment localization failed"},
+		{ID: "image", ContentID: content.ID, ExternalID: "i", Type: model.AttachmentImage, LocalPath: "media/zsxq/image.png"},
+	}
+	require.NoError(t, store.ArchiveContentAndEnqueue(content, attachments, nil, true))
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	require.Len(t, deliveries[0].Dynamic.Files, 3)
+	assert.Equal(t, "original.pdf", deliveries[0].Dynamic.Files[0].Name)
+	assert.Equal(t, "附件-2.mp3", deliveries[0].Dynamic.Files[1].Name)
+	assert.Equal(t, "attachment localization failed", deliveries[0].Dynamic.Files[2].LocalizeError)
+
+	attachments[0].FileName = "edited.pdf"
+	require.NoError(t, store.ArchiveContent(content, attachments))
+	after, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	assert.Equal(t, "original.pdf", after[0].Dynamic.Files[0].Name)
+	assert.Equal(t, filepath.ToSlash("media/zsxq/file-local.pdf"), after[0].Dynamic.Files[0].LocalPath)
+}
 
 func TestCreateSourceEnforcesIdentityAndLimitAtomically(t *testing.T) {
 	t.Parallel()

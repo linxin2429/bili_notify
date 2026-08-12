@@ -15,6 +15,7 @@ export type BiliLogin = Schemas['BilibiliLogin'] | null
 export type MicrosoftLogin = Schemas['MicrosoftLogin']
 export type RuntimeSettings = Schemas['RuntimeSettings']
 export type PlatformAccount = Schemas['PlatformAccount']
+export type ZSXQGroup = Schemas['ZSXQGroup']
 export type Source = Schemas['Source']
 export type UnifiedContent = Schemas['Content']
 export type Attachment = Schemas['Attachment']
@@ -35,7 +36,7 @@ export type ChannelDraft =
   | { id?: string; name: string; type: 'email'; enabled: boolean; settings: { host: string; port: string; username: string; from: string; to: string; tls: string }; secrets?: { password?: string } }
   | { id?: string; name: string; type: 'microsoft'; enabled: boolean; settings: { client_id: string; tenant: string; to: string }; secrets?: never }
   | { id?: string; name: string; type: 'dingtalk'; enabled: boolean; settings: Record<string, never>; secrets?: { webhook?: string; secret?: string } }
-  | { id?: string; name: string; type: 'feishu'; enabled: boolean; settings: { app_id: string }; secrets?: { webhook?: string; secret?: string; app_secret?: string } }
+  | { id?: string; name: string; type: 'feishu'; enabled: boolean; settings: { app_id: string; chat_id: string }; secrets?: { app_secret?: string } }
   | { id?: string; name: string; type: 'wecom'; enabled: boolean; settings: Record<string, never>; secrets?: { webhook?: string } }
 
 export interface ContentQuery { uid?: string; platform?: 'bilibili' | 'zsxq'; source_id?: string; q?: string; from?: string; to?: string; limit?: number; after?: string }

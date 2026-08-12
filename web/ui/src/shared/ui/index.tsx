@@ -30,8 +30,8 @@ export function NativeDateTimeField({ label, value, onChange }: { label: string;
   return <label className="field"><span>{label}</span><input type="datetime-local" value={value} onChange={event => onChange(event.target.value)} /></label>
 }
 
-export function SelectField({ label, value, options, onChange, disabled = false }: { label: string; value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void; disabled?: boolean }) {
-  return <label className="field select"><span>{label}</span><select value={value} onChange={event => onChange(event.target.value)} disabled={disabled}>{options.map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
+export function SelectField({ label, value, options, onChange, disabled = false }: { label: string; value: string; options: Array<{ value: string; label: string; disabled?: boolean }>; onChange: (value: string) => void; disabled?: boolean }) {
+  return <label className="field select"><span>{label}</span><select value={value} onChange={event => onChange(event.target.value)} disabled={disabled}>{options.map(option => <option value={option.value} key={option.value} disabled={option.disabled}>{option.label}</option>)}</select></label>
 }
 
 export function SwitchField({ checked, onChange, children }: { checked: boolean; onChange: (value: boolean) => void; children: React.ReactNode }) {

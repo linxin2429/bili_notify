@@ -204,17 +204,18 @@ func TestFeishuAppCredentialsValidation(t *testing.T) {
 		wantErr  string
 	}{
 		{
-			name:     "webhook only",
+			name:     "application robot",
+			settings: map[string]string{"app_id": "cli_a", "app_secret": "sec", "chat_id": "oc_group"},
+		},
+		{
+			name:     "missing chat id",
+			settings: map[string]string{"app_id": "cli_a", "app_secret": "sec"},
+			wantErr:  "chat_id",
+		},
+		{
+			name:     "webhook is no longer sufficient",
 			settings: map[string]string{"webhook": "https://open.feishu.cn/hook", "secret": "s"},
-		},
-		{
-			name:     "paired app credentials",
-			settings: map[string]string{"webhook": "https://open.feishu.cn/hook", "secret": "s", "app_id": "cli_a", "app_secret": "sec"},
-		},
-		{
-			name:     "app_id alone",
-			settings: map[string]string{"webhook": "https://open.feishu.cn/hook", "secret": "s", "app_id": "cli_a"},
-			wantErr:  "app_id and app_secret",
+			wantErr:  "not supported",
 		},
 	}
 	for _, tt := range tests {

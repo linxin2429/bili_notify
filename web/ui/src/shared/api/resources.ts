@@ -3,7 +3,7 @@ import {
   auditLogPageSchema, biliLoginSchema, channelSchema,
   deliveryPageSchema, emptyResponseSchema, microsoftLoginSchema, queuedStatusSchema,
   runtimeSchema, runtimeSettingsSchema, sentStatusSchema,
-  platformAccountSchema, sourceSchema,
+  platformAccountSchema, zsxqGroupSchema, sourceSchema,
   contentPageSchema, contentDetailSchema, commentTreeSchema,
   aiWorkerStatusSchema, aiProfileSchema, aiProfileTestResultSchema, aiPromptSchema, aiJobSchema, aiJobPageSchema, canceledStatusSchema,
 } from './contracts'
@@ -17,6 +17,7 @@ export const resources = {
   runtime: (signal?: AbortSignal) => requestJSON(`${apiRoot}/runtime`, runtimeSchema, { signal }),
   settings: (signal?: AbortSignal) => requestJSON(`${apiRoot}/settings`, runtimeSettingsSchema, { signal }),
   accounts: (signal?: AbortSignal) => requestJSON(`${apiRoot}/accounts`, array(platformAccountSchema), { signal }),
+  zsxqGroups: (signal?: AbortSignal) => requestJSON(`${apiRoot}/accounts/zsxq/groups`, array(zsxqGroupSchema), { signal }),
   sources: (platform = '', signal?: AbortSignal) => requestJSON(`${apiRoot}/sources${queryString({ platform })}`, array(sourceSchema), { signal }),
   contents: (query: ContentQuery, signal?: AbortSignal) => requestJSON(`${apiRoot}/contents${queryString(query)}`, contentPageSchema, { signal }),
   content: (id: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/contents/${encodeURIComponent(id)}`, contentDetailSchema, { signal }),
@@ -32,7 +33,8 @@ export const resources = {
   aiJobs: (query: { kind?: string; state?: string; limit?: number; offset?: number } = {}, signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/jobs${queryString(query)}`, aiJobPageSchema, { signal }),
   aiJob: (id: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/jobs/${encodeURIComponent(id)}`, aiJobSchema, { signal }),
 
-  createSource: (csrf: string, input: { platform: 'bilibili' | 'zsxq'; type: 'up' | 'planet'; external_id: string; name: string; note: string; enabled: boolean }) => write(`${apiRoot}/sources`, sourceSchema, 'POST', csrf, input),
+  createBilibiliSource: (csrf: string, input: { uid: string; name: string; note: string; enabled: boolean }) => write(`${apiRoot}/sources/bilibili`, sourceSchema, 'POST', csrf, input),
+  createZSXQSource: (csrf: string, input: { group_id: string; note: string; enabled: boolean }) => write(`${apiRoot}/sources/zsxq`, sourceSchema, 'POST', csrf, input),
   updateSource: (csrf: string, input: Pick<Source, 'id' | 'name' | 'note' | 'enabled'>) => write(`${apiRoot}/sources/${encodeURIComponent(input.id)}`, sourceSchema, 'PUT', csrf, { name: input.name, note: input.note || '', enabled: input.enabled }),
   deleteSource: (csrf: string, id: string) => write(`${apiRoot}/sources/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
   importZSXQToken: (csrf: string, cookie: string) => write(`${apiRoot}/accounts/zsxq/token`, platformAccountSchema, 'POST', csrf, { cookie }),

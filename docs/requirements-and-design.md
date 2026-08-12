@@ -62,13 +62,19 @@ B站适配器使用二维码生成、二维码轮询、导航验证、关注关�
 
 动态类型按实际内容归一化：B 站返回为 `DYNAMIC_TYPE_DRAW` 但图文卡片没有图片时记为 `DYNAMIC_TYPE_WORD`；有图片时仍为 `DRAW`。评论区坐标优先取动态 `basic.comment_type` 与 `basic.comment_id_str`，且始终以 B 站原始类型解释坐标；因此无图文字 opus 仍可能使用相簿评论区 11。缺失 `basic` 时仅对可确定映射的原始类型兜底（视频 avid、文字/转发动态 id、专栏 cvid）。图文动态在无 `basic` 时不得猜测 11/17，直接跳过跟踪。转发评论区挂在转发自身。PGC 与通用卡片不进入评论跟踪。
 
-SMTP 只支持隐式 TLS 和 STARTTLS，并校验证书。Microsoft 使用 OAuth 2.0 设备码与委托 `Mail.Send` 权限，访问令牌过期时自动刷新并持久化。钉钉、飞书和企业微信使用 HTTPS Webhook，钉钉与飞书要求签名密钥。飞书渠道可额外配置成对的应用 `app_id` / `app_secret`，用于上传图片并在 `post` 中内嵌 `image_key`；未配置时图片仍以链接展示。
+SMTP 只支持隐式 TLS 和 STARTTLS，并校验证书。Microsoft 使用 OAuth 2.0 设备码与委托 `Mail.Send`、`Mail.ReadWrite` 权限，访问令牌过期时自动刷新并持久化。钉钉与企业微信使用 HTTPS Webhook；飞书只使用应用机器人，要求 `app_id`、`app_secret` 和目标群 `chat_id`，应用必须启用机器人、拥有消息发送及图片/文件上传权限并已加入目标群。权限扩大的升级会禁用 Microsoft 渠道并清除旧授权；飞书升级会删除废弃的 Webhook/签名秘密，并禁用缺少 `chat_id` 的渠道。
 
 所有通知 HTTP 协议响应最多读取 1 MiB；成功响应超过上限、JSON 损坏、业务码缺失或类型漂移都视为永久协议错误，避免把无法证明成功的响应误判为已投递。网络故障、HTTP 429 和 5xx 可重试，`Retry-After`（秒数或 HTTP 日期）是重试调度的最小等待时间；4xx、OAuth 凭据失效和明确业务错误进入阻塞。错误只保留操作名、HTTP 状态和业务码，不拼接响应正文、请求 URL、OAuth 描述或飞书 `msg`，避免 Webhook 查询签名、令牌及上游回显秘密进入日志。
 
 附件统一落在 `data_dir/media/{platform}/{source_id}/{content_id}/`。B 站继续只下载可安全识别的图片并维持 10 MiB 单图保护；知识星球支持图片、文件、音频和视频，默认单件上限 500 MiB、平台总预算 50 GiB。超过单件限制或总预算时只保留元数据，不删除旧档案，也不阻断正文、评论和通知。所有下载只接受 HTTP(S) 公网目标，每次重定向重新校验；路径段由 `pathologize` 生成，临时文件为 `0600`，最终提交由 `fileflow` 执行冲突安全移动并持久化其实际返回路径，路径穿越和符号链接均拒绝。知识星球 Authorization 只发送给原始 API 域名，跳转或 CDN 请求会剥离敏感请求头；签名下载 URL 和本地绝对路径不出现在日志、通知或列表响应。认证附件端点支持 Range，并设置 attachment disposition 与 `nosniff`。清理器不递归删除不可信目录，只删除任务指定文件并向上修剪 `media/` 内的空目录；越界或符号链接路径进入阻塞状态。
 
-动态通知保存接口返回的完整正文，并按类型提取标题、简介、内容直达链接、富文本链接、封面或多图、视频时长与播放信息、互动统计和转发原文；动态正文本身不为补充内容发起额外的 B 站请求。升级后每个已有 UP 首次可见的充电动态只归档并建立 seen 基线，不投递；同批普通新动态照常投递，后续新充电动态正常投递。评论通知在发现 UP 回复后按 root 展开对话串。邮件与 Microsoft Graph 在存在本地文件时以内联 CID/附件嵌入图片，否则退回远程 `<img src>`；钉钉自定义机器人继续使用可展示外链图片的 Markdown（`![](CDN URL)`，不用本地文件）；飞书在配置应用凭证且本地文件可用时上传并内嵌图片，否则列为链接；企业微信先发正文 Markdown，再按序追加 `msgtype=image`（原始字节 ≤2 MiB），并在 Outbox `progress` 中记录已成功段以便重试不重复。机器人消息在各平台限制内按 UTF-8 边界截断，始终保留截断提示和原内容链接。
+动态通知保存接口返回的完整正文，并按类型提取标题、简介、内容直达链接、富文本链接、封面或多图、视频时长与播放信息、互动统计和转发原文；动态正文本身不为补充内容发起额外的 B 站请求。升级后每个已有 UP 首次可见的充电动态只归档并建立 seen 基线，不投递；同批普通新动态照常投递，后续新充电动态正常投递。评论通知在发现 UP 回复后按 root 展开对话串。邮件与 Microsoft Graph 在存在本地文件时以内联 CID/附件嵌入图片，否则退回远程 `<img src>`；钉钉自定义机器人继续使用可展示外链图片的 Markdown（`![](CDN URL)`，不用本地文件）；飞书应用机器人上传本地图片并在富文本中嵌入；企业微信先发正文 Markdown，再按序追加 `msgtype=image`（原始字节 ≤2 MiB）。机器人消息在各平台限制内按 UTF-8 边界截断，始终保留截断提示和原内容链接。
+
+知识星球新内容进入 Outbox 时，会把全部非图片附件（`file`、`audio`、`video`）的稳定 ID、原始名称、MIME、声明大小、本地相对路径和本地化错误复制进不可变载荷；已有附件链接仍保留。因此内容编辑、附件表变化和签名下载地址失效都不会改变已排队通知。空名称按顺序生成“附件-N”，并尽量从 MIME 或归档路径保留扩展名。投递时通过受约束的流式打开接口再次验证文件位于 `data_dir/media`、路径不含符号链接且目标是普通文件，以实际大小作为渠道判断依据。
+
+正文总是在普通文件之前确认发送。SMTP 把普通文件作为 MIME attachment 流式发送且不设置应用侧大小上限；Microsoft 先建立草稿，小于 3 MiB 的文件直接添加，3–150 MiB 使用 320 KiB 整数倍的分片上传会话，最后发送草稿；飞书逐个上传并发送 `msg_type=file`，单文件上限 30 MiB；企业微信从机器人 Webhook 安全提取 key，上传临时素材再发送 `msgtype=file`，合法范围是 5 B–20 MiB；钉钉不上传普通文件，继续展示附件名称和原内容链接。未本地化、已丢失、空文件或渠道超限的文件不会阻断其余内容，正文会明确列出文件名、实际/声明大小和跳过原因。
+
+Outbox `progress` 分别记录正文段、图片数、普通文件数和 Microsoft 草稿 ID。飞书、企业微信和 Microsoft 在重试时从首个未确认文件继续，避免重复发送已确认的部分；鉴权、配置与确定性业务协议错误进入 blocked，网络、429 和 5xx 沿用退避重试。带本地媒体的单次投递和 SMTP 操作允许最长 15 分钟；HTTP 仍限制连接、TLS 握手和响应头时间，但不使用会截断流式请求体的全局 10 秒期限。升级前已经排队的载荷不反向补造附件快照。
 
 ## 4. 管理接口与实时协议
 
@@ -86,8 +92,8 @@ HTTP 承担认证生命周期和全部管理资源 API：
 | `GET /api/v4/runtime`、`GET /api/v4/settings` | 分别读取运行状态/时区和完整运行设置 |
 | `GET /api/v4/accounts` | 读取 B 站与知识星球账号的非秘密状态 |
 | `GET/POST /api/v4/accounts/bilibili/qr`、`DELETE /api/v4/accounts/bilibili/qr/{id}`、`DELETE /api/v4/accounts/bilibili/session` | 查询、建立或取消二维码事务，以及清除 B 站会话 |
-| `POST /api/v4/accounts/zsxq/token`、`DELETE /api/v4/accounts/zsxq/session` | 导入知识星球 Cookie 中的 access token 及注销 |
-| `GET/POST /api/v4/sources`、`PUT/DELETE /api/v4/sources/{id}` | 查询、手动创建 B 站或知识星球来源、启停或删除跨平台采集源 |
+| `POST /api/v4/accounts/zsxq/token`、`DELETE /api/v4/accounts/zsxq/session`、`GET /api/v4/accounts/zsxq/groups` | 导入知识星球 Cookie 中的 access token、注销及实时读取账号可见星球 |
+| `GET /api/v4/sources`、`POST /api/v4/sources/bilibili`、`POST /api/v4/sources/zsxq`、`PUT/DELETE /api/v4/sources/{id}` | 查询采集源；分别添加 B 站 UP 或从登录账号星球中添加知识星球；启停或删除来源 |
 | `GET /api/v4/contents[/{id}]` | 按平台、来源、关键字、时间和稳定游标查询统一内容 |
 | `GET /api/v4/contents/{id}/comments` | 返回稳定重建的嵌套评论树 |
 | `GET /api/v4/contents/{id}/attachments/{attachment_id}` | 认证下载本地附件，支持 Range |

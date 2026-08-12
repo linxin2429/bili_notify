@@ -35,8 +35,8 @@ func TestAdminAPILifecycle(t *testing.T) {
 	t.Parallel()
 	fixture := newAdminAPIFixture(t, nil)
 
-	response := fixture.request(t, http.MethodPost, "/api/v4/sources", map[string]any{
-		"platform": "bilibili", "type": "up", "external_id": "42", "name": "first name", "note": "", "enabled": true,
+	response := fixture.request(t, http.MethodPost, "/api/v4/sources/bilibili", map[string]any{
+		"uid": "42", "name": "first name", "note": "", "enabled": true,
 	}, true)
 	assert.Equal(t, http.StatusCreated, response.Code)
 	var createdSource model.Source
@@ -44,20 +44,13 @@ func TestAdminAPILifecycle(t *testing.T) {
 	assert.Equal(t, "42", createdSource.ExternalID)
 	assert.Equal(t, model.SourceBilibiliUP, createdSource.Type)
 
-	response = fixture.request(t, http.MethodPost, "/api/v4/sources", map[string]any{
-		"platform": "bilibili", "type": "up", "external_id": "42", "name": "duplicate", "note": "", "enabled": true,
+	response = fixture.request(t, http.MethodPost, "/api/v4/sources/bilibili", map[string]any{
+		"uid": "42", "name": "duplicate", "note": "", "enabled": true,
 	}, true)
 	assertAPIError(t, response, http.StatusConflict, "conflict")
 
-	response = fixture.request(t, http.MethodPost, "/api/v4/sources", map[string]any{
-		"platform": "zsxq", "type": "planet", "external_id": "9", "name": "Planet", "note": "manual", "enabled": false,
-	}, true)
-	assert.Equal(t, http.StatusCreated, response.Code)
-	var planet model.Source
-	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &planet))
-	assert.Equal(t, model.SourceZSXQPlanet, planet.Type)
-	assert.Equal(t, "zsxq:planet:9", planet.ID)
-	assert.False(t, planet.Enabled)
+	planet := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "9", Name: "Planet", Enabled: false}
+	require.NoError(t, fixture.store.CreateSource(planet))
 
 	response = fixture.request(t, http.MethodPut, "/api/v4/sources/bilibili:up:42", map[string]any{
 		"name": "updated name", "note": "note", "enabled": false,
@@ -135,6 +128,51 @@ func TestAdminAPILifecycle(t *testing.T) {
 	response = fixture.request(t, http.MethodDelete, "/api/v4/sources/zsxq:planet:9", nil, true)
 	assert.Equal(t, http.StatusNoContent, response.Code)
 	assert.Greater(t, fixture.events.Revision(), uint64(0))
+}
+
+func TestZSXQGroupDiscoveryAndSourceCreation(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v2/groups", r.URL.Path)
+		assert.Equal(t, "session-secret", r.Header.Get("Authorization"))
+		writeJSON(w, http.StatusOK, map[string]any{"succeeded": true, "code": 0, "resp_data": map[string]any{"groups": []map[string]any{
+			{"group_id": 9, "name": "账号星球", "owner": map[string]any{"user_id": 8, "name": "星主"}},
+		}}})
+	}))
+	t.Cleanup(upstream.Close)
+	fixture := newAdminAPIFixture(t, nil)
+	require.NoError(t, fixture.store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "7", DisplayName: "成员", Status: model.AccountConnected, Session: map[string]string{zsxq.AccessTokenKey: "session-secret"}}))
+	client, err := zsxq.New(upstream.Client(), "web-zsxq-test", zsxq.WithBaseURL(upstream.URL))
+	require.NoError(t, err)
+	manager, err := zsxq.NewAccountManager(client, fixture.store)
+	require.NoError(t, err)
+	fixture.server.zsxqAccounts = manager
+
+	response := fixture.request(t, http.MethodGet, "/api/v4/accounts/zsxq/groups", nil, false)
+	assert.Equal(t, http.StatusOK, response.Code)
+	assert.JSONEq(t, `[{"id":"9","name":"账号星球","owner_id":"8","owner_name":"星主"}]`, response.Body.String())
+	assert.NotContains(t, response.Body.String(), "session-secret")
+
+	response = fixture.request(t, http.MethodPost, "/api/v4/sources/zsxq", map[string]any{"group_id": "9", "note": "重点", "enabled": true}, true)
+	assert.Equal(t, http.StatusCreated, response.Code)
+	var source model.Source
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &source))
+	assert.Equal(t, "账号星球", source.Name)
+	assert.Equal(t, "8", source.OwnerID)
+	assert.Equal(t, "星主", source.OwnerName)
+	assert.Equal(t, "重点", source.Note)
+
+	response = fixture.request(t, http.MethodPost, "/api/v4/sources/zsxq", map[string]any{"group_id": "10", "note": "", "enabled": true}, true)
+	assertAPIError(t, response, http.StatusUnprocessableEntity, "validation_failed")
+	response = fixture.request(t, http.MethodPost, "/api/v4/sources", map[string]any{}, true)
+	assert.Equal(t, http.StatusMethodNotAllowed, response.Code)
+
+	disconnected := newAdminAPIFixture(t, nil)
+	disconnectedManager, err := zsxq.NewAccountManager(client, disconnected.store)
+	require.NoError(t, err)
+	disconnected.server.zsxqAccounts = disconnectedManager
+	response = disconnected.request(t, http.MethodGet, "/api/v4/accounts/zsxq/groups", nil, false)
+	assertAPIError(t, response, http.StatusConflict, "account_not_connected")
 }
 
 func TestBilibiliLoginHTTPAPIAndAuditLifecycle(t *testing.T) {
@@ -498,14 +536,12 @@ func TestAdminAPIRequestValidation(t *testing.T) {
 		status int
 		code   string
 	}{
-		{name: "invalid json", method: http.MethodPost, path: "/api/v4/sources", body: `{`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "unknown field", method: http.MethodPost, path: "/api/v4/sources", body: `{"platform":"bilibili","external_id":"42","name":"up","enabled":true,"unknown":1}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid json", method: http.MethodPost, path: "/api/v4/sources/bilibili", body: `{`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "unknown field", method: http.MethodPost, path: "/api/v4/sources/bilibili", body: `{"uid":"42","name":"up","note":"","enabled":true,"unknown":1}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "channel create id belongs to server", method: http.MethodPost, path: "/api/v4/channels", body: `{"id":"client-id","name":"mail","type":"email","enabled":true,"settings":{}}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "channel update id belongs to path", method: http.MethodPut, path: "/api/v4/channels/server-id", body: `{"id":"client-id","name":"mail","type":"email","enabled":true,"settings":{}}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "multiple values", method: http.MethodPost, path: "/api/v4/sources", body: `{} {}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "invalid source", method: http.MethodPost, path: "/api/v4/sources", body: `{"platform":"bilibili","type":"up","external_id":"","name":"up","note":"","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
-		{name: "Bilibili source type mismatch", method: http.MethodPost, path: "/api/v4/sources", body: `{"platform":"bilibili","type":"planet","external_id":"42","name":"up","note":"","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
-		{name: "Knowledge Planet source type mismatch", method: http.MethodPost, path: "/api/v4/sources", body: `{"platform":"zsxq","type":"up","external_id":"9","name":"planet","note":"","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
+		{name: "multiple values", method: http.MethodPost, path: "/api/v4/sources/bilibili", body: `{} {}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid source", method: http.MethodPost, path: "/api/v4/sources/bilibili", body: `{"uid":"","name":"up","note":"","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
 		{name: "missing settings", method: http.MethodPut, path: "/api/v4/settings", body: `{"poll_interval_sec":30}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "short retry settings", method: http.MethodPut, path: "/api/v4/settings", body: string(shortRetryJSON), status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "unknown setting", method: http.MethodPut, path: "/api/v4/settings", body: string(unknownSettingsJSON), status: http.StatusBadRequest, code: "invalid_request"},
@@ -541,7 +577,7 @@ func TestAdminAPIWriteAuthorization(t *testing.T) {
 		method string
 		path   string
 	}{
-		{name: "create source", method: http.MethodPost, path: "/api/v4/sources"},
+		{name: "create source", method: http.MethodPost, path: "/api/v4/sources/bilibili"},
 		{name: "update source", method: http.MethodPut, path: "/api/v4/sources/bilibili:up:42"},
 		{name: "delete source", method: http.MethodDelete, path: "/api/v4/sources/bilibili:up:42"},
 		{name: "create channel", method: http.MethodPost, path: "/api/v4/channels"},

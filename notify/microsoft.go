@@ -7,14 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/mail"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/linxin2429/bili_notify/media"
+	"github.com/linxin2429/bili_notify/model"
 	"golang.org/x/oauth2"
 )
 
@@ -47,7 +50,7 @@ func microsoftOAuthConfig(settings map[string]string, endpoints microsoftEndpoin
 			TokenURL:      endpoints.tokenURL,
 			AuthStyle:     oauth2.AuthStyleInParams,
 		},
-		Scopes: []string{"offline_access", "https://graph.microsoft.com/Mail.Send"},
+		Scopes: []string{"offline_access", "https://graph.microsoft.com/Mail.Send", "https://graph.microsoft.com/Mail.ReadWrite"},
 	}
 }
 
@@ -214,6 +217,238 @@ func (s *microsoftSender) Send(ctx context.Context, message Message) error {
 	return &PermanentError{Err: graphErr}
 }
 
+// SendProgressive uses a persisted draft so file attachment and final-send
+// retries do not recreate already confirmed work.
+func (s *microsoftSender) SendProgressive(ctx context.Context, message Message, progress *model.DeliveryProgress) (*model.DeliveryProgress, error) {
+	current := model.DeliveryProgress{}
+	if progress != nil {
+		current = *progress
+	}
+	message, files := classifyFiles(message, s.dataDir, 1, media.MicrosoftMaxFileSize)
+	if len(message.Files) == 0 {
+		err := s.Send(ctx, message)
+		if err == nil {
+			current.TextSent = true
+		}
+		return &current, err
+	}
+	token, err := s.accessToken(ctx)
+	if err != nil {
+		return &current, err
+	}
+	if current.MicrosoftDraftID == "" {
+		draftID, err := s.createDraft(ctx, token, message)
+		if err != nil {
+			return &current, err
+		}
+		current.MicrosoftDraftID = draftID
+		current.TextSent = true
+	}
+	for index := current.FilesSent; index < len(files); index++ {
+		if files[index].Size < 3<<20 {
+			err = s.addSmallAttachment(ctx, token, current.MicrosoftDraftID, files[index])
+		} else {
+			err = s.addLargeAttachment(ctx, token, current.MicrosoftDraftID, files[index])
+		}
+		if err != nil {
+			return &current, err
+		}
+		current.FilesSent = index + 1
+	}
+	endpoint := s.graphMessagesURL() + "/" + url.PathEscape(current.MicrosoftDraftID) + "/send"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return &current, &PermanentError{Err: err}
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if err := s.doGraph(ctx, req, http.StatusAccepted, nil); err != nil {
+		return &current, err
+	}
+	return &current, nil
+}
+
+func (s *microsoftSender) accessToken(ctx context.Context) (string, error) {
+	token, err := microsoftTokenFromSettings(s.settings)
+	if err != nil {
+		return "", &PermanentError{Err: err}
+	}
+	config := microsoftOAuthConfig(s.settings, s.endpoints)
+	current, err := config.TokenSource(oauthContext(ctx, s.client), token).Token()
+	if err != nil {
+		return "", classifyMicrosoftTokenError(err)
+	}
+	if microsoftTokenChanged(token, current) {
+		if s.updateSettings == nil {
+			return "", errors.New("persisting refreshed Microsoft token: settings updater is required")
+		}
+		if err := s.updateSettings(microsoftTokenSettings(current)); err != nil {
+			return "", fmt.Errorf("persisting refreshed Microsoft token: %w", err)
+		}
+	}
+	return current.AccessToken, nil
+}
+
+func (s *microsoftSender) graphMessagesURL() string {
+	if strings.HasSuffix(s.endpoints.graphSendURL, "/me/sendMail") {
+		return strings.TrimSuffix(s.endpoints.graphSendURL, "/sendMail") + "/messages"
+	}
+	return strings.TrimSuffix(s.endpoints.graphSendURL, "/") + "/messages"
+}
+
+func (s *microsoftSender) createDraft(ctx context.Context, token string, message Message) (string, error) {
+	recipients := make([]map[string]any, 0, len(s.recipients))
+	for _, recipient := range s.recipients {
+		recipients = append(recipients, map[string]any{"emailAddress": map[string]string{"address": recipient}})
+	}
+	inline := make([]map[string]any, 0)
+	htmlBody := renderHTMLWithCID(message, func(image Image, index int) string {
+		if image.LocalPath == "" {
+			return ""
+		}
+		data, detected, err := media.ReadFile(s.dataDir, image.LocalPath)
+		if err != nil || len(data) == 0 {
+			return ""
+		}
+		cid := fmt.Sprintf("image-%d", index)
+		inline = append(inline, map[string]any{"@odata.type": "#microsoft.graph.fileAttachment", "name": filepath.Base(image.LocalPath),
+			"contentType": firstNonEmpty(image.ContentType, detected, "application/octet-stream"), "contentBytes": base64.StdEncoding.EncodeToString(data), "contentId": cid, "isInline": true})
+		return cid
+	})
+	payload := map[string]any{"subject": message.Subject, "body": map[string]string{"contentType": "HTML", "content": htmlBody}, "toRecipients": recipients}
+	if len(inline) > 0 {
+		payload["attachments"] = inline
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", &PermanentError{Err: fmt.Errorf("encoding Microsoft draft: %w", err)}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.graphMessagesURL(), bytes.NewReader(body))
+	if err != nil {
+		return "", &PermanentError{Err: err}
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	var response struct {
+		ID string `json:"id"`
+	}
+	if err := s.doGraph(ctx, req, http.StatusCreated, &response); err != nil {
+		return "", err
+	}
+	if response.ID == "" {
+		return "", &PermanentError{Err: errors.New("Microsoft Graph draft response is missing id")}
+	}
+	return response.ID, nil
+}
+
+func (s *microsoftSender) addSmallAttachment(ctx context.Context, token, draftID string, item model.DeliveryFile) error {
+	file, _, detected, err := media.OpenFile(s.dataDir, item.LocalPath)
+	if err != nil {
+		return fmt.Errorf("opening Microsoft attachment %q: %w", item.Name, err)
+	}
+	data, err := io.ReadAll(file)
+	_ = file.Close()
+	if err != nil {
+		return fmt.Errorf("reading Microsoft attachment %q: %w", item.Name, err)
+	}
+	payload := map[string]any{"@odata.type": "#microsoft.graph.fileAttachment", "name": item.Name,
+		"contentType": firstNonEmpty(item.MIME, detected, "application/octet-stream"), "contentBytes": base64.StdEncoding.EncodeToString(data)}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return &PermanentError{Err: err}
+	}
+	endpoint := s.graphMessagesURL() + "/" + url.PathEscape(draftID) + "/attachments"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return &PermanentError{Err: err}
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	return s.doGraph(ctx, req, http.StatusCreated, nil)
+}
+
+func (s *microsoftSender) addLargeAttachment(ctx context.Context, token, draftID string, item model.DeliveryFile) error {
+	payload := map[string]any{"AttachmentItem": map[string]any{"attachmentType": "file", "name": item.Name, "size": item.Size}}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return &PermanentError{Err: err}
+	}
+	endpoint := s.graphMessagesURL() + "/" + url.PathEscape(draftID) + "/attachments/createUploadSession"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return &PermanentError{Err: err}
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	var session struct {
+		UploadURL string `json:"uploadUrl"`
+	}
+	if err := s.doGraph(ctx, req, http.StatusOK, &session); err != nil {
+		return err
+	}
+	if session.UploadURL == "" {
+		return &PermanentError{Err: errors.New("Microsoft upload session is missing uploadUrl")}
+	}
+	file, actual, _, err := media.OpenFile(s.dataDir, item.LocalPath)
+	if err != nil {
+		return fmt.Errorf("opening Microsoft attachment %q: %w", item.Name, err)
+	}
+	const chunkSize int64 = 12 * 320 * 1024
+	for offset := int64(0); offset < actual; {
+		length := min(chunkSize, actual-offset)
+		chunk := make([]byte, length)
+		if _, err := io.ReadFull(file, chunk); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("reading Microsoft attachment chunk: %w", err)
+		}
+		put, err := http.NewRequestWithContext(ctx, http.MethodPut, session.UploadURL, bytes.NewReader(chunk))
+		if err != nil {
+			_ = file.Close()
+			return &PermanentError{Err: err}
+		}
+		put.Header.Set("Content-Length", strconv.FormatInt(length, 10))
+		put.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, offset+length-1, actual))
+		put.Header.Set("Content-Type", "application/octet-stream")
+		expected := http.StatusAccepted
+		if offset+length == actual {
+			expected = http.StatusCreated
+		}
+		if err := s.doGraph(ctx, put, expected, nil); err != nil {
+			_ = file.Close()
+			return err
+		}
+		offset += length
+	}
+	_ = file.Close()
+	return nil
+}
+
+func (s *microsoftSender) doGraph(_ context.Context, req *http.Request, expected int, target any) error {
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return sanitizedHTTPTransportError("Microsoft Graph", err)
+	}
+	defer resp.Body.Close()
+	body, oversized, err := readProtocolResponse(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading Microsoft Graph response: %w", err)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return retryableHTTPError("Microsoft Graph", resp)
+	}
+	if resp.StatusCode != expected {
+		return &PermanentError{Err: fmt.Errorf("Microsoft Graph returned HTTP %d", resp.StatusCode)}
+	}
+	if oversized {
+		return &PermanentError{Err: fmt.Errorf("Microsoft Graph response exceeds %d bytes", maxProtocolResponseBytes)}
+	}
+	if target != nil && len(body) > 0 {
+		if err := json.Unmarshal(body, target); err != nil {
+			return &PermanentError{Err: fmt.Errorf("decoding Microsoft Graph response: %w", err)}
+		}
+	}
+	return nil
+}
+
 func microsoftTokenFromSettings(settings map[string]string) (*oauth2.Token, error) {
 	if settings["refresh_token"] == "" {
 		return nil, errors.New("Microsoft channel is not authorized")
@@ -273,7 +508,7 @@ func oauthClient(client *http.Client) *http.Client {
 	if client != nil {
 		return client
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return defaultHTTPClient()
 }
 
 func oauthContext(ctx context.Context, client *http.Client) context.Context {

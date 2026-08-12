@@ -87,6 +87,60 @@ type User struct {
 	Name string
 }
 
+// Group is a secret-free summary of a Knowledge Planet group visible to the
+// authenticated account.
+type Group struct {
+	ID        string
+	Name      string
+	OwnerID   string
+	OwnerName string
+}
+
+func (c *Client) Groups(ctx context.Context, token string) ([]Group, error) {
+	var response struct {
+		Groups []struct {
+			GroupID json.Number `json:"group_id"`
+			Name    string      `json:"name"`
+			Owner   struct {
+				UserID json.Number `json:"user_id"`
+				UID    json.Number `json:"uid"`
+				Name   string      `json:"name"`
+			} `json:"owner"`
+		} `json:"groups"`
+	}
+	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/groups", nil, nil, &response); err != nil {
+		return nil, err
+	}
+	groups := make([]Group, 0, len(response.Groups))
+	for _, raw := range response.Groups {
+		id := raw.GroupID.String()
+		if !decimalID(id) || strings.TrimSpace(raw.Name) == "" {
+			return nil, ErrSchemaDrift
+		}
+		ownerID := raw.Owner.UserID.String()
+		if ownerID == "" {
+			ownerID = raw.Owner.UID.String()
+		}
+		if ownerID != "" && !decimalID(ownerID) {
+			return nil, ErrSchemaDrift
+		}
+		groups = append(groups, Group{ID: id, Name: raw.Name, OwnerID: ownerID, OwnerName: raw.Owner.Name})
+	}
+	return groups, nil
+}
+
+func decimalID(value string) bool {
+	if value == "" || value[0] == '0' {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Client) Me(ctx context.Context, token string) (User, error) {
 	// Knowledge Planet's DWeb /users/self payload uses user.uid. Older fixtures and
 	// some nested objects still expose user_id; accept either without guessing names.

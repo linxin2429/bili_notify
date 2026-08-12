@@ -33,7 +33,7 @@ func TestFeishuUploadsLocalImages(t *testing.T) {
 	require.NoError(t, os.WriteFile(absPath, []byte("image-bytes"), 0o600))
 
 	var paths []string
-	var webhookPayload map[string]any
+	var messagePayload map[string]any
 	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		paths = append(paths, request.URL.Path)
 		body := `{}`
@@ -47,8 +47,9 @@ func TestFeishuUploadsLocalImages(t *testing.T) {
 			require.NoError(t, err)
 			assert.Contains(t, string(uploaded), "image-bytes")
 			body = `{"code":0,"data":{"image_key":"image-key"}}`
-		case "/hook":
-			require.NoError(t, json.NewDecoder(request.Body).Decode(&webhookPayload))
+		case "/open-apis/im/v1/messages":
+			assert.Equal(t, "chat_id", request.URL.Query().Get("receive_id_type"))
+			require.NoError(t, json.NewDecoder(request.Body).Decode(&messagePayload))
 			body = `{"code":0}`
 		default:
 			return responseFor(request, http.StatusNotFound, `{}`), nil
@@ -59,8 +60,7 @@ func TestFeishuUploadsLocalImages(t *testing.T) {
 	sender, err := NewSender(model.Channel{
 		Name: "feishu", Type: model.ChannelFeishu,
 		Settings: map[string]string{
-			"webhook": "https://hook.invalid/hook", "secret": "secret",
-			"app_id": appID, "app_secret": "app-secret",
+			"app_id": appID, "app_secret": "app-secret", "chat_id": "oc_group",
 		},
 	}, client, dataDir, nil)
 	require.NoError(t, err)
@@ -72,9 +72,9 @@ func TestFeishuUploadsLocalImages(t *testing.T) {
 	assert.Equal(t, []string{
 		"/open-apis/auth/v3/tenant_access_token/internal",
 		"/open-apis/im/v1/images",
-		"/hook",
+		"/open-apis/im/v1/messages",
 	}, paths)
-	raw, err := json.Marshal(webhookPayload)
+	raw, err := json.Marshal(messagePayload)
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), "image-key")
 }
@@ -299,7 +299,7 @@ func TestNewSenderVariants(t *testing.T) {
 		{name: "email", channel: model.Channel{Name: "email", Type: model.ChannelEmail, Settings: map[string]string{"host": "smtp.example.com", "port": "465", "tls": "tls", "from": "from@example.com", "to": "to@example.com"}}},
 		{name: "microsoft", channel: model.Channel{Name: "microsoft", Type: model.ChannelMicrosoft, Settings: map[string]string{"client_id": "11111111-2222-3333-4444-555555555555", "tenant": "common", "to": "to@example.com"}}},
 		{name: "dingtalk", channel: model.Channel{Name: "dingtalk", Type: model.ChannelDingTalk, Settings: map[string]string{"webhook": "https://example.com/hook", "secret": "secret"}}},
-		{name: "feishu", channel: model.Channel{Name: "feishu", Type: model.ChannelFeishu, Settings: map[string]string{"webhook": "https://example.com/hook", "secret": "secret"}}},
+		{name: "feishu", channel: model.Channel{Name: "feishu", Type: model.ChannelFeishu, Settings: map[string]string{"app_id": "app", "app_secret": "secret", "chat_id": "oc_group"}}},
 		{name: "wecom", channel: model.Channel{Name: "wecom", Type: model.ChannelWeCom, Settings: map[string]string{"webhook": "https://example.com/hook"}}},
 		{name: "invalid", channel: model.Channel{Name: "invalid", Type: "unknown"}, wantErr: "unsupported"},
 	}

@@ -25,7 +25,7 @@ export function channelTypeLabel(value: ChannelType) {
 }
 
 export function settingLabel(value: string) {
-  return ({ host: '主机', port: '端口', tls: 'TLS', from: '发件人', to: '收件人', username: '用户名', password: '密码', webhook: 'Webhook', secret: '签名密钥', client_id: '客户端 ID', tenant: '租户', access_token: '访问令牌', refresh_token: '刷新令牌', app_id: '应用 App ID', app_secret: '应用 App Secret' } as Record<string, string>)[value] || value
+  return ({ host: '主机', port: '端口', tls: 'TLS', from: '发件人', to: '收件人', username: '用户名', password: '密码', webhook: 'Webhook', secret: '签名密钥', client_id: '客户端 ID', tenant: '租户', access_token: '访问令牌', refresh_token: '刷新令牌', app_id: '应用 App ID', app_secret: '应用 App Secret', chat_id: '目标群 Chat ID' } as Record<string, string>)[value] || value
 }
 
 export function loginLabel(value: string) {

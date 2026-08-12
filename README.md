@@ -75,14 +75,16 @@ docker run -d --name bili-notify \
 Microsoft 渠道通过 Microsoft Graph 与 OAuth 2.0 设备码授权发送邮件：
 
 1. 在 Microsoft Entra 创建应用注册；个人 Outlook 账号需允许个人 Microsoft 账户。
-2. 启用“允许公共客户端流”，添加委托权限 `Mail.Send`。
+2. 启用“允许公共客户端流”，添加委托权限 `Mail.Send` 和 `Mail.ReadWrite`。
 3. 在控制台填写客户端 ID、租户和收件人，保存后点击“开始授权”。
 
-`tenant` 可填写 `common`、`consumers`、`organizations`、租户 UUID 或租户域名。访问令牌和刷新令牌会加密保存并自动刷新。
+`tenant` 可填写 `common`、`consumers`、`organizations`、租户 UUID 或租户域名。访问令牌和刷新令牌会加密保存并自动刷新。由于附件通过草稿和上传会话投递，从旧版本升级后必须重新授权 Microsoft 渠道。
 
 ### 群机器人
 
-钉钉和飞书填写 HTTPS Webhook 与签名密钥；企业微信填写 HTTPS Webhook。所有 Webhook 与签名密钥都加密保存。
+钉钉填写 HTTPS Webhook 与签名密钥，企业微信填写带机器人 key 的 HTTPS Webhook。飞书使用应用机器人，填写 App ID、App Secret 和目标群 Chat ID；应用需启用机器人、拥有消息发送及图片/文件上传权限，并已加入目标群。Webhook、签名密钥和 App Secret 都加密保存。
+
+知识星球的图片继续按各渠道的图片能力展示；`file`、`audio`、`video` 附件作为普通文件投递。SMTP 不设置应用侧硬上限，Microsoft 支持至 150 MiB，飞书至 30 MiB，企业微信支持 5 B–20 MiB，钉钉暂不上传文件。文件未归档、丢失、为空或超限时，正文会列出跳过原因，其余正文和附件仍会发送。
 
 ## 运维
 
