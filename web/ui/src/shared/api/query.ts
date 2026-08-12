@@ -8,6 +8,7 @@ export const queries = {
   runtime: () => queryOptions({ queryKey: queryKeys.runtime, queryFn: ({ signal }) => resources.runtime(signal), staleTime: 10_000 }),
   settings: () => queryOptions({ queryKey: queryKeys.settings, queryFn: ({ signal }) => resources.settings(signal), staleTime: 30_000 }),
   accounts: () => queryOptions({ queryKey: queryKeys.accounts, queryFn: ({ signal }) => resources.accounts(signal), staleTime: 10_000 }),
+  zsxqGroups: (enabled = true) => queryOptions({ queryKey: queryKeys.zsxqGroups, queryFn: ({ signal }) => resources.zsxqGroups(signal), staleTime: 0, enabled }),
   sources: (platform = '') => queryOptions({ queryKey: queryKeys.sources(platform), queryFn: ({ signal }) => resources.sources(platform, signal), staleTime: 10_000 }),
   contents: (query: ContentQuery) => queryOptions({ queryKey: queryKeys.contents(query), queryFn: ({ signal }) => resources.contents(query, signal), staleTime: 10_000 }),
   content: (id: string) => queryOptions({ queryKey: queryKeys.content(id), queryFn: ({ signal }) => resources.content(id, signal), enabled: Boolean(id) }),

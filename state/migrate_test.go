@@ -133,7 +133,7 @@ func TestV10MigrationPreservesV9StateAndRemovesTransitionalTables(t *testing.T) 
 	t.Parallel()
 	db, path, v := preparePopulatedV9(t)
 	require.NoError(t, runMigrations(t.Context(), db, v))
-	assertMigrationVersion(t, db, 10)
+	assertMigrationVersion(t, db, 11)
 	for _, table := range []string{"auth_session", "deliveries", "comments", "dynamics", "seen_comments", "seen_dynamics", "comment_targets", "ups"} {
 		var count int
 		require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count))
@@ -183,6 +183,48 @@ func TestV10MigrationPreservesV9StateAndRemovesTransitionalTables(t *testing.T) 
 	assert.Equal(t, "video title", title)
 	assert.Equal(t, "body", summary)
 	assert.Equal(t, "00-trace", traceparent)
+}
+
+func TestV11MigrationInvalidatesChangedChannelAuthorization(t *testing.T) {
+	t.Parallel()
+	v := mustVault(t, 109)
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), v)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	tests := []struct {
+		id      string
+		kind    model.ChannelType
+		public  map[string]string
+		secrets map[string]string
+	}{
+		{id: "microsoft", kind: model.ChannelMicrosoft, public: map[string]string{"client_id": "id", "to": "to@example.com", "authorized": "true", "token_type": "Bearer"}, secrets: map[string]string{"access_token": "access", "refresh_token": "refresh"}},
+		{id: "feishu", kind: model.ChannelFeishu, public: map[string]string{"app_id": "app"}, secrets: map[string]string{"app_secret": "app-secret", "webhook": "old-webhook", "secret": "old-sign"}},
+	}
+	for _, tt := range tests {
+		public, marshalErr := json.Marshal(tt.public)
+		require.NoError(t, marshalErr)
+		sealed, sealErr := sealJSON(v, tableChannelSecrets, tt.id, tt.secrets)
+		require.NoError(t, sealErr)
+		require.NoError(t, store.db.Exec(`INSERT INTO channels(id,name,type,enabled,public_settings_json,secret_sealed,created_at,updated_at) VALUES(?,?,?,1,?,?,0,0)`, tt.id, tt.id, tt.kind, string(public), sealed).Error)
+	}
+	sqlDB, err := store.db.DB()
+	require.NoError(t, err)
+	tx, err := sqlDB.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	require.NoError(t, migrateV11(v)(t.Context(), tx))
+	require.NoError(t, tx.Commit())
+
+	microsoft, err := store.Channel("microsoft")
+	require.NoError(t, err)
+	assert.False(t, microsoft.Enabled)
+	assert.Empty(t, microsoft.Settings["refresh_token"])
+	assert.Empty(t, microsoft.Settings["authorized"])
+	feishu, err := store.Channel("feishu")
+	require.NoError(t, err)
+	assert.False(t, feishu.Enabled)
+	assert.Equal(t, "app", feishu.Settings["app_id"])
+	assert.Equal(t, "app-secret", feishu.Settings["app_secret"])
+	assert.Empty(t, feishu.Settings["webhook"])
 }
 
 func TestV10MigrationRollsBackCorruptV9Payload(t *testing.T) {

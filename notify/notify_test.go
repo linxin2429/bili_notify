@@ -139,7 +139,7 @@ func TestFeishuPostIsRichTextAndWithinLimit(t *testing.T) {
 
 func TestRobotSenderUsesChannelSpecificFormats(t *testing.T) {
 	t.Parallel()
-	for _, channelType := range []model.ChannelType{model.ChannelDingTalk, model.ChannelFeishu} {
+	for _, channelType := range []model.ChannelType{model.ChannelDingTalk} {
 		t.Run(string(channelType), func(t *testing.T) {
 			t.Parallel()
 			requests := make(chan handlerResult[map[string]any], 1)
@@ -167,8 +167,6 @@ func TestRobotSenderUsesChannelSpecificFormats(t *testing.T) {
 			switch channelType {
 			case model.ChannelDingTalk:
 				assert.Equal(t, "markdown", got["msgtype"])
-			case model.ChannelFeishu:
-				assert.Equal(t, "post", got["msg_type"])
 			}
 		})
 	}
@@ -262,6 +260,7 @@ func TestStartMicrosoftDeviceAuth(t *testing.T) {
 	request := requireHandlerResult(t, requests)
 	require.NoError(t, err)
 	assert.Contains(t, request.Get("scope"), "Mail.Send")
+	assert.Contains(t, request.Get("scope"), "Mail.ReadWrite")
 	assert.Equal(t, "ABCD-EFGH", auth.UserCode)
 	assert.Equal(t, "https://microsoft.com/devicelogin", auth.VerificationURI)
 }

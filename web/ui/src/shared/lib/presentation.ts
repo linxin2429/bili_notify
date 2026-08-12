@@ -25,7 +25,7 @@ export function channelTypeLabel(value: ChannelType) {
 }
 
 export function settingLabel(value: string) {
-  return ({ host: '主机', port: '端口', tls: 'TLS', from: '发件人', to: '收件人', username: '用户名', password: '密码', webhook: 'Webhook', secret: '签名密钥', client_id: '客户端 ID', tenant: '租户', access_token: '访问令牌', refresh_token: '刷新令牌', app_id: '应用 App ID', app_secret: '应用 App Secret' } as Record<string, string>)[value] || value
+  return ({ host: '主机', port: '端口', tls: 'TLS', from: '发件人', to: '收件人', username: '用户名', password: '密码', webhook: 'Webhook', secret: '签名密钥', client_id: '客户端 ID', tenant: '租户', access_token: '访问令牌', refresh_token: '刷新令牌', app_id: '应用 App ID', app_secret: '应用 App Secret', chat_id: '目标群 Chat ID' } as Record<string, string>)[value] || value
 }
 
 export function loginLabel(value: string) {
@@ -183,7 +183,7 @@ export function auditActionLabel(action: string) {
     'channel.create': '添加通知渠道', 'channel.update': '修改通知渠道', 'channel.delete': '删除通知渠道', 'channel.test': '测试通知渠道',
     'delivery.retry': '重试投递',
     'bilibili.login.start': '开始 B 站登录', 'bilibili.login.cancel': '取消 B 站登录', 'bilibili.logout': '退出 B 站登录',
-    'zsxq.login': '知识星球登录', 'zsxq.logout': '退出知识星球', 'zsxq.sync-sources': '刷新知识星球来源',
+    'zsxq.login': '知识星球登录', 'zsxq.logout': '退出知识星球',
     'microsoft.login.start': '开始 Microsoft 授权', 'microsoft.login.cancel': '取消 Microsoft 授权',
     'settings.update': '修改运行参数',
     'ai.profile.create': '添加 AI 模型配置', 'ai.profile.update': '修改 AI 模型配置', 'ai.profile.delete': '删除 AI 模型配置',

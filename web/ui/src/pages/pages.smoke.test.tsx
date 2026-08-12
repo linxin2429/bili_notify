@@ -14,10 +14,11 @@ import { DeliveriesPage } from './DeliveriesPage'
 import { HistoryPage } from './HistoryPage'
 import { AuditLogsPage } from './AuditLogsPage'
 import { SettingsPage } from './SettingsPage'
+import { MorePage } from './MorePage'
 
 const api = vi.hoisted(() => ({
-  runtime: vi.fn(), settings: vi.fn(), accounts: vi.fn(), sources: vi.fn(), contents: vi.fn(), content: vi.fn(), contentComments: vi.fn(), channels: vi.fn(), deliveries: vi.fn(), biliLogin: vi.fn(), microsoftLogins: vi.fn(), auditLogs: vi.fn(),
-  createSource: vi.fn(), updateSource: vi.fn(), deleteSource: vi.fn(), syncZSXQSources: vi.fn(), deleteZSXQSession: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), deleteChannel: vi.fn(), testChannel: vi.fn(), retryDelivery: vi.fn(), startBiliLogin: vi.fn(), cancelBiliLogin: vi.fn(), deleteBilibiliSession: vi.fn(), startMicrosoftLogin: vi.fn(), cancelMicrosoftLogin: vi.fn(), updateSettings: vi.fn(),
+  runtime: vi.fn(), settings: vi.fn(), accounts: vi.fn(), zsxqGroups: vi.fn(), sources: vi.fn(), contents: vi.fn(), content: vi.fn(), contentComments: vi.fn(), channels: vi.fn(), deliveries: vi.fn(), biliLogin: vi.fn(), microsoftLogins: vi.fn(), auditLogs: vi.fn(),
+  createBilibiliSource: vi.fn(), createZSXQSource: vi.fn(), updateSource: vi.fn(), deleteSource: vi.fn(), deleteZSXQSession: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), deleteChannel: vi.fn(), testChannel: vi.fn(), retryDelivery: vi.fn(), startBiliLogin: vi.fn(), cancelBiliLogin: vi.fn(), deleteBilibiliSession: vi.fn(), startMicrosoftLogin: vi.fn(), cancelMicrosoftLogin: vi.fn(), updateSettings: vi.fn(),
 }))
 const session = vi.hoisted(() => ({ changePassword: vi.fn() }))
 vi.mock('../shared/api/resources', () => ({ resources: api }))
@@ -35,8 +36,8 @@ describe('resource pages', () => {
     api.sources.mockResolvedValue([source]); api.contents.mockResolvedValue({ items: [content], page: { next_cursor: '', has_more: false } }); api.content.mockResolvedValue({ content, attachments: [] }); api.contentComments.mockResolvedValue({ children: [], incomplete: false })
     api.deliveries.mockResolvedValue({ items: [makeDelivery({ state: 'blocked' })], page: { next_cursor: '', has_more: false } }); api.biliLogin.mockResolvedValue(null); api.microsoftLogins.mockResolvedValue([])
     api.auditLogs.mockResolvedValue({ items: [makeAudit()], page: { next_cursor: '', has_more: false } })
-    api.startBiliLogin.mockResolvedValue({ id: 'login', status: 'waiting', expires_at: '2026-08-09T10:05:00Z' }); api.createSource.mockResolvedValue(source); api.retryDelivery.mockResolvedValue({ status: 'queued' }); api.updateSettings.mockResolvedValue(settings)
-    api.updateSource.mockResolvedValue(source); api.deleteSource.mockResolvedValue(undefined); api.syncZSXQSources.mockResolvedValue([]); api.createChannel.mockResolvedValue(channel); api.updateChannel.mockResolvedValue(channel); api.deleteChannel.mockResolvedValue(undefined); api.testChannel.mockResolvedValue({ status: 'sent' }); api.deleteBilibiliSession.mockResolvedValue(undefined); session.changePassword.mockResolvedValue({ csrf_token: 'replacement-csrf' })
+    api.zsxqGroups.mockResolvedValue([]); api.startBiliLogin.mockResolvedValue({ id: 'login', status: 'waiting', expires_at: '2026-08-09T10:05:00Z' }); api.createBilibiliSource.mockResolvedValue(source); api.createZSXQSource.mockResolvedValue(source); api.retryDelivery.mockResolvedValue({ status: 'queued' }); api.updateSettings.mockResolvedValue(settings)
+    api.updateSource.mockResolvedValue(source); api.deleteSource.mockResolvedValue(undefined); api.createChannel.mockResolvedValue(channel); api.updateChannel.mockResolvedValue(channel); api.deleteChannel.mockResolvedValue(undefined); api.testChannel.mockResolvedValue({ status: 'sent' }); api.deleteBilibiliSession.mockResolvedValue(undefined); session.changePassword.mockResolvedValue({ csrf_token: 'replacement-csrf' })
   })
 
   it('starts Bilibili QR login and confirms logout from overview', async () => {
@@ -70,29 +71,78 @@ describe('resource pages', () => {
     { name: 'history', path: '/history', heading: '历史内容', view: <HistoryPage /> },
     { name: 'audit', path: '/audit-logs', heading: '操作日志', view: <AuditLogsPage /> },
     { name: 'settings', path: '/settings', heading: '设置', view: <SettingsPage /> },
+    { name: 'more', path: '/more', heading: '更多', view: <MorePage /> },
   ])('renders $name from its own resource queries', async ({ path, heading, view }) => {
     renderPage(view, path)
     expect(await screen.findByRole('heading', { name: heading })).toBeInTheDocument()
   })
 
+  it.each([
+    { path: '/more', activeLabel: undefined },
+    { path: '/channels', activeLabel: '通知渠道' },
+  ])('renders more navigation at $path', ({ path, activeLabel }) => {
+    renderPage(<MorePage />, path)
+
+    const navigation = screen.getByRole('navigation', { name: '更多导航' })
+    expect(navigation).toBeInTheDocument()
+    expect(screen.getAllByRole('link')).toHaveLength(5)
+    expect(screen.getByRole('link', { name: 'AI 工作台' })).toHaveAttribute('href', '/ai')
+    if (activeLabel) expect(screen.getByRole('link', { name: activeLabel })).toHaveClass('nav-item--active')
+    else expect(navigation.querySelector('.nav-item--active')).not.toBeInTheDocument()
+  })
+
   it('creates a Bilibili source', async () => {
     const user = userEvent.setup(); renderPage(<SourcesPage />, '/sources')
-    await user.click(await screen.findByRole('button', { name: /添加 B 站 UP/ }))
+    await user.click(await screen.findByRole('button', { name: '添加 B 站采集源' }))
     await user.type(screen.getByLabelText('UID'), '99')
     await user.type(screen.getByLabelText('来源名称'), '新 UP')
     await user.click(screen.getByRole('button', { name: '保存' }))
-    expect(api.createSource).toHaveBeenCalledWith('csrf', { platform: 'bilibili', external_id: '99', name: '新 UP', note: '', enabled: true })
+    expect(api.createBilibiliSource).toHaveBeenCalledWith('csrf', { uid: '99', name: '新 UP', note: '', enabled: true })
+  })
+
+  it('creates a Knowledge Planet source from the connected account groups', async () => {
+    api.accounts.mockResolvedValue([{ platform: 'zsxq', status: 'connected', display_name: '星球号' }])
+    api.zsxqGroups.mockResolvedValue([{ id: '28882581855851', name: '账号星球', owner_id: '8', owner_name: '星主' }])
+    const user = userEvent.setup(); renderPage(<SourcesPage />, '/sources')
+    await user.click(await screen.findByRole('button', { name: '添加知识星球采集源' }))
+    await user.selectOptions(await screen.findByLabelText('星球'), '28882581855851')
+    expect(screen.queryByLabelText('平台')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('星球 ID')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('来源名称')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    expect(api.createZSXQSource).toHaveBeenCalledWith('csrf', { group_id: '28882581855851', note: '', enabled: true })
+  })
+
+  it('shows already added Knowledge Planet groups but disables them', async () => {
+    const existing = { ...source, id: 'zsxq:planet:9', platform: 'zsxq' as const, type: 'planet' as const, external_id: '9', name: '已添加星球' }
+    api.accounts.mockResolvedValue([{ platform: 'zsxq', status: 'connected', display_name: '星球号' }])
+    api.sources.mockResolvedValue([existing])
+    api.zsxqGroups.mockResolvedValue([{ id: '9', name: '已添加星球' }, { id: '10', name: '可添加星球' }])
+    const user = userEvent.setup(); renderPage(<SourcesPage />, '/sources')
+    await user.click(await screen.findByRole('button', { name: '添加知识星球采集源' }))
+    expect(await screen.findByRole('option', { name: /已添加星球.*已添加/ })).toBeDisabled()
+    expect(screen.getByRole('option', { name: /可添加星球/ })).toBeEnabled()
+  })
+
+  it('retries loading Knowledge Planet groups after an upstream error', async () => {
+    api.accounts.mockResolvedValue([{ platform: 'zsxq', status: 'connected', display_name: '星球号' }])
+    api.zsxqGroups.mockRejectedValueOnce(new Error('星球列表加载失败')).mockResolvedValueOnce([{ id: '10', name: '可添加星球' }])
+    const user = userEvent.setup(); renderPage(<SourcesPage />, '/sources')
+    await user.click(await screen.findByRole('button', { name: '添加知识星球采集源' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('星球列表加载失败')
+    await user.click(screen.getByRole('button', { name: '重试' }))
+    expect(await screen.findByRole('option', { name: /可添加星球/ })).toBeEnabled()
+    expect(api.zsxqGroups).toHaveBeenCalledTimes(2)
   })
 
   it('shows empty source CTAs and logs out the Knowledge Planet account', async () => {
     api.sources.mockResolvedValue([])
     api.accounts.mockResolvedValue([{ platform: 'zsxq', status: 'connected', display_name: '星球号', masked_phone: '138****0000' }])
-    api.syncZSXQSources.mockResolvedValue([])
     api.deleteZSXQSession.mockResolvedValue(undefined)
     const user = userEvent.setup()
     renderPage(<SourcesPage />, '/sources')
     expect(await screen.findByText('尚未添加 B 站 UP')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: '刷新可见星球' }).length).toBeGreaterThan(0)
+    expect(screen.getByText('尚未添加知识星球')).toBeInTheDocument()
     expect(screen.getByText('已连接')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '退出登录' }))
     await user.click(screen.getByRole('button', { name: '确认退出' }))
@@ -228,7 +278,7 @@ describe('resource pages', () => {
     { type: 'email', fields: { 'SMTP 主机': 'smtp.test', '发件人': 'from@test', '收件人': 'to@test', '密码': 'secret' }, expected: { settings: { host: 'smtp.test', port: '465', tls: 'tls', username: '', from: 'from@test', to: 'to@test' }, secrets: { password: 'secret' } } },
     { type: 'microsoft', fields: { '应用程序（客户端）ID': 'client', '收件人': 'to@test' }, expected: { enabled: false, settings: { client_id: 'client', tenant: 'common', to: 'to@test' } } },
     { type: 'dingtalk', fields: { 'Webhook URL': 'https://robot.test', '签名密钥': 'secret' }, expected: { settings: {}, secrets: { webhook: 'https://robot.test', secret: 'secret' } } },
-    { type: 'feishu', fields: { 'Webhook URL': 'https://feishu.test', '签名密钥': 'secret', '应用 App ID': 'app', '应用 App Secret': 'app-secret' }, expected: { settings: { app_id: 'app' }, secrets: { webhook: 'https://feishu.test', secret: 'secret', app_secret: 'app-secret' } } },
+    { type: 'feishu', fields: { '应用 App ID': 'app', '应用 App Secret': 'app-secret', '目标群 Chat ID': 'oc_group' }, expected: { settings: { app_id: 'app', chat_id: 'oc_group' }, secrets: { app_secret: 'app-secret' } } },
     { type: 'wecom', fields: { 'Webhook URL': 'https://wecom.test' }, expected: { settings: {}, secrets: { webhook: 'https://wecom.test' } } },
   ] as const)('builds a typed $type channel draft from its dedicated fields', async ({ type, fields, expected }) => {
     api.channels.mockResolvedValue([]); const user = userEvent.setup(); const view = renderPage(<ChannelsPage />, '/channels')

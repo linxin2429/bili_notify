@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/linxin2429/bili_notify/model"
+	"github.com/linxin2429/bili_notify/notify"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
 )
@@ -181,6 +182,10 @@ func (s *Server) testChannelAPI(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withAPITimeout(r)
 	defer cancel()
 	if err := s.engine.TestChannel(ctx, r.PathValue("id")); err != nil {
+		if message, ok := notify.ActionableMessage(err); ok {
+			writeAPIError(w, http.StatusUnprocessableEntity, "channel_configuration", message)
+			return
+		}
 		writeAPIError(w, http.StatusBadGateway, "upstream_failure", "notification channel test failed")
 		return
 	}

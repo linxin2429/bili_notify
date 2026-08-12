@@ -1445,8 +1445,8 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (changed 
 		return true, nil
 	}
 	timeout := 12 * time.Second
-	if messageHasLocalImages(message) {
-		timeout = 60 * time.Second
+	if messageHasLocalMedia(message) {
+		timeout = 15 * time.Minute
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, timeout)
 	sendCtx, sendSpan := e.tracer.Start(sendCtx, "notification.send",
@@ -2086,7 +2086,10 @@ func (e *Engine) enrichMedia(ctx context.Context, items []model.Dynamic) {
 	}
 }
 
-func messageHasLocalImages(message notify.Message) bool {
+func messageHasLocalMedia(message notify.Message) bool {
+	if len(message.Files) > 0 {
+		return true
+	}
 	for _, section := range message.Sections {
 		for _, image := range section.Images {
 			if image.LocalPath != "" {
@@ -2096,6 +2099,8 @@ func messageHasLocalImages(message notify.Message) bool {
 	}
 	return false
 }
+
+func messageHasLocalImages(message notify.Message) bool { return messageHasLocalMedia(message) }
 
 func finishSpan(span trace.Span, err error) {
 	if err != nil && !errors.Is(err, context.Canceled) {

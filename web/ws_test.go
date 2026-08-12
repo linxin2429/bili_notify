@@ -82,7 +82,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	assert.Equal(t, "sync.required", initial.Event)
 	assert.Equal(t, allResourceTopics(), initial.Topics)
 
-	badRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v4/sources", strings.NewReader(`{"platform":"bilibili","external_id":"42","name":"Test UP","enabled":true}`))
+	badRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v4/sources/bilibili", strings.NewReader(`{"uid":"42","name":"Test UP","enabled":true}`))
 	require.NoError(t, err)
 	badRequest.Header.Set("Content-Type", "application/json")
 	badRequest.Header.Set("X-CSRF-Token", "invalid")
@@ -92,7 +92,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	t.Cleanup(func() { _ = badResponse.Body.Close() })
 	assert.Equal(t, http.StatusForbidden, badResponse.StatusCode)
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v4/sources", strings.NewReader(`{"platform":"bilibili","external_id":"42","name":"Test UP","enabled":true}`))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v4/sources/bilibili", strings.NewReader(`{"uid":"42","name":"Test UP","note":"","enabled":true}`))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-CSRF-Token", csrf)

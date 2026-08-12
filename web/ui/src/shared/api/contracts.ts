@@ -71,6 +71,10 @@ export const platformAccountSchema = z.object({
   risk_paused_until: z.string().optional(), last_error: z.string().optional(),
 }).strict() satisfies z.ZodType<Schemas['PlatformAccount']>
 
+export const zsxqGroupSchema = z.object({
+  id: z.string(), name: z.string(), owner_id: z.string().optional(), owner_name: z.string().optional(),
+}).strict() satisfies z.ZodType<Schemas['ZSXQGroup']>
+
 export const sourceSchema = z.object({
   id: z.string(), platform: z.enum(['bilibili', 'zsxq']), type: z.enum(['up', 'planet']), external_id: z.string(), name: z.string(), note: z.string().optional(),
   owner_id: z.string().optional(), owner_name: z.string().optional(), enabled: z.boolean(), baseline_state: z.enum(['pending', 'running', 'complete', 'failed']),

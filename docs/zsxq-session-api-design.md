@@ -32,20 +32,20 @@ HMAC-SHA1("zsxq-sdk-secret", timestamp + "\n" + upper(method) + "\n" + path [+ "
 
 数据库 schema 不变，`PlatformAccount.Session` 仅保存 `{"zsxq_access_token":"..."}`，继续由 Vault 密封。旧密文已有该键时直接使用；没有该键的账号视为 invalid，要求重新导入。认证失效时显式以空 session 更新，不能利用 `nil` 的“保留旧秘密”语义。
 
-同一 external account 更新 token 不改变来源启停状态。切换到不同账号时，账号替换与全部 ZSXQ 来源停用必须在同一 SQLite 事务完成；任一步失败整体回滚。导入成功不自动同步来源。`POST /api/v4/accounts/zsxq/sync-sources` 每次从数据库读取当前 token，请求 `/v2/groups` 后合并可见来源。
+账号凭证与采集源是两个独立事实：账号保存“当前用什么 token 访问”，来源保存“管理员希望采集哪些星球”。同一账号更新 token 或切换到不同账号都只替换账号记录，不修改、停用或删除任何 ZSXQ 来源。管理端通过 `GET /api/v4/accounts/zsxq/groups` 实时读取当前账号的可见星球；创建来源时只提交选中的 `group_id`，服务端再次读取列表并使用上游名称和星主信息，拒绝当前账号不可见的 ID。目录不持久化，已有来源不会因切换账号而自动删除。
 
 ## 4. 管理 API、审计与前端
 
 导入成功返回 `201 PlatformAccount`，且账号 DTO 永不包含 session。Cookie 解析错误返回 `400 validation_failed`；上游确认 token 无效或过期返回 `422 invalid_token`，两者通过可选 `error.fields.cookie` 定位输入；签名、网络或未知上游失败返回 `502 upstream_failed`。所有写操作保留管理员会话和 CSRF 校验。
 
-删除短信端点 `POST /accounts/zsxq/sms-code` 与验证码端点 `POST /accounts/zsxq/session`；保留 `DELETE /accounts/zsxq/session` 和 `POST /accounts/zsxq/sync-sources`。导入写 `zsxq.token.import` 审计事件，摘要、日志和错误不得包含 Cookie、token、请求体或上游正文。
+删除短信端点 `POST /accounts/zsxq/sms-code`、验证码端点 `POST /accounts/zsxq/session` 与批量来源同步端点；保留 `DELETE /accounts/zsxq/session`。导入写 `zsxq.token.import` 审计事件，摘要、日志和错误不得包含 Cookie、token、请求体或上游正文。
 
-登录页只有一个秘密输入框，并说明：登录知识星球网页，在开发者工具中选择 `api.zsxq.com` 请求，复制 `Cookie` 请求头值并粘贴。值只存在组件表单 state，不进入 URL、Query cache、localStorage 或错误详情。成功后清空输入、失效账号查询并进入来源页；来源同步仍由用户点击“刷新可见星球”。删除 Aliyun captcha 模块、全局类型与 CSP 外联白名单。
+登录页只有一个秘密输入框，并说明：登录知识星球网页，在开发者工具中选择 `api.zsxq.com` 请求，复制 `Cookie` 请求头值并粘贴。值只存在组件表单 state，不进入 URL、Query cache、localStorage 或错误详情。成功后清空输入、失效账号查询并进入来源页；更换 Session 不修改来源。来源页把 B 站和知识星球添加入口分开：B 站填写 UID，知识星球从当前账号目录下拉选择，只填写可选备注和启停状态。已添加星球仍显示但不可再次选择。
 
 ## 5. 采集与附件安全
 
-两个采集协程每轮从存储读取 session 中的 token，并显式传给所有 API 请求，因此不会共享或覆盖认证状态。token 无效时账号标记 invalid 并真正清除密文。附件只在首个目标仍为 `api.zsxq.com` 时携带 `Authorization`；重定向及 CDN 请求必须删除 `Authorization`、Cookie 等认证头并重新执行 SSRF 校验。
+两个采集协程每轮从存储读取 session 中的最新 token，并显式传给所有已启用来源的 API 请求，因此账号或 token 更新后无需重建来源。停用来源不采集；新 token 对某个来源无权限时只记录来源错误，不改变来源启停状态。手动来源没有预先同步的星主 ID，评论解析仅在星主 ID 缺失时采用上游 `owner` 角色；已有星主 ID 时仍以 ID 为准，不能由其他作者声明角色。token 本身无效时账号标记 invalid 并真正清除密文。附件只在首个目标仍为 `api.zsxq.com` 时携带 `Authorization`；重定向及 CDN 请求必须删除 `Authorization`、Cookie 等认证头并重新执行 SSRF 校验。
 
 ## 6. 验证
 
-使用固定时钟、设备 ID 与 request ID 验证签名原文、HMAC、headers、path/query 和五个上游合同；覆盖 envelope 漂移、认证、签名、权限、限流、404、HTML、畸形和超大响应。Cookie 解析使用表驱动测试与原生 fuzz。管理 API 覆盖认证、CSRF、JSON/字段错误、400/422/502/201、旧账号保留、同账号更新、异账号原子停用与回滚。持久化测试证明只密封 token、旧 session 判 invalid 和认证失效清密文；媒体测试证明首跳带 Authorization、重定向不转发。前端覆盖帮助文案、秘密输入、字段错误、载荷、成功跳转与查询失效，并证明 captcha 不再加载。
+使用固定时钟、设备 ID 与 request ID 验证签名原文、HMAC、headers、path/query 和采集所需上游合同；覆盖星球目录的大整数 ID、缺失字段、envelope 漂移、认证、签名、权限、限流、404、HTML、畸形和超大响应。Cookie 解析使用表驱动测试与原生 fuzz。管理 API 覆盖认证、CSRF、JSON/字段错误、账号目录、不可见星球、重复来源和服务端派生名称/星主信息。持久化测试证明只密封 token、旧 session 判 invalid 和认证失效清密文；媒体测试证明首跳带 Authorization、重定向不转发。前端覆盖独立的平台入口、星球下拉、已添加项禁用、加载失败重试、成功跳转与查询失效。

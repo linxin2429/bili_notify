@@ -25,10 +25,11 @@ func (s *Server) registerPlatformAPI(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v4/accounts/bilibili/session", s.audit("bilibili.logout", "platform_account", "", s.requireSession(true, s.deleteBilibiliSessionV4)))
 	mux.HandleFunc("POST /api/v4/accounts/zsxq/token", s.audit("zsxq.token.import", "platform_account", "", s.requireSession(true, s.zsxqTokenV4)))
 	mux.HandleFunc("DELETE /api/v4/accounts/zsxq/session", s.audit("zsxq.logout", "platform_account", "", s.requireSession(true, s.deleteZSXQSessionV4)))
-	mux.HandleFunc("POST /api/v4/accounts/zsxq/sync-sources", s.audit("zsxq.sources.sync", "source", "", s.requireSession(true, s.syncZSXQSourcesV4)))
+	mux.HandleFunc("GET /api/v4/accounts/zsxq/groups", s.requireSession(false, s.zsxqGroupsV4))
 
 	mux.HandleFunc("GET /api/v4/sources", s.requireSession(false, s.sourcesV4))
-	mux.HandleFunc("POST /api/v4/sources", s.audit("source.create", "source", "", s.requireSession(true, s.createSourceV4)))
+	mux.HandleFunc("POST /api/v4/sources/bilibili", s.audit("source.create", "source", "", s.requireSession(true, s.createBilibiliSourceV4)))
+	mux.HandleFunc("POST /api/v4/sources/zsxq", s.audit("source.create", "source", "", s.requireSession(true, s.createZSXQSourceV4)))
 	mux.HandleFunc("PUT /api/v4/sources/{id}", s.audit("source.update", "source", "id", s.requireSession(true, s.updateSourceV4)))
 	mux.HandleFunc("DELETE /api/v4/sources/{id}", s.audit("source.delete", "source", "id", s.requireSession(true, s.deleteSourceV4)))
 
@@ -94,20 +95,35 @@ func (s *Server) deleteZSXQSessionV4(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) syncZSXQSourcesV4(w http.ResponseWriter, r *http.Request) {
+type zsxqGroupView struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	OwnerID   string `json:"owner_id,omitempty"`
+	OwnerName string `json:"owner_name,omitempty"`
+}
+
+func (s *Server) zsxqGroupsV4(w http.ResponseWriter, r *http.Request) {
 	if s.zsxqAccounts == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "integration_unavailable", "Knowledge Planet integration is unavailable")
 		return
 	}
 	ctx, cancel := withAPITimeout(r)
 	defer cancel()
-	sources, err := s.zsxqAccounts.SyncSources(ctx)
+	groups, err := s.zsxqAccounts.Groups(ctx)
 	if err != nil {
+		if errors.Is(err, zsxq.ErrAuthentication) || errors.Is(err, state.ErrNotFound) {
+			s.events.Publish(service.TopicAccounts)
+			writeAPIError(w, http.StatusConflict, "account_not_connected", "connect a Knowledge Planet account before listing groups")
+			return
+		}
 		writeZSXQAPIError(w, err)
 		return
 	}
-	s.events.Publish(service.TopicSources)
-	writeJSON(w, http.StatusOK, sources)
+	views := make([]zsxqGroupView, 0, len(groups))
+	for _, group := range groups {
+		views = append(views, zsxqGroupView{ID: group.ID, Name: group.Name, OwnerID: group.OwnerID, OwnerName: group.OwnerName})
+	}
+	writeJSON(w, http.StatusOK, views)
 }
 
 func writeZSXQAPIError(w http.ResponseWriter, err error) {
@@ -139,23 +155,65 @@ func (s *Server) sourcesV4(w http.ResponseWriter, r *http.Request) {
 	s.writeAPIResult(w, http.StatusOK, sources, err)
 }
 
-func (s *Server) createSourceV4(w http.ResponseWriter, r *http.Request) {
+func (s *Server) createBilibiliSourceV4(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Platform   model.Platform `json:"platform"`
-		ExternalID string         `json:"external_id"`
-		Name       string         `json:"name"`
-		Note       string         `json:"note"`
-		Enabled    bool           `json:"enabled"`
+		UID     string `json:"uid"`
+		Name    string `json:"name"`
+		Note    string `json:"note"`
+		Enabled bool   `json:"enabled"`
 	}
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	if input.Platform != model.PlatformBilibili {
-		writeAPIError(w, http.StatusBadRequest, "validation_failed", "only Bilibili UP sources may be created manually")
+	source := model.Source{ID: model.SourceID(model.PlatformBilibili, input.UID), Platform: model.PlatformBilibili, Type: model.SourceBilibiliUP,
+		ExternalID: input.UID, Name: input.Name, Note: input.Note, Enabled: input.Enabled, BaselineState: model.BaselinePending}
+	s.createSourceV4(w, r, source)
+}
+
+func (s *Server) createZSXQSourceV4(w http.ResponseWriter, r *http.Request) {
+	if s.zsxqAccounts == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "integration_unavailable", "Knowledge Planet integration is unavailable")
 		return
 	}
-	source := model.Source{ID: model.SourceID(input.Platform, input.ExternalID), Platform: input.Platform, Type: model.SourceBilibiliUP,
-		ExternalID: input.ExternalID, Name: input.Name, Note: input.Note, Enabled: input.Enabled, BaselineState: model.BaselinePending}
+	var input struct {
+		GroupID string `json:"group_id"`
+		Note    string `json:"note"`
+		Enabled bool   `json:"enabled"`
+	}
+	if !decodeAPIRequest(w, r, &input) {
+		return
+	}
+	ctx, cancel := withAPITimeout(r)
+	defer cancel()
+	groups, err := s.zsxqAccounts.Groups(ctx)
+	if err != nil {
+		if errors.Is(err, zsxq.ErrAuthentication) || errors.Is(err, state.ErrNotFound) {
+			s.events.Publish(service.TopicAccounts)
+			writeAPIError(w, http.StatusConflict, "account_not_connected", "connect a Knowledge Planet account before adding a source")
+			return
+		}
+		writeZSXQAPIError(w, err)
+		return
+	}
+	groupID := strings.TrimSpace(input.GroupID)
+	var selected *zsxq.Group
+	for index := range groups {
+		if groups[index].ID == groupID {
+			selected = &groups[index]
+			break
+		}
+	}
+	if selected == nil {
+		writeAPIErrorFields(w, http.StatusUnprocessableEntity, "validation_failed", "selected Knowledge Planet group is not visible to the connected account", map[string]string{"group_id": "请选择当前账号中的星球"})
+		return
+	}
+	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, selected.ID), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
+		ExternalID: selected.ID, Name: selected.Name, Note: input.Note, OwnerID: selected.OwnerID, OwnerName: selected.OwnerName,
+		Enabled: input.Enabled, BaselineState: model.BaselinePending}
+	s.createSourceV4(w, r, source)
+}
+
+func (s *Server) createSourceV4(w http.ResponseWriter, r *http.Request, source model.Source) {
 	if err := source.Validate(); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "validation_failed", err.Error())
 		return

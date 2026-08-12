@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -69,42 +70,6 @@ func (s *Store) PutPlatformAccount(account model.PlatformAccount) error {
 		row.VerifiedAt = unixPointer(account.VerifiedAt)
 		row.RiskPausedUntil = unixPointer(account.RiskPausedUntil)
 		return tx.Save(&row).Error
-	})
-}
-
-// ReplaceZSXQPlatformAccount replaces the authenticated account and, when its
-// identity changes, disables every ZSXQ source in the same transaction.
-func (s *Store) ReplaceZSXQPlatformAccount(account model.PlatformAccount) error {
-	if account.Platform != model.PlatformZSXQ {
-		return errors.New("ZSXQ account is required")
-	}
-	if err := account.Validate(); err != nil {
-		return err
-	}
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		var old platformAccountRow
-		err := tx.Where("platform = ?", model.PlatformZSXQ).Take(&old).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		sealed, err := sealJSON(s.vault, tablePlatformAccounts, string(account.Platform), account.Session)
-		if err != nil {
-			return fmt.Errorf("encrypting %s session: %w", account.Platform, err)
-		}
-		now := account.UpdatedAt
-		if now.IsZero() {
-			now = time.Now()
-		}
-		row := platformAccountRow{Platform: string(account.Platform), ExternalID: account.ExternalID, DisplayName: account.DisplayName,
-			Status: string(account.Status), SealedSession: sealed, SealedAAD: tablePlatformAccounts, UpdatedAt: now.Unix(), LastError: account.LastError}
-		row.VerifiedAt = unixPointer(account.VerifiedAt)
-		if err := tx.Save(&row).Error; err != nil {
-			return err
-		}
-		if old.ExternalID != "" && old.ExternalID != account.ExternalID {
-			return tx.Model(&sourceRow{}).Where("platform = ?", model.PlatformZSXQ).Update("enabled", 0).Error
-		}
-		return nil
 	})
 }
 
@@ -273,35 +238,6 @@ func (s *Store) CreateSource(source model.Source) error {
 			}
 		}
 		return tx.Create(sourceFromModel(source)).Error
-	})
-}
-
-// MergeVisibleSources inserts/updates upstream-owned metadata without changing
-// the administrator's Enabled, note, or baseline/backfill choices.
-func (s *Store) MergeVisibleSources(platform model.Platform, sources []model.Source) error {
-	if err := platform.Validate(); err != nil {
-		return err
-	}
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		for _, source := range sources {
-			if source.Platform != platform {
-				return errors.New("visible source platform mismatch")
-			}
-			if source.BaselineState == "" {
-				source.BaselineState = model.BaselinePending
-			}
-			if err := source.Validate(); err != nil {
-				return err
-			}
-			row := sourceFromModel(source)
-			if err := tx.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "id"}},
-				DoUpdates: clause.AssignmentColumns([]string{"name", "owner_id", "owner_name"}),
-			}).Create(&row).Error; err != nil {
-				return err
-			}
-		}
-		return nil
 	})
 }
 
@@ -1010,6 +946,7 @@ func contentDeliverySnapshotTx(tx *gorm.DB, content model.Content, attachments [
 	dynamic := model.Dynamic{ID: content.ID, Platform: content.Platform, SourceName: source.Name, UID: content.SourceID,
 		UPName: content.AuthorName, Type: string(content.Type), PublishedAt: content.PublishedAt, Summary: content.Text,
 		Description: content.Text, URL: content.URL, Title: content.Title}
+	fileIndex := 0
 	for _, attachment := range attachments {
 		if attachment.Type == model.AttachmentImage && attachment.LocalPath != "" {
 			dynamic.Media = append(dynamic.Media, model.DynamicMedia{Kind: model.DynamicMediaImage, Width: attachment.Width,
@@ -1024,8 +961,32 @@ func contentDeliverySnapshotTx(tx *gorm.DB, content model.Content, attachments [
 			label += fmt.Sprintf(" (%s)", humanBytes(attachment.Size))
 		}
 		dynamic.Links = append(dynamic.Links, model.DynamicLink{Text: label, URL: content.URL})
+		if content.Platform == model.PlatformZSXQ && attachment.Type != model.AttachmentImage && attachment.Type != model.AttachmentLink {
+			fileIndex++
+			name := deliveryFileName(attachment, fileIndex)
+			dynamic.Files = append(dynamic.Files, model.DeliveryFile{ID: attachment.ID, Name: name, MIME: attachment.MIME,
+				Size: attachment.Size, LocalPath: attachment.LocalPath, LocalizeError: attachment.LocalizeError})
+		}
 	}
 	return dynamic, nil
+}
+
+func deliveryFileName(attachment model.Attachment, index int) string {
+	if name := strings.TrimSpace(filepath.Base(strings.ReplaceAll(attachment.FileName, `\`, "/"))); name != "" && name != "." {
+		return name
+	}
+	ext := filepath.Ext(filepath.Base(attachment.LocalPath))
+	if ext == "" {
+		switch strings.ToLower(attachment.MIME) {
+		case "audio/mpeg":
+			ext = ".mp3"
+		case "video/mp4":
+			ext = ".mp4"
+		case "application/pdf":
+			ext = ".pdf"
+		}
+	}
+	return fmt.Sprintf("附件-%d%s", index, ext)
 }
 
 func commentDigestNotificationTx(tx *gorm.DB, digest model.CommentDigest, key string, now time.Time) (model.CommentNotification, error) {

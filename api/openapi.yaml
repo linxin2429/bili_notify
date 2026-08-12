@@ -267,6 +267,8 @@ paths:
           $ref: '#/components/responses/CSRFError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '422':
+          $ref: '#/components/responses/ChannelConfigurationError'
         '502':
           $ref: '#/components/responses/UpstreamError'
   /api/v4/channels/{id}/microsoft-login:
@@ -654,15 +656,17 @@ paths:
       operationId: deleteZSXQSession
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
       responses: {'204': {description: Knowledge Planet account disconnected.}}
-  /api/v4/accounts/zsxq/sync-sources:
-    post:
-      tags: [accounts, sources]
-      operationId: syncZSXQSources
-      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+  /api/v4/accounts/zsxq/groups:
+    get:
+      tags: [accounts]
+      operationId: listZSXQGroups
       responses:
         '200':
-          description: Visible Knowledge Planet sources.
-          content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Source'}}}}
+          description: Knowledge Planet groups visible to the connected account.
+          content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/ZSXQGroup'}}}}
+        '409': {$ref: '#/components/responses/ConflictError'}
+        '429': {$ref: '#/components/responses/RateLimitError'}
+        '502': {$ref: '#/components/responses/UpstreamError'}
   /api/v4/sources:
     get:
       tags: [sources]
@@ -673,15 +677,28 @@ paths:
         '200':
           description: Collection sources.
           content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Source'}}}}
+  /api/v4/sources/bilibili:
     post:
       tags: [sources]
-      operationId: createSource
+      operationId: createBilibiliSource
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
       requestBody:
         required: true
-        content: {application/json: {schema: {$ref: '#/components/schemas/CreateSourceRequest'}}}
+        content: {application/json: {schema: {$ref: '#/components/schemas/CreateBilibiliSourceRequest'}}}
       responses:
         '201': {description: Source created, content: {application/json: {schema: {$ref: '#/components/schemas/Source'}}}}
+  /api/v4/sources/zsxq:
+    post:
+      tags: [sources]
+      operationId: createZSXQSource
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CreateZSXQSourceRequest'}}}
+      responses:
+        '201': {description: Source created from a group visible to the connected account, content: {application/json: {schema: {$ref: '#/components/schemas/Source'}}}}
+        '409': {$ref: '#/components/responses/ConflictError'}
+        '422': {$ref: '#/components/responses/InvalidRequest'}
   /api/v4/sources/{id}:
     parameters: [{name: id, in: path, required: true, schema: {type: string}}]
     put:
@@ -920,6 +937,15 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    ChannelConfigurationError:
+      description: The notification provider rejected a fixable channel configuration or permission setting.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
     InternalError:
       description: Internal server failure.
       headers:
@@ -1024,6 +1050,15 @@ components:
         updated_at: {type: string, format: date-time}
         risk_paused_until: {type: string, format: date-time}
         last_error: {type: string}
+    ZSXQGroup:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id: {type: string, pattern: '^[1-9][0-9]*$'}
+        name: {type: string, minLength: 1}
+        owner_id: {type: string, pattern: '^[1-9][0-9]*$'}
+        owner_name: {type: string}
     Source:
       type: object
       additionalProperties: false
@@ -1049,14 +1084,21 @@ components:
         sync_lag_sec: {type: integer, format: int64}
         last_error: {type: string}
         consecutive_fails: {type: integer}
-    CreateSourceRequest:
+    CreateBilibiliSourceRequest:
       type: object
       additionalProperties: false
-      required: [platform, external_id, name, note, enabled]
+      required: [uid, name, note, enabled]
       properties:
-        platform: {type: string, const: bilibili}
-        external_id: {type: string, pattern: '^[1-9][0-9]*$'}
+        uid: {type: string, pattern: '^[1-9][0-9]*$'}
         name: {type: string}
+        note: {type: string}
+        enabled: {type: boolean}
+    CreateZSXQSourceRequest:
+      type: object
+      additionalProperties: false
+      required: [group_id, note, enabled]
+      properties:
+        group_id: {type: string, pattern: '^[1-9][0-9]*$'}
         note: {type: string}
         enabled: {type: boolean}
     UpdateSourceRequest:
@@ -1209,9 +1251,11 @@ components:
         enabled: {type: boolean}
         settings:
           type: object
+          description: Public channel settings. Feishu accepts only app_id and chat_id; its legacy webhook settings are not supported.
           additionalProperties: {type: string}
         secrets:
           type: object
+          description: Write-only channel secrets. Feishu accepts only app_secret; Microsoft OAuth tokens are managed by device authorization.
           additionalProperties: {type: string}
     Channel:
       type: object

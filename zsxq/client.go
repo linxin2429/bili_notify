@@ -28,13 +28,14 @@ const (
 )
 
 var (
-	ErrAuthentication = errors.New("zsxq authentication failed")
-	ErrRateLimited    = errors.New("zsxq request rate limited")
-	ErrRiskControl    = errors.New("zsxq risk control triggered")
-	ErrPermission     = errors.New("zsxq source permission denied")
-	ErrRemoteNotFound = errors.New("zsxq remote content not found")
-	ErrSchemaDrift    = errors.New("zsxq response schema changed")
-	ErrUpstream       = errors.New("zsxq upstream request failed")
+	ErrAuthentication    = errors.New("zsxq authentication failed")
+	ErrRateLimited       = errors.New("zsxq request rate limited")
+	ErrRiskControl       = errors.New("zsxq risk control triggered")
+	ErrPermission        = errors.New("zsxq source permission denied")
+	ErrUnsupportedClient = errors.New("zsxq rejected non-official client access")
+	ErrRemoteNotFound    = errors.New("zsxq remote content not found")
+	ErrSchemaDrift       = errors.New("zsxq response schema changed")
+	ErrUpstream          = errors.New("zsxq upstream request failed")
 )
 
 type Client struct {
@@ -87,6 +88,60 @@ type User struct {
 	Name string
 }
 
+// Group is a secret-free summary of a Knowledge Planet group visible to the
+// authenticated account.
+type Group struct {
+	ID        string
+	Name      string
+	OwnerID   string
+	OwnerName string
+}
+
+func (c *Client) Groups(ctx context.Context, token string) ([]Group, error) {
+	var response struct {
+		Groups []struct {
+			GroupID json.Number `json:"group_id"`
+			Name    string      `json:"name"`
+			Owner   struct {
+				UserID json.Number `json:"user_id"`
+				UID    json.Number `json:"uid"`
+				Name   string      `json:"name"`
+			} `json:"owner"`
+		} `json:"groups"`
+	}
+	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/groups", nil, nil, &response); err != nil {
+		return nil, err
+	}
+	groups := make([]Group, 0, len(response.Groups))
+	for _, raw := range response.Groups {
+		id := raw.GroupID.String()
+		if !decimalID(id) || strings.TrimSpace(raw.Name) == "" {
+			return nil, ErrSchemaDrift
+		}
+		ownerID := raw.Owner.UserID.String()
+		if ownerID == "" {
+			ownerID = raw.Owner.UID.String()
+		}
+		if ownerID != "" && !decimalID(ownerID) {
+			return nil, ErrSchemaDrift
+		}
+		groups = append(groups, Group{ID: id, Name: raw.Name, OwnerID: ownerID, OwnerName: raw.Owner.Name})
+	}
+	return groups, nil
+}
+
+func decimalID(value string) bool {
+	if value == "" || value[0] == '0' {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Client) Me(ctx context.Context, token string) (User, error) {
 	// Knowledge Planet's DWeb /users/self payload uses user.uid. Older fixtures and
 	// some nested objects still expose user_id; accept either without guessing names.
@@ -110,38 +165,20 @@ func (c *Client) Me(ctx context.Context, token string) (User, error) {
 	return User{ID: id, Name: response.User.Name}, nil
 }
 
-type Group struct {
-	ID        string
-	Name      string
-	OwnerID   string
-	OwnerName string
-}
-
-func (c *Client) Groups(ctx context.Context, token string) ([]Group, error) {
-	var response struct {
-		Groups []struct {
-			GroupID json.Number `json:"group_id"`
-			Name    string      `json:"name"`
-			Owner   apiUser     `json:"owner"`
-		} `json:"groups"`
-	}
-	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/groups", nil, nil, &response); err != nil {
-		return nil, err
-	}
-	groups := make([]Group, 0, len(response.Groups))
-	for _, item := range response.Groups {
-		if item.GroupID.String() == "" || item.Name == "" || item.Owner.UserID.String() == "" {
-			return nil, ErrSchemaDrift
-		}
-		groups = append(groups, Group{ID: item.GroupID.String(), Name: item.Name, OwnerID: item.Owner.UserID.String(), OwnerName: item.Owner.Name})
-	}
-	return groups, nil
-}
-
 type TopicPage struct {
 	Contents    []model.Content
 	Attachments map[string][]model.Attachment
 	NextCursor  string
+}
+
+// TopicSnapshot is the normalized topic detail plus the comments included in
+// that same upstream response. CommentsComplete distinguishes a full small
+// thread from the presentation-only prefix returned for larger threads.
+type TopicSnapshot struct {
+	Content          model.Content
+	Attachments      []model.Attachment
+	ShownComments    []model.CommentNode
+	CommentsComplete bool
 }
 
 func (c *Client) Topics(ctx context.Context, token string, source model.Source, cursor string, count int) (TopicPage, error) {
@@ -177,15 +214,48 @@ func (c *Client) Topics(ctx context.Context, token string, source model.Source, 
 	return page, nil
 }
 
-func (c *Client) Topic(ctx context.Context, token string, source model.Source, topicID string) (model.Content, []model.Attachment, error) {
+func (c *Client) Topic(ctx context.Context, token string, source model.Source, topicID string) (TopicSnapshot, error) {
 	var response struct {
 		Topic apiTopic `json:"topic"`
 	}
 	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/topics/"+url.PathEscape(topicID), nil, nil, &response); err != nil {
-		return model.Content{}, nil, err
+		return TopicSnapshot{}, err
 	}
 	content, attachments, err := parseTopic(source, response.Topic)
-	return content, attachments, err
+	if err != nil {
+		return TopicSnapshot{}, err
+	}
+	comments, complete, err := parseShownComments(content, source.OwnerID, response.Topic.ShowComments, response.Topic.CommentsCount)
+	if err != nil {
+		return TopicSnapshot{}, err
+	}
+	return TopicSnapshot{Content: content, Attachments: attachments, ShownComments: comments, CommentsComplete: complete}, nil
+}
+
+func (c *Client) populateFileDownloadURLs(ctx context.Context, token string, attachments []model.Attachment) error {
+	for index := range attachments {
+		attachment := &attachments[index]
+		if attachment.Type != model.AttachmentFile || attachment.RemoteURL != "" || attachment.LocalPath != "" {
+			continue
+		}
+		var response struct {
+			DownloadURL string `json:"download_url"`
+		}
+		path := "/v2/files/" + url.PathEscape(attachment.ExternalID) + "/download_url"
+		if err := c.doJSON(ctx, token, http.MethodGet, path, nil, nil, &response); err != nil {
+			if errors.Is(err, ErrPermission) || errors.Is(err, ErrRemoteNotFound) {
+				attachment.LocalizeError = "attachment download unavailable"
+				continue
+			}
+			return err
+		}
+		parsed, err := url.Parse(response.DownloadURL)
+		if err != nil || (strings.ToLower(parsed.Scheme) != "http" && strings.ToLower(parsed.Scheme) != "https") || !parsed.IsAbs() || parsed.Host == "" {
+			return ErrSchemaDrift
+		}
+		attachment.RemoteURL = response.DownloadURL
+	}
+	return nil
 }
 
 type CommentPage struct {
@@ -337,6 +407,8 @@ func classifyBusinessCode(code int) error {
 		return fmt.Errorf("%w: business code %d", ErrRateLimited, code)
 	case 403, 1006:
 		return fmt.Errorf("%w: business code %d", ErrPermission, code)
+	case 1059:
+		return fmt.Errorf("%w: business code %d", ErrUnsupportedClient, code)
 	case 404:
 		return fmt.Errorf("%w: business code %d", ErrRemoteNotFound, code)
 	case 0:

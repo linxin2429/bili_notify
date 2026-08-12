@@ -3,6 +3,7 @@ package zsxq
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -16,8 +17,7 @@ var ErrInvalidCookie = errors.New("invalid Knowledge Planet cookie")
 
 type AccountStore interface {
 	PlatformAccount(model.Platform) (model.PlatformAccount, error)
-	ReplaceZSXQPlatformAccount(model.PlatformAccount) error
-	MergeVisibleSources(model.Platform, []model.Source) error
+	PutPlatformAccount(model.PlatformAccount) error
 }
 
 type AccountManager struct {
@@ -77,34 +77,35 @@ func (manager *AccountManager) ImportCookie(ctx context.Context, rawCookie strin
 	now := manager.now()
 	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: user.ID, DisplayName: user.Name,
 		Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: token}, VerifiedAt: now, UpdatedAt: now}
-	if err := manager.store.ReplaceZSXQPlatformAccount(account); err != nil {
+	if err := manager.store.PutPlatformAccount(account); err != nil {
 		return model.PlatformAccount{}, err
 	}
 	account.Session = nil
 	return account, nil
 }
 
-func (manager *AccountManager) SyncSources(ctx context.Context) ([]model.Source, error) {
+func (manager *AccountManager) Groups(ctx context.Context) ([]Group, error) {
 	account, err := manager.store.PlatformAccount(model.PlatformZSXQ)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("loading Knowledge Planet account: %w", err)
+	}
+	if account.Status != model.AccountConnected {
+		return nil, ErrAuthentication
 	}
 	token, err := AccessToken(account)
 	if err != nil {
 		return nil, err
 	}
 	groups, err := manager.client.Groups(ctx, token)
-	if err != nil {
-		return nil, err
+	if !errors.Is(err, ErrAuthentication) {
+		return groups, err
 	}
-	sources := make([]model.Source, 0, len(groups))
-	for _, group := range groups {
-		sources = append(sources, model.Source{ID: model.SourceID(model.PlatformZSXQ, group.ID), Platform: model.PlatformZSXQ,
-			Type: model.SourceZSXQPlanet, ExternalID: group.ID, Name: group.Name, OwnerID: group.OwnerID, OwnerName: group.OwnerName,
-			BaselineState: model.BaselinePending})
+	account.Status = model.AccountInvalid
+	account.Session = map[string]string{}
+	account.LastError = "session import required"
+	account.UpdatedAt = manager.now()
+	if storeErr := manager.store.PutPlatformAccount(account); storeErr != nil {
+		return nil, fmt.Errorf("invalidating rejected Knowledge Planet session: %w", storeErr)
 	}
-	if err := manager.store.MergeVisibleSources(model.PlatformZSXQ, sources); err != nil {
-		return nil, err
-	}
-	return sources, nil
+	return nil, err
 }

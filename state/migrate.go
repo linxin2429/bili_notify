@@ -19,6 +19,7 @@ func runMigrations(ctx context.Context, db *sql.DB, v *vault.Vault) error {
 		db,
 		migrations.FS,
 		goose.WithGoMigrations(goose.NewGoMigration(10, &goose.GoFunc{RunTx: migrateV10(v)}, nil)),
+		goose.WithGoMigrations(goose.NewGoMigration(11, &goose.GoFunc{RunTx: migrateV11(v)}, nil)),
 	)
 	if err != nil {
 		return fmt.Errorf("creating migration provider: %w", err)

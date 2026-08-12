@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/linxin2429/bili_notify/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -238,12 +240,14 @@ func TestFeishuTokenAndImageProtocolFailures(t *testing.T) {
 		retryAfter string
 		permanent  bool
 		wantRetry  bool
+		wantAction string
 		want       string
 	}{
 		{name: "token rate limit", operation: "token", status: http.StatusTooManyRequests, retryAfter: "13", wantRetry: true, want: "HTTP 429"},
 		{name: "token unauthorized", operation: "token", status: http.StatusUnauthorized, permanent: true, want: "HTTP 401"},
 		{name: "token malformed", operation: "token", status: http.StatusOK, body: `{"code":`, permanent: true, want: "decoding"},
 		{name: "token business error", operation: "token", status: http.StatusOK, body: `{"code":10003,"msg":"app-secret must-not-leak"}`, permanent: true, want: "code=10003"},
+		{name: "token invalid credentials", operation: "token", status: http.StatusOK, body: `{"code":10014,"msg":"app-secret must-not-leak"}`, permanent: true, want: "code=10014", wantAction: "App ID 与 App Secret"},
 		{name: "image server error", operation: "image", status: http.StatusBadGateway, want: "HTTP 502"},
 		{name: "image malformed", operation: "image", status: http.StatusOK, body: `{"code":`, permanent: true, want: "decoding"},
 		{name: "image business error", operation: "image", status: http.StatusOK, body: `{"code":234,"msg":"app-secret must-not-leak"}`, permanent: true, want: "code=234"},
@@ -271,6 +275,49 @@ func TestFeishuTokenAndImageProtocolFailures(t *testing.T) {
 			assert.NotContains(t, err.Error(), "app-secret")
 			_, retry := RetryAfter(err)
 			assert.Equal(t, tt.wantRetry, retry)
+			message, actionable := ActionableMessage(err)
+			assert.Equal(t, tt.wantAction != "", actionable)
+			assert.Contains(t, message, tt.wantAction)
+		})
+	}
+}
+
+func TestFeishuMessagePermissionFailureIsActionable(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		code        int64
+		wantMessage string
+	}{
+		{name: "bot is outside group", code: 230002, wantMessage: "添加到 Chat ID 对应的群聊"},
+		{name: "bot ability disabled", code: 230006, wantMessage: "启用机器人"},
+		{name: "recipient outside availability", code: 230013, wantMessage: "可用范围"},
+		{name: "send permission denied", code: 230035, wantMessage: "im:message:send_as_bot"},
+		{name: "tenant permission denied", code: 99991672, wantMessage: "im:message:send_as_bot"},
+		{name: "unknown error remains generic", code: 234567, wantMessage: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				body := fmt.Sprintf(`{"code":%d,"msg":"permission detail must-not-leak"}`, tt.code)
+				return responseWithHeader(request, http.StatusBadRequest, body, make(http.Header)), nil
+			})}
+			t.Cleanup(client.CloseIdleConnections)
+			caches := &sync.Map{}
+			caches.Store(feishuTokenCacheKey("app-id", "app-secret"), &feishuTokenCache{token: "tenant-token", expires: time.Now().Add(time.Hour)})
+			sender := &robotSender{
+				kind: model.ChannelFeishu, client: client, appID: "app-id", appSecret: "app-secret", chatID: "oc_group", feishuTokenCaches: caches,
+			}
+
+			err := sender.Send(t.Context(), TextMessage("test", "body"))
+			require.Error(t, err)
+			assert.True(t, IsPermanent(err))
+			assert.ErrorContains(t, err, fmt.Sprintf("HTTP 400 with business code %d", tt.code))
+			assert.NotContains(t, err.Error(), "permission detail")
+			message, ok := ActionableMessage(err)
+			assert.Equal(t, tt.wantMessage != "", ok)
+			assert.Contains(t, message, tt.wantMessage)
 		})
 	}
 }
