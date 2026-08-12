@@ -144,6 +144,16 @@ type TopicPage struct {
 	NextCursor  string
 }
 
+// TopicSnapshot is the normalized topic detail plus the comments included in
+// that same upstream response. CommentsComplete distinguishes a full small
+// thread from the presentation-only prefix returned for larger threads.
+type TopicSnapshot struct {
+	Content          model.Content
+	Attachments      []model.Attachment
+	ShownComments    []model.CommentNode
+	CommentsComplete bool
+}
+
 func (c *Client) Topics(ctx context.Context, token string, source model.Source, cursor string, count int) (TopicPage, error) {
 	if source.Platform != model.PlatformZSXQ || source.Type != model.SourceZSXQPlanet {
 		return TopicPage{}, errors.New("zsxq source is required")
@@ -177,15 +187,48 @@ func (c *Client) Topics(ctx context.Context, token string, source model.Source, 
 	return page, nil
 }
 
-func (c *Client) Topic(ctx context.Context, token string, source model.Source, topicID string) (model.Content, []model.Attachment, error) {
+func (c *Client) Topic(ctx context.Context, token string, source model.Source, topicID string) (TopicSnapshot, error) {
 	var response struct {
 		Topic apiTopic `json:"topic"`
 	}
 	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/topics/"+url.PathEscape(topicID), nil, nil, &response); err != nil {
-		return model.Content{}, nil, err
+		return TopicSnapshot{}, err
 	}
 	content, attachments, err := parseTopic(source, response.Topic)
-	return content, attachments, err
+	if err != nil {
+		return TopicSnapshot{}, err
+	}
+	comments, complete, err := parseShownComments(content, source.OwnerID, response.Topic.ShowComments, response.Topic.CommentsCount)
+	if err != nil {
+		return TopicSnapshot{}, err
+	}
+	return TopicSnapshot{Content: content, Attachments: attachments, ShownComments: comments, CommentsComplete: complete}, nil
+}
+
+func (c *Client) populateFileDownloadURLs(ctx context.Context, token string, attachments []model.Attachment) error {
+	for index := range attachments {
+		attachment := &attachments[index]
+		if attachment.Type != model.AttachmentFile || attachment.RemoteURL != "" || attachment.LocalPath != "" {
+			continue
+		}
+		var response struct {
+			DownloadURL string `json:"download_url"`
+		}
+		path := "/v2/files/" + url.PathEscape(attachment.ExternalID) + "/download_url"
+		if err := c.doJSON(ctx, token, http.MethodGet, path, nil, nil, &response); err != nil {
+			if errors.Is(err, ErrPermission) || errors.Is(err, ErrRemoteNotFound) {
+				attachment.LocalizeError = "attachment download unavailable"
+				continue
+			}
+			return err
+		}
+		parsed, err := url.Parse(response.DownloadURL)
+		if err != nil || (strings.ToLower(parsed.Scheme) != "http" && strings.ToLower(parsed.Scheme) != "https") || !parsed.IsAbs() || parsed.Host == "" {
+			return ErrSchemaDrift
+		}
+		attachment.RemoteURL = response.DownloadURL
+	}
+	return nil
 }
 
 type CommentPage struct {

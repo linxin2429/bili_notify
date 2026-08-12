@@ -31,6 +31,7 @@ type Collector struct {
 }
 
 type collectorStore interface {
+	Attachment(string, string, bool) (model.Attachment, error)
 	ArchiveContent(model.Content, []model.Attachment) error
 	ArchiveContentAndEnqueue(model.Content, []model.Attachment, []string, bool) error
 	CommentSyncState(model.Platform, string) (bool, error)
@@ -214,7 +215,9 @@ func (collector *Collector) syncSource(ctx context.Context, token string, source
 	for _, content := range page.Contents {
 		content.Baseline = initializing || !isAfterWatermark(content, watermark)
 		attachments := page.Attachments[content.ID]
-		collector.localize(ctx, source, content, attachments, token)
+		if err := collector.localize(ctx, source, content, attachments, token); err != nil {
+			return err
+		}
 		if err := collector.store.ArchiveContentAndEnqueue(content, attachments, nil, !content.Baseline); err != nil {
 			return err
 		}
@@ -227,7 +230,9 @@ func (collector *Collector) syncSource(ctx context.Context, token string, source
 		for _, content := range history.Contents {
 			content.Baseline = true
 			attachments := history.Attachments[content.ID]
-			collector.localize(ctx, source, content, attachments, token)
+			if err := collector.localize(ctx, source, content, attachments, token); err != nil {
+				return err
+			}
 			if err := collector.store.ArchiveContentAndEnqueue(content, attachments, nil, false); err != nil {
 				return err
 			}
@@ -248,9 +253,29 @@ func (collector *Collector) syncSource(ctx context.Context, token string, source
 	return collector.store.PutSource(source)
 }
 
-func (collector *Collector) localize(ctx context.Context, source model.Source, content model.Content, attachments []model.Attachment, token string) {
+func (collector *Collector) localize(ctx context.Context, source model.Source, content model.Content, attachments []model.Attachment, token string) error {
 	if collector.assets == nil || len(attachments) == 0 {
-		return
+		return nil
+	}
+	for index := range attachments {
+		existing, err := collector.store.Attachment(content.ID, attachments[index].ID, false)
+		if err != nil && !errors.Is(err, state.ErrNotFound) {
+			return err
+		}
+		if err == nil && existing.LocalPath != "" {
+			attachments[index].LocalPath = existing.LocalPath
+			attachments[index].RemoteHost = existing.RemoteHost
+			attachments[index].LocalizeError = ""
+			if attachments[index].MIME == "" {
+				attachments[index].MIME = existing.MIME
+			}
+			if attachments[index].Size == 0 {
+				attachments[index].Size = existing.Size
+			}
+		}
+	}
+	if err := collector.client.populateFileDownloadURLs(ctx, token, attachments); err != nil {
+		return err
 	}
 	settings := collector.settings()
 	result := collector.assets.EnsureAttachments(ctx, model.PlatformZSXQ, source.ID, content.ID, attachments,
@@ -259,6 +284,7 @@ func (collector *Collector) localize(ctx context.Context, source model.Source, c
 		collector.logger.WarnContext(ctx, "Knowledge Planet attachment budget exhausted", "event", "zsxq.asset.budget_exhausted")
 		collector.queueSystemAlert(ctx, "zsxq-asset-budget-exhausted", "知识星球附件总预算已耗尽；新附件将只归档元数据，现有档案不会自动删除。")
 	}
+	return nil
 }
 
 func (collector *Collector) SyncComments(ctx context.Context) error {
@@ -297,7 +323,7 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 				return err
 			}
 			for _, archived := range contents {
-				content, attachments, err := collector.client.Topic(ctx, token, source, archived.ExternalID)
+				snapshot, err := collector.client.Topic(ctx, token, source, archived.ExternalID)
 				if err != nil {
 					if collector.stopPlatformOnError(account, err) {
 						if errors.Is(err, ErrAuthentication) {
@@ -311,21 +337,31 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 					_ = collector.store.PutCommentSyncState(model.PlatformZSXQ, archived.ID, false, time.Now(), publicError(err))
 					continue
 				}
+				content, attachments := snapshot.Content, snapshot.Attachments
 				content.Baseline = archived.Baseline
-				collector.localize(ctx, source, content, attachments, token)
-				if err := collector.store.ArchiveContent(content, attachments); err != nil {
-					return err
-				}
-				nodes, complete, err := collector.allComments(ctx, token, content, source.OwnerID)
-				if err != nil {
+				if err := collector.localize(ctx, source, content, attachments, token); err != nil {
 					if collector.stopPlatformOnError(account, err) {
-						if errors.Is(err, ErrAuthentication) {
-							collector.queueSystemAlert(ctx, fmt.Sprintf("zsxq-auth-%d", account.VerifiedAt.Unix()), "知识星球登录已失效，知识星球采集已暂停；B 站采集和通知投递不受影响。")
-						}
 						return err
 					}
 					_ = collector.store.PutCommentSyncState(model.PlatformZSXQ, content.ID, false, time.Now(), publicError(err))
 					continue
+				}
+				if err := collector.store.ArchiveContent(content, attachments); err != nil {
+					return err
+				}
+				nodes, complete := snapshot.ShownComments, snapshot.CommentsComplete
+				if !complete {
+					nodes, complete, err = collector.allComments(ctx, token, content, source.OwnerID)
+					if err != nil {
+						if collector.stopPlatformOnError(account, err) {
+							if errors.Is(err, ErrAuthentication) {
+								collector.queueSystemAlert(ctx, fmt.Sprintf("zsxq-auth-%d", account.VerifiedAt.Unix()), "知识星球登录已失效，知识星球采集已暂停；B 站采集和通知投递不受影响。")
+							}
+							return err
+						}
+						_ = collector.store.PutCommentSyncState(model.PlatformZSXQ, content.ID, false, time.Now(), publicError(err))
+						continue
+					}
 				}
 				baselineReady, err := collector.store.CommentSyncState(model.PlatformZSXQ, content.ID)
 				if err != nil {
