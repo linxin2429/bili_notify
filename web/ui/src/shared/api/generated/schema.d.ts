@@ -526,7 +526,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v4/accounts/zsxq/sms-code": {
+    "/api/v4/accounts/zsxq/token": {
         parameters: {
             query?: never;
             header?: never;
@@ -535,7 +535,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["sendZSXQSMSCode"];
+        post: operations["importZSXQToken"];
         delete?: never;
         options?: never;
         head?: never;
@@ -551,7 +551,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["createZSXQSession"];
+        post?: never;
         delete: operations["deleteZSXQSession"];
         options?: never;
         head?: never;
@@ -680,6 +680,9 @@ export interface components {
             error: {
                 code: string;
                 message: string;
+                fields?: {
+                    [key: string]: string;
+                };
             };
         };
         Session: {
@@ -740,21 +743,6 @@ export interface components {
             /** Format: date-time */
             risk_paused_until?: string;
             last_error?: string;
-        };
-        ZSXQSMSCodeRequest: {
-            country_code: string;
-            phone: string;
-            captcha_verify_param: string;
-            agreement_accepted: boolean;
-        };
-        ZSXQLoginTransaction: {
-            id: string;
-            masked_phone: string;
-            /** Format: date-time */
-            expires_at: string;
-            /** Format: date-time */
-            next_send_at: string;
-            attempts_left: number;
         };
         Source: {
             id: string;
@@ -2358,34 +2346,7 @@ export interface operations {
             };
         };
     };
-    sendZSXQSMSCode: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-CSRF-Token": components["parameters"]["CSRFToken"];
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ZSXQSMSCodeRequest"];
-            };
-        };
-        responses: {
-            /** @description Ephemeral login transaction. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ZSXQLoginTransaction"];
-                };
-            };
-            429: components["responses"]["RateLimitError"];
-        };
-    };
-    createZSXQSession: {
+    importZSXQToken: {
         parameters: {
             query?: never;
             header: {
@@ -2397,8 +2358,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    transaction_id: string;
-                    code: string;
+                    cookie: string;
                 };
             };
         };
@@ -2412,6 +2372,8 @@ export interface operations {
                     "application/json": components["schemas"]["PlatformAccount"];
                 };
             };
+            400: components["responses"]["InvalidRequest"];
+            422: components["responses"]["InvalidRequest"];
         };
     };
     deleteZSXQSession: {

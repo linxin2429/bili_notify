@@ -52,7 +52,7 @@ type Server struct {
 	auth           *authenticator
 	engine         *service.Engine
 	ai             *service.AIEngine
-	zsxqLogin      *zsxq.LoginManager
+	zsxqAccounts   *zsxq.AccountManager
 	sourceAdmin    SourceAdmin
 	settings       SettingsService
 	store          *state.Store
@@ -78,8 +78,8 @@ func WithAIEngine(engine *service.AIEngine) ServerOption {
 	return func(server *Server) { server.ai = engine }
 }
 
-func WithZSXQLogin(manager *zsxq.LoginManager) ServerOption {
-	return func(server *Server) { server.zsxqLogin = manager }
+func WithZSXQAccounts(manager *zsxq.AccountManager) ServerOption {
+	return func(server *Server) { server.zsxqAccounts = manager }
 }
 
 func WithSourceAdmin(admin SourceAdmin) ServerOption {
@@ -214,22 +214,16 @@ func (s *Server) adminHandler() http.Handler {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The admin UI is a SPA: client-side navigation keeps the document CSP from the first HTML
-		// response. Knowledge Planet login needs Aliyun captcha origins on every page document so
-		// in-app links to /integrations/zsxq-login can load the slider without a full reload.
-		// CSP host wildcards only match one DNS label, so multi-level captcha endpoints
-		// (*.captcha-open.aliyuncs.com, *.device.saf.aliyuncs.com) need explicit entries.
-		// font-src data: is required for the captcha icon font embedded as a data: URI.
-		// Also allow the official Bilibili player and CDN covers for history previews.
+		// Allow the official Bilibili player and CDN covers for history previews.
 		// Child frame CSP still applies on player.bilibili.com; this only relaxes our own frame-src/img-src.
 		w.Header().Set("Content-Security-Policy", strings.Join([]string{
 			"default-src 'self'",
-			"connect-src 'self' https://*.aliyun.com https://*.aliyuncs.com https://*.captcha-open.aliyuncs.com https://*.device.saf.aliyuncs.com https://*.saf.aliyuncs.com https://*.ap-southeast-1.aliyuncs.com https://*.alicdn.com https://static-captcha.aliyuncs.com",
-			"img-src 'self' data: https://*.hdslb.com https://*.biliimg.com https://*.alicdn.com",
+			"connect-src 'self'",
+			"img-src 'self' data: https://*.hdslb.com https://*.biliimg.com",
 			"style-src 'self' 'unsafe-inline'",
-			"font-src 'self' data:",
-			"script-src 'self' https://o.alicdn.com https://g.alicdn.com https://x.alicdn.com",
-			"frame-src https://player.bilibili.com https://*.aliyun.com https://*.alicdn.com",
+			"font-src 'self'",
+			"script-src 'self'",
+			"frame-src https://player.bilibili.com",
 			"worker-src 'self' blob:",
 			"frame-ancestors 'none'",
 			"base-uri 'none'",
@@ -237,10 +231,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		}, "; "))
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		// no-referrer breaks Aliyun captcha device fingerprinting (cross-origin
-		// captcha-open/device endpoints receive an empty Referer and reject tokens).
-		// Same-origin API calls still only expose the origin, not path/query.
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -412,7 +403,15 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeAPIError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+	writeAPIErrorFields(w, status, code, message, nil)
+}
+
+func writeAPIErrorFields(w http.ResponseWriter, status int, code, message string, fields map[string]string) {
+	detail := map[string]any{"code": code, "message": message}
+	if len(fields) != 0 {
+		detail["fields"] = fields
+	}
+	writeJSON(w, status, map[string]any{"error": detail})
 }
 
 func (s *Server) registerConnection(token string, connection *websocket.Conn) {

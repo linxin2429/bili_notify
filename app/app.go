@@ -194,10 +194,7 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if err != nil {
 		return fmt.Errorf("initializing Knowledge Planet client: %w", err)
 	}
-	if account, accountErr := store.PlatformAccount(model.PlatformZSXQ); accountErr == nil {
-		zsxqClient.SetSession(account.Session)
-	}
-	zsxqLogin, err := zsxq.NewLoginManager(zsxqClient, store)
+	zsxqAccounts, err := zsxq.NewAccountManager(zsxqClient, store)
 	if err != nil {
 		return err
 	}
@@ -223,7 +220,7 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if err != nil {
 		return err
 	}
-	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator, cfg.DataDir, web.WithAIEngine(aiEngine), web.WithZSXQLogin(zsxqLogin), web.WithSourceAdmin(sourceAdmin))
+	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator, cfg.DataDir, web.WithAIEngine(aiEngine), web.WithZSXQAccounts(zsxqAccounts), web.WithSourceAdmin(sourceAdmin))
 	if err != nil {
 		return err
 	}

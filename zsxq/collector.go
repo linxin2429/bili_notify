@@ -154,7 +154,11 @@ func (collector *Collector) SyncDynamics(ctx context.Context) error {
 	if account.Status != model.AccountConnected {
 		return ErrAuthentication
 	}
-	collector.client.SetSession(account.Session)
+	token, err := AccessToken(account)
+	if err != nil {
+		collector.invalidateAccount(account)
+		return err
+	}
 	sources, err := collector.store.ListSources(model.PlatformZSXQ)
 	if err != nil {
 		return err
@@ -163,11 +167,11 @@ func (collector *Collector) SyncDynamics(ctx context.Context) error {
 		if !source.Enabled {
 			continue
 		}
-		if err := collector.syncSource(ctx, source, account.Session); err != nil {
+		if err := collector.syncSource(ctx, token, source); err != nil {
 			collector.recordSourceError(source, err)
 			if errors.Is(err, ErrAuthentication) {
 				collector.queueSystemAlert(ctx, fmt.Sprintf("zsxq-auth-%d", account.VerifiedAt.Unix()), "知识星球登录已失效，知识星球采集已暂停；B 站采集和通知投递不受影响。")
-				account.Status, account.LastError, account.Session = model.AccountInvalid, "authentication expired", nil
+				account.Status, account.LastError, account.Session = model.AccountInvalid, "authentication expired", map[string]string{}
 				_ = collector.store.PutPlatformAccount(account)
 				return err
 			}
@@ -185,8 +189,8 @@ func (collector *Collector) SyncDynamics(ctx context.Context) error {
 	return nil
 }
 
-func (collector *Collector) syncSource(ctx context.Context, source model.Source, cookies map[string]string) error {
-	page, err := collector.client.Topics(ctx, source, "", 20)
+func (collector *Collector) syncSource(ctx context.Context, token string, source model.Source) error {
+	page, err := collector.client.Topics(ctx, token, source, "", 20)
 	if err != nil {
 		return err
 	}
@@ -210,20 +214,20 @@ func (collector *Collector) syncSource(ctx context.Context, source model.Source,
 	for _, content := range page.Contents {
 		content.Baseline = initializing || !isAfterWatermark(content, watermark)
 		attachments := page.Attachments[content.ID]
-		collector.localize(ctx, source, content, attachments, cookies)
+		collector.localize(ctx, source, content, attachments, token)
 		if err := collector.store.ArchiveContentAndEnqueue(content, attachments, nil, !content.Baseline); err != nil {
 			return err
 		}
 	}
 	if source.BaselineState == model.BaselineRunning && source.BackfillCursor != "" {
-		history, err := collector.client.Topics(ctx, source, source.BackfillCursor, 20)
+		history, err := collector.client.Topics(ctx, token, source, source.BackfillCursor, 20)
 		if err != nil {
 			return err
 		}
 		for _, content := range history.Contents {
 			content.Baseline = true
 			attachments := history.Attachments[content.ID]
-			collector.localize(ctx, source, content, attachments, cookies)
+			collector.localize(ctx, source, content, attachments, token)
 			if err := collector.store.ArchiveContentAndEnqueue(content, attachments, nil, false); err != nil {
 				return err
 			}
@@ -244,13 +248,13 @@ func (collector *Collector) syncSource(ctx context.Context, source model.Source,
 	return collector.store.PutSource(source)
 }
 
-func (collector *Collector) localize(ctx context.Context, source model.Source, content model.Content, attachments []model.Attachment, cookies map[string]string) {
+func (collector *Collector) localize(ctx context.Context, source model.Source, content model.Content, attachments []model.Attachment, token string) {
 	if collector.assets == nil || len(attachments) == 0 {
 		return
 	}
 	settings := collector.settings()
 	result := collector.assets.EnsureAttachments(ctx, model.PlatformZSXQ, source.ID, content.ID, attachments,
-		int64(settings.ZSXQAssetMaxFileMiB)<<20, int64(settings.ZSXQAssetTotalBudgetGiB)<<30, cookies)
+		int64(settings.ZSXQAssetMaxFileMiB)<<20, int64(settings.ZSXQAssetTotalBudgetGiB)<<30, token)
 	if result.BudgetFull {
 		collector.logger.WarnContext(ctx, "Knowledge Planet attachment budget exhausted", "event", "zsxq.asset.budget_exhausted")
 		collector.queueSystemAlert(ctx, "zsxq-asset-budget-exhausted", "知识星球附件总预算已耗尽；新附件将只归档元数据，现有档案不会自动删除。")
@@ -272,7 +276,11 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 	if account.Status != model.AccountConnected {
 		return ErrAuthentication
 	}
-	collector.client.SetSession(account.Session)
+	token, err := AccessToken(account)
+	if err != nil {
+		collector.invalidateAccount(account)
+		return err
+	}
 	sources, err := collector.store.ListSources(model.PlatformZSXQ)
 	if err != nil {
 		return err
@@ -289,7 +297,7 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 				return err
 			}
 			for _, archived := range contents {
-				content, attachments, err := collector.client.Topic(ctx, source, archived.ExternalID)
+				content, attachments, err := collector.client.Topic(ctx, token, source, archived.ExternalID)
 				if err != nil {
 					if collector.stopPlatformOnError(account, err) {
 						if errors.Is(err, ErrAuthentication) {
@@ -304,11 +312,11 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 					continue
 				}
 				content.Baseline = archived.Baseline
-				collector.localize(ctx, source, content, attachments, account.Session)
+				collector.localize(ctx, source, content, attachments, token)
 				if err := collector.store.ArchiveContent(content, attachments); err != nil {
 					return err
 				}
-				nodes, complete, err := collector.allComments(ctx, content, source.OwnerID)
+				nodes, complete, err := collector.allComments(ctx, token, content, source.OwnerID)
 				if err != nil {
 					if collector.stopPlatformOnError(account, err) {
 						if errors.Is(err, ErrAuthentication) {
@@ -340,10 +348,16 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 	return nil
 }
 
+func (collector *Collector) invalidateAccount(account model.PlatformAccount) {
+	account.Status = model.AccountInvalid
+	account.LastError = "authentication expired"
+	account.Session = map[string]string{}
+	_ = collector.store.PutPlatformAccount(account)
+}
+
 func (collector *Collector) stopPlatformOnError(account model.PlatformAccount, err error) bool {
 	if errors.Is(err, ErrAuthentication) {
-		account.Status, account.LastError, account.Session = model.AccountInvalid, "authentication expired", nil
-		_ = collector.store.PutPlatformAccount(account)
+		collector.invalidateAccount(account)
 		return true
 	}
 	if errors.Is(err, ErrRiskControl) || errors.Is(err, ErrRateLimited) {
@@ -357,12 +371,12 @@ func (collector *Collector) stopPlatformOnError(account model.PlatformAccount, e
 	return false
 }
 
-func (collector *Collector) allComments(ctx context.Context, content model.Content, ownerID string) ([]model.CommentNode, bool, error) {
+func (collector *Collector) allComments(ctx context.Context, token string, content model.Content, ownerID string) ([]model.CommentNode, bool, error) {
 	var nodes []model.CommentNode
 	cursor := ""
 	seenCursors := make(map[string]bool)
 	for pageNumber := 0; pageNumber < 10000; pageNumber++ {
-		page, err := collector.client.Comments(ctx, content, ownerID, cursor, 100)
+		page, err := collector.client.Comments(ctx, token, content, ownerID, cursor, 100)
 		if err != nil {
 			return nodes, false, err
 		}

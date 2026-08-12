@@ -79,8 +79,6 @@ export const sourceSchema = z.object({
   last_error: z.string().optional(), consecutive_fails: z.number().int(),
 }).strict() satisfies z.ZodType<Schemas['Source']>
 
-export const zsxqLoginTransactionSchema = z.object({ id: z.string(), masked_phone: z.string(), expires_at: z.string(), next_send_at: z.string(), attempts_left: z.number().int() }).strict() satisfies z.ZodType<Schemas['ZSXQLoginTransaction']>
-
 export const contentSchema = z.object({
   id: z.string(), platform: z.enum(['bilibili', 'zsxq']), source_id: z.string(), external_id: z.string(),
   author_id: z.string().optional(), author_name: z.string().optional(), upstream_type: z.string(),

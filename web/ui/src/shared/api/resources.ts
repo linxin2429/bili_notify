@@ -3,7 +3,7 @@ import {
   auditLogPageSchema, biliLoginSchema, channelSchema,
   deliveryPageSchema, emptyResponseSchema, microsoftLoginSchema, queuedStatusSchema,
   runtimeSchema, runtimeSettingsSchema, sentStatusSchema,
-  platformAccountSchema, sourceSchema, zsxqLoginTransactionSchema,
+  platformAccountSchema, sourceSchema,
   contentPageSchema, contentDetailSchema, commentTreeSchema,
   aiWorkerStatusSchema, aiProfileSchema, aiProfileTestResultSchema, aiPromptSchema, aiJobSchema, aiJobPageSchema, canceledStatusSchema,
 } from './contracts'
@@ -36,8 +36,7 @@ export const resources = {
   updateSource: (csrf: string, input: Pick<Source, 'id' | 'name' | 'note' | 'enabled'>) => write(`${apiRoot}/sources/${encodeURIComponent(input.id)}`, sourceSchema, 'PUT', csrf, { name: input.name, note: input.note || '', enabled: input.enabled }),
   deleteSource: (csrf: string, id: string) => write(`${apiRoot}/sources/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
   syncZSXQSources: (csrf: string) => write(`${apiRoot}/accounts/zsxq/sync-sources`, array(sourceSchema), 'POST', csrf),
-  sendZSXQCode: (csrf: string, input: { country_code: string; phone: string; captcha_verify_param: string; agreement_accepted: boolean }) => write(`${apiRoot}/accounts/zsxq/sms-code`, zsxqLoginTransactionSchema, 'POST', csrf, input),
-  createZSXQSession: (csrf: string, transaction_id: string, code: string) => write(`${apiRoot}/accounts/zsxq/session`, platformAccountSchema, 'POST', csrf, { transaction_id, code }),
+  importZSXQToken: (csrf: string, cookie: string) => write(`${apiRoot}/accounts/zsxq/token`, platformAccountSchema, 'POST', csrf, { cookie }),
   deleteZSXQSession: (csrf: string) => write(`${apiRoot}/accounts/zsxq/session`, emptyResponseSchema, 'DELETE', csrf),
   createChannel: (csrf: string, input: ChannelDraft) => write(`${apiRoot}/channels`, channelSchema, 'POST', csrf, input),
   updateChannel: (csrf: string, input: ChannelDraft & { id: string }) => {

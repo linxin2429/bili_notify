@@ -21,7 +21,7 @@ Bili Notify 面向个人或小团队，在一个 Docker 容器中归档 B 站 UP
 ```mermaid
 flowchart LR
     B[B站登录及动态接口] --> C[B站独立限流轮询器]
-    Z[知识星球短信登录及接口] --> Q[知识星球独立限流与回补器]
+    Z[知识星球 Session 导入及接口] --> Q[知识星球独立限流与回补器]
     C --> P[严格解析与去重]
     Q --> P
     P -->|同一事务 archive+seen+Outbox| S[(data.db SQLite)]
@@ -40,7 +40,7 @@ flowchart LR
     AI --> OP[OpenAI 兼容转写与文本接口]
 ```
 
-代码按功能划分为顶层包：`bilibili` 负责 B 站网页接口与二维码登录，`zsxq` 负责知识星球短信登录、严格解析、动态回补和评论同步，`media` 负责安全附件本地化，`state` 负责事务和持久化，`notify` 负责投递协议，`service` 负责编排 B 站、Outbox、OAuth 和领域事件，`web` 负责认证、`/api/v4`、WebSocket 与嵌入式管理台。
+代码按功能划分为顶层包：`bilibili` 负责 B 站网页接口与二维码登录，`zsxq` 负责知识星球 Session 导入、严格解析、动态回补和评论同步，`media` 负责安全附件本地化，`state` 负责事务和持久化，`notify` 负责投递协议，`service` 负责编排 B 站、Outbox、OAuth 和领域事件，`web` 负责认证、`/api/v4`、WebSocket 与嵌入式管理台。知识星球客户端按请求显式传 token，不持有共享 cookie jar；协议与安全边界详见 `docs/zsxq-session-api-design.md`。
 
 AI 子系统采用“持久化控制面 + 可替换执行面”：Go 主进程把模型配置档、提示词模板、任务输入、进度和结果持久化到 `data.db`，提交任务时同时密封模型与提示词配置快照，避免排队期间的设置修改改变已有任务语义；调度器以一个转写槽位和两个总结槽位从队列领取任务，再通过仅本机 Unix Socket 暴露的内部 gRPC 调用 Python Worker。Python Worker 使用 yt-dlp 读取指定 BVID/分 P，下载连接以连续 60 秒无响应作为单次失败边界，对元数据、普通 HTTP 和分片请求分别最多重试 10 次并执行最长 30 秒的指数退避；随后由 FFmpeg 提取并切分为最长 10 分钟的单声道 16kHz、16-bit FLAC，显式限制采样位深，使单个切片在最坏情况下仍低于 OpenAI 兼容 multipart 的 25 MB 上限。Worker 通过 `/audio/transcriptions` 请求 `verbose_json` 和 segment timestamps，并把分段时间加上音频切片偏移。文本总结对超长输入执行分块 Map/Reduce。模型 Base URL、API Key、模型名、语言、超时、温度、上下文字符预算和提示词均由管理台配置，不绑定单一供应商；最大输出 Token 留空或为零时不向供应商发送 `max_tokens`，正整数没有应用侧业务上限。模型的可用状态是管理员标记而非执行权限，停用模型不会阻止工作台选择和任务提交；默认模型必须同时可用。管理台可以通过 Worker 对文本或转写模型发起一次最多 20 秒的最小真实推理来检测连通性，该操作可能产生极小的供应商费用，结果只在当前页面显示、不持久化，也不会自动启停模型。Worker 向标准输出写 JSON 结构化日志，覆盖进程生命周期、任务阶段、音频切片字节数和数量、上游 HTTP 状态/耗时/请求 ID 及经过截断和密钥脱敏的错误消息，但不记录 API Key、Cookie、音频、转写正文或提示词；日志级别由 `BILI_NOTIFY_AI_LOG_LEVEL` 控制。Worker 不可用时任务保持 queued，主进程的采集、通知和管理能力不受影响；正在运行的任务在主进程重启后标为 `worker_interrupted`，由管理员显式重试。
 
@@ -66,7 +66,7 @@ SMTP 只支持隐式 TLS 和 STARTTLS，并校验证书。Microsoft 使用 OAuth
 
 所有通知 HTTP 协议响应最多读取 1 MiB；成功响应超过上限、JSON 损坏、业务码缺失或类型漂移都视为永久协议错误，避免把无法证明成功的响应误判为已投递。网络故障、HTTP 429 和 5xx 可重试，`Retry-After`（秒数或 HTTP 日期）是重试调度的最小等待时间；4xx、OAuth 凭据失效和明确业务错误进入阻塞。错误只保留操作名、HTTP 状态和业务码，不拼接响应正文、请求 URL、OAuth 描述或飞书 `msg`，避免 Webhook 查询签名、令牌及上游回显秘密进入日志。
 
-附件统一落在 `data_dir/media/{platform}/{source_id}/{content_id}/`。B 站继续只下载可安全识别的图片并维持 10 MiB 单图保护；知识星球支持图片、文件、音频和视频，默认单件上限 500 MiB、平台总预算 50 GiB。超过单件限制或总预算时只保留元数据，不删除旧档案，也不阻断正文、评论和通知。所有下载只接受 HTTP(S) 公网目标，每次重定向重新校验；路径段由 `pathologize` 生成，临时文件为 `0600`，最终提交由 `fileflow` 执行冲突安全移动并持久化其实际返回路径，路径穿越和符号链接均拒绝。知识星球 Cookie 只发送给原始 API 域名，跳转或 CDN 请求会剥离敏感请求头；签名下载 URL 和本地绝对路径不出现在日志、通知或列表响应。认证附件端点支持 Range，并设置 attachment disposition 与 `nosniff`。清理器不递归删除不可信目录，只删除任务指定文件并向上修剪 `media/` 内的空目录；越界或符号链接路径进入阻塞状态。
+附件统一落在 `data_dir/media/{platform}/{source_id}/{content_id}/`。B 站继续只下载可安全识别的图片并维持 10 MiB 单图保护；知识星球支持图片、文件、音频和视频，默认单件上限 500 MiB、平台总预算 50 GiB。超过单件限制或总预算时只保留元数据，不删除旧档案，也不阻断正文、评论和通知。所有下载只接受 HTTP(S) 公网目标，每次重定向重新校验；路径段由 `pathologize` 生成，临时文件为 `0600`，最终提交由 `fileflow` 执行冲突安全移动并持久化其实际返回路径，路径穿越和符号链接均拒绝。知识星球 Authorization 只发送给原始 API 域名，跳转或 CDN 请求会剥离敏感请求头；签名下载 URL 和本地绝对路径不出现在日志、通知或列表响应。认证附件端点支持 Range，并设置 attachment disposition 与 `nosniff`。清理器不递归删除不可信目录，只删除任务指定文件并向上修剪 `media/` 内的空目录；越界或符号链接路径进入阻塞状态。
 
 动态通知保存接口返回的完整正文，并按类型提取标题、简介、内容直达链接、富文本链接、封面或多图、视频时长与播放信息、互动统计和转发原文；动态正文本身不为补充内容发起额外的 B 站请求。升级后每个已有 UP 首次可见的充电动态只归档并建立 seen 基线，不投递；同批普通新动态照常投递，后续新充电动态正常投递。评论通知在发现 UP 回复后按 root 展开对话串。邮件与 Microsoft Graph 在存在本地文件时以内联 CID/附件嵌入图片，否则退回远程 `<img src>`；钉钉自定义机器人继续使用可展示外链图片的 Markdown（`![](CDN URL)`，不用本地文件）；飞书在配置应用凭证且本地文件可用时上传并内嵌图片，否则列为链接；企业微信先发正文 Markdown，再按序追加 `msgtype=image`（原始字节 ≤2 MiB），并在 Outbox `progress` 中记录已成功段以便重试不重复。机器人消息在各平台限制内按 UTF-8 边界截断，始终保留截断提示和原内容链接。
 
@@ -86,7 +86,7 @@ HTTP 承担认证生命周期和全部管理资源 API：
 | `GET /api/v4/runtime`、`GET /api/v4/settings` | 分别读取运行状态/时区和完整运行设置 |
 | `GET /api/v4/accounts` | 读取 B 站与知识星球账号的非秘密状态 |
 | `GET/POST /api/v4/accounts/bilibili/qr`、`DELETE /api/v4/accounts/bilibili/qr/{id}`、`DELETE /api/v4/accounts/bilibili/session` | 查询、建立或取消二维码事务，以及清除 B 站会话 |
-| `POST /api/v4/accounts/zsxq/sms-code`、`POST/DELETE /api/v4/accounts/zsxq/session` | 知识星球滑块后短信登录及注销 |
+| `POST /api/v4/accounts/zsxq/token`、`DELETE /api/v4/accounts/zsxq/session` | 导入知识星球 Cookie 中的 access token 及注销 |
 | `POST /api/v4/accounts/zsxq/sync-sources` | 刷新账号可见星球，不改变管理员启停选择 |
 | `GET/POST /api/v4/sources`、`PUT/DELETE /api/v4/sources/{id}` | 查询、创建 B 站来源、启停或删除跨平台采集源 |
 | `GET /api/v4/contents[/{id}]` | 按平台、来源、关键字、时间和稳定游标查询统一内容 |
@@ -128,7 +128,7 @@ WebSocket 只承载失效信号，不接受业务命令或资源数据。连接�
 
 未初始化数据库启动时生成 12 位 Crockford Base32 初始化码，只写入结构化日志并保存在进程内存。首次设置管理员密码使用原子事务，成功后代码立即清除；未初始化实例重启会生成新码。管理员密码使用 Argon2id，哈希保存在数据库元数据中。
 
-Cookie、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名密钥使用 AES-256-GCM 加密，每条记录使用独立 nonce，并把 **表名与主键** 作为附加认证数据。浏览器和日志不输出任何秘密。
+知识星球 access token、B站 Cookie、SMTP 密码、OAuth 令牌、Webhook 与机器人签名密钥使用 AES-256-GCM 加密，每条记录使用独立 nonce，并把 **表名与主键** 作为附加认证数据。浏览器和日志不输出任何秘密。
 
 本版本不迁移旧 bbolt/双库卷；旧卷由操作者显式备份和移除，程序不会执行破坏性升级。
 
