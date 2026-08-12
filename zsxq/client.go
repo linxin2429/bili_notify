@@ -4,10 +4,6 @@ package zsxq
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,8 +19,8 @@ import (
 
 const (
 	DefaultBaseURL = "https://api.zsxq.com"
-	appVersion     = "2.83.0"
-	signingSecret  = "zsxq-sdk-secret"
+	webVersion     = "2.37.0"
+	webUserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
 
 var (
@@ -41,10 +37,7 @@ var (
 type Client struct {
 	httpClient *http.Client
 	baseURL    *url.URL
-	userAgent  string
-	adUID      string
 	now        func() time.Time
-	requestID  func() string
 }
 
 type Option func(*Client) error
@@ -60,32 +53,28 @@ func WithBaseURL(raw string) Option {
 	}
 }
 
-func withProtocolValues(now func() time.Time, requestID func() string, adUID string) Option {
+func withNow(now func() time.Time) Option {
 	return func(client *Client) error {
-		client.now, client.requestID, client.adUID = now, requestID, adUID
+		client.now = now
 		return nil
 	}
 }
 
-func New(httpClient *http.Client, userAgent string, options ...Option) (*Client, error) {
+func New(httpClient *http.Client, options ...Option) (*Client, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
 	copy := *httpClient
 	copy.Jar = nil
+	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	base, _ := url.Parse(DefaultBaseURL)
-	client := &Client{httpClient: &copy, baseURL: base, userAgent: userAgent, adUID: newRequestID(), now: time.Now, requestID: newRequestID}
+	client := &Client{httpClient: &copy, baseURL: base, now: time.Now}
 	for _, option := range options {
 		if err := option(client); err != nil {
 			return nil, err
 		}
 	}
 	return client, nil
-}
-
-type User struct {
-	ID   string
-	Name string
 }
 
 // Group is a secret-free summary of a Knowledge Planet group visible to the
@@ -142,29 +131,6 @@ func decimalID(value string) bool {
 	return true
 }
 
-func (c *Client) Me(ctx context.Context, token string) (User, error) {
-	// Knowledge Planet's DWeb /users/self payload uses user.uid. Older fixtures and
-	// some nested objects still expose user_id; accept either without guessing names.
-	var response struct {
-		User struct {
-			UID    json.Number `json:"uid"`
-			UserID json.Number `json:"user_id"`
-			Name   string      `json:"name"`
-		} `json:"user"`
-	}
-	if err := c.doJSON(ctx, token, http.MethodGet, "/v3/users/self", nil, nil, &response); err != nil {
-		return User{}, err
-	}
-	id := response.User.UID.String()
-	if id == "" {
-		id = response.User.UserID.String()
-	}
-	if id == "" || response.User.Name == "" {
-		return User{}, ErrSchemaDrift
-	}
-	return User{ID: id, Name: response.User.Name}, nil
-}
-
 type TopicPage struct {
 	Contents    []model.Content
 	Attachments map[string][]model.Attachment
@@ -215,17 +181,19 @@ func (c *Client) Topics(ctx context.Context, token string, source model.Source, 
 }
 
 func (c *Client) Topic(ctx context.Context, token string, source model.Source, topicID string) (TopicSnapshot, error) {
-	var response struct {
-		Topic apiTopic `json:"topic"`
-	}
-	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/topics/"+url.PathEscape(topicID), nil, nil, &response); err != nil {
+	var payload json.RawMessage
+	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/topics/"+url.PathEscape(topicID)+"/info", nil, nil, &payload); err != nil {
 		return TopicSnapshot{}, err
 	}
-	content, attachments, err := parseTopic(source, response.Topic)
+	raw, err := decodeTopicDetail(payload)
 	if err != nil {
 		return TopicSnapshot{}, err
 	}
-	comments, complete, err := parseShownComments(content, source.OwnerID, response.Topic.ShowComments, response.Topic.CommentsCount)
+	content, attachments, err := parseTopic(source, raw)
+	if err != nil {
+		return TopicSnapshot{}, err
+	}
+	comments, complete, err := parseShownComments(content, source.OwnerID, raw.ShowComments, raw.CommentsCount)
 	if err != nil {
 		return TopicSnapshot{}, err
 	}
@@ -318,12 +286,13 @@ func (c *Client) doJSON(ctx context.Context, token, method, path string, query u
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", c.userAgent)
-	request.Header.Set("Origin", "https://wx.zsxq.com")
+	request.Header.Set("Accept", "application/json, text/plain, */*")
+	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	request.Header.Set("User-Agent", webUserAgent)
 	request.Header.Set("Referer", "https://wx.zsxq.com/")
-	request.Header.Set("Authorization", token)
-	c.sign(request, encoded)
+	request.Header.Set("X-Timestamp", strconv.FormatInt(c.now().Unix(), 10))
+	request.Header.Set("X-Version", webVersion)
+	request.AddCookie(&http.Cookie{Name: AccessTokenKey, Value: token})
 	if input != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -332,6 +301,12 @@ func (c *Client) doJSON(ctx context.Context, token, method, path string, query u
 		return fmt.Errorf("%w: transport", ErrUpstream)
 	}
 	defer response.Body.Close()
+	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		location := response.Header.Get("Location")
+		if parsed, parseErr := url.Parse(location); parseErr == nil && strings.EqualFold(parsed.Hostname(), "wx.zsxq.com") && strings.Contains(parsed.Path, "login") {
+			return ErrAuthentication
+		}
+	}
 	if err := classifyStatus(response.StatusCode); err != nil {
 		return err
 	}
@@ -343,6 +318,29 @@ func (c *Client) doJSON(ctx context.Context, token, method, path string, query u
 		return ErrSchemaDrift
 	}
 	return decodeEnvelope(limited, output)
+}
+
+func decodeTopicDetail(payload json.RawMessage) (apiTopic, error) {
+	var wrapped struct {
+		Topic json.RawMessage `json:"topic"`
+	}
+	if err := json.Unmarshal(payload, &wrapped); err != nil {
+		return apiTopic{}, ErrSchemaDrift
+	}
+	raw := payload
+	if len(wrapped.Topic) != 0 && !bytes.Equal(wrapped.Topic, []byte("null")) {
+		raw = wrapped.Topic
+	}
+	var topic apiTopic
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&topic); err != nil {
+		return apiTopic{}, ErrSchemaDrift
+	}
+	if topic.TopicID.String() == "" {
+		return apiTopic{}, ErrSchemaDrift
+	}
+	return topic, nil
 }
 
 func classifyStatus(status int) error {
@@ -424,31 +422,4 @@ func (c *Client) resolveURL(path string) url.URL {
 	target := *c.baseURL
 	target.Path = strings.TrimSuffix(c.baseURL.Path, "/") + path
 	return target
-}
-
-func (c *Client) sign(request *http.Request, body []byte) {
-	timestamp := strconv.FormatInt(c.now().Unix(), 10)
-	requestID := c.requestID()
-	plain := timestamp + "\n" + strings.ToUpper(request.Method) + "\n" + request.URL.Path
-	if len(body) != 0 {
-		plain += "\n" + string(body)
-	}
-	digest := hmac.New(sha1.New, []byte(signingSecret))
-	_, _ = digest.Write([]byte(plain))
-	request.Header.Set("X-Request-Id", requestID)
-	request.Header.Set("X-Version", appVersion)
-	request.Header.Set("X-Signature", hex.EncodeToString(digest.Sum(nil)))
-	request.Header.Set("X-Timestamp", timestamp)
-	request.Header.Set("X-Aduid", c.adUID)
-}
-
-func newRequestID() string {
-	value := make([]byte, 16)
-	if _, err := rand.Read(value); err != nil {
-		return strconv.FormatInt(time.Now().UnixNano(), 16)
-	}
-	value[6] = value[6]&0x0f | 0x40
-	value[8] = value[8]&0x3f | 0x80
-	encoded := hex.EncodeToString(value)
-	return encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:]
 }

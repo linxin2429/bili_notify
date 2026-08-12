@@ -46,3 +46,27 @@ func TestSourceValidatesZSXQTopicFilters(t *testing.T) {
 		})
 	}
 }
+
+func TestPlatformAccountAllowsIdentitylessZSXQWebSession(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		account PlatformAccount
+		wantErr string
+	}{
+		{name: "Knowledge Planet session has no usable self endpoint", account: PlatformAccount{Platform: PlatformZSXQ, Status: AccountConnected}},
+		{name: "Bilibili still requires upstream identity", account: PlatformAccount{Platform: PlatformBilibili, Status: AccountConnected}, wantErr: "external_id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.account.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}

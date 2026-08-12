@@ -585,7 +585,7 @@ func publicError(err error) string {
 	case errors.Is(err, ErrRemoteNotFound):
 		return "upstream content deleted"
 	case errors.Is(err, ErrUnsupportedClient):
-		return "知识星球已拒绝 Cookie/非官方工具访问；需迁移到官方 OAuth Skill"
+		return "知识星球拒绝了当前网页会话请求；请重新导入 Session，若持续出现则上游协议已变化"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err.Error()
 	default:

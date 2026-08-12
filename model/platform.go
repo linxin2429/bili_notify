@@ -56,7 +56,7 @@ func (a PlatformAccount) Validate() error {
 	if err := a.Platform.Validate(); err != nil {
 		return err
 	}
-	if a.Status == AccountConnected && strings.TrimSpace(a.ExternalID) == "" {
+	if a.Status == AccountConnected && a.Platform != PlatformZSXQ && strings.TrimSpace(a.ExternalID) == "" {
 		return errors.New("connected account external_id is required")
 	}
 	return nil

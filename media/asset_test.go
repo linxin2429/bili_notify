@@ -54,17 +54,19 @@ func TestAttachmentDownloaderEnforcesStreamingLimits(t *testing.T) {
 	}
 }
 
-func TestAttachmentRedirectNeverForwardsZSXQAuthorization(t *testing.T) {
+func TestAttachmentRedirectNeverForwardsZSXQSession(t *testing.T) {
 	t.Parallel()
-	var originAuthorization string
-	var redirectedAuthorization string
+	var originCookie string
+	var originUserAgent string
+	var redirectedCookie string
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		redirectedAuthorization = r.Header.Get("Authorization")
+		redirectedCookie = r.Header.Get("Cookie")
 		_, _ = w.Write([]byte("asset"))
 	}))
 	t.Cleanup(target.Close)
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		originAuthorization = r.Header.Get("Authorization")
+		originCookie = r.Header.Get("Cookie")
+		originUserAgent = r.Header.Get("User-Agent")
 		http.Redirect(w, &http.Request{}, target.URL+"/download", http.StatusFound)
 	}))
 	t.Cleanup(origin.Close)
@@ -80,8 +82,9 @@ func TestAttachmentRedirectNeverForwardsZSXQAuthorization(t *testing.T) {
 	attachments := []model.Attachment{{ID: "a", ContentID: "c", ExternalID: "a", Type: model.AttachmentFile, RemoteURL: "http://api.zsxq.com/attachment"}}
 	result := downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "source", "content", attachments, 100, 100, "secret")
 	require.Equal(t, 1, result.Downloaded)
-	assert.Equal(t, "secret", originAuthorization)
-	assert.Empty(t, redirectedAuthorization)
+	assert.Equal(t, "zsxq_access_token=secret", originCookie)
+	assert.Equal(t, zsxqWebUserAgent, originUserAgent)
+	assert.Empty(t, redirectedCookie)
 }
 
 func TestAttachmentDownloaderRejectsSymlinkMediaTree(t *testing.T) {

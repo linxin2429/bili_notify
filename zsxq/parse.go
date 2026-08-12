@@ -30,6 +30,11 @@ type apiImage struct {
 		Width  int    `json:"width"`
 		Height int    `json:"height"`
 	} `json:"large"`
+	Original struct {
+		URL    string `json:"url"`
+		Width  int    `json:"width"`
+		Height int    `json:"height"`
+	} `json:"original"`
 }
 
 type apiFile struct {
@@ -76,6 +81,7 @@ type apiTopic struct {
 	LikesCount    int64        `json:"likes_count"`
 	CommentsCount int64        `json:"comments_count"`
 	RewardsCount  int64        `json:"rewards_count"`
+	ReadingCount  int64        `json:"reading_count"`
 	Title         string       `json:"title"`
 	Talk          *apiBody     `json:"talk"`
 	Question      *apiBody     `json:"question"`
@@ -132,6 +138,11 @@ func parseTopic(source model.Source, topic apiTopic) (model.Content, []model.Att
 	// "SemiAnalysis的NV...") rather than an authored title. Only body-level
 	// titles are canonical enough to archive.
 	title := body.Title
+	if topic.Type == "solution" {
+		// Unlike the generated preview used by ordinary topics, solution.title is
+		// the authored question and solution.text is the answer.
+		title = topic.Title
+	}
 	if body.Article != nil {
 		contentType = model.ContentLongArticle
 		title = firstText(body.Article.Title, title)
@@ -148,7 +159,7 @@ func parseTopic(source model.Source, topic apiTopic) (model.Content, []model.Att
 		AuthorID: authorID, AuthorName: authorName, UpstreamType: topic.Type,
 		Type: contentType, Title: title, Text: renderRichText(text), SafeHTML: sanitizeRichText(text),
 		URL: "https://wx.zsxq.com/dweb2/index/topic_detail/" + id, PublishedAt: created, UpdatedAt: updated,
-		Stats: map[string]int64{"likes": topic.LikesCount, "comments": topic.CommentsCount, "rewards": topic.RewardsCount},
+		Stats: map[string]int64{"likes": topic.LikesCount, "comments": topic.CommentsCount, "reads": topic.ReadingCount, "rewards": topic.RewardsCount},
 	}
 	attachments := parseAttachments(contentID, body)
 	if topic.Answer != nil && topic.Answer != body {
@@ -167,7 +178,12 @@ func parseAttachments(contentID string, body *apiBody) []model.Attachment {
 		if externalID == "" {
 			externalID = "image-" + strconv.Itoa(index)
 		}
+		remoteURL := image.Large.URL
 		width, height := image.Large.Width, image.Large.Height
+		if remoteURL == "" {
+			remoteURL = image.Original.URL
+			width, height = image.Original.Width, image.Original.Height
+		}
 		if width == 0 {
 			width = image.Width
 		}
@@ -175,7 +191,7 @@ func parseAttachments(contentID string, body *apiBody) []model.Attachment {
 			height = image.Height
 		}
 		result = append(result, model.Attachment{ID: contentID + ":attachment:" + externalID, ContentID: contentID, ExternalID: externalID,
-			Type: model.AttachmentImage, MIME: image.Type, Width: width, Height: height, RemoteURL: image.Large.URL})
+			Type: model.AttachmentImage, MIME: image.Type, Width: width, Height: height, RemoteURL: remoteURL})
 	}
 	for index, file := range body.Files {
 		externalID := file.FileID.String()

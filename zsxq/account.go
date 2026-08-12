@@ -70,12 +70,12 @@ func (manager *AccountManager) ImportCookie(ctx context.Context, rawCookie strin
 	if err != nil {
 		return model.PlatformAccount{}, err
 	}
-	user, err := manager.client.Me(ctx, token)
+	_, err = manager.client.Groups(ctx, token)
 	if err != nil {
 		return model.PlatformAccount{}, err
 	}
 	now := manager.now()
-	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: user.ID, DisplayName: user.Name,
+	account := model.PlatformAccount{Platform: model.PlatformZSXQ, DisplayName: "知识星球网页会话",
 		Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: token}, VerifiedAt: now, UpdatedAt: now}
 	if err := manager.store.PutPlatformAccount(account); err != nil {
 		return model.PlatformAccount{}, err

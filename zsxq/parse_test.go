@@ -30,6 +30,12 @@ func TestParseTopicTypesAndStrictUnknowns(t *testing.T) {
 		}(), wantType: model.ContentQuestion},
 		{name: "task", topic: topicFixture("task", &apiBody{Owner: userFixture(), Text: "task"}), wantType: model.ContentTask},
 		{name: "long article", topic: topicFixture("article", &apiBody{Owner: userFixture(), Text: "article"}), wantType: model.ContentLongArticle},
+		{name: "solution", topic: func() apiTopic {
+			topic := topicFixture("solution", &apiBody{Owner: userFixture(), Text: "answer"})
+			topic.Title = "authored question"
+			topic.ReadingCount = 12
+			return topic
+		}(), wantType: model.ContentTask},
 		{name: "unknown is rejected", topic: topicFixture("new_type", &apiBody{Owner: userFixture()}), wantErr: ErrSchemaDrift},
 		{name: "missing body is rejected", topic: topicFixture("talk", nil), wantErr: ErrSchemaDrift},
 	}
@@ -52,6 +58,11 @@ func TestParseTopicTypesAndStrictUnknowns(t *testing.T) {
 			}
 			if tt.name == "question and answer" {
 				assert.Contains(t, content.Text, "回答")
+			}
+			if tt.name == "solution" {
+				assert.Equal(t, "authored question", content.Title)
+				assert.Equal(t, "answer", content.Text)
+				assert.Equal(t, int64(12), content.Stats["reads"])
 			}
 		})
 	}
@@ -133,6 +144,21 @@ func TestRenderRichText(t *testing.T) {
 	}
 }
 
+func TestParseImageFallsBackToOriginalVariant(t *testing.T) {
+	t.Parallel()
+	body := &apiBody{Owner: userFixture()}
+	body.Images = []apiImage{{ImageID: json.Number("9"), Width: 10, Height: 20}}
+	body.Images[0].Original.URL = "https://images.zsxq.com/original.jpg"
+	body.Images[0].Original.Width = 100
+	body.Images[0].Original.Height = 200
+
+	attachments := parseAttachments(model.ContentID(model.PlatformZSXQ, "1"), body)
+	require.Len(t, attachments, 1)
+	assert.Equal(t, "https://images.zsxq.com/original.jpg", attachments[0].RemoteURL)
+	assert.Equal(t, 100, attachments[0].Width)
+	assert.Equal(t, 200, attachments[0].Height)
+}
+
 func TestShownCommentCompleteness(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -167,6 +193,8 @@ func topicFixture(kind string, body *apiBody) apiTopic {
 		topic.Task = body
 	case "article":
 		topic.Article = body
+	case "solution":
+		topic.Solution = body
 	}
 	return topic
 }

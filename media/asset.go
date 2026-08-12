@@ -18,6 +18,8 @@ import (
 
 var ErrBudgetExhausted = errors.New("media storage budget exhausted")
 
+const zsxqWebUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+
 type AttachmentDownloader struct {
 	DataDir             string
 	Client              *http.Client
@@ -98,7 +100,8 @@ func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, 
 	request.Header.Set("User-Agent", firstNonEmpty(downloader.UserAgent, "bili-notify"))
 	request.Header.Set("Accept", "*/*")
 	if platform == model.PlatformZSXQ && strings.EqualFold(request.URL.Hostname(), "api.zsxq.com") && apiToken != "" {
-		request.Header.Set("Authorization", apiToken)
+		request.Header.Set("User-Agent", zsxqWebUserAgent)
+		request.AddCookie(&http.Cookie{Name: "zsxq_access_token", Value: apiToken})
 	}
 	client := downloader.safeClient(ctx)
 	response, err := client.Do(request)
