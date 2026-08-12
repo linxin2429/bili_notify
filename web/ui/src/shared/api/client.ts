@@ -31,9 +31,8 @@ export async function requestJSON<T>(path: string, schema: ResponseSchema<T>, in
       const detail = parsed.success ? parsed.data.error : undefined
       const message = detail?.message || (typeof body === 'string' && body.trim()) || response.statusText || `HTTP ${response.status}`
       const error = new ApiError(message, 'http', { status: response.status, code: detail?.code, fields: detail?.fields, requestId })
-      // Only admin-session failures force a global logout. Platform integrations
-      // (e.g. Knowledge Planet captcha/SMS) may also return 401 with a different
-      // code and must stay on the current page so the operator can retry.
+      // Only admin-session failures force a global logout. An upstream integration
+      // may also return 401 with a different code and must stay on the current page.
       if (response.status === 401 && isAdminSessionFailure(detail?.code)) authenticationLost?.()
       throw error
     }

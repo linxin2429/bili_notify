@@ -81,6 +81,61 @@ func TestPlatformAccountRejectsInvalidPlatform(t *testing.T) {
 	}
 }
 
+func TestReplaceZSXQPlatformAccountDisablesSourcesOnlyWhenIdentityChanges(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 158)
+	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "1"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
+		ExternalID: "1", Name: "Planet", Enabled: true, BaselineState: model.BaselineComplete}
+	require.NoError(t, store.PutSource(source))
+
+	tests := []struct {
+		name        string
+		externalID  string
+		wantEnabled bool
+	}{
+		{name: "first import", externalID: "account-1", wantEnabled: true},
+		{name: "same account token refresh", externalID: "account-1", wantEnabled: true},
+		{name: "different account", externalID: "account-2", wantEnabled: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: tt.externalID, DisplayName: "Member", Status: model.AccountConnected,
+				Session: map[string]string{"zsxq_access_token": "token-" + tt.externalID}}
+			require.NoError(t, store.ReplaceZSXQPlatformAccount(account))
+			loaded, err := store.Source(source.ID)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantEnabled, loaded.Enabled)
+		})
+	}
+}
+
+func TestLegacyZSXQSessionWithoutAccessTokenIsInvalid(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 159)
+	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "account", DisplayName: "Member", Status: model.AccountConnected,
+		Session: map[string]string{"legacy_cookie": "secret"}}
+	require.NoError(t, store.PutPlatformAccount(account))
+	loaded, err := store.PlatformAccount(model.PlatformZSXQ)
+	require.NoError(t, err)
+	assert.Equal(t, model.AccountInvalid, loaded.Status)
+	assert.Equal(t, "session import required", loaded.LastError)
+}
+
+func TestEmptyZSXQSessionClearsSealedToken(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 160)
+	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "account", DisplayName: "Member", Status: model.AccountConnected,
+		Session: map[string]string{"zsxq_access_token": "secret"}}
+	require.NoError(t, store.PutPlatformAccount(account))
+	account.Status = model.AccountInvalid
+	account.Session = map[string]string{}
+	require.NoError(t, store.PutPlatformAccount(account))
+	loaded, err := store.PlatformAccount(model.PlatformZSXQ)
+	require.NoError(t, err)
+	assert.Empty(t, loaded.Session)
+	assert.Equal(t, model.AccountInvalid, loaded.Status)
+}
+
 func TestMergeVisibleSourcesPreservesAdministratorState(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, 157)

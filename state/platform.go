@@ -72,6 +72,42 @@ func (s *Store) PutPlatformAccount(account model.PlatformAccount) error {
 	})
 }
 
+// ReplaceZSXQPlatformAccount replaces the authenticated account and, when its
+// identity changes, disables every ZSXQ source in the same transaction.
+func (s *Store) ReplaceZSXQPlatformAccount(account model.PlatformAccount) error {
+	if account.Platform != model.PlatformZSXQ {
+		return errors.New("ZSXQ account is required")
+	}
+	if err := account.Validate(); err != nil {
+		return err
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var old platformAccountRow
+		err := tx.Where("platform = ?", model.PlatformZSXQ).Take(&old).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		sealed, err := sealJSON(s.vault, tablePlatformAccounts, string(account.Platform), account.Session)
+		if err != nil {
+			return fmt.Errorf("encrypting %s session: %w", account.Platform, err)
+		}
+		now := account.UpdatedAt
+		if now.IsZero() {
+			now = time.Now()
+		}
+		row := platformAccountRow{Platform: string(account.Platform), ExternalID: account.ExternalID, DisplayName: account.DisplayName,
+			Status: string(account.Status), SealedSession: sealed, SealedAAD: tablePlatformAccounts, UpdatedAt: now.Unix(), LastError: account.LastError}
+		row.VerifiedAt = unixPointer(account.VerifiedAt)
+		if err := tx.Save(&row).Error; err != nil {
+			return err
+		}
+		if old.ExternalID != "" && old.ExternalID != account.ExternalID {
+			return tx.Model(&sourceRow{}).Where("platform = ?", model.PlatformZSXQ).Update("enabled", 0).Error
+		}
+		return nil
+	})
+}
+
 func (s *Store) PlatformAccount(platform model.Platform) (model.PlatformAccount, error) {
 	if err := platform.Validate(); err != nil {
 		return model.PlatformAccount{}, err
@@ -92,6 +128,10 @@ func (s *Store) PlatformAccount(platform model.Platform) (model.PlatformAccount,
 		if err := openJSON(s.vault, tablePlatformAccounts, string(platform), row.SealedSession, &account.Session); err != nil {
 			return model.PlatformAccount{}, err
 		}
+	}
+	if platform == model.PlatformZSXQ && account.Status == model.AccountConnected && strings.TrimSpace(account.Session["zsxq_access_token"]) == "" {
+		account.Status = model.AccountInvalid
+		account.LastError = "session import required"
 	}
 	return account, nil
 }

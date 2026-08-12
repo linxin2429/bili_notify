@@ -628,25 +628,10 @@ paths:
       operationId: deleteBilibiliSession
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
       responses: {'204': {description: Bilibili account disconnected.}}
-  /api/v4/accounts/zsxq/sms-code:
+  /api/v4/accounts/zsxq/token:
     post:
       tags: [accounts]
-      operationId: sendZSXQSMSCode
-      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/ZSXQSMSCodeRequest'}
-      responses:
-        '201':
-          description: Ephemeral login transaction.
-          content: {application/json: {schema: {$ref: '#/components/schemas/ZSXQLoginTransaction'}}}
-        '429': {$ref: '#/components/responses/RateLimitError'}
-  /api/v4/accounts/zsxq/session:
-    post:
-      tags: [accounts]
-      operationId: createZSXQSession
+      operationId: importZSXQToken
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
       requestBody:
         required: true
@@ -655,12 +640,15 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [transaction_id, code]
-              properties: {transaction_id: {type: string}, code: {type: string}}
+              required: [cookie]
+              properties: {cookie: {type: string, minLength: 1}}
       responses:
         '201':
           description: Connected Knowledge Planet account.
           content: {application/json: {schema: {$ref: '#/components/schemas/PlatformAccount'}}}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '422': {$ref: '#/components/responses/InvalidRequest'}
+  /api/v4/accounts/zsxq/session:
     delete:
       tags: [accounts]
       operationId: deleteZSXQSession
@@ -954,6 +942,9 @@ components:
           properties:
             code: {type: string}
             message: {type: string}
+            fields:
+              type: object
+              additionalProperties: {type: string}
     Session:
       type: object
       additionalProperties: false
@@ -1033,25 +1024,6 @@ components:
         updated_at: {type: string, format: date-time}
         risk_paused_until: {type: string, format: date-time}
         last_error: {type: string}
-    ZSXQSMSCodeRequest:
-      type: object
-      additionalProperties: false
-      required: [country_code, phone, captcha_verify_param, agreement_accepted]
-      properties:
-        country_code: {type: string, pattern: '^\+[0-9]{1,4}$'}
-        phone: {type: string, pattern: '^[0-9]{5,20}$'}
-        captcha_verify_param: {type: string, minLength: 1}
-        agreement_accepted: {type: boolean}
-    ZSXQLoginTransaction:
-      type: object
-      additionalProperties: false
-      required: [id, masked_phone, expires_at, next_send_at, attempts_left]
-      properties:
-        id: {type: string}
-        masked_phone: {type: string}
-        expires_at: {type: string, format: date-time}
-        next_send_at: {type: string, format: date-time}
-        attempts_left: {type: integer, minimum: 0, maximum: 5}
     Source:
       type: object
       additionalProperties: false

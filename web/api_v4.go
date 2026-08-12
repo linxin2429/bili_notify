@@ -23,8 +23,7 @@ func (s *Server) registerPlatformAPI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v4/accounts/bilibili/qr", s.audit("bilibili.login.start", "platform_account", "", s.requireSession(true, s.startBiliLoginAPI)))
 	mux.HandleFunc("DELETE /api/v4/accounts/bilibili/qr/{id}", s.audit("bilibili.login.cancel", "platform_account", "id", s.requireSession(true, s.cancelBiliLoginAPI)))
 	mux.HandleFunc("DELETE /api/v4/accounts/bilibili/session", s.audit("bilibili.logout", "platform_account", "", s.requireSession(true, s.deleteBilibiliSessionV4)))
-	mux.HandleFunc("POST /api/v4/accounts/zsxq/sms-code", s.audit("zsxq.sms.send", "platform_account", "", s.requireSession(true, s.zsxqSMSCodeV4)))
-	mux.HandleFunc("POST /api/v4/accounts/zsxq/session", s.audit("zsxq.login", "platform_account", "", s.requireSession(true, s.zsxqSessionV4)))
+	mux.HandleFunc("POST /api/v4/accounts/zsxq/token", s.audit("zsxq.token.import", "platform_account", "", s.requireSession(true, s.zsxqTokenV4)))
 	mux.HandleFunc("DELETE /api/v4/accounts/zsxq/session", s.audit("zsxq.logout", "platform_account", "", s.requireSession(true, s.deleteZSXQSessionV4)))
 	mux.HandleFunc("POST /api/v4/accounts/zsxq/sync-sources", s.audit("zsxq.sources.sync", "source", "", s.requireSession(true, s.syncZSXQSourcesV4)))
 
@@ -56,64 +55,33 @@ func (s *Server) deleteBilibiliSessionV4(w http.ResponseWriter, _ *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) zsxqSMSCodeV4(w http.ResponseWriter, r *http.Request) {
-	if s.zsxqLogin == nil {
-		writeAPIError(w, http.StatusServiceUnavailable, "integration_unavailable", "Knowledge Planet integration is unavailable")
-		return
-	}
-	var input zsxq.SMSCodeRequest
-	if !decodeAPIRequest(w, r, &input) {
-		return
-	}
-	if err := input.Validate(); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "validation_failed", err.Error())
-		return
-	}
-	ctx, cancel := withAPITimeout(r)
-	defer cancel()
-	transaction, err := s.zsxqLogin.SendCode(ctx, input)
-	if err != nil {
-		// Class only — never log phone, captcha tokens, or upstream bodies.
-		s.logger.Warn("Knowledge Planet SMS send failed", "event", "zsxq.sms.failed", "error", err.Error())
-		writeZSXQAPIError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, transaction)
-}
-
-func (s *Server) zsxqSessionV4(w http.ResponseWriter, r *http.Request) {
-	if s.zsxqLogin == nil {
+func (s *Server) zsxqTokenV4(w http.ResponseWriter, r *http.Request) {
+	if s.zsxqAccounts == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "integration_unavailable", "Knowledge Planet integration is unavailable")
 		return
 	}
 	var input struct {
-		TransactionID string `json:"transaction_id"`
-		Code          string `json:"code"`
+		Cookie string `json:"cookie"`
 	}
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	if strings.TrimSpace(input.TransactionID) == "" || strings.TrimSpace(input.Code) == "" {
-		writeAPIError(w, http.StatusBadRequest, "validation_failed", "transaction_id and code are required")
+	if _, err := zsxq.ParseAccessToken(input.Cookie); err != nil {
+		writeAPIErrorFields(w, http.StatusBadRequest, "validation_failed", "cookie must contain exactly one non-empty zsxq_access_token", map[string]string{"cookie": "Cookie 无效或缺少 zsxq_access_token"})
 		return
 	}
 	ctx, cancel := withAPITimeout(r)
 	defer cancel()
-	account, err := s.zsxqLogin.SubmitCode(ctx, input.TransactionID, input.Code)
+	account, err := s.zsxqAccounts.ImportCookie(ctx, input.Cookie)
 	if err != nil {
-		// Class only — never log phone, SMS code, captcha tokens, or upstream bodies.
-		s.logger.Warn("Knowledge Planet login failed", "event", "zsxq.login.failed", "error", err.Error())
 		writeZSXQAPIError(w, err)
 		return
 	}
-	s.events.Publish(service.TopicAccounts | service.TopicSources)
+	s.events.Publish(service.TopicAccounts)
 	writeJSON(w, http.StatusCreated, account)
 }
 
 func (s *Server) deleteZSXQSessionV4(w http.ResponseWriter, r *http.Request) {
-	if s.zsxqLogin != nil {
-		s.zsxqLogin.ClearSession()
-	}
 	err := s.store.WithContext(r.Context()).DeletePlatformAccount(model.PlatformZSXQ)
 	if errors.Is(err, state.ErrNotFound) {
 		err = nil
@@ -127,13 +95,13 @@ func (s *Server) deleteZSXQSessionV4(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) syncZSXQSourcesV4(w http.ResponseWriter, r *http.Request) {
-	if s.zsxqLogin == nil {
+	if s.zsxqAccounts == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "integration_unavailable", "Knowledge Planet integration is unavailable")
 		return
 	}
 	ctx, cancel := withAPITimeout(r)
 	defer cancel()
-	sources, err := s.zsxqLogin.SyncSources(ctx)
+	sources, err := s.zsxqAccounts.SyncSources(ctx)
 	if err != nil {
 		writeZSXQAPIError(w, err)
 		return
@@ -144,23 +112,12 @@ func (s *Server) syncZSXQSourcesV4(w http.ResponseWriter, r *http.Request) {
 
 func writeZSXQAPIError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, zsxq.ErrInvalidPhone):
-		writeAPIError(w, http.StatusBadRequest, "invalid_phone", "phone number is invalid")
-	case errors.Is(err, zsxq.ErrInvalidCode):
-		// Not an admin-session failure; keep 400 so the SPA does not force logout.
-		writeAPIError(w, http.StatusBadRequest, "invalid_code", "SMS verification code is invalid or expired")
-	case errors.Is(err, zsxq.ErrPhoneUnbound):
-		writeAPIError(w, http.StatusConflict, "phone_unbound", "phone number is not bound to a Knowledge Planet account")
-	case errors.Is(err, zsxq.ErrSMSCooldown), errors.Is(err, zsxq.ErrAttemptsExceeded), errors.Is(err, zsxq.ErrRateLimited), errors.Is(err, zsxq.ErrRiskControl):
+	case errors.Is(err, zsxq.ErrRateLimited), errors.Is(err, zsxq.ErrRiskControl):
 		writeAPIError(w, http.StatusTooManyRequests, "rate_limited", err.Error())
-	case errors.Is(err, zsxq.ErrLoginExpired):
-		writeAPIError(w, http.StatusGone, "login_expired", err.Error())
-	case errors.Is(err, zsxq.ErrLoginNotFound):
-		writeAPIError(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, zsxq.ErrAuthentication):
-		// Upstream captcha/signature/device rejection (often business code 1059).
-		// Use 502 (not 401) so the admin session stays valid and the operator can retry.
-		writeAPIError(w, http.StatusBadGateway, "authentication_failed", "Knowledge Planet rejected the captcha or device check; refresh the page, complete the slider again, then resend the SMS code")
+		writeAPIErrorFields(w, http.StatusUnprocessableEntity, "invalid_token", "Knowledge Planet access token is invalid or expired", map[string]string{"cookie": "Cookie 中的 token 无效或已过期"})
+	case errors.Is(err, zsxq.ErrPermission):
+		writeAPIError(w, http.StatusForbidden, "permission_denied", "Knowledge Planet source permission denied")
 	case errors.Is(err, zsxq.ErrSchemaDrift):
 		writeAPIError(w, http.StatusBadGateway, "upstream_failure", "Knowledge Planet response schema changed")
 	case errors.Is(err, zsxq.ErrUpstream):

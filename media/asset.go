@@ -36,7 +36,7 @@ type AttachmentResult struct {
 
 // EnsureAttachments localizes arbitrary attachment types with streaming size
 // enforcement. Signed remote URLs remain only in the caller's in-memory model.
-func (downloader *AttachmentDownloader) EnsureAttachments(ctx context.Context, platform model.Platform, sourceID, contentID string, attachments []model.Attachment, maxFileBytes, totalBudgetBytes int64, apiCookies map[string]string) AttachmentResult {
+func (downloader *AttachmentDownloader) EnsureAttachments(ctx context.Context, platform model.Platform, sourceID, contentID string, attachments []model.Attachment, maxFileBytes, totalBudgetBytes int64, apiToken string) AttachmentResult {
 	var result AttachmentResult
 	if downloader == nil || maxFileBytes <= 0 || totalBudgetBytes <= 0 {
 		return result
@@ -65,7 +65,7 @@ func (downloader *AttachmentDownloader) EnsureAttachments(ctx context.Context, p
 			continue
 		}
 		limit := min(maxFileBytes, remaining)
-		size, err := downloader.downloadAttachment(ctx, platform, sourceID, contentID, item, limit, apiCookies)
+		size, err := downloader.downloadAttachment(ctx, platform, sourceID, contentID, item, limit, apiToken)
 		if err != nil {
 			if errors.Is(err, ErrTooLarge) && remaining < maxFileBytes {
 				err = ErrBudgetExhausted
@@ -87,7 +87,7 @@ func (downloader *AttachmentDownloader) EnsureAttachments(ctx context.Context, p
 	return result
 }
 
-func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, platform model.Platform, sourceID, contentID string, item *model.Attachment, limit int64, apiCookies map[string]string) (int64, error) {
+func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, platform model.Platform, sourceID, contentID string, item *model.Attachment, limit int64, apiToken string) (int64, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, item.RemoteURL, nil)
 	if err != nil {
 		return 0, err
@@ -97,10 +97,8 @@ func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, 
 	}
 	request.Header.Set("User-Agent", firstNonEmpty(downloader.UserAgent, "bili-notify"))
 	request.Header.Set("Accept", "*/*")
-	if platform == model.PlatformZSXQ && strings.EqualFold(request.URL.Hostname(), "api.zsxq.com") {
-		for name, value := range apiCookies {
-			request.AddCookie(&http.Cookie{Name: name, Value: value})
-		}
+	if platform == model.PlatformZSXQ && strings.EqualFold(request.URL.Hostname(), "api.zsxq.com") && apiToken != "" {
+		request.Header.Set("Authorization", apiToken)
 	}
 	client := downloader.safeClient(ctx)
 	response, err := client.Do(request)
@@ -174,7 +172,7 @@ func (downloader *AttachmentDownloader) safeClient(ctx context.Context) *http.Cl
 		base = http.DefaultClient
 	}
 	copy := *base
-	// Never inherit a jar: redirects to a CDN must not receive ZSXQ cookies.
+	// Never inherit a jar: redirects to a CDN must not receive authentication.
 	copy.Jar = nil
 	previous := base.CheckRedirect
 	copy.CheckRedirect = func(request *http.Request, via []*http.Request) error {

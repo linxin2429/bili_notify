@@ -1,19 +1,18 @@
-// Package zsxq implements the server-side Knowledge Planet integration. The
-// client owns a cookie jar and never exposes upstream response bodies in errors.
+// Package zsxq implements the server-side Knowledge Planet integration.
 package zsxq
 
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
+	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"strconv"
 	"strings"
@@ -22,18 +21,20 @@ import (
 	"github.com/linxin2429/bili_notify/model"
 )
 
-const DefaultBaseURL = "https://api.zsxq.com/v2"
+const (
+	DefaultBaseURL = "https://api.zsxq.com"
+	appVersion     = "2.83.0"
+	signingSecret  = "zsxq-sdk-secret"
+)
 
 var (
 	ErrAuthentication = errors.New("zsxq authentication failed")
 	ErrRateLimited    = errors.New("zsxq request rate limited")
 	ErrRiskControl    = errors.New("zsxq risk control triggered")
+	ErrPermission     = errors.New("zsxq source permission denied")
 	ErrRemoteNotFound = errors.New("zsxq remote content not found")
 	ErrSchemaDrift    = errors.New("zsxq response schema changed")
 	ErrUpstream       = errors.New("zsxq upstream request failed")
-	ErrInvalidPhone   = errors.New("zsxq phone number is invalid")
-	ErrPhoneUnbound   = errors.New("zsxq phone number is not bound")
-	ErrInvalidCode    = errors.New("zsxq SMS verification code is invalid")
 )
 
 type Client struct {
@@ -41,8 +42,8 @@ type Client struct {
 	baseURL    *url.URL
 	userAgent  string
 	adUID      string
-	login      *loginCipher
 	now        func() time.Time
+	requestID  func() string
 }
 
 type Option func(*Client) error
@@ -58,24 +59,21 @@ func WithBaseURL(raw string) Option {
 	}
 }
 
+func withProtocolValues(now func() time.Time, requestID func() string, adUID string) Option {
+	return func(client *Client) error {
+		client.now, client.requestID, client.adUID = now, requestID, adUID
+		return nil
+	}
+}
+
 func New(httpClient *http.Client, userAgent string, options ...Option) (*Client, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
 	copy := *httpClient
-	if copy.Jar == nil {
-		jar, err := cookiejar.New(nil)
-		if err != nil {
-			return nil, err
-		}
-		copy.Jar = jar
-	}
+	copy.Jar = nil
 	base, _ := url.Parse(DefaultBaseURL)
-	login, err := newLoginCipher()
-	if err != nil {
-		return nil, fmt.Errorf("initializing ZSXQ login encryption: %w", err)
-	}
-	client := &Client{httpClient: &copy, baseURL: base, userAgent: userAgent, adUID: newRequestID(), login: login, now: time.Now}
+	client := &Client{httpClient: &copy, baseURL: base, userAgent: userAgent, adUID: newRequestID(), now: time.Now, requestID: newRequestID}
 	for _, option := range options {
 		if err := option(client); err != nil {
 			return nil, err
@@ -84,105 +82,12 @@ func New(httpClient *http.Client, userAgent string, options ...Option) (*Client,
 	return client, nil
 }
 
-func (c *Client) SetSession(cookies map[string]string) {
-	values := make([]*http.Cookie, 0, len(cookies))
-	for name, value := range cookies {
-		values = append(values, &http.Cookie{Name: name, Value: value, Path: "/", Secure: true, HttpOnly: true})
-	}
-	c.httpClient.Jar.SetCookies(c.baseURL, values)
-}
-
-func (c *Client) Session() map[string]string {
-	result := make(map[string]string)
-	for _, cookie := range c.httpClient.Jar.Cookies(c.baseURL) {
-		result[cookie.Name] = cookie.Value
-	}
-	return result
-}
-
-func (c *Client) ClearSession() {
-	for _, cookie := range c.httpClient.Jar.Cookies(c.baseURL) {
-		cookie.Value = ""
-		cookie.MaxAge = -1
-		cookie.Expires = time.Unix(1, 0)
-		c.httpClient.Jar.SetCookies(c.baseURL, []*http.Cookie{cookie})
-	}
-}
-
-type SMSCodeRequest struct {
-	CountryCode        string `json:"country_code"`
-	Phone              string `json:"phone"`
-	CaptchaVerifyParam string `json:"captcha_verify_param"`
-	AgreementAccepted  bool   `json:"agreement_accepted"`
-}
-
-func (request SMSCodeRequest) Validate() error {
-	if !request.AgreementAccepted {
-		return errors.New("user agreement and privacy policy must be accepted")
-	}
-	if !strings.HasPrefix(request.CountryCode, "+") || len(request.CountryCode) < 2 || len(request.CountryCode) > 5 {
-		return errors.New("country_code must start with +")
-	}
-	phone := strings.TrimSpace(request.Phone)
-	if len(phone) < 5 || len(phone) > 20 {
-		return errors.New("phone number length is invalid")
-	}
-	for _, character := range phone {
-		if character < '0' || character > '9' {
-			return errors.New("phone must contain digits only")
-		}
-	}
-	if strings.TrimSpace(request.CaptchaVerifyParam) == "" {
-		return errors.New("captcha verification is required")
-	}
-	return nil
-}
-
-// SendSMSCode forwards the one-time Alibaba CAPTCHA result. The request value
-// is never retained by Client and upstream bodies are deliberately redacted.
-func (c *Client) SendSMSCode(ctx context.Context, request SMSCodeRequest) error {
-	if err := request.Validate(); err != nil {
-		return err
-	}
-	payload := map[string]any{"req_data": map[string]any{
-		"phone": map[string]any{
-			"country_code": strings.TrimPrefix(request.CountryCode, "+"),
-			"phone_number": request.Phone,
-		},
-		"captcha_v2": map[string]any{"captcha_verify_param": request.CaptchaVerifyParam},
-	}}
-	return c.doJSON(ctx, http.MethodPost, "/verify_codes", nil, payload, nil)
-}
-
-type LoginResult struct {
-	AccountID   string
-	AccountName string
-	Cookies     map[string]string
-}
-
-func (c *Client) Login(ctx context.Context, countryCode, phone, code string) (LoginResult, error) {
-	if strings.TrimSpace(code) == "" {
-		return LoginResult{}, errors.New("SMS code is required")
-	}
-	payload := map[string]any{"req_data": map[string]any{"client": "DWeb", "phone": map[string]any{
-		"country_code": strings.TrimPrefix(countryCode, "+"), "phone_number": phone, "verify_code": code,
-	}}}
-	if err := c.doEncryptedLogin(ctx, payload); err != nil {
-		return LoginResult{}, err
-	}
-	account, err := c.Me(ctx)
-	if err != nil {
-		return LoginResult{}, err
-	}
-	return LoginResult{AccountID: account.ID, AccountName: account.Name, Cookies: c.Session()}, nil
-}
-
 type User struct {
 	ID   string
 	Name string
 }
 
-func (c *Client) Me(ctx context.Context) (User, error) {
+func (c *Client) Me(ctx context.Context, token string) (User, error) {
 	// Knowledge Planet's DWeb /users/self payload uses user.uid. Older fixtures and
 	// some nested objects still expose user_id; accept either without guessing names.
 	var response struct {
@@ -192,7 +97,7 @@ func (c *Client) Me(ctx context.Context) (User, error) {
 			Name   string      `json:"name"`
 		} `json:"user"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, "/users/self", nil, nil, &response); err != nil {
+	if err := c.doJSON(ctx, token, http.MethodGet, "/v3/users/self", nil, nil, &response); err != nil {
 		return User{}, err
 	}
 	id := response.User.UID.String()
@@ -212,7 +117,7 @@ type Group struct {
 	OwnerName string
 }
 
-func (c *Client) Groups(ctx context.Context) ([]Group, error) {
+func (c *Client) Groups(ctx context.Context, token string) ([]Group, error) {
 	var response struct {
 		Groups []struct {
 			GroupID json.Number `json:"group_id"`
@@ -220,7 +125,7 @@ func (c *Client) Groups(ctx context.Context) ([]Group, error) {
 			Owner   apiUser     `json:"owner"`
 		} `json:"groups"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, "/groups", nil, nil, &response); err != nil {
+	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/groups", nil, nil, &response); err != nil {
 		return nil, err
 	}
 	groups := make([]Group, 0, len(response.Groups))
@@ -239,7 +144,7 @@ type TopicPage struct {
 	NextCursor  string
 }
 
-func (c *Client) Topics(ctx context.Context, source model.Source, cursor string, count int) (TopicPage, error) {
+func (c *Client) Topics(ctx context.Context, token string, source model.Source, cursor string, count int) (TopicPage, error) {
 	if source.Platform != model.PlatformZSXQ || source.Type != model.SourceZSXQPlanet {
 		return TopicPage{}, errors.New("zsxq source is required")
 	}
@@ -254,7 +159,7 @@ func (c *Client) Topics(ctx context.Context, source model.Source, cursor string,
 		Topics  []apiTopic `json:"topics"`
 		EndTime string     `json:"end_time"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, "/groups/"+url.PathEscape(source.ExternalID)+"/topics", query, nil, &response); err != nil {
+	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/groups/"+url.PathEscape(source.ExternalID)+"/topics", query, nil, &response); err != nil {
 		return TopicPage{}, err
 	}
 	page := TopicPage{Attachments: make(map[string][]model.Attachment), NextCursor: response.EndTime}
@@ -272,11 +177,11 @@ func (c *Client) Topics(ctx context.Context, source model.Source, cursor string,
 	return page, nil
 }
 
-func (c *Client) Topic(ctx context.Context, source model.Source, topicID string) (model.Content, []model.Attachment, error) {
+func (c *Client) Topic(ctx context.Context, token string, source model.Source, topicID string) (model.Content, []model.Attachment, error) {
 	var response struct {
 		Topic apiTopic `json:"topic"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, "/topics/"+url.PathEscape(topicID), nil, nil, &response); err != nil {
+	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/topics/"+url.PathEscape(topicID), nil, nil, &response); err != nil {
 		return model.Content{}, nil, err
 	}
 	content, attachments, err := parseTopic(source, response.Topic)
@@ -288,7 +193,7 @@ type CommentPage struct {
 	NextCursor string
 }
 
-func (c *Client) Comments(ctx context.Context, content model.Content, ownerID, cursor string, count int) (CommentPage, error) {
+func (c *Client) Comments(ctx context.Context, token string, content model.Content, ownerID, cursor string, count int) (CommentPage, error) {
 	if content.Platform != model.PlatformZSXQ {
 		return CommentPage{}, errors.New("zsxq content is required")
 	}
@@ -304,7 +209,7 @@ func (c *Client) Comments(ctx context.Context, content model.Content, ownerID, c
 		StickyComments []apiComment `json:"sticky_comments"`
 		BeginTime      string       `json:"begin_time"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, "/topics/"+url.PathEscape(content.ExternalID)+"/comments", query, nil, &response); err != nil {
+	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/topics/"+url.PathEscape(content.ExternalID)+"/comments", query, nil, &response); err != nil {
 		return CommentPage{}, err
 	}
 	page := CommentPage{NextCursor: response.BeginTime}
@@ -324,14 +229,16 @@ func (c *Client) Comments(ctx context.Context, content model.Content, ownerID, c
 	return page, nil
 }
 
-func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, input, output any) error {
+func (c *Client) doJSON(ctx context.Context, token, method, path string, query url.Values, input, output any) error {
 	target := c.resolveURL(path)
 	if query != nil {
 		target.RawQuery = query.Encode()
 	}
 	var body io.Reader
+	var encoded []byte
 	if input != nil {
-		encoded, err := json.Marshal(input)
+		var err error
+		encoded, err = json.Marshal(input)
 		if err != nil {
 			return err
 		}
@@ -345,7 +252,8 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 	request.Header.Set("User-Agent", c.userAgent)
 	request.Header.Set("Origin", "https://wx.zsxq.com")
 	request.Header.Set("Referer", "https://wx.zsxq.com/")
-	c.sign(request)
+	request.Header.Set("Authorization", token)
+	c.sign(request, encoded)
 	if input != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -357,16 +265,22 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 	if err := classifyStatus(response.StatusCode); err != nil {
 		return err
 	}
-	limited, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+	limited, err := io.ReadAll(io.LimitReader(response.Body, (8<<20)+1))
 	if err != nil {
 		return ErrUpstream
+	}
+	if len(limited) > 8<<20 {
+		return ErrSchemaDrift
 	}
 	return decodeEnvelope(limited, output)
 }
 
 func classifyStatus(status int) error {
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+	if status == http.StatusUnauthorized {
 		return ErrAuthentication
+	}
+	if status == http.StatusForbidden {
+		return ErrPermission
 	}
 	if status == http.StatusTooManyRequests {
 		return ErrRateLimited
@@ -381,12 +295,11 @@ func classifyStatus(status int) error {
 }
 
 func decodeEnvelope(body []byte, output any) error {
-	// Knowledge Planet uses both "succeeded" (bool) and the older "succeed"
-	// field (bool or string) across login/SMS endpoints. Accept either.
 	var envelope struct {
-		Succeeded *flexibleBool   `json:"succeeded"`
-		Succeed   *flexibleBool   `json:"succeed"`
+		Succeeded *bool           `json:"succeeded"`
 		Code      int             `json:"code"`
+		Error     string          `json:"error"`
+		Info      string          `json:"info"`
 		RespData  json.RawMessage `json:"resp_data"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
@@ -394,14 +307,10 @@ func decodeEnvelope(body []byte, output any) error {
 	if err := decoder.Decode(&envelope); err != nil {
 		return ErrSchemaDrift
 	}
-	ok := false
-	switch {
-	case envelope.Succeeded != nil:
-		ok = bool(*envelope.Succeeded)
-	case envelope.Succeed != nil:
-		ok = bool(*envelope.Succeed)
+	if envelope.Succeeded == nil {
+		return ErrSchemaDrift
 	}
-	if !ok {
+	if !*envelope.Succeeded {
 		return classifyBusinessCode(envelope.Code)
 	}
 	if output == nil {
@@ -420,22 +329,16 @@ func decodeEnvelope(body []byte, output any) error {
 
 func classifyBusinessCode(code int) error {
 	switch code {
-	case 401, 1059:
-		// 1059 is signature/device validation failure on some endpoints (including
-		// incomplete captcha device fingerprints) and forces a full captcha restart.
+	case 10001, 10002:
 		return fmt.Errorf("%w: business code %d", ErrAuthentication, code)
-	case 1004:
-		return fmt.Errorf("%w: business code %d", ErrInvalidPhone, code)
-	case 1031, 10013:
-		return fmt.Errorf("%w: business code %d", ErrPhoneUnbound, code)
-	case 10022, 90012:
-		// 10022 is the documented invalid SMS payload; 90012 is returned after a
-		// one-time code has already been consumed or is no longer acceptable.
-		return fmt.Errorf("%w: business code %d", ErrInvalidCode, code)
-	case 429:
+	case 10003:
+		return fmt.Errorf("%w: signature rejected", ErrUpstream)
+	case 40001:
 		return fmt.Errorf("%w: business code %d", ErrRateLimited, code)
 	case 403, 1006:
-		return fmt.Errorf("%w: business code %d", ErrRiskControl, code)
+		return fmt.Errorf("%w: business code %d", ErrPermission, code)
+	case 404:
+		return fmt.Errorf("%w: business code %d", ErrRemoteNotFound, code)
 	case 0:
 		// Missing/zero code with a failed envelope still means upstream rejected
 		// the request; keep the public mapping generic.
@@ -445,97 +348,24 @@ func classifyBusinessCode(code int) error {
 	}
 }
 
-// flexibleBool accepts JSON booleans and the string forms "true"/"false" used by
-// some Knowledge Planet envelopes.
-type flexibleBool bool
-
-func (value *flexibleBool) UnmarshalJSON(raw []byte) error {
-	raw = bytes.TrimSpace(raw)
-	switch {
-	case bytes.Equal(raw, []byte("true")), bytes.Equal(raw, []byte(`"true"`)), bytes.Equal(raw, []byte(`"True"`)):
-		*value = true
-		return nil
-	case bytes.Equal(raw, []byte("false")), bytes.Equal(raw, []byte(`"false"`)), bytes.Equal(raw, []byte(`"False"`)):
-		*value = false
-		return nil
-	default:
-		return fmt.Errorf("invalid boolean %s", string(raw))
-	}
-}
-
-func (c *Client) doEncryptedLogin(ctx context.Context, input any) error {
-	plain, err := json.Marshal(input)
-	if err != nil {
-		return err
-	}
-	encrypted, err := c.login.encrypt(plain)
-	if err != nil {
-		return err
-	}
-	target := c.resolveURL("/access_tokens")
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), strings.NewReader(encrypted))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Accept", "text/plain")
-	request.Header.Set("Content-Type", "text/plain")
-	request.Header.Set("User-Agent", c.userAgent)
-	request.Header.Set("Origin", "https://wx.zsxq.com")
-	request.Header.Set("Referer", "https://wx.zsxq.com/")
-	key, iv := c.login.headers()
-	request.Header.Set("X-Key", key)
-	request.Header.Set("X-IV", iv)
-	c.sign(request)
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return fmt.Errorf("%w: transport", ErrUpstream)
-	}
-	defer response.Body.Close()
-	if err := classifyStatus(response.StatusCode); err != nil {
-		return err
-	}
-	encoded, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
-	if err != nil {
-		return ErrUpstream
-	}
-	trimmed := bytes.TrimSpace(encoded)
-	// Success responses are AES ciphertext. Business failures often come back as
-	// plain JSON envelopes; try decrypt first, then fall back without leaking the body.
-	if decrypted, err := c.login.decrypt(string(trimmed)); err == nil {
-		return decodeEnvelope(decrypted, nil)
-	}
-	if err := decodeEnvelope(trimmed, nil); err == nil || !errors.Is(err, ErrSchemaDrift) {
-		return err
-	}
-	return ErrSchemaDrift
-}
-
 func (c *Client) resolveURL(path string) url.URL {
 	target := *c.baseURL
-	basePath := strings.TrimSuffix(c.baseURL.Path, "/")
-	if isV3Path(path) && strings.HasSuffix(basePath, "/v2") {
-		basePath = strings.TrimSuffix(basePath, "/v2") + "/v3"
-	}
-	target.Path = basePath + path
+	target.Path = strings.TrimSuffix(c.baseURL.Path, "/") + path
 	return target
 }
 
-func isV3Path(path string) bool {
-	switch path {
-	case "/access_tokens", "/verify_codes", "/users/self", "/users/self/login_info", "/users/self/accounts":
-		return true
-	default:
-		return false
-	}
-}
-
-func (c *Client) sign(request *http.Request) {
+func (c *Client) sign(request *http.Request, body []byte) {
 	timestamp := strconv.FormatInt(c.now().Unix(), 10)
-	requestID := newRequestID()
-	digest := sha256.Sum256([]byte(request.URL.String() + " " + timestamp + " " + requestID))
+	requestID := c.requestID()
+	plain := timestamp + "\n" + strings.ToUpper(request.Method) + "\n" + request.URL.Path
+	if len(body) != 0 {
+		plain += "\n" + string(body)
+	}
+	digest := hmac.New(sha1.New, []byte(signingSecret))
+	_, _ = digest.Write([]byte(plain))
 	request.Header.Set("X-Request-Id", requestID)
-	request.Header.Set("X-Version", map[bool]string{true: "3.20.0", false: "2.95.0"}[strings.Contains(request.URL.Path, "/v3/")])
-	request.Header.Set("X-Signature", hex.EncodeToString(digest[:]))
+	request.Header.Set("X-Version", appVersion)
+	request.Header.Set("X-Signature", hex.EncodeToString(digest.Sum(nil)))
 	request.Header.Set("X-Timestamp", timestamp)
 	request.Header.Set("X-Aduid", c.adUID)
 }

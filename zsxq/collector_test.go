@@ -27,7 +27,7 @@ func TestSyncDynamicsArchivesBaselineWithoutChannels(t *testing.T) {
 	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), key)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "user", DisplayName: "User", Status: model.AccountConnected, Session: map[string]string{"access_token": "session"}}
+	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "user", DisplayName: "User", Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: "session"}}
 	require.NoError(t, store.PutPlatformAccount(account))
 	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
 		ExternalID: "9", Name: "Planet", OwnerID: "8", Enabled: true, BaselineState: model.BaselinePending}
