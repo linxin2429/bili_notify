@@ -56,7 +56,7 @@ describe('resource transport', () => {
     })
     vi.stubGlobal('fetch', fetch)
 
-    await resources.createSource('csrf', { platform: 'bilibili', external_id: '42', name: 'UP', note: '', enabled: true })
+    await resources.createSource('csrf', { platform: 'bilibili', type: 'up', external_id: '42', name: 'UP', note: '', enabled: true })
     await resources.updateSource('csrf', { id: 'bilibili:up:4/2', name: '改名', note: '备注', enabled: false })
     await resources.deleteSource('csrf', 'bilibili:up:4/2')
     const draft = { name: '邮件', type: 'email' as const, enabled: true, settings: { host: 'smtp', port: '465', tls: 'tls', username: '', from: 'a', to: 'b' } }

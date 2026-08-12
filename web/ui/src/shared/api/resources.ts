@@ -32,10 +32,9 @@ export const resources = {
   aiJobs: (query: { kind?: string; state?: string; limit?: number; offset?: number } = {}, signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/jobs${queryString(query)}`, aiJobPageSchema, { signal }),
   aiJob: (id: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/jobs/${encodeURIComponent(id)}`, aiJobSchema, { signal }),
 
-  createSource: (csrf: string, input: { platform: 'bilibili'; external_id: string; name: string; note: string; enabled: boolean }) => write(`${apiRoot}/sources`, sourceSchema, 'POST', csrf, input),
+  createSource: (csrf: string, input: { platform: 'bilibili' | 'zsxq'; type: 'up' | 'planet'; external_id: string; name: string; note: string; enabled: boolean }) => write(`${apiRoot}/sources`, sourceSchema, 'POST', csrf, input),
   updateSource: (csrf: string, input: Pick<Source, 'id' | 'name' | 'note' | 'enabled'>) => write(`${apiRoot}/sources/${encodeURIComponent(input.id)}`, sourceSchema, 'PUT', csrf, { name: input.name, note: input.note || '', enabled: input.enabled }),
   deleteSource: (csrf: string, id: string) => write(`${apiRoot}/sources/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
-  syncZSXQSources: (csrf: string) => write(`${apiRoot}/accounts/zsxq/sync-sources`, array(sourceSchema), 'POST', csrf),
   importZSXQToken: (csrf: string, cookie: string) => write(`${apiRoot}/accounts/zsxq/token`, platformAccountSchema, 'POST', csrf, { cookie }),
   deleteZSXQSession: (csrf: string) => write(`${apiRoot}/accounts/zsxq/session`, emptyResponseSchema, 'DELETE', csrf),
   createChannel: (csrf: string, input: ChannelDraft) => write(`${apiRoot}/channels`, channelSchema, 'POST', csrf, input),

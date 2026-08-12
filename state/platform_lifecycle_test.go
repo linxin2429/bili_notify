@@ -81,30 +81,36 @@ func TestPlatformAccountRejectsInvalidPlatform(t *testing.T) {
 	}
 }
 
-func TestReplaceZSXQPlatformAccountDisablesSourcesOnlyWhenIdentityChanges(t *testing.T) {
+func TestPutZSXQPlatformAccountPreservesSources(t *testing.T) {
 	t.Parallel()
-	store := openTestStore(t, 158)
-	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "1"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
-		ExternalID: "1", Name: "Planet", Enabled: true, BaselineState: model.BaselineComplete}
-	require.NoError(t, store.PutSource(source))
-
 	tests := []struct {
-		name        string
-		externalID  string
-		wantEnabled bool
+		name       string
+		externalID string
 	}{
-		{name: "first import", externalID: "account-1", wantEnabled: true},
-		{name: "same account token refresh", externalID: "account-1", wantEnabled: true},
-		{name: "different account", externalID: "account-2", wantEnabled: false},
+		{name: "first import", externalID: "account-1"},
+		{name: "same account token refresh", externalID: "account-1"},
+		{name: "different account", externalID: "account-2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store := openTestStore(t, 158)
+			require.NoError(t, store.PutSource(model.Source{ID: model.SourceID(model.PlatformZSXQ, "1"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
+				ExternalID: "1", Name: "Disabled", Enabled: false, BaselineState: model.BaselineComplete}))
+			require.NoError(t, store.PutSource(model.Source{ID: model.SourceID(model.PlatformZSXQ, "2"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
+				ExternalID: "2", Name: "Enabled", Enabled: true, BaselineState: model.BaselineComplete}))
+			if tt.name != "first import" {
+				require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "account-1", DisplayName: "Old", Status: model.AccountConnected,
+					Session: map[string]string{"zsxq_access_token": "old-token"}}))
+			}
 			account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: tt.externalID, DisplayName: "Member", Status: model.AccountConnected,
-				Session: map[string]string{"zsxq_access_token": "token-" + tt.externalID}}
-			require.NoError(t, store.ReplaceZSXQPlatformAccount(account))
-			loaded, err := store.Source(source.ID)
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantEnabled, loaded.Enabled)
+				Session: map[string]string{"zsxq_access_token": "new-token"}}
+			require.NoError(t, store.PutPlatformAccount(account))
+			for id, wantEnabled := range map[string]bool{"1": false, "2": true} {
+				loaded, err := store.Source(model.SourceID(model.PlatformZSXQ, id))
+				require.NoError(t, err)
+				assert.Equal(t, wantEnabled, loaded.Enabled)
+			}
 		})
 	}
 }
@@ -136,57 +142,10 @@ func TestEmptyZSXQSessionClearsSealedToken(t *testing.T) {
 	assert.Equal(t, model.AccountInvalid, loaded.Status)
 }
 
-func TestMergeVisibleSourcesPreservesAdministratorState(t *testing.T) {
+func TestListSourcesRejectsInvalidPlatform(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, 157)
-	now := time.Date(2026, time.August, 10, 2, 3, 4, 0, time.UTC)
-	existing := model.Source{
-		ID: model.SourceID(model.PlatformZSXQ, "2"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
-		ExternalID: "2", Name: "old", Note: "keep", OwnerID: "old-owner", OwnerName: "old owner",
-		Enabled: true, BaselineState: model.BaselineRunning, BackfillCursor: "cursor", HighWatermark: "high",
-		BackfillDone: 3, BackfillTotal: 9, LastSuccessAt: now,
-	}
-	require.NoError(t, store.PutSource(existing))
-
-	visible := []model.Source{
-		{ID: existing.ID, Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "2", Name: "new", OwnerID: "owner-2", OwnerName: "owner two"},
-		{ID: model.SourceID(model.PlatformZSXQ, "1"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "1", Name: "first", OwnerID: "owner-1"},
-	}
-	require.NoError(t, store.MergeVisibleSources(model.PlatformZSXQ, visible))
-
-	loaded, err := store.Source(existing.ID)
-	require.NoError(t, err)
-	assert.Equal(t, "new", loaded.Name)
-	assert.Equal(t, "owner-2", loaded.OwnerID)
-	assert.Equal(t, "keep", loaded.Note)
-	assert.True(t, loaded.Enabled)
-	assert.Equal(t, model.BaselineRunning, loaded.BaselineState)
-	assert.Equal(t, "cursor", loaded.BackfillCursor)
-	assert.Equal(t, int64(3), loaded.BackfillDone)
-	assert.True(t, loaded.LastSuccessAt.Equal(now))
-
-	items, err := store.ListSources(model.PlatformZSXQ)
-	require.NoError(t, err)
-	require.Len(t, items, 2)
-	assert.Equal(t, "first", items[0].Name)
-	assert.Equal(t, model.BaselinePending, items[0].BaselineState)
-
-	tests := []struct {
-		name     string
-		platform model.Platform
-		sources  []model.Source
-	}{
-		{name: "invalid platform", platform: model.Platform("invalid")},
-		{name: "platform mismatch", platform: model.PlatformZSXQ, sources: []model.Source{{Platform: model.PlatformBilibili}}},
-		{name: "invalid source", platform: model.PlatformZSXQ, sources: []model.Source{{Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet}}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Error(t, store.MergeVisibleSources(tt.platform, tt.sources))
-		})
-	}
-	_, err = store.ListSources(model.Platform("invalid"))
+	_, err := store.ListSources(model.Platform("invalid"))
 	assert.Error(t, err)
 }
 

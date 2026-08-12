@@ -196,18 +196,10 @@ func FuzzParseAccessToken(f *testing.F) {
 
 type accountStoreStub struct {
 	account model.PlatformAccount
-	sources []model.Source
 }
 
-func (store *accountStoreStub) PlatformAccount(model.Platform) (model.PlatformAccount, error) {
-	return store.account, nil
-}
-func (store *accountStoreStub) ReplaceZSXQPlatformAccount(account model.PlatformAccount) error {
+func (store *accountStoreStub) PutPlatformAccount(account model.PlatformAccount) error {
 	store.account = account
-	return nil
-}
-func (store *accountStoreStub) MergeVisibleSources(_ model.Platform, sources []model.Source) error {
-	store.sources = sources
 	return nil
 }
 

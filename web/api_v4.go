@@ -25,7 +25,6 @@ func (s *Server) registerPlatformAPI(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v4/accounts/bilibili/session", s.audit("bilibili.logout", "platform_account", "", s.requireSession(true, s.deleteBilibiliSessionV4)))
 	mux.HandleFunc("POST /api/v4/accounts/zsxq/token", s.audit("zsxq.token.import", "platform_account", "", s.requireSession(true, s.zsxqTokenV4)))
 	mux.HandleFunc("DELETE /api/v4/accounts/zsxq/session", s.audit("zsxq.logout", "platform_account", "", s.requireSession(true, s.deleteZSXQSessionV4)))
-	mux.HandleFunc("POST /api/v4/accounts/zsxq/sync-sources", s.audit("zsxq.sources.sync", "source", "", s.requireSession(true, s.syncZSXQSourcesV4)))
 
 	mux.HandleFunc("GET /api/v4/sources", s.requireSession(false, s.sourcesV4))
 	mux.HandleFunc("POST /api/v4/sources", s.audit("source.create", "source", "", s.requireSession(true, s.createSourceV4)))
@@ -94,22 +93,6 @@ func (s *Server) deleteZSXQSessionV4(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) syncZSXQSourcesV4(w http.ResponseWriter, r *http.Request) {
-	if s.zsxqAccounts == nil {
-		writeAPIError(w, http.StatusServiceUnavailable, "integration_unavailable", "Knowledge Planet integration is unavailable")
-		return
-	}
-	ctx, cancel := withAPITimeout(r)
-	defer cancel()
-	sources, err := s.zsxqAccounts.SyncSources(ctx)
-	if err != nil {
-		writeZSXQAPIError(w, err)
-		return
-	}
-	s.events.Publish(service.TopicSources)
-	writeJSON(w, http.StatusOK, sources)
-}
-
 func writeZSXQAPIError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, zsxq.ErrRateLimited), errors.Is(err, zsxq.ErrRiskControl):
@@ -141,20 +124,17 @@ func (s *Server) sourcesV4(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createSourceV4(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Platform   model.Platform `json:"platform"`
-		ExternalID string         `json:"external_id"`
-		Name       string         `json:"name"`
-		Note       string         `json:"note"`
-		Enabled    bool           `json:"enabled"`
+		Platform   model.Platform   `json:"platform"`
+		Type       model.SourceType `json:"type"`
+		ExternalID string           `json:"external_id"`
+		Name       string           `json:"name"`
+		Note       string           `json:"note"`
+		Enabled    bool             `json:"enabled"`
 	}
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	if input.Platform != model.PlatformBilibili {
-		writeAPIError(w, http.StatusBadRequest, "validation_failed", "only Bilibili UP sources may be created manually")
-		return
-	}
-	source := model.Source{ID: model.SourceID(input.Platform, input.ExternalID), Platform: input.Platform, Type: model.SourceBilibiliUP,
+	source := model.Source{ID: model.SourceID(input.Platform, input.ExternalID), Platform: input.Platform, Type: input.Type,
 		ExternalID: input.ExternalID, Name: input.Name, Note: input.Note, Enabled: input.Enabled, BaselineState: model.BaselinePending}
 	if err := source.Validate(); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "validation_failed", err.Error())

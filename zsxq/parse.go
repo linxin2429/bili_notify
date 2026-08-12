@@ -274,6 +274,11 @@ func roleFor(user apiUser, ownerID string) model.AuthorRole {
 		return model.RoleOwner
 	}
 	switch strings.ToLower(user.Role) {
+	case "owner":
+		if ownerID == "" {
+			return model.RoleOwner
+		}
+		return model.RoleMember
 	case "admin":
 		return model.RoleAdmin
 	case "guest":

@@ -53,12 +53,71 @@ func TestSyncDynamicsArchivesBaselineWithoutChannels(t *testing.T) {
 	assert.Equal(t, model.BaselineComplete, updated.BaselineState)
 }
 
+func TestSyncDynamicsUsesLatestTokenWithoutChangingSourceAvailability(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		enabled      bool
+		status       int
+		wantRequests int64
+		wantError    string
+	}{
+		{name: "enabled source uses replacement account token", enabled: true, status: http.StatusOK, wantRequests: 1},
+		{name: "disabled source remains idle", enabled: false, status: http.StatusOK, wantRequests: 0},
+		{name: "permission failure preserves enabled source", enabled: true, status: http.StatusForbidden, wantRequests: 1, wantError: "upstream synchronization failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				assert.Equal(t, "new-token", r.Header.Get("Authorization"))
+				if tt.status != http.StatusOK {
+					w.WriteHeader(tt.status)
+					return
+				}
+				writeEnvelope(t, w, map[string]any{"topics": []any{}, "end_time": ""})
+			}))
+			t.Cleanup(server.Close)
+			key, err := vault.New(bytes.Repeat([]byte{183}, 32))
+			require.NoError(t, err)
+			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), key)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "old-user", DisplayName: "Old", Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: "old-token"}}))
+			source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
+				ExternalID: "9", Name: "Planet", Enabled: tt.enabled, BaselineState: model.BaselineComplete}
+			require.NoError(t, store.PutSource(source))
+			require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "new-user", DisplayName: "New", Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: "new-token"}}))
+			client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+			require.NoError(t, err)
+			collector, err := NewCollector(store, client, model.DefaultRuntimeSettings, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			require.NoError(t, err)
+
+			require.NoError(t, collector.SyncDynamics(t.Context()))
+			assert.Equal(t, tt.wantRequests, requests.Load())
+			loaded, err := store.Source(source.ID)
+			require.NoError(t, err)
+			assert.Equal(t, tt.enabled, loaded.Enabled)
+			if tt.wantError == "" {
+				assert.Empty(t, loaded.LastError)
+			} else {
+				assert.Contains(t, loaded.LastError, tt.wantError)
+			}
+		})
+	}
+}
+
 func TestSyncCommentsUsesCompleteTopicPreview(t *testing.T) {
 	t.Parallel()
 	var commentsEndpointCalled atomic.Bool
 	var fileURLCalls atomic.Int64
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/signed/file" {
+			assert.Equal(t, "new-session", r.Header.Get("Authorization"))
+		}
 		switch r.URL.Path {
 		case "/v2/topics/1/comments":
 			commentsEndpointCalled.Store(true)
@@ -78,12 +137,14 @@ func TestSyncCommentsUsesCompleteTopicPreview(t *testing.T) {
 	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), key)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "user", DisplayName: "User", Status: model.AccountConnected,
-		Session: map[string]string{AccessTokenKey: "session"}}
+	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "old-user", DisplayName: "Old", Status: model.AccountConnected,
+		Session: map[string]string{AccessTokenKey: "old-session"}}
 	require.NoError(t, store.PutPlatformAccount(account))
 	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
 		ExternalID: "9", Name: "Planet", OwnerID: "8", Enabled: true, BaselineState: model.BaselineComplete}
 	require.NoError(t, store.PutSource(source))
+	account.ExternalID, account.DisplayName, account.Session = "new-user", "New", map[string]string{AccessTokenKey: "new-session"}
+	require.NoError(t, store.PutPlatformAccount(account))
 	content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "1"), Platform: model.PlatformZSXQ, SourceID: source.ID,
 		ExternalID: "1", AuthorID: "8", AuthorName: "Owner", UpstreamType: "talk", Type: model.ContentDiscussion,
 		PublishedAt: time.Date(2026, time.August, 10, 0, 0, 0, 0, time.UTC)}

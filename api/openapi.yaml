@@ -654,15 +654,6 @@ paths:
       operationId: deleteZSXQSession
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
       responses: {'204': {description: Knowledge Planet account disconnected.}}
-  /api/v4/accounts/zsxq/sync-sources:
-    post:
-      tags: [accounts, sources]
-      operationId: syncZSXQSources
-      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
-      responses:
-        '200':
-          description: Visible Knowledge Planet sources.
-          content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Source'}}}}
   /api/v4/sources:
     get:
       tags: [sources]
@@ -1052,9 +1043,10 @@ components:
     CreateSourceRequest:
       type: object
       additionalProperties: false
-      required: [platform, external_id, name, note, enabled]
+      required: [platform, type, external_id, name, note, enabled]
       properties:
-        platform: {type: string, const: bilibili}
+        platform: {type: string, enum: [bilibili, zsxq]}
+        type: {type: string, enum: [up, planet], description: 'Must be up for bilibili and planet for zsxq.'}
         external_id: {type: string, pattern: '^[1-9][0-9]*$'}
         name: {type: string}
         note: {type: string}

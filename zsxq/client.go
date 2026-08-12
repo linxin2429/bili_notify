@@ -110,34 +110,6 @@ func (c *Client) Me(ctx context.Context, token string) (User, error) {
 	return User{ID: id, Name: response.User.Name}, nil
 }
 
-type Group struct {
-	ID        string
-	Name      string
-	OwnerID   string
-	OwnerName string
-}
-
-func (c *Client) Groups(ctx context.Context, token string) ([]Group, error) {
-	var response struct {
-		Groups []struct {
-			GroupID json.Number `json:"group_id"`
-			Name    string      `json:"name"`
-			Owner   apiUser     `json:"owner"`
-		} `json:"groups"`
-	}
-	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/groups", nil, nil, &response); err != nil {
-		return nil, err
-	}
-	groups := make([]Group, 0, len(response.Groups))
-	for _, item := range response.Groups {
-		if item.GroupID.String() == "" || item.Name == "" || item.Owner.UserID.String() == "" {
-			return nil, ErrSchemaDrift
-		}
-		groups = append(groups, Group{ID: item.GroupID.String(), Name: item.Name, OwnerID: item.Owner.UserID.String(), OwnerName: item.Owner.Name})
-	}
-	return groups, nil
-}
-
 type TopicPage struct {
 	Contents    []model.Content
 	Attachments map[string][]model.Attachment

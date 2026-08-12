@@ -36,7 +36,7 @@ func TestAdminAPILifecycle(t *testing.T) {
 	fixture := newAdminAPIFixture(t, nil)
 
 	response := fixture.request(t, http.MethodPost, "/api/v4/sources", map[string]any{
-		"platform": "bilibili", "external_id": "42", "name": "first name", "enabled": true,
+		"platform": "bilibili", "type": "up", "external_id": "42", "name": "first name", "note": "", "enabled": true,
 	}, true)
 	assert.Equal(t, http.StatusCreated, response.Code)
 	var createdSource model.Source
@@ -45,9 +45,19 @@ func TestAdminAPILifecycle(t *testing.T) {
 	assert.Equal(t, model.SourceBilibiliUP, createdSource.Type)
 
 	response = fixture.request(t, http.MethodPost, "/api/v4/sources", map[string]any{
-		"platform": "bilibili", "external_id": "42", "name": "duplicate", "enabled": true,
+		"platform": "bilibili", "type": "up", "external_id": "42", "name": "duplicate", "note": "", "enabled": true,
 	}, true)
 	assertAPIError(t, response, http.StatusConflict, "conflict")
+
+	response = fixture.request(t, http.MethodPost, "/api/v4/sources", map[string]any{
+		"platform": "zsxq", "type": "planet", "external_id": "9", "name": "Planet", "note": "manual", "enabled": false,
+	}, true)
+	assert.Equal(t, http.StatusCreated, response.Code)
+	var planet model.Source
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &planet))
+	assert.Equal(t, model.SourceZSXQPlanet, planet.Type)
+	assert.Equal(t, "zsxq:planet:9", planet.ID)
+	assert.False(t, planet.Enabled)
 
 	response = fixture.request(t, http.MethodPut, "/api/v4/sources/bilibili:up:42", map[string]any{
 		"name": "updated name", "note": "note", "enabled": false,
@@ -121,6 +131,8 @@ func TestAdminAPILifecycle(t *testing.T) {
 	response = fixture.request(t, http.MethodDelete, "/api/v4/channels/"+createdChannel.ID, nil, true)
 	assert.Equal(t, http.StatusNoContent, response.Code)
 	response = fixture.request(t, http.MethodDelete, "/api/v4/sources/bilibili:up:42", nil, true)
+	assert.Equal(t, http.StatusNoContent, response.Code)
+	response = fixture.request(t, http.MethodDelete, "/api/v4/sources/zsxq:planet:9", nil, true)
 	assert.Equal(t, http.StatusNoContent, response.Code)
 	assert.Greater(t, fixture.events.Revision(), uint64(0))
 }
@@ -491,7 +503,9 @@ func TestAdminAPIRequestValidation(t *testing.T) {
 		{name: "channel create id belongs to server", method: http.MethodPost, path: "/api/v4/channels", body: `{"id":"client-id","name":"mail","type":"email","enabled":true,"settings":{}}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "channel update id belongs to path", method: http.MethodPut, path: "/api/v4/channels/server-id", body: `{"id":"client-id","name":"mail","type":"email","enabled":true,"settings":{}}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "multiple values", method: http.MethodPost, path: "/api/v4/sources", body: `{} {}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "invalid source", method: http.MethodPost, path: "/api/v4/sources", body: `{"platform":"bilibili","external_id":"","name":"up","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
+		{name: "invalid source", method: http.MethodPost, path: "/api/v4/sources", body: `{"platform":"bilibili","type":"up","external_id":"","name":"up","note":"","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
+		{name: "Bilibili source type mismatch", method: http.MethodPost, path: "/api/v4/sources", body: `{"platform":"bilibili","type":"planet","external_id":"42","name":"up","note":"","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
+		{name: "Knowledge Planet source type mismatch", method: http.MethodPost, path: "/api/v4/sources", body: `{"platform":"zsxq","type":"up","external_id":"9","name":"planet","note":"","enabled":true}`, status: http.StatusBadRequest, code: "validation_failed"},
 		{name: "missing settings", method: http.MethodPut, path: "/api/v4/settings", body: `{"poll_interval_sec":30}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "short retry settings", method: http.MethodPut, path: "/api/v4/settings", body: string(shortRetryJSON), status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "unknown setting", method: http.MethodPut, path: "/api/v4/settings", body: string(unknownSettingsJSON), status: http.StatusBadRequest, code: "invalid_request"},

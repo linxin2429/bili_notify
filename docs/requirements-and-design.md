@@ -54,7 +54,7 @@ AI 子系统采用“持久化控制面 + 可替换执行面”：Go 主进程�
 
 评论监控按平台独立调度。B 站默认每 120 秒同步每个 UP 最近 N 条（默认 10）可映射评论区坐标的内容，并翻完全部根评论与每个根下的全部子回复；退出最近 N 窗口后保留树但不再请求。知识星球默认每 600 秒同步全部已归档主题：主题详情中的 `show_comments` 节点数与 `comments_count` 一致时，该快照可直接作为完整评论树；不一致时必须继续翻完独立评论接口，不能把展示子集误判为完整树。主题内文件只有元数据，下载前通过 `/v2/files/{file_id}/download_url` 取得临时地址；禁止下载或文件已删除时仍归档元数据，鉴权、限流和上游故障则让整轮重试。上一轮未结束时不启动重叠任务。两个平台首次同步评论均只建立基线。运行设置由 SQLite 持久化并热更新；环境变量只为空库播种，B 站和知识星球分别使用 `BILI_NOTIFY_BILIBILI_*` 与 `BILI_NOTIFY_ZSXQ_*`。
 
-新内容按发布时间和稳定 ID 由旧到新处理。知识星球启用时先固定最新页高水位，再持久化分页回补水位以前的历史；回补内容不通知，回补期间水位以后的新内容走实时通知。任务只有在平台 HTTP 状态和业务码均成功后才删除；网络错误、429 和 5xx 分级重试，不可恢复配置或鉴权错误进入阻塞。删除来源会通过索引删除所属 Outbox，并在同一数据库事务中级联删除内容、附件元数据、评论、seen 和同步状态，同时写入持久化媒体清理任务；后台 cleaner 幂等执行并持久化重试，进程重启不会丢失清理意图。知识星球来源下次刷新账号时会以停用状态重新出现。
+新内容按发布时间和稳定 ID 由旧到新处理。知识星球启用时先固定最新页高水位，再持久化分页回补水位以前的历史；回补内容不通知，回补期间水位以后的新内容走实时通知。任务只有在平台 HTTP 状态和业务码均成功后才删除；网络错误、429 和 5xx 分级重试，不可恢复配置或鉴权错误进入阻塞。删除来源会通过索引删除所属 Outbox，并在同一数据库事务中级联删除内容、附件元数据、评论、seen 和同步状态，同时写入持久化媒体清理任务；后台 cleaner 幂等执行并持久化重试，进程重启不会丢失清理意图。删除后的知识星球来源不会因登录或更换 token 自动恢复，需要管理员手动重新添加。
 
 ## 3. B站与通知协议
 
@@ -87,8 +87,7 @@ HTTP 承担认证生命周期和全部管理资源 API：
 | `GET /api/v4/accounts` | 读取 B 站与知识星球账号的非秘密状态 |
 | `GET/POST /api/v4/accounts/bilibili/qr`、`DELETE /api/v4/accounts/bilibili/qr/{id}`、`DELETE /api/v4/accounts/bilibili/session` | 查询、建立或取消二维码事务，以及清除 B 站会话 |
 | `POST /api/v4/accounts/zsxq/token`、`DELETE /api/v4/accounts/zsxq/session` | 导入知识星球 Cookie 中的 access token 及注销 |
-| `POST /api/v4/accounts/zsxq/sync-sources` | 刷新账号可见星球，不改变管理员启停选择 |
-| `GET/POST /api/v4/sources`、`PUT/DELETE /api/v4/sources/{id}` | 查询、创建 B 站来源、启停或删除跨平台采集源 |
+| `GET/POST /api/v4/sources`、`PUT/DELETE /api/v4/sources/{id}` | 查询、手动创建 B 站或知识星球来源、启停或删除跨平台采集源 |
 | `GET /api/v4/contents[/{id}]` | 按平台、来源、关键字、时间和稳定游标查询统一内容 |
 | `GET /api/v4/contents/{id}/comments` | 返回稳定重建的嵌套评论树 |
 | `GET /api/v4/contents/{id}/attachments/{attachment_id}` | 认证下载本地附件，支持 Range |

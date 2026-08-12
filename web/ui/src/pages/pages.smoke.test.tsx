@@ -17,7 +17,7 @@ import { SettingsPage } from './SettingsPage'
 
 const api = vi.hoisted(() => ({
   runtime: vi.fn(), settings: vi.fn(), accounts: vi.fn(), sources: vi.fn(), contents: vi.fn(), content: vi.fn(), contentComments: vi.fn(), channels: vi.fn(), deliveries: vi.fn(), biliLogin: vi.fn(), microsoftLogins: vi.fn(), auditLogs: vi.fn(),
-  createSource: vi.fn(), updateSource: vi.fn(), deleteSource: vi.fn(), syncZSXQSources: vi.fn(), deleteZSXQSession: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), deleteChannel: vi.fn(), testChannel: vi.fn(), retryDelivery: vi.fn(), startBiliLogin: vi.fn(), cancelBiliLogin: vi.fn(), deleteBilibiliSession: vi.fn(), startMicrosoftLogin: vi.fn(), cancelMicrosoftLogin: vi.fn(), updateSettings: vi.fn(),
+  createSource: vi.fn(), updateSource: vi.fn(), deleteSource: vi.fn(), deleteZSXQSession: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), deleteChannel: vi.fn(), testChannel: vi.fn(), retryDelivery: vi.fn(), startBiliLogin: vi.fn(), cancelBiliLogin: vi.fn(), deleteBilibiliSession: vi.fn(), startMicrosoftLogin: vi.fn(), cancelMicrosoftLogin: vi.fn(), updateSettings: vi.fn(),
 }))
 const session = vi.hoisted(() => ({ changePassword: vi.fn() }))
 vi.mock('../shared/api/resources', () => ({ resources: api }))
@@ -36,7 +36,7 @@ describe('resource pages', () => {
     api.deliveries.mockResolvedValue({ items: [makeDelivery({ state: 'blocked' })], page: { next_cursor: '', has_more: false } }); api.biliLogin.mockResolvedValue(null); api.microsoftLogins.mockResolvedValue([])
     api.auditLogs.mockResolvedValue({ items: [makeAudit()], page: { next_cursor: '', has_more: false } })
     api.startBiliLogin.mockResolvedValue({ id: 'login', status: 'waiting', expires_at: '2026-08-09T10:05:00Z' }); api.createSource.mockResolvedValue(source); api.retryDelivery.mockResolvedValue({ status: 'queued' }); api.updateSettings.mockResolvedValue(settings)
-    api.updateSource.mockResolvedValue(source); api.deleteSource.mockResolvedValue(undefined); api.syncZSXQSources.mockResolvedValue([]); api.createChannel.mockResolvedValue(channel); api.updateChannel.mockResolvedValue(channel); api.deleteChannel.mockResolvedValue(undefined); api.testChannel.mockResolvedValue({ status: 'sent' }); api.deleteBilibiliSession.mockResolvedValue(undefined); session.changePassword.mockResolvedValue({ csrf_token: 'replacement-csrf' })
+    api.updateSource.mockResolvedValue(source); api.deleteSource.mockResolvedValue(undefined); api.createChannel.mockResolvedValue(channel); api.updateChannel.mockResolvedValue(channel); api.deleteChannel.mockResolvedValue(undefined); api.testChannel.mockResolvedValue({ status: 'sent' }); api.deleteBilibiliSession.mockResolvedValue(undefined); session.changePassword.mockResolvedValue({ csrf_token: 'replacement-csrf' })
   })
 
   it('starts Bilibili QR login and confirms logout from overview', async () => {
@@ -77,22 +77,33 @@ describe('resource pages', () => {
 
   it('creates a Bilibili source', async () => {
     const user = userEvent.setup(); renderPage(<SourcesPage />, '/sources')
-    await user.click(await screen.findByRole('button', { name: /添加 B 站 UP/ }))
+    await user.click((await screen.findAllByRole('button', { name: '添加采集源' }))[0])
     await user.type(screen.getByLabelText('UID'), '99')
     await user.type(screen.getByLabelText('来源名称'), '新 UP')
     await user.click(screen.getByRole('button', { name: '保存' }))
-    expect(api.createSource).toHaveBeenCalledWith('csrf', { platform: 'bilibili', external_id: '99', name: '新 UP', note: '', enabled: true })
+    expect(api.createSource).toHaveBeenCalledWith('csrf', { platform: 'bilibili', type: 'up', external_id: '99', name: '新 UP', note: '', enabled: true })
+  })
+
+  it('manually creates a Knowledge Planet source without discovery', async () => {
+    const user = userEvent.setup(); renderPage(<SourcesPage />, '/sources')
+    await user.click((await screen.findAllByRole('button', { name: '添加采集源' }))[0])
+    await user.selectOptions(screen.getByLabelText('平台'), 'zsxq')
+    await user.type(screen.getByLabelText('星球 ID'), '28882581855851')
+    await user.type(screen.getByLabelText('来源名称'), '手动星球')
+    expect(screen.getByText(/不检查当前 Session 是否有权访问/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    expect(api.createSource).toHaveBeenCalledWith('csrf', { platform: 'zsxq', type: 'planet', external_id: '28882581855851', name: '手动星球', note: '', enabled: true })
   })
 
   it('shows empty source CTAs and logs out the Knowledge Planet account', async () => {
     api.sources.mockResolvedValue([])
     api.accounts.mockResolvedValue([{ platform: 'zsxq', status: 'connected', display_name: '星球号', masked_phone: '138****0000' }])
-    api.syncZSXQSources.mockResolvedValue([])
     api.deleteZSXQSession.mockResolvedValue(undefined)
     const user = userEvent.setup()
     renderPage(<SourcesPage />, '/sources')
     expect(await screen.findByText('尚未添加 B 站 UP')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: '刷新可见星球' }).length).toBeGreaterThan(0)
+    expect(screen.getByText('尚未手动添加知识星球')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '刷新可见星球' })).not.toBeInTheDocument()
     expect(screen.getByText('已连接')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '退出登录' }))
     await user.click(screen.getByRole('button', { name: '确认退出' }))

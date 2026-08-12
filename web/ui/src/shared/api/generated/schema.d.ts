@@ -558,22 +558,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v4/accounts/zsxq/sync-sources": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["syncZSXQSources"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v4/sources": {
         parameters: {
             query?: never;
@@ -776,8 +760,13 @@ export interface components {
             consecutive_fails: number;
         };
         CreateSourceRequest: {
-            /** @constant */
-            platform: "bilibili";
+            /** @enum {string} */
+            platform: "bilibili" | "zsxq";
+            /**
+             * @description Must be up for bilibili and planet for zsxq.
+             * @enum {string}
+             */
+            type: "up" | "planet";
             external_id: string;
             name: string;
             note: string;
@@ -2393,28 +2382,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    syncZSXQSources: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-CSRF-Token": components["parameters"]["CSRFToken"];
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Visible Knowledge Planet sources. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Source"][];
-                };
             };
         };
     };

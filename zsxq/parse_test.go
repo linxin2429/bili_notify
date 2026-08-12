@@ -51,19 +51,21 @@ func TestParseTopicTypesAndStrictUnknowns(t *testing.T) {
 func TestParseCommentUsesOnlyPlanetOwnerAsNotificationRole(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		user apiUser
-		want model.AuthorRole
+		name    string
+		ownerID string
+		user    apiUser
+		want    model.AuthorRole
 	}{
-		{name: "planet owner", user: apiUser{UserID: json.Number("8"), Name: "Owner", Role: "owner"}, want: model.RoleOwner},
-		{name: "administrator", user: apiUser{UserID: json.Number("7"), Name: "Admin", Role: "admin"}, want: model.RoleAdmin},
-		{name: "ordinary author cannot claim owner role", user: apiUser{UserID: json.Number("6"), Name: "Member", Role: "owner"}, want: model.RoleMember},
+		{name: "planet owner", ownerID: "8", user: apiUser{UserID: json.Number("8"), Name: "Owner", Role: "owner"}, want: model.RoleOwner},
+		{name: "upstream owner role when manually configured source has no owner id", user: apiUser{UserID: json.Number("8"), Name: "Owner", Role: "owner"}, want: model.RoleOwner, ownerID: ""},
+		{name: "administrator", ownerID: "8", user: apiUser{UserID: json.Number("7"), Name: "Admin", Role: "admin"}, want: model.RoleAdmin},
+		{name: "ordinary author cannot claim owner role", ownerID: "8", user: apiUser{UserID: json.Number("6"), Name: "Member", Role: "owner"}, want: model.RoleMember},
 	}
 	content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "1"), Platform: model.PlatformZSXQ, ExternalID: "1"}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			node, err := parseComment(content, "8", apiComment{CommentID: json.Number("3"), CreateTime: "2026-08-10T00:00:00Z", Owner: tt.user})
+			node, err := parseComment(content, tt.ownerID, apiComment{CommentID: json.Number("3"), CreateTime: "2026-08-10T00:00:00Z", Owner: tt.user})
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, node.Role)
 		})
