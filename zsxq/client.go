@@ -4,10 +4,6 @@ package zsxq
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,35 +12,30 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
+	"sync/atomic"
 
 	"github.com/linxin2429/bili_notify/model"
 )
 
 const (
-	DefaultBaseURL = "https://api.zsxq.com"
-	appVersion     = "2.83.0"
-	signingSecret  = "zsxq-sdk-secret"
+	DefaultBaseURL  = "https://mcp.zsxq.com/topic/mcp/"
+	maxResponseSize = 8 << 20
 )
 
 var (
-	ErrAuthentication    = errors.New("zsxq authentication failed")
-	ErrRateLimited       = errors.New("zsxq request rate limited")
-	ErrRiskControl       = errors.New("zsxq risk control triggered")
-	ErrPermission        = errors.New("zsxq source permission denied")
-	ErrUnsupportedClient = errors.New("zsxq rejected non-official client access")
-	ErrRemoteNotFound    = errors.New("zsxq remote content not found")
-	ErrSchemaDrift       = errors.New("zsxq response schema changed")
-	ErrUpstream          = errors.New("zsxq upstream request failed")
+	ErrAuthentication = errors.New("zsxq authentication failed")
+	ErrRateLimited    = errors.New("zsxq request rate limited")
+	ErrPermission     = errors.New("zsxq source permission denied")
+	ErrRemoteNotFound = errors.New("zsxq remote content not found")
+	ErrSchemaDrift    = errors.New("zsxq response schema changed")
+	ErrUpstream       = errors.New("zsxq upstream request failed")
 )
 
 type Client struct {
 	httpClient *http.Client
 	baseURL    *url.URL
 	userAgent  string
-	adUID      string
-	now        func() time.Time
-	requestID  func() string
+	requestID  atomic.Uint64
 }
 
 type Option func(*Client) error
@@ -60,21 +51,17 @@ func WithBaseURL(raw string) Option {
 	}
 }
 
-func withProtocolValues(now func() time.Time, requestID func() string, adUID string) Option {
-	return func(client *Client) error {
-		client.now, client.requestID, client.adUID = now, requestID, adUID
-		return nil
-	}
-}
-
 func New(httpClient *http.Client, userAgent string, options ...Option) (*Client, error) {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 15 * time.Second}
+		httpClient = http.DefaultClient
 	}
 	copy := *httpClient
 	copy.Jar = nil
+	// The credential is scoped to one configured MCP origin. A redirect is a
+	// protocol failure; following it could disclose X-Api-Key to another host.
+	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	base, _ := url.Parse(DefaultBaseURL)
-	client := &Client{httpClient: &copy, baseURL: base, userAgent: userAgent, adUID: newRequestID(), now: time.Now, requestID: newRequestID}
+	client := &Client{httpClient: &copy, baseURL: base, userAgent: userAgent}
 	for _, option := range options {
 		if err := option(client); err != nil {
 			return nil, err
@@ -97,7 +84,7 @@ type Group struct {
 	OwnerName string
 }
 
-func (c *Client) Groups(ctx context.Context, token string) ([]Group, error) {
+func (c *Client) Groups(ctx context.Context, apiKey string) ([]Group, error) {
 	var response struct {
 		Groups []struct {
 			GroupID json.Number `json:"group_id"`
@@ -109,7 +96,7 @@ func (c *Client) Groups(ctx context.Context, token string) ([]Group, error) {
 			} `json:"owner"`
 		} `json:"groups"`
 	}
-	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/groups", nil, nil, &response); err != nil {
+	if err := c.doJSON(ctx, apiKey, http.MethodGet, "/v2/groups", nil, nil, &response); err != nil {
 		return nil, err
 	}
 	groups := make([]Group, 0, len(response.Groups))
@@ -142,7 +129,7 @@ func decimalID(value string) bool {
 	return true
 }
 
-func (c *Client) Me(ctx context.Context, token string) (User, error) {
+func (c *Client) Me(ctx context.Context, apiKey string) (User, error) {
 	// Knowledge Planet's DWeb /users/self payload uses user.uid. Older fixtures and
 	// some nested objects still expose user_id; accept either without guessing names.
 	var response struct {
@@ -152,7 +139,7 @@ func (c *Client) Me(ctx context.Context, token string) (User, error) {
 			Name   string      `json:"name"`
 		} `json:"user"`
 	}
-	if err := c.doJSON(ctx, token, http.MethodGet, "/v3/users/self", nil, nil, &response); err != nil {
+	if err := c.doJSON(ctx, apiKey, http.MethodGet, "/v3/users/self", nil, nil, &response); err != nil {
 		return User{}, err
 	}
 	id := response.User.UID.String()
@@ -181,7 +168,7 @@ type TopicSnapshot struct {
 	CommentsComplete bool
 }
 
-func (c *Client) Topics(ctx context.Context, token string, source model.Source, cursor string, count int) (TopicPage, error) {
+func (c *Client) Topics(ctx context.Context, apiKey string, source model.Source, cursor string, count int) (TopicPage, error) {
 	if source.Platform != model.PlatformZSXQ || source.Type != model.SourceZSXQPlanet {
 		return TopicPage{}, errors.New("zsxq source is required")
 	}
@@ -196,7 +183,7 @@ func (c *Client) Topics(ctx context.Context, token string, source model.Source, 
 		Topics  []apiTopic `json:"topics"`
 		EndTime string     `json:"end_time"`
 	}
-	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/groups/"+url.PathEscape(source.ExternalID)+"/topics", query, nil, &response); err != nil {
+	if err := c.doJSON(ctx, apiKey, http.MethodGet, "/v2/groups/"+url.PathEscape(source.ExternalID)+"/topics", query, nil, &response); err != nil {
 		return TopicPage{}, err
 	}
 	page := TopicPage{Attachments: make(map[string][]model.Attachment), NextCursor: response.EndTime}
@@ -214,11 +201,11 @@ func (c *Client) Topics(ctx context.Context, token string, source model.Source, 
 	return page, nil
 }
 
-func (c *Client) Topic(ctx context.Context, token string, source model.Source, topicID string) (TopicSnapshot, error) {
+func (c *Client) Topic(ctx context.Context, apiKey string, source model.Source, topicID string) (TopicSnapshot, error) {
 	var response struct {
 		Topic apiTopic `json:"topic"`
 	}
-	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/topics/"+url.PathEscape(topicID), nil, nil, &response); err != nil {
+	if err := c.doJSON(ctx, apiKey, http.MethodGet, "/v2/topics/"+url.PathEscape(topicID), nil, nil, &response); err != nil {
 		return TopicSnapshot{}, err
 	}
 	content, attachments, err := parseTopic(source, response.Topic)
@@ -232,7 +219,7 @@ func (c *Client) Topic(ctx context.Context, token string, source model.Source, t
 	return TopicSnapshot{Content: content, Attachments: attachments, ShownComments: comments, CommentsComplete: complete}, nil
 }
 
-func (c *Client) populateFileDownloadURLs(ctx context.Context, token string, attachments []model.Attachment) error {
+func (c *Client) populateFileDownloadURLs(ctx context.Context, apiKey string, attachments []model.Attachment) error {
 	for index := range attachments {
 		attachment := &attachments[index]
 		if attachment.Type != model.AttachmentFile || attachment.RemoteURL != "" || attachment.LocalPath != "" {
@@ -242,7 +229,7 @@ func (c *Client) populateFileDownloadURLs(ctx context.Context, token string, att
 			DownloadURL string `json:"download_url"`
 		}
 		path := "/v2/files/" + url.PathEscape(attachment.ExternalID) + "/download_url"
-		if err := c.doJSON(ctx, token, http.MethodGet, path, nil, nil, &response); err != nil {
+		if err := c.doJSON(ctx, apiKey, http.MethodGet, path, nil, nil, &response); err != nil {
 			if errors.Is(err, ErrPermission) || errors.Is(err, ErrRemoteNotFound) {
 				attachment.LocalizeError = "attachment download unavailable"
 				continue
@@ -263,7 +250,7 @@ type CommentPage struct {
 	NextCursor string
 }
 
-func (c *Client) Comments(ctx context.Context, token string, content model.Content, ownerID, cursor string, count int) (CommentPage, error) {
+func (c *Client) Comments(ctx context.Context, apiKey string, content model.Content, ownerID, cursor string, count int) (CommentPage, error) {
 	if content.Platform != model.PlatformZSXQ {
 		return CommentPage{}, errors.New("zsxq content is required")
 	}
@@ -279,7 +266,7 @@ func (c *Client) Comments(ctx context.Context, token string, content model.Conte
 		StickyComments []apiComment `json:"sticky_comments"`
 		BeginTime      string       `json:"begin_time"`
 	}
-	if err := c.doJSON(ctx, token, http.MethodGet, "/v2/topics/"+url.PathEscape(content.ExternalID)+"/comments", query, nil, &response); err != nil {
+	if err := c.doJSON(ctx, apiKey, http.MethodGet, "/v2/topics/"+url.PathEscape(content.ExternalID)+"/comments", query, nil, &response); err != nil {
 		return CommentPage{}, err
 	}
 	page := CommentPage{NextCursor: response.BeginTime}
@@ -299,50 +286,168 @@ func (c *Client) Comments(ctx context.Context, token string, content model.Conte
 	return page, nil
 }
 
-func (c *Client) doJSON(ctx context.Context, token, method, path string, query url.Values, input, output any) error {
-	target := c.resolveURL(path)
-	if query != nil {
-		target.RawQuery = query.Encode()
-	}
-	var body io.Reader
-	var encoded []byte
-	if input != nil {
-		var err error
-		encoded, err = json.Marshal(input)
-		if err != nil {
-			return err
+func (c *Client) doJSON(ctx context.Context, apiKey, method, path string, query url.Values, input, output any) error {
+	arguments := map[string]any{"method": method, "path": path}
+	if len(query) != 0 {
+		queryObject := make(map[string]any, len(query))
+		for key, values := range query {
+			if len(values) == 1 {
+				queryObject[key] = values[0]
+			} else {
+				queryObject[key] = values
+			}
 		}
-		body = bytes.NewReader(encoded)
+		arguments["query"] = queryObject
 	}
-	request, err := http.NewRequestWithContext(ctx, method, target.String(), body)
+	if input != nil {
+		arguments["body"] = input
+	}
+	id := c.requestID.Add(1)
+	encoded, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": id, "method": "tools/call",
+		"params": map[string]any{"name": "call_zsxq_api", "arguments": arguments},
+	})
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", c.userAgent)
-	request.Header.Set("Origin", "https://wx.zsxq.com")
-	request.Header.Set("Referer", "https://wx.zsxq.com/")
-	request.Header.Set("Authorization", token)
-	c.sign(request, encoded)
-	if input != nil {
-		request.Header.Set("Content-Type", "application/json")
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL.String(), bytes.NewReader(encoded))
+	if err != nil {
+		return err
 	}
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", c.userAgent)
+	request.Header.Set("X-Api-Key", apiKey)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		return fmt.Errorf("%w: transport", ErrUpstream)
 	}
 	defer response.Body.Close()
 	if err := classifyStatus(response.StatusCode); err != nil {
 		return err
 	}
-	limited, err := io.ReadAll(io.LimitReader(response.Body, (8<<20)+1))
+	limited, err := io.ReadAll(io.LimitReader(response.Body, maxResponseSize+1))
 	if err != nil {
 		return ErrUpstream
 	}
-	if len(limited) > 8<<20 {
+	if len(limited) > maxResponseSize {
 		return ErrSchemaDrift
 	}
-	return decodeEnvelope(limited, output)
+	message, err := decodeMCPMessage(limited, response.Header.Get("Content-Type"), id)
+	if err != nil {
+		return err
+	}
+	return decodeMCPResult(message, output)
+}
+
+type mcpMessage struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  *struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	} `json:"result"`
+	Error json.RawMessage `json:"error"`
+}
+
+func decodeMCPMessage(body []byte, contentType string, id uint64) (mcpMessage, error) {
+	var candidates [][]byte
+	if strings.HasPrefix(strings.ToLower(contentType), "text/event-stream") {
+		var eventName string
+		var data []string
+		flush := func() {
+			if eventName == "message" && len(data) != 0 {
+				candidates = append(candidates, []byte(strings.Join(data, "\n")))
+			}
+			eventName, data = "", nil
+		}
+		for _, line := range strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n") {
+			if line == "" {
+				flush()
+				continue
+			}
+			if strings.HasPrefix(line, "event:") {
+				eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			}
+			if strings.HasPrefix(line, "data:") {
+				data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+		}
+		flush()
+	} else {
+		candidates = append(candidates, body)
+	}
+	if len(candidates) != 1 {
+		return mcpMessage{}, ErrSchemaDrift
+	}
+	wantID := strconv.FormatUint(id, 10)
+	var message mcpMessage
+	if err := decodeStrictJSON(candidates[0], &message); err != nil {
+		return mcpMessage{}, ErrSchemaDrift
+	}
+	if string(message.ID) != wantID || message.JSONRPC != "2.0" {
+		return mcpMessage{}, ErrSchemaDrift
+	}
+	return message, nil
+}
+
+func decodeMCPResult(message mcpMessage, output any) error {
+	if len(message.Error) != 0 || message.Result == nil || len(message.Result.Content) != 1 || message.Result.Content[0].Type != "text" {
+		return ErrUpstream
+	}
+	text := message.Result.Content[0].Text
+	var proxy struct {
+		Success    *bool           `json:"success"`
+		StatusCode int             `json:"status_code"`
+		Body       json.RawMessage `json:"body"`
+		Error      string          `json:"error"`
+	}
+	if err := decodeStrictJSON([]byte(text), &proxy); err != nil {
+		return ErrSchemaDrift
+	}
+	if proxy.StatusCode != 0 {
+		if err := classifyStatus(proxy.StatusCode); err != nil {
+			return err
+		}
+	}
+	if proxy.Success == nil {
+		return ErrSchemaDrift
+	}
+	if !*proxy.Success || message.Result.IsError {
+		// Authentication failures issued before the API proxy runs do not carry
+		// status_code, but the official MCP service includes a structured 401 in
+		// its error string. Never return that upstream text to callers.
+		if strings.Contains(proxy.Error, `"code":401`) || strings.EqualFold(proxy.Error, "Authentication failed") {
+			return ErrAuthentication
+		}
+		return ErrUpstream
+	}
+	if proxy.StatusCode == 0 {
+		return ErrSchemaDrift
+	}
+	if len(proxy.Body) == 0 || bytes.Equal(proxy.Body, []byte("null")) {
+		return ErrSchemaDrift
+	}
+	return decodeEnvelope(proxy.Body, output)
+}
+
+func decodeStrictJSON(body []byte, output any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(output); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("trailing JSON data")
+	}
+	return nil
 }
 
 func classifyStatus(status int) error {
@@ -372,9 +477,7 @@ func decodeEnvelope(body []byte, output any) error {
 		Info      string          `json:"info"`
 		RespData  json.RawMessage `json:"resp_data"`
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	if err := decoder.Decode(&envelope); err != nil {
+	if err := decodeStrictJSON(body, &envelope); err != nil {
 		return ErrSchemaDrift
 	}
 	if envelope.Succeeded == nil {
@@ -389,9 +492,7 @@ func decodeEnvelope(body []byte, output any) error {
 	if len(envelope.RespData) == 0 || bytes.Equal(envelope.RespData, []byte("null")) {
 		return ErrSchemaDrift
 	}
-	decoder = json.NewDecoder(bytes.NewReader(envelope.RespData))
-	decoder.UseNumber()
-	if err := decoder.Decode(output); err != nil {
+	if err := decodeStrictJSON(envelope.RespData, output); err != nil {
 		return ErrSchemaDrift
 	}
 	return nil
@@ -401,14 +502,10 @@ func classifyBusinessCode(code int) error {
 	switch code {
 	case 10001, 10002:
 		return fmt.Errorf("%w: business code %d", ErrAuthentication, code)
-	case 10003:
-		return fmt.Errorf("%w: signature rejected", ErrUpstream)
 	case 40001:
 		return fmt.Errorf("%w: business code %d", ErrRateLimited, code)
 	case 403, 1006:
 		return fmt.Errorf("%w: business code %d", ErrPermission, code)
-	case 1059:
-		return fmt.Errorf("%w: business code %d", ErrUnsupportedClient, code)
 	case 404:
 		return fmt.Errorf("%w: business code %d", ErrRemoteNotFound, code)
 	case 0:
@@ -418,37 +515,4 @@ func classifyBusinessCode(code int) error {
 	default:
 		return fmt.Errorf("%w: business code %d", ErrUpstream, code)
 	}
-}
-
-func (c *Client) resolveURL(path string) url.URL {
-	target := *c.baseURL
-	target.Path = strings.TrimSuffix(c.baseURL.Path, "/") + path
-	return target
-}
-
-func (c *Client) sign(request *http.Request, body []byte) {
-	timestamp := strconv.FormatInt(c.now().Unix(), 10)
-	requestID := c.requestID()
-	plain := timestamp + "\n" + strings.ToUpper(request.Method) + "\n" + request.URL.Path
-	if len(body) != 0 {
-		plain += "\n" + string(body)
-	}
-	digest := hmac.New(sha1.New, []byte(signingSecret))
-	_, _ = digest.Write([]byte(plain))
-	request.Header.Set("X-Request-Id", requestID)
-	request.Header.Set("X-Version", appVersion)
-	request.Header.Set("X-Signature", hex.EncodeToString(digest.Sum(nil)))
-	request.Header.Set("X-Timestamp", timestamp)
-	request.Header.Set("X-Aduid", c.adUID)
-}
-
-func newRequestID() string {
-	value := make([]byte, 16)
-	if _, err := rand.Read(value); err != nil {
-		return strconv.FormatInt(time.Now().UnixNano(), 16)
-	}
-	value[6] = value[6]&0x0f | 0x40
-	value[8] = value[8]&0x3f | 0x80
-	encoded := hex.EncodeToString(value)
-	return encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:]
 }

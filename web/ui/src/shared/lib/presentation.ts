@@ -183,7 +183,7 @@ export function auditActionLabel(action: string) {
     'channel.create': '添加通知渠道', 'channel.update': '修改通知渠道', 'channel.delete': '删除通知渠道', 'channel.test': '测试通知渠道',
     'delivery.retry': '重试投递',
     'bilibili.login.start': '开始 B 站登录', 'bilibili.login.cancel': '取消 B 站登录', 'bilibili.logout': '退出 B 站登录',
-    'zsxq.login': '知识星球登录', 'zsxq.logout': '退出知识星球',
+    'zsxq.credential.update': '更新知识星球密钥', 'zsxq.credential.delete': '删除知识星球密钥',
     'microsoft.login.start': '开始 Microsoft 授权', 'microsoft.login.cancel': '取消 Microsoft 授权',
     'settings.update': '修改运行参数',
     'ai.profile.create': '添加 AI 模型配置', 'ai.profile.update': '修改 AI 模型配置', 'ai.profile.delete': '删除 AI 模型配置',
@@ -206,8 +206,8 @@ export const auditActionFilterOptions = [
   { value: 'channel.test', label: auditActionLabel('channel.test') },
   { value: 'delivery.retry', label: auditActionLabel('delivery.retry') },
   { value: 'bilibili.logout', label: auditActionLabel('bilibili.logout') },
-  { value: 'zsxq.login', label: auditActionLabel('zsxq.login') },
-  { value: 'zsxq.logout', label: auditActionLabel('zsxq.logout') },
+  { value: 'zsxq.credential.update', label: auditActionLabel('zsxq.credential.update') },
+  { value: 'zsxq.credential.delete', label: auditActionLabel('zsxq.credential.delete') },
   { value: 'auth.password.change', label: auditActionLabel('auth.password.change') },
 ] as const
 

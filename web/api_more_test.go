@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -133,15 +134,16 @@ func TestAdminAPILifecycle(t *testing.T) {
 func TestZSXQGroupDiscoveryAndSourceCreation(t *testing.T) {
 	t.Parallel()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/v2/groups", r.URL.Path)
-		assert.Equal(t, "session-secret", r.Header.Get("Authorization"))
-		writeJSON(w, http.StatusOK, map[string]any{"succeeded": true, "code": 0, "resp_data": map[string]any{"groups": []map[string]any{
+		id, path := readWebTestMCPCall(t, r)
+		assert.Equal(t, "/v2/groups", path)
+		assert.Equal(t, "session-secret", r.Header.Get("X-Api-Key"))
+		writeWebTestMCPResponse(t, w, id, http.StatusOK, map[string]any{"groups": []map[string]any{
 			{"group_id": 9, "name": "账号星球", "owner": map[string]any{"user_id": 8, "name": "星主"}},
-		}}})
+		}})
 	}))
 	t.Cleanup(upstream.Close)
 	fixture := newAdminAPIFixture(t, nil)
-	require.NoError(t, fixture.store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "7", DisplayName: "成员", Status: model.AccountConnected, Session: map[string]string{zsxq.AccessTokenKey: "session-secret"}}))
+	require.NoError(t, fixture.store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "7", DisplayName: "成员", Status: model.AccountConnected, Session: map[string]string{zsxq.APIKeyCredential: "session-secret"}}))
 	client, err := zsxq.New(upstream.Client(), "web-zsxq-test", zsxq.WithBaseURL(upstream.URL))
 	require.NoError(t, err)
 	manager, err := zsxq.NewAccountManager(client, fixture.store)
@@ -807,7 +809,7 @@ func assertAPIError(t *testing.T, response *httptest.ResponseRecorder, status in
 	assert.Equal(t, code, body.Error.Code)
 }
 
-func TestZSXQAPIErrorMappingAndTokenImport(t *testing.T) {
+func TestZSXQAPIErrorMappingAndCredentialUpdate(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
@@ -816,7 +818,7 @@ func TestZSXQAPIErrorMappingAndTokenImport(t *testing.T) {
 		code   string
 	}{
 		{name: "rate limited", err: zsxq.ErrRateLimited, status: http.StatusTooManyRequests, code: "rate_limited"},
-		{name: "authentication", err: zsxq.ErrAuthentication, status: http.StatusUnprocessableEntity, code: "invalid_token"},
+		{name: "authentication", err: zsxq.ErrAuthentication, status: http.StatusUnprocessableEntity, code: "invalid_api_key"},
 		{name: "permission", err: zsxq.ErrPermission, status: http.StatusForbidden, code: "permission_denied"},
 		{name: "schema drift", err: zsxq.ErrSchemaDrift, status: http.StatusBadGateway, code: "upstream_failure"},
 		{name: "upstream", err: zsxq.ErrUpstream, status: http.StatusBadGateway, code: "upstream_failure"},
@@ -831,16 +833,17 @@ func TestZSXQAPIErrorMappingAndTokenImport(t *testing.T) {
 		})
 	}
 
-	t.Run("token endpoint", func(t *testing.T) {
+	t.Run("credential endpoint", func(t *testing.T) {
 		t.Parallel()
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
+			id, path := readWebTestMCPCall(t, r)
+			switch path {
 			case "/v3/users/self":
-				if r.Header.Get("Authorization") == "bad" {
-					_ = json.NewEncoder(w).Encode(map[string]any{"succeeded": false, "code": 10001})
+				if r.Header.Get("X-Api-Key") == "bad" {
+					writeWebTestMCPResponse(t, w, id, http.StatusUnauthorized, map[string]any{})
 					return
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"succeeded": true, "code": 0, "resp_data": map[string]any{"user": map[string]any{"uid": 9, "name": "Member"}}})
+				writeWebTestMCPResponse(t, w, id, http.StatusOK, map[string]any{"user": map[string]any{"uid": 9, "name": "Member"}})
 			default:
 				http.NotFound(w, r)
 			}
@@ -854,19 +857,57 @@ func TestZSXQAPIErrorMappingAndTokenImport(t *testing.T) {
 		require.NoError(t, err)
 		fixture.server.zsxqAccounts = manager
 
-		missing := fixture.request(t, http.MethodPost, "/api/v4/accounts/zsxq/token", map[string]any{"cookie": "foo=bar"}, true)
-		assertAPIError(t, missing, http.StatusBadRequest, "validation_failed")
+		missing := fixture.request(t, http.MethodPut, "/api/v4/accounts/zsxq/credential", map[string]any{"api_key": " \r\n"}, true)
+		assertAPIError(t, missing, http.StatusUnprocessableEntity, "invalid_api_key")
 
-		authFailed := fixture.request(t, http.MethodPost, "/api/v4/accounts/zsxq/token", map[string]any{"cookie": "zsxq_access_token=bad"}, true)
-		assertAPIError(t, authFailed, http.StatusUnprocessableEntity, "invalid_token")
-		created := fixture.request(t, http.MethodPost, "/api/v4/accounts/zsxq/token", map[string]any{"cookie": "foo=bar; zsxq_access_token=session-secret"}, true)
-		assert.Equal(t, http.StatusCreated, created.Code)
+		authFailed := fixture.request(t, http.MethodPut, "/api/v4/accounts/zsxq/credential", map[string]any{"api_key": "bad"}, true)
+		assertAPIError(t, authFailed, http.StatusUnprocessableEntity, "invalid_api_key")
+		created := fixture.request(t, http.MethodPut, "/api/v4/accounts/zsxq/credential", map[string]any{"api_key": " session-secret "}, true)
+		assert.Equal(t, http.StatusOK, created.Code)
 		assert.NotContains(t, created.Body.String(), "session-secret")
+		stored, err := fixture.store.PlatformAccount(model.PlatformZSXQ)
+		require.NoError(t, err)
+		assert.Equal(t, "session-secret", stored.Session[zsxq.APIKeyCredential])
+		rejectedUpdate := fixture.request(t, http.MethodPut, "/api/v4/accounts/zsxq/credential", map[string]any{"api_key": "bad"}, true)
+		assertAPIError(t, rejectedUpdate, http.StatusUnprocessableEntity, "invalid_api_key")
+		stored, err = fixture.store.PlatformAccount(model.PlatformZSXQ)
+		require.NoError(t, err)
+		assert.Equal(t, "session-secret", stored.Session[zsxq.APIKeyCredential])
+		deleted := fixture.request(t, http.MethodDelete, "/api/v4/accounts/zsxq/credential", nil, true)
+		assert.Equal(t, http.StatusNoContent, deleted.Code)
+		_, err = fixture.store.PlatformAccount(model.PlatformZSXQ)
+		assert.ErrorIs(t, err, state.ErrNotFound)
 
 		unavailable := newAdminAPIFixture(t, nil)
-		response := unavailable.request(t, http.MethodPost, "/api/v4/accounts/zsxq/token", map[string]any{"cookie": "zsxq_access_token=secret"}, true)
+		response := unavailable.request(t, http.MethodPut, "/api/v4/accounts/zsxq/credential", map[string]any{"api_key": "secret"}, true)
 		assertAPIError(t, response, http.StatusServiceUnavailable, "integration_unavailable")
 	})
+}
+
+func readWebTestMCPCall(t *testing.T, request *http.Request) (json.RawMessage, string) {
+	t.Helper()
+	var call struct {
+		ID     json.RawMessage `json:"id"`
+		Params struct {
+			Arguments map[string]any `json:"arguments"`
+		} `json:"params"`
+	}
+	require.NoError(t, json.NewDecoder(request.Body).Decode(&call))
+	path, _ := call.Params.Arguments["path"].(string)
+	return call.ID, path
+}
+
+func writeWebTestMCPResponse(t *testing.T, writer http.ResponseWriter, id json.RawMessage, status int, data any) {
+	t.Helper()
+	envelope, err := json.Marshal(map[string]any{"succeeded": true, "code": 0, "resp_data": data})
+	require.NoError(t, err)
+	proxy, err := json.Marshal(map[string]any{"success": status >= 200 && status < 300, "status_code": status, "body": json.RawMessage(envelope)})
+	require.NoError(t, err)
+	message, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"content": []map[string]any{{"type": "text", "text": string(proxy)}}}})
+	require.NoError(t, err)
+	writer.Header().Set("Content-Type", "text/event-stream")
+	_, err = fmt.Fprintf(writer, "event: message\ndata: %s\n\n", message)
+	require.NoError(t, err)
 }
 
 func webTestSettings() model.RuntimeSettings {

@@ -9,34 +9,34 @@ import { NotificationProvider } from '../shared/ui'
 import { ThemeProvider } from '../shared/ui/theme'
 import { ZSXQLoginPage } from './ZSXQLoginPage'
 
-const api = vi.hoisted(() => ({ importZSXQToken: vi.fn() }))
+const api = vi.hoisted(() => ({ updateZSXQCredential: vi.fn() }))
 vi.mock('../shared/api/resources', () => ({ resources: api }))
 
-describe('Knowledge Planet session import', () => {
+describe('Knowledge Planet MCP credential', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    api.importZSXQToken.mockResolvedValue({ platform: 'zsxq', external_id: '7', display_name: '星球用户', status: 'connected' })
+    api.updateZSXQCredential.mockResolvedValue({ platform: 'zsxq', external_id: '7', display_name: '星球用户', status: 'connected' })
   })
 
-  it('submits the Cookie header and clears it after success', async () => {
+  it('submits the Jasmine API key and clears it after success', async () => {
     const user = userEvent.setup(); renderLogin()
-    expect(screen.getByText(/api\.zsxq\.com/)).toBeInTheDocument()
-    const input = screen.getByLabelText('Cookie 请求头值')
-    await user.type(input, 'foo=bar; zsxq_access_token=secret')
-    await user.click(screen.getByRole('button', { name: '导入 Session' }))
-    await waitFor(() => expect(api.importZSXQToken).toHaveBeenCalledWith('csrf', 'foo=bar; zsxq_access_token=secret'))
+    expect(screen.getByRole('link', { name: 'Jasmine 密钥管理' })).toHaveAttribute('href', 'https://garden.zsxq.com/jasmine/')
+    const input = screen.getByLabelText('Jasmine API 密钥')
+    await user.type(input, 'opaque-secret')
+    await user.click(screen.getByRole('button', { name: '连接或更新密钥' }))
+    await waitFor(() => expect(api.updateZSXQCredential).toHaveBeenCalledWith('csrf', 'opaque-secret'))
     expect(input).toHaveValue('')
     expect(await screen.findByRole('heading', { name: '采集源列表' })).toBeInTheDocument()
   })
 
-  it('shows the safe field-level Cookie error', async () => {
+  it('shows the safe field-level API key error and preserves input', async () => {
     const user = userEvent.setup()
-    api.importZSXQToken.mockRejectedValue(new ApiError('invalid', 'http', { fields: { cookie: 'Cookie 中的 token 无效' } }))
+    api.updateZSXQCredential.mockRejectedValue(new ApiError('invalid', 'http', { fields: { api_key: '密钥无效或已过期' } }))
     renderLogin()
-    await user.type(screen.getByLabelText('Cookie 请求头值'), 'bad-cookie')
-    await user.click(screen.getByRole('button', { name: '导入 Session' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Cookie 中的 token 无效')
-    expect(screen.getByLabelText('Cookie 请求头值')).toHaveValue('bad-cookie')
+    await user.type(screen.getByLabelText('Jasmine API 密钥'), 'bad-key')
+    await user.click(screen.getByRole('button', { name: '连接或更新密钥' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('密钥无效或已过期')
+    expect(screen.getByLabelText('Jasmine API 密钥')).toHaveValue('bad-key')
   })
 })
 

@@ -4,16 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/linxin2429/bili_notify/model"
 )
 
-const AccessTokenKey = "zsxq_access_token"
+const APIKeyCredential = "zsxq_api_key"
 
-var ErrInvalidCookie = errors.New("invalid Knowledge Planet cookie")
+var ErrInvalidAPIKey = errors.New("invalid Knowledge Planet API key")
 
 type AccountStore interface {
 	PlatformAccount(model.Platform) (model.PlatformAccount, error)
@@ -33,50 +33,39 @@ func NewAccountManager(client *Client, store AccountStore) (*AccountManager, err
 	return &AccountManager{client: client, store: store, now: time.Now}, nil
 }
 
-func ParseAccessToken(rawCookie string) (string, error) {
-	if strings.TrimSpace(rawCookie) == "" || strings.ContainsAny(rawCookie, "\r\n\x00") {
-		return "", ErrInvalidCookie
+func NormalizeAPIKey(raw string) (string, error) {
+	apiKey := strings.TrimSpace(raw)
+	if apiKey == "" || len(apiKey) > 8<<10 {
+		return "", ErrInvalidAPIKey
 	}
-	cookies, err := http.ParseCookie(rawCookie)
-	if err != nil {
-		return "", ErrInvalidCookie
-	}
-	var token string
-	for _, cookie := range cookies {
-		if cookie.Name != AccessTokenKey {
-			continue
+	for _, character := range apiKey {
+		if unicode.IsControl(character) {
+			return "", ErrInvalidAPIKey
 		}
-		if token != "" || strings.TrimSpace(cookie.Value) == "" {
-			return "", ErrInvalidCookie
-		}
-		token = cookie.Value
 	}
-	if token == "" {
-		return "", ErrInvalidCookie
-	}
-	return token, nil
+	return apiKey, nil
 }
 
-func AccessToken(account model.PlatformAccount) (string, error) {
-	token := strings.TrimSpace(account.Session[AccessTokenKey])
-	if token == "" {
+func APIKey(account model.PlatformAccount) (string, error) {
+	apiKey := strings.TrimSpace(account.Session[APIKeyCredential])
+	if apiKey == "" {
 		return "", ErrAuthentication
 	}
-	return token, nil
+	return apiKey, nil
 }
 
-func (manager *AccountManager) ImportCookie(ctx context.Context, rawCookie string) (model.PlatformAccount, error) {
-	token, err := ParseAccessToken(rawCookie)
+func (manager *AccountManager) UpdateCredential(ctx context.Context, rawAPIKey string) (model.PlatformAccount, error) {
+	apiKey, err := NormalizeAPIKey(rawAPIKey)
 	if err != nil {
 		return model.PlatformAccount{}, err
 	}
-	user, err := manager.client.Me(ctx, token)
+	user, err := manager.client.Me(ctx, apiKey)
 	if err != nil {
 		return model.PlatformAccount{}, err
 	}
 	now := manager.now()
 	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: user.ID, DisplayName: user.Name,
-		Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: token}, VerifiedAt: now, UpdatedAt: now}
+		Status: model.AccountConnected, Session: map[string]string{APIKeyCredential: apiKey}, VerifiedAt: now, UpdatedAt: now}
 	if err := manager.store.PutPlatformAccount(account); err != nil {
 		return model.PlatformAccount{}, err
 	}
@@ -92,20 +81,20 @@ func (manager *AccountManager) Groups(ctx context.Context) ([]Group, error) {
 	if account.Status != model.AccountConnected {
 		return nil, ErrAuthentication
 	}
-	token, err := AccessToken(account)
+	apiKey, err := APIKey(account)
 	if err != nil {
 		return nil, err
 	}
-	groups, err := manager.client.Groups(ctx, token)
+	groups, err := manager.client.Groups(ctx, apiKey)
 	if !errors.Is(err, ErrAuthentication) {
 		return groups, err
 	}
 	account.Status = model.AccountInvalid
 	account.Session = map[string]string{}
-	account.LastError = "session import required"
+	account.LastError = "API key update required"
 	account.UpdatedAt = manager.now()
 	if storeErr := manager.store.PutPlatformAccount(account); storeErr != nil {
-		return nil, fmt.Errorf("invalidating rejected Knowledge Planet session: %w", storeErr)
+		return nil, fmt.Errorf("invalidating rejected Knowledge Planet credential: %w", storeErr)
 	}
 	return nil, err
 }

@@ -23,8 +23,8 @@ func (s *Server) registerPlatformAPI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v4/accounts/bilibili/qr", s.audit("bilibili.login.start", "platform_account", "", s.requireSession(true, s.startBiliLoginAPI)))
 	mux.HandleFunc("DELETE /api/v4/accounts/bilibili/qr/{id}", s.audit("bilibili.login.cancel", "platform_account", "id", s.requireSession(true, s.cancelBiliLoginAPI)))
 	mux.HandleFunc("DELETE /api/v4/accounts/bilibili/session", s.audit("bilibili.logout", "platform_account", "", s.requireSession(true, s.deleteBilibiliSessionV4)))
-	mux.HandleFunc("POST /api/v4/accounts/zsxq/token", s.audit("zsxq.token.import", "platform_account", "", s.requireSession(true, s.zsxqTokenV4)))
-	mux.HandleFunc("DELETE /api/v4/accounts/zsxq/session", s.audit("zsxq.logout", "platform_account", "", s.requireSession(true, s.deleteZSXQSessionV4)))
+	mux.HandleFunc("PUT /api/v4/accounts/zsxq/credential", s.audit("zsxq.credential.update", "platform_account", "", s.requireSession(true, s.updateZSXQCredentialV4)))
+	mux.HandleFunc("DELETE /api/v4/accounts/zsxq/credential", s.audit("zsxq.credential.delete", "platform_account", "", s.requireSession(true, s.deleteZSXQCredentialV4)))
 	mux.HandleFunc("GET /api/v4/accounts/zsxq/groups", s.requireSession(false, s.zsxqGroupsV4))
 
 	mux.HandleFunc("GET /api/v4/sources", s.requireSession(false, s.sourcesV4))
@@ -56,33 +56,33 @@ func (s *Server) deleteBilibiliSessionV4(w http.ResponseWriter, _ *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) zsxqTokenV4(w http.ResponseWriter, r *http.Request) {
+func (s *Server) updateZSXQCredentialV4(w http.ResponseWriter, r *http.Request) {
 	if s.zsxqAccounts == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "integration_unavailable", "Knowledge Planet integration is unavailable")
 		return
 	}
 	var input struct {
-		Cookie string `json:"cookie"`
+		APIKey string `json:"api_key"`
 	}
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	if _, err := zsxq.ParseAccessToken(input.Cookie); err != nil {
-		writeAPIErrorFields(w, http.StatusBadRequest, "validation_failed", "cookie must contain exactly one non-empty zsxq_access_token", map[string]string{"cookie": "Cookie 无效或缺少 zsxq_access_token"})
+	if _, err := zsxq.NormalizeAPIKey(input.APIKey); err != nil {
+		writeAPIErrorFields(w, http.StatusUnprocessableEntity, "invalid_api_key", "Knowledge Planet API key is invalid", map[string]string{"api_key": "密钥不能为空、不能包含控制字符且不能超过 8 KiB"})
 		return
 	}
 	ctx, cancel := withAPITimeout(r)
 	defer cancel()
-	account, err := s.zsxqAccounts.ImportCookie(ctx, input.Cookie)
+	account, err := s.zsxqAccounts.UpdateCredential(ctx, input.APIKey)
 	if err != nil {
 		writeZSXQAPIError(w, err)
 		return
 	}
 	s.events.Publish(service.TopicAccounts)
-	writeJSON(w, http.StatusCreated, account)
+	writeJSON(w, http.StatusOK, account)
 }
 
-func (s *Server) deleteZSXQSessionV4(w http.ResponseWriter, r *http.Request) {
+func (s *Server) deleteZSXQCredentialV4(w http.ResponseWriter, r *http.Request) {
 	err := s.store.WithContext(r.Context()).DeletePlatformAccount(model.PlatformZSXQ)
 	if errors.Is(err, state.ErrNotFound) {
 		err = nil
@@ -128,10 +128,10 @@ func (s *Server) zsxqGroupsV4(w http.ResponseWriter, r *http.Request) {
 
 func writeZSXQAPIError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, zsxq.ErrRateLimited), errors.Is(err, zsxq.ErrRiskControl):
+	case errors.Is(err, zsxq.ErrRateLimited):
 		writeAPIError(w, http.StatusTooManyRequests, "rate_limited", err.Error())
 	case errors.Is(err, zsxq.ErrAuthentication):
-		writeAPIErrorFields(w, http.StatusUnprocessableEntity, "invalid_token", "Knowledge Planet access token is invalid or expired", map[string]string{"cookie": "Cookie 中的 token 无效或已过期"})
+		writeAPIErrorFields(w, http.StatusUnprocessableEntity, "invalid_api_key", "Knowledge Planet API key is invalid or expired", map[string]string{"api_key": "密钥无效或已过期"})
 	case errors.Is(err, zsxq.ErrPermission):
 		writeAPIError(w, http.StatusForbidden, "permission_denied", "Knowledge Planet source permission denied")
 	case errors.Is(err, zsxq.ErrSchemaDrift):

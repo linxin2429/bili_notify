@@ -526,7 +526,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v4/accounts/zsxq/token": {
+    "/api/v4/accounts/zsxq/credential": {
         parameters: {
             query?: never;
             header?: never;
@@ -534,25 +534,9 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
-        post: operations["importZSXQToken"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v4/accounts/zsxq/session": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
+        put: operations["updateZSXQCredential"];
         post?: never;
-        delete: operations["deleteZSXQSession"];
+        delete: operations["deleteZSXQCredential"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1327,7 +1311,17 @@ export interface components {
                 "application/json": components["schemas"]["ErrorEnvelope"];
             };
         };
-        /** @description Authentication attempts are rate limited. */
+        /** @description The authenticated upstream account lacks permission for the operation. */
+        PermissionError: {
+            headers: {
+                "X-Request-ID": components["headers"]["RequestID"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description The request was rate limited. */
         RateLimitError: {
             headers: {
                 "X-Request-ID": components["headers"]["RequestID"];
@@ -1337,7 +1331,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorEnvelope"];
             };
         };
-        /** @description Upstream notification provider failed. */
+        /** @description An upstream service failed. */
         UpstreamError: {
             headers: {
                 "X-Request-ID": components["headers"]["RequestID"];
@@ -2421,7 +2415,7 @@ export interface operations {
             };
         };
     };
-    importZSXQToken: {
+    updateZSXQCredential: {
         parameters: {
             query?: never;
             header: {
@@ -2433,13 +2427,13 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    cookie: string;
+                    api_key: string;
                 };
             };
         };
         responses: {
             /** @description Connected Knowledge Planet account. */
-            201: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2447,11 +2441,13 @@ export interface operations {
                     "application/json": components["schemas"]["PlatformAccount"];
                 };
             };
-            400: components["responses"]["InvalidRequest"];
+            403: components["responses"]["PermissionError"];
             422: components["responses"]["InvalidRequest"];
+            429: components["responses"]["RateLimitError"];
+            502: components["responses"]["UpstreamError"];
         };
     };
-    deleteZSXQSession: {
+    deleteZSXQCredential: {
         parameters: {
             query?: never;
             header: {
@@ -2462,7 +2458,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Knowledge Planet account disconnected. */
+            /** @description Knowledge Planet credential deleted. */
             204: {
                 headers: {
                     [name: string]: unknown;

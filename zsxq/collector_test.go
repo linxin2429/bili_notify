@@ -21,8 +21,9 @@ import (
 
 func TestSyncDynamicsArchivesBaselineWithoutChannels(t *testing.T) {
 	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"succeeded":true,"resp_data":{"topics":[{"topic_id":1,"type":"talk","create_time":"2026-08-10T00:00:00Z","talk":{"owner":{"user_id":8,"name":"Owner","role":"owner"},"text":"hello"}}],"end_time":""}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, _, _, _ := readMCPCall(t, r)
+		writeMCPEnvelope(t, w, id, http.StatusOK, map[string]any{"topics": []any{map[string]any{"topic_id": 1, "type": "talk", "create_time": "2026-08-10T00:00:00Z", "talk": map[string]any{"owner": map[string]any{"user_id": 8, "name": "Owner", "role": "owner"}, "text": "hello"}}}, "end_time": ""})
 	}))
 	t.Cleanup(server.Close)
 	key, err := vault.New(bytes.Repeat([]byte{181}, 32))
@@ -30,7 +31,7 @@ func TestSyncDynamicsArchivesBaselineWithoutChannels(t *testing.T) {
 	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), key)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "user", DisplayName: "User", Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: "session"}}
+	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "user", DisplayName: "User", Status: model.AccountConnected, Session: map[string]string{APIKeyCredential: "key"}}
 	require.NoError(t, store.PutPlatformAccount(account))
 	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
 		ExternalID: "9", Name: "Planet", OwnerID: "8", Enabled: true, BaselineState: model.BaselinePending}
@@ -53,7 +54,7 @@ func TestSyncDynamicsArchivesBaselineWithoutChannels(t *testing.T) {
 	assert.Equal(t, model.BaselineComplete, updated.BaselineState)
 }
 
-func TestSyncDynamicsUsesLatestTokenWithoutChangingSourceAvailability(t *testing.T) {
+func TestSyncDynamicsUsesLatestAPIKeyWithoutChangingSourceAvailability(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name         string
@@ -62,7 +63,7 @@ func TestSyncDynamicsUsesLatestTokenWithoutChangingSourceAvailability(t *testing
 		wantRequests int64
 		wantError    string
 	}{
-		{name: "enabled source uses replacement account token", enabled: true, status: http.StatusOK, wantRequests: 1},
+		{name: "enabled source uses replacement account key", enabled: true, status: http.StatusOK, wantRequests: 1},
 		{name: "disabled source remains idle", enabled: false, status: http.StatusOK, wantRequests: 0},
 		{name: "permission failure preserves enabled source", enabled: true, status: http.StatusForbidden, wantRequests: 1, wantError: "upstream synchronization failed"},
 	}
@@ -72,12 +73,9 @@ func TestSyncDynamicsUsesLatestTokenWithoutChangingSourceAvailability(t *testing
 			var requests atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
-				assert.Equal(t, "new-token", r.Header.Get("Authorization"))
-				if tt.status != http.StatusOK {
-					w.WriteHeader(tt.status)
-					return
-				}
-				writeEnvelope(t, w, map[string]any{"topics": []any{}, "end_time": ""})
+				id, _, _, _ := readMCPCall(t, r)
+				assert.Equal(t, "new-key", r.Header.Get("X-Api-Key"))
+				writeMCPEnvelope(t, w, id, tt.status, map[string]any{"topics": []any{}, "end_time": ""})
 			}))
 			t.Cleanup(server.Close)
 			key, err := vault.New(bytes.Repeat([]byte{183}, 32))
@@ -85,11 +83,11 @@ func TestSyncDynamicsUsesLatestTokenWithoutChangingSourceAvailability(t *testing
 			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), key)
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, store.Close()) })
-			require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "old-user", DisplayName: "Old", Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: "old-token"}}))
+			require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "old-user", DisplayName: "Old", Status: model.AccountConnected, Session: map[string]string{APIKeyCredential: "old-key"}}))
 			source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
 				ExternalID: "9", Name: "Planet", Enabled: tt.enabled, BaselineState: model.BaselineComplete}
 			require.NoError(t, store.PutSource(source))
-			require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "new-user", DisplayName: "New", Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: "new-token"}}))
+			require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "new-user", DisplayName: "New", Status: model.AccountConnected, Session: map[string]string{APIKeyCredential: "new-key"}}))
 			client, err := New(server.Client(), "test", WithBaseURL(server.URL))
 			require.NoError(t, err)
 			collector, err := NewCollector(store, client, model.DefaultRuntimeSettings, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -114,11 +112,13 @@ func TestSyncDynamicsFiltersAuthorsAcrossLivePages(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.URL.Query().Get("end_time") == "" {
-			writeEnvelope(t, w, map[string]any{"topics": []any{map[string]any{"topic_id": 3, "type": "talk", "create_time": "2026-08-10T03:00:00Z", "talk": map[string]any{"owner": map[string]any{"user_id": 7, "name": "Other"}, "text": "not selected"}}}, "end_time": "next"})
+		id, _, _, arguments := readMCPCall(t, r)
+		query, _ := arguments["query"].(map[string]any)
+		if query["end_time"] == nil {
+			writeMCPEnvelope(t, w, id, http.StatusOK, map[string]any{"topics": []any{map[string]any{"topic_id": 3, "type": "talk", "create_time": "2026-08-10T03:00:00Z", "talk": map[string]any{"owner": map[string]any{"user_id": 7, "name": "Other"}, "text": "not selected"}}}, "end_time": "next"})
 			return
 		}
-		writeEnvelope(t, w, map[string]any{"topics": []any{
+		writeMCPEnvelope(t, w, id, http.StatusOK, map[string]any{"topics": []any{
 			map[string]any{"topic_id": 2, "type": "talk", "create_time": "2026-08-10T02:00:00Z", "talk": map[string]any{"owner": map[string]any{"user_id": 8, "name": "Selected"}, "text": "selected"}},
 			map[string]any{"topic_id": 1, "type": "talk", "create_time": "2026-08-10T01:00:00Z", "talk": map[string]any{"owner": map[string]any{"user_id": 8, "name": "Selected"}, "text": "already passed watermark"}},
 		}, "end_time": ""})
@@ -129,7 +129,7 @@ func TestSyncDynamicsFiltersAuthorsAcrossLivePages(t *testing.T) {
 	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), key)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "user", Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: "token"}}))
+	require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "user", Status: model.AccountConnected, Session: map[string]string{APIKeyCredential: "key"}}))
 	watermarkContent := model.Content{ID: model.ContentID(model.PlatformZSXQ, "1"), PublishedAt: time.Date(2026, time.August, 10, 1, 0, 0, 0, time.UTC)}
 	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "9", Name: "Planet", Enabled: true,
 		BaselineState: model.BaselineComplete, HighWatermark: encodeWatermark(watermarkContent), ZSXQTopicMode: model.ZSXQTopicSelectedAuthors, ZSXQAuthors: []model.ZSXQAuthor{{UserID: "8", Name: "Selected"}}}
@@ -156,20 +156,23 @@ func TestSyncCommentsUsesCompleteTopicPreview(t *testing.T) {
 	var fileURLCalls atomic.Int64
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/signed/file" {
-			assert.Equal(t, "new-session", r.Header.Get("Authorization"))
+		if r.URL.Path == "/signed/file" {
+			assert.Empty(t, r.Header.Get("X-Api-Key"))
+			assert.Empty(t, r.Header.Get("Authorization"))
+			_, _ = io.WriteString(w, "pdf")
+			return
 		}
-		switch r.URL.Path {
+		id, _, path, _ := readMCPCall(t, r)
+		assert.Equal(t, "new-key", r.Header.Get("X-Api-Key"))
+		switch path {
 		case "/v2/topics/1/comments":
 			commentsEndpointCalled.Store(true)
-			http.Error(w, "comments endpoint must not be called", http.StatusInternalServerError)
+			writeMCPEnvelope(t, w, id, http.StatusInternalServerError, map[string]any{})
 		case "/v2/files/4/download_url":
 			fileURLCalls.Add(1)
-			writeEnvelope(t, w, map[string]any{"download_url": server.URL + "/signed/file"})
-		case "/signed/file":
-			_, _ = io.WriteString(w, "pdf")
+			writeMCPEnvelope(t, w, id, http.StatusOK, map[string]any{"download_url": server.URL + "/signed/file"})
 		default:
-			_, _ = io.WriteString(w, `{"succeeded":true,"resp_data":{"topic":{"topic_id":1,"type":"talk","create_time":"2026-08-10T00:00:00Z","comments_count":1,"talk":{"owner":{"user_id":8,"name":"Owner"},"text":"hello","files":[{"file_id":4,"name":"资料.pdf","size":3}]},"show_comments":[{"comment_id":3,"create_time":"2026-08-10T01:00:00Z","owner":{"user_id":8,"name":"Owner"},"text":"answer"}]}}}`)
+			writeMCPEnvelope(t, w, id, http.StatusOK, map[string]any{"topic": map[string]any{"topic_id": 1, "type": "talk", "create_time": "2026-08-10T00:00:00Z", "comments_count": 1, "talk": map[string]any{"owner": map[string]any{"user_id": 8, "name": "Owner"}, "text": "hello", "files": []any{map[string]any{"file_id": 4, "name": "资料.pdf", "size": 3}}}, "show_comments": []any{map[string]any{"comment_id": 3, "create_time": "2026-08-10T01:00:00Z", "owner": map[string]any{"user_id": 8, "name": "Owner"}, "text": "answer"}}}})
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -179,12 +182,12 @@ func TestSyncCommentsUsesCompleteTopicPreview(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
 	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "old-user", DisplayName: "Old", Status: model.AccountConnected,
-		Session: map[string]string{AccessTokenKey: "old-session"}}
+		Session: map[string]string{APIKeyCredential: "old-key"}}
 	require.NoError(t, store.PutPlatformAccount(account))
 	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
 		ExternalID: "9", Name: "Planet", OwnerID: "8", Enabled: true, BaselineState: model.BaselineComplete}
 	require.NoError(t, store.PutSource(source))
-	account.ExternalID, account.DisplayName, account.Session = "new-user", "New", map[string]string{AccessTokenKey: "new-session"}
+	account.ExternalID, account.DisplayName, account.Session = "new-user", "New", map[string]string{APIKeyCredential: "new-key"}
 	require.NoError(t, store.PutPlatformAccount(account))
 	content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "1"), Platform: model.PlatformZSXQ, SourceID: source.ID,
 		ExternalID: "1", AuthorID: "8", AuthorName: "Owner", UpstreamType: "talk", Type: model.ContentDiscussion,

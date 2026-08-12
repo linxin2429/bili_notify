@@ -18,7 +18,7 @@ import { MorePage } from './MorePage'
 
 const api = vi.hoisted(() => ({
   runtime: vi.fn(), settings: vi.fn(), accounts: vi.fn(), zsxqGroups: vi.fn(), sources: vi.fn(), contents: vi.fn(), content: vi.fn(), contentComments: vi.fn(), channels: vi.fn(), deliveries: vi.fn(), biliLogin: vi.fn(), microsoftLogins: vi.fn(), auditLogs: vi.fn(),
-  createBilibiliSource: vi.fn(), createZSXQSource: vi.fn(), updateSource: vi.fn(), deleteSource: vi.fn(), deleteZSXQSession: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), deleteChannel: vi.fn(), testChannel: vi.fn(), retryDelivery: vi.fn(), startBiliLogin: vi.fn(), cancelBiliLogin: vi.fn(), deleteBilibiliSession: vi.fn(), startMicrosoftLogin: vi.fn(), cancelMicrosoftLogin: vi.fn(), updateSettings: vi.fn(),
+  createBilibiliSource: vi.fn(), createZSXQSource: vi.fn(), updateSource: vi.fn(), deleteSource: vi.fn(), deleteZSXQCredential: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), deleteChannel: vi.fn(), testChannel: vi.fn(), retryDelivery: vi.fn(), startBiliLogin: vi.fn(), cancelBiliLogin: vi.fn(), deleteBilibiliSession: vi.fn(), startMicrosoftLogin: vi.fn(), cancelMicrosoftLogin: vi.fn(), updateSettings: vi.fn(),
 }))
 const session = vi.hoisted(() => ({ changePassword: vi.fn() }))
 vi.mock('../shared/api/resources', () => ({ resources: api }))
@@ -151,18 +151,18 @@ describe('resource pages', () => {
     expect(api.zsxqGroups).toHaveBeenCalledTimes(2)
   })
 
-  it('shows empty source CTAs and logs out the Knowledge Planet account', async () => {
+  it('shows empty source CTAs and deletes the Knowledge Planet credential', async () => {
     api.sources.mockResolvedValue([])
     api.accounts.mockResolvedValue([{ platform: 'zsxq', status: 'connected', display_name: '星球号', masked_phone: '138****0000' }])
-    api.deleteZSXQSession.mockResolvedValue(undefined)
+    api.deleteZSXQCredential.mockResolvedValue(undefined)
     const user = userEvent.setup()
     renderPage(<SourcesPage />, '/sources')
     expect(await screen.findByText('尚未添加 B 站 UP')).toBeInTheDocument()
     expect(screen.getByText('尚未添加知识星球')).toBeInTheDocument()
     expect(screen.getByText('已连接')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '退出登录' }))
-    await user.click(screen.getByRole('button', { name: '确认退出' }))
-    await waitFor(() => expect(api.deleteZSXQSession).toHaveBeenCalledWith('csrf'))
+    await user.click(screen.getByRole('button', { name: '删除密钥' }))
+    await user.click(screen.getByRole('button', { name: '确认删除' }))
+    await waitFor(() => expect(api.deleteZSXQCredential).toHaveBeenCalledWith('csrf'))
   })
 
   it('retries a blocked delivery through a mutation', async () => {

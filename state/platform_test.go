@@ -116,7 +116,7 @@ func TestPlatformIdentityAndEncryptedAccountSession(t *testing.T) {
 	assert.Len(t, items, 2)
 	assert.NotEqual(t, items[0].ID, items[1].ID)
 
-	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "7", DisplayName: "User", Status: model.AccountConnected, Session: map[string]string{"zsxq_access_token": "secret"}}
+	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "7", DisplayName: "User", Status: model.AccountConnected, Session: map[string]string{"zsxq_api_key": "secret"}}
 	require.NoError(t, store.PutPlatformAccount(account))
 	loaded, err := store.PlatformAccount(model.PlatformZSXQ)
 	require.NoError(t, err)

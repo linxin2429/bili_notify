@@ -87,8 +87,8 @@ func TestPutZSXQPlatformAccountPreservesSources(t *testing.T) {
 		name       string
 		externalID string
 	}{
-		{name: "first import", externalID: "account-1"},
-		{name: "same account token refresh", externalID: "account-1"},
+		{name: "first credential", externalID: "account-1"},
+		{name: "same account key refresh", externalID: "account-1"},
 		{name: "different account", externalID: "account-2"},
 	}
 	for _, tt := range tests {
@@ -99,12 +99,12 @@ func TestPutZSXQPlatformAccountPreservesSources(t *testing.T) {
 				ExternalID: "1", Name: "Disabled", Enabled: false, BaselineState: model.BaselineComplete}))
 			require.NoError(t, store.PutSource(model.Source{ID: model.SourceID(model.PlatformZSXQ, "2"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
 				ExternalID: "2", Name: "Enabled", Enabled: true, BaselineState: model.BaselineComplete}))
-			if tt.name != "first import" {
+			if tt.name != "first credential" {
 				require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "account-1", DisplayName: "Old", Status: model.AccountConnected,
-					Session: map[string]string{"zsxq_access_token": "old-token"}}))
+					Session: map[string]string{"zsxq_api_key": "old-key"}}))
 			}
 			account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: tt.externalID, DisplayName: "Member", Status: model.AccountConnected,
-				Session: map[string]string{"zsxq_access_token": "new-token"}}
+				Session: map[string]string{"zsxq_api_key": "new-key"}}
 			require.NoError(t, store.PutPlatformAccount(account))
 			for id, wantEnabled := range map[string]bool{"1": false, "2": true} {
 				loaded, err := store.Source(model.SourceID(model.PlatformZSXQ, id))
@@ -115,7 +115,7 @@ func TestPutZSXQPlatformAccountPreservesSources(t *testing.T) {
 	}
 }
 
-func TestLegacyZSXQSessionWithoutAccessTokenIsInvalid(t *testing.T) {
+func TestLegacyZSXQCredentialWithoutAPIKeyIsInvalid(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, 159)
 	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "account", DisplayName: "Member", Status: model.AccountConnected,
@@ -124,14 +124,14 @@ func TestLegacyZSXQSessionWithoutAccessTokenIsInvalid(t *testing.T) {
 	loaded, err := store.PlatformAccount(model.PlatformZSXQ)
 	require.NoError(t, err)
 	assert.Equal(t, model.AccountInvalid, loaded.Status)
-	assert.Equal(t, "session import required", loaded.LastError)
+	assert.Equal(t, "API key update required", loaded.LastError)
 }
 
-func TestEmptyZSXQSessionClearsSealedToken(t *testing.T) {
+func TestEmptyZSXQCredentialClearsSealedKey(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, 160)
 	account := model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "account", DisplayName: "Member", Status: model.AccountConnected,
-		Session: map[string]string{"zsxq_access_token": "secret"}}
+		Session: map[string]string{"zsxq_api_key": "secret"}}
 	require.NoError(t, store.PutPlatformAccount(account))
 	account.Status = model.AccountInvalid
 	account.Session = map[string]string{}

@@ -92,7 +92,7 @@ main.go → cmd/ (Cobra CLI + Viper/BILI_NOTIFY_* env)
 | `config/` | Startup settings: paths, listen addrs, log level are process-immutable. Poll interval / request rate / concurrency / comment knobs are **first-run defaults** only; after seed they live in SQLite and hot-reload via admin UI. |
 | `model/` | Shared domain facts and validation (Source, Content, CommentNode, Channel, Delivery, accounts, AI jobs). |
 | `bilibili/` | Web API client: QR login, session validate, space dynamics feed, strict dynamic parsing. |
-| `zsxq/` | Knowledge Planet client, SMS login, dynamic/backfill worker, and comment-tree worker. |
+| `zsxq/` | Official Knowledge Planet MCP client, credential lifecycle, dynamic/backfill worker, and comment-tree worker. |
 | `sources/` | Source administration use cases and post-commit invalidation callbacks. |
 | `state/` | Single SQLite adapter (`data.db`): sources, contents, comment nodes, seen items, the only Outbox, encrypted settings/accounts, AI jobs, cleanup tasks; goose migrations on open. |
 | `media/` | Safe attachment localization plus persistent, idempotent cleanup worker. |

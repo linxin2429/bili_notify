@@ -64,7 +64,7 @@ export function OverviewPage() {
 
     <section className="metric-ledger" aria-label="关键运行指标">
       <Metric label="B站登录" value={status.auth_valid ? '有效' : '未登录'} detail={status.bili_account ? `${status.bili_account.name} · UID ${status.bili_account.uid}` : undefined} />
-      <Metric label="知识星球登录" value={zsxqAccount?.status === 'connected' ? '有效' : '未登录'} detail={zsxqAccount?.display_name || zsxqAccount?.masked_phone} href="/sources" />
+      <Metric label="知识星球密钥" value={zsxqAccount?.status === 'connected' ? '已连接' : '未连接'} detail={zsxqAccount?.display_name || zsxqAccount?.masked_phone} href="/sources" />
       <Metric label="采集源" value={accounts.isError || sources.isError ? '—' : String(configuredSources.length)} detail={sources.isError ? '加载失败' : `${configuredSources.filter(source => source.enabled).length} 个已启用`} href="/sources" />
       <Metric label="待投递" value={String(status.outbox_depth)} detail={status.oldest_delivery ? `最早 ${formatDate(status.oldest_delivery, run.timezone)}` : '队列为空'} href={status.outbox_depth > 0 ? '/deliveries?state=blocked' : '/deliveries'} />
     </section>
@@ -113,7 +113,7 @@ export function OverviewPage() {
         </Checklist>
         <Checklist
           done={zsxqAuthOK}
-          action={!zsxqAuthOK ? <Link className="button button--outline" to="/integrations/zsxq-login">去登录知识星球</Link> : undefined}
+          action={!zsxqAuthOK ? <Link className="button button--outline" to="/integrations/zsxq-login">连接知识星球密钥</Link> : undefined}
         >
           已启用知识星球来源的账号有效
         </Checklist>

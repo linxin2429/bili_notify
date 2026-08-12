@@ -35,8 +35,8 @@ type platformAccountRow struct {
 
 func (platformAccountRow) TableName() string { return tablePlatformAccounts }
 
-// PutPlatformAccount encrypts session cookies and atomically replaces the
-// account projection. Passing a nil Session preserves an existing secret.
+// PutPlatformAccount encrypts credentials and atomically replaces the account
+// projection. Passing a nil Session preserves an existing secret.
 func (s *Store) PutPlatformAccount(account model.PlatformAccount) error {
 	if err := account.Validate(); err != nil {
 		return err
@@ -47,7 +47,7 @@ func (s *Store) PutPlatformAccount(account model.PlatformAccount) error {
 			var err error
 			sealed, err = sealJSON(s.vault, tablePlatformAccounts, string(account.Platform), account.Session)
 			if err != nil {
-				return fmt.Errorf("encrypting %s session: %w", account.Platform, err)
+				return fmt.Errorf("encrypting %s credential: %w", account.Platform, err)
 			}
 		} else {
 			var old platformAccountRow
@@ -94,9 +94,9 @@ func (s *Store) PlatformAccount(platform model.Platform) (model.PlatformAccount,
 			return model.PlatformAccount{}, err
 		}
 	}
-	if platform == model.PlatformZSXQ && account.Status == model.AccountConnected && strings.TrimSpace(account.Session["zsxq_access_token"]) == "" {
+	if platform == model.PlatformZSXQ && account.Status == model.AccountConnected && strings.TrimSpace(account.Session["zsxq_api_key"]) == "" {
 		account.Status = model.AccountInvalid
-		account.LastError = "session import required"
+		account.LastError = "API key update required"
 	}
 	return account, nil
 }

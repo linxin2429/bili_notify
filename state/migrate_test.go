@@ -156,7 +156,7 @@ func TestV10MigrationPreservesV9StateAndRemovesTransitionalTables(t *testing.T) 
 	t.Parallel()
 	db, path, v := preparePopulatedV9(t)
 	require.NoError(t, runMigrations(t.Context(), db, v))
-	assertMigrationVersion(t, db, 12)
+	assertMigrationVersion(t, db, 13)
 	for _, table := range []string{"auth_session", "deliveries", "comments", "dynamics", "seen_comments", "seen_dynamics", "comment_targets", "ups"} {
 		var count int
 		require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count))
@@ -206,6 +206,43 @@ func TestV10MigrationPreservesV9StateAndRemovesTransitionalTables(t *testing.T) 
 	assert.Equal(t, "video title", title)
 	assert.Equal(t, "body", summary)
 	assert.Equal(t, "00-trace", traceparent)
+}
+
+func TestV13RemovesLegacyZSXQCredentialOnly(t *testing.T) {
+	t.Parallel()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "data.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS)
+	require.NoError(t, err)
+	_, err = provider.UpTo(t.Context(), 12)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO platform_accounts(platform, external_id, status, sealed_session, sealed_aad, updated_at) VALUES('zsxq','7','connected',X'010203','platform_accounts',1)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO sources(id,platform,type,external_id,name,enabled,baseline_state,backfill_cursor,high_watermark,backfill_done) VALUES('zsxq:planet:9','zsxq','planet','9','Planet',1,'running','cursor','watermark',17)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO contents(id,platform,source_id,external_id,upstream_type,type,published_at,first_seen_at,last_synced_at) VALUES('zsxq:content:1','zsxq','zsxq:planet:9','1','talk','discussion',1,1,1)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO attachments(id,content_id,external_id,type) VALUES('zsxq:content:1:attachment:2','zsxq:content:1','2','file')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO comment_nodes(id,platform,content_id,external_id,published_at,first_seen_at) VALUES('zsxq:comment:3','zsxq','zsxq:content:1','3',1,1)`)
+	require.NoError(t, err)
+	_, err = provider.UpTo(t.Context(), 13)
+	require.NoError(t, err)
+	var accounts int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM platform_accounts WHERE platform='zsxq'`).Scan(&accounts))
+	assert.Zero(t, accounts)
+	var cursor, watermark string
+	var done int
+	require.NoError(t, db.QueryRow(`SELECT backfill_cursor, high_watermark, backfill_done FROM sources WHERE id='zsxq:planet:9'`).Scan(&cursor, &watermark, &done))
+	assert.Equal(t, "cursor", cursor)
+	assert.Equal(t, "watermark", watermark)
+	assert.Equal(t, 17, done)
+	for _, table := range []string{"contents", "attachments", "comment_nodes"} {
+		var count int
+		require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM `+table).Scan(&count))
+		assert.Equal(t, 1, count, table)
+	}
 }
 
 func TestV11MigrationInvalidatesChangedChannelAuthorization(t *testing.T) {

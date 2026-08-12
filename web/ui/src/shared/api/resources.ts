@@ -37,8 +37,8 @@ export const resources = {
   createZSXQSource: (csrf: string, input: { group_id: string; note: string; enabled: boolean; zsxq_topic_mode: 'all' | 'selected_authors'; zsxq_authors: Array<{ user_id: string; name?: string }> }) => write(`${apiRoot}/sources/zsxq`, sourceSchema, 'POST', csrf, input),
   updateSource: (csrf: string, input: Pick<Source, 'id' | 'name' | 'note' | 'enabled' | 'platform' | 'zsxq_topic_mode' | 'zsxq_authors'>) => write(`${apiRoot}/sources/${encodeURIComponent(input.id)}`, sourceSchema, 'PUT', csrf, input.platform === 'zsxq' ? { name: input.name, note: input.note || '', enabled: input.enabled, zsxq_topic_mode: input.zsxq_topic_mode, zsxq_authors: input.zsxq_authors || [] } : { name: input.name, note: input.note || '', enabled: input.enabled }),
   deleteSource: (csrf: string, id: string) => write(`${apiRoot}/sources/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
-  importZSXQToken: (csrf: string, cookie: string) => write(`${apiRoot}/accounts/zsxq/token`, platformAccountSchema, 'POST', csrf, { cookie }),
-  deleteZSXQSession: (csrf: string) => write(`${apiRoot}/accounts/zsxq/session`, emptyResponseSchema, 'DELETE', csrf),
+  updateZSXQCredential: (csrf: string, apiKey: string) => write(`${apiRoot}/accounts/zsxq/credential`, platformAccountSchema, 'PUT', csrf, { api_key: apiKey }),
+  deleteZSXQCredential: (csrf: string) => write(`${apiRoot}/accounts/zsxq/credential`, emptyResponseSchema, 'DELETE', csrf),
   createChannel: (csrf: string, input: ChannelDraft) => write(`${apiRoot}/channels`, channelSchema, 'POST', csrf, input),
   updateChannel: (csrf: string, input: ChannelDraft & { id: string }) => {
     const { id, ...body } = input

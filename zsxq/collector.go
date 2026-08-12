@@ -156,7 +156,7 @@ func (collector *Collector) SyncDynamics(ctx context.Context) error {
 	if account.Status != model.AccountConnected {
 		return ErrAuthentication
 	}
-	token, err := AccessToken(account)
+	apiKey, err := APIKey(account)
 	if err != nil {
 		collector.invalidateAccount(account)
 		return err
@@ -169,15 +169,15 @@ func (collector *Collector) SyncDynamics(ctx context.Context) error {
 		if !source.Enabled {
 			continue
 		}
-		if err := collector.syncSource(ctx, token, source); err != nil {
+		if err := collector.syncSource(ctx, apiKey, source); err != nil {
 			collector.recordSourceError(source, err)
 			if errors.Is(err, ErrAuthentication) {
-				collector.queueSystemAlert(ctx, fmt.Sprintf("zsxq-auth-%d", account.VerifiedAt.Unix()), "知识星球登录已失效，知识星球采集已暂停；B 站采集和通知投递不受影响。")
-				account.Status, account.LastError, account.Session = model.AccountInvalid, "authentication expired", map[string]string{}
+				collector.queueSystemAlert(ctx, fmt.Sprintf("zsxq-auth-%d", account.VerifiedAt.Unix()), "知识星球密钥已失效，知识星球采集已暂停；请在 Jasmine 重新创建或更新密钥。B 站采集和通知投递不受影响。")
+				account.Status, account.LastError, account.Session = model.AccountInvalid, "API key update required", map[string]string{}
 				_ = collector.store.PutPlatformAccount(account)
 				return err
 			}
-			if errors.Is(err, ErrRiskControl) || errors.Is(err, ErrRateLimited) {
+			if errors.Is(err, ErrRateLimited) {
 				pause := time.Duration(collector.settings().ZSXQRiskPauseSec) * time.Second
 				until := time.Now().Add(pause)
 				collector.pause(until)
@@ -191,15 +191,15 @@ func (collector *Collector) SyncDynamics(ctx context.Context) error {
 	return nil
 }
 
-func (collector *Collector) syncSource(ctx context.Context, token string, source model.Source) error {
-	page, err := collector.client.Topics(ctx, token, source, "", 20)
+func (collector *Collector) syncSource(ctx context.Context, apiKey string, source model.Source) error {
+	page, err := collector.client.Topics(ctx, apiKey, source, "", 20)
 	if err != nil {
 		return err
 	}
 	initializing := source.BaselineState == "" || source.BaselineState == model.BaselinePending
 	watermark := source.HighWatermark
 	if !initializing {
-		page, err = collector.liveTopicsThroughWatermark(ctx, token, source, page, watermark)
+		page, err = collector.liveTopicsThroughWatermark(ctx, apiKey, source, page, watermark)
 		if err != nil {
 			return err
 		}
@@ -237,7 +237,7 @@ func (collector *Collector) syncSource(ctx context.Context, token string, source
 			content.Baseline = initializing
 		}
 		attachments := page.Attachments[content.ID]
-		if err := collector.localize(ctx, source, content, attachments, token); err != nil {
+		if err := collector.localize(ctx, source, content, attachments, apiKey); err != nil {
 			return err
 		}
 		if err := collector.store.ArchiveContentAndEnqueue(content, attachments, nil, !content.Baseline && !passedWatermark); err != nil {
@@ -245,7 +245,7 @@ func (collector *Collector) syncSource(ctx context.Context, token string, source
 		}
 	}
 	if source.BaselineState == model.BaselineRunning && source.BackfillCursor != "" {
-		history, err := collector.client.Topics(ctx, token, source, source.BackfillCursor, 20)
+		history, err := collector.client.Topics(ctx, apiKey, source, source.BackfillCursor, 20)
 		if err != nil {
 			return err
 		}
@@ -255,7 +255,7 @@ func (collector *Collector) syncSource(ctx context.Context, token string, source
 			}
 			content.Baseline = true
 			attachments := history.Attachments[content.ID]
-			if err := collector.localize(ctx, source, content, attachments, token); err != nil {
+			if err := collector.localize(ctx, source, content, attachments, apiKey); err != nil {
 				return err
 			}
 			if err := collector.store.ArchiveContentAndEnqueue(content, attachments, nil, false); err != nil {
@@ -278,7 +278,7 @@ func (collector *Collector) syncSource(ctx context.Context, token string, source
 	return collector.store.PutSource(source)
 }
 
-func (collector *Collector) liveTopicsThroughWatermark(ctx context.Context, token string, source model.Source, first TopicPage, watermark string) (TopicPage, error) {
+func (collector *Collector) liveTopicsThroughWatermark(ctx context.Context, apiKey string, source model.Source, first TopicPage, watermark string) (TopicPage, error) {
 	result := first
 	cursor := first.NextCursor
 	seenCursors := make(map[string]bool)
@@ -293,7 +293,7 @@ func (collector *Collector) liveTopicsThroughWatermark(ctx context.Context, toke
 			return TopicPage{}, ErrSchemaDrift
 		}
 		seenCursors[cursor] = true
-		next, err := collector.client.Topics(ctx, token, source, cursor, 20)
+		next, err := collector.client.Topics(ctx, apiKey, source, cursor, 20)
 		if err != nil {
 			return TopicPage{}, err
 		}
@@ -339,7 +339,7 @@ func sourceCollectsTopic(source model.Source, content model.Content) bool {
 	return false
 }
 
-func (collector *Collector) localize(ctx context.Context, source model.Source, content model.Content, attachments []model.Attachment, token string) error {
+func (collector *Collector) localize(ctx context.Context, source model.Source, content model.Content, attachments []model.Attachment, apiKey string) error {
 	if collector.assets == nil || len(attachments) == 0 {
 		return nil
 	}
@@ -360,12 +360,12 @@ func (collector *Collector) localize(ctx context.Context, source model.Source, c
 			}
 		}
 	}
-	if err := collector.client.populateFileDownloadURLs(ctx, token, attachments); err != nil {
+	if err := collector.client.populateFileDownloadURLs(ctx, apiKey, attachments); err != nil {
 		return err
 	}
 	settings := collector.settings()
 	result := collector.assets.EnsureAttachments(ctx, model.PlatformZSXQ, source.ID, content.ID, attachments,
-		int64(settings.ZSXQAssetMaxFileMiB)<<20, int64(settings.ZSXQAssetTotalBudgetGiB)<<30, token)
+		int64(settings.ZSXQAssetMaxFileMiB)<<20, int64(settings.ZSXQAssetTotalBudgetGiB)<<30)
 	if result.BudgetFull {
 		collector.logger.WarnContext(ctx, "Knowledge Planet attachment budget exhausted", "event", "zsxq.asset.budget_exhausted")
 		collector.queueSystemAlert(ctx, "zsxq-asset-budget-exhausted", "知识星球附件总预算已耗尽；新附件将只归档元数据，现有档案不会自动删除。")
@@ -388,7 +388,7 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 	if account.Status != model.AccountConnected {
 		return ErrAuthentication
 	}
-	token, err := AccessToken(account)
+	apiKey, err := APIKey(account)
 	if err != nil {
 		collector.invalidateAccount(account)
 		return err
@@ -409,11 +409,11 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 				return err
 			}
 			for _, archived := range contents {
-				snapshot, err := collector.client.Topic(ctx, token, source, archived.ExternalID)
+				snapshot, err := collector.client.Topic(ctx, apiKey, source, archived.ExternalID)
 				if err != nil {
 					if collector.stopPlatformOnError(account, err) {
 						if errors.Is(err, ErrAuthentication) {
-							collector.queueSystemAlert(ctx, fmt.Sprintf("zsxq-auth-%d", account.VerifiedAt.Unix()), "知识星球登录已失效，知识星球采集已暂停；B 站采集和通知投递不受影响。")
+							collector.queueSystemAlert(ctx, fmt.Sprintf("zsxq-auth-%d", account.VerifiedAt.Unix()), "知识星球密钥已失效，知识星球采集已暂停；请在 Jasmine 重新创建或更新密钥。B 站采集和通知投递不受影响。")
 						}
 						return err
 					}
@@ -425,7 +425,7 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 				}
 				content, attachments := snapshot.Content, snapshot.Attachments
 				content.Baseline = archived.Baseline
-				if err := collector.localize(ctx, source, content, attachments, token); err != nil {
+				if err := collector.localize(ctx, source, content, attachments, apiKey); err != nil {
 					if collector.stopPlatformOnError(account, err) {
 						return err
 					}
@@ -437,11 +437,11 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 				}
 				nodes, complete := snapshot.ShownComments, snapshot.CommentsComplete
 				if !complete {
-					nodes, complete, err = collector.allComments(ctx, token, content, source.OwnerID)
+					nodes, complete, err = collector.allComments(ctx, apiKey, content, source.OwnerID)
 					if err != nil {
 						if collector.stopPlatformOnError(account, err) {
 							if errors.Is(err, ErrAuthentication) {
-								collector.queueSystemAlert(ctx, fmt.Sprintf("zsxq-auth-%d", account.VerifiedAt.Unix()), "知识星球登录已失效，知识星球采集已暂停；B 站采集和通知投递不受影响。")
+								collector.queueSystemAlert(ctx, fmt.Sprintf("zsxq-auth-%d", account.VerifiedAt.Unix()), "知识星球密钥已失效，知识星球采集已暂停；请在 Jasmine 重新创建或更新密钥。B 站采集和通知投递不受影响。")
 							}
 							return err
 						}
@@ -472,7 +472,7 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 
 func (collector *Collector) invalidateAccount(account model.PlatformAccount) {
 	account.Status = model.AccountInvalid
-	account.LastError = "authentication expired"
+	account.LastError = "API key update required"
 	account.Session = map[string]string{}
 	_ = collector.store.PutPlatformAccount(account)
 }
@@ -482,7 +482,7 @@ func (collector *Collector) stopPlatformOnError(account model.PlatformAccount, e
 		collector.invalidateAccount(account)
 		return true
 	}
-	if errors.Is(err, ErrRiskControl) || errors.Is(err, ErrRateLimited) {
+	if errors.Is(err, ErrRateLimited) {
 		until := time.Now().Add(time.Duration(collector.settings().ZSXQRiskPauseSec) * time.Second)
 		collector.pause(until)
 		collector.riskUntil.Store(until.Unix())
@@ -493,12 +493,12 @@ func (collector *Collector) stopPlatformOnError(account model.PlatformAccount, e
 	return false
 }
 
-func (collector *Collector) allComments(ctx context.Context, token string, content model.Content, ownerID string) ([]model.CommentNode, bool, error) {
+func (collector *Collector) allComments(ctx context.Context, apiKey string, content model.Content, ownerID string) ([]model.CommentNode, bool, error) {
 	var nodes []model.CommentNode
 	cursor := ""
 	seenCursors := make(map[string]bool)
 	for pageNumber := 0; pageNumber < 10000; pageNumber++ {
-		page, err := collector.client.Comments(ctx, token, content, ownerID, cursor, 100)
+		page, err := collector.client.Comments(ctx, apiKey, content, ownerID, cursor, 100)
 		if err != nil {
 			return nodes, false, err
 		}
@@ -575,17 +575,13 @@ func decodeWatermark(value string) (time.Time, string, bool) {
 func publicError(err error) string {
 	switch {
 	case errors.Is(err, ErrAuthentication):
-		return "authentication expired"
+		return "API key update required"
 	case errors.Is(err, ErrRateLimited):
 		return "request rate limited"
-	case errors.Is(err, ErrRiskControl):
-		return "risk control pause"
 	case errors.Is(err, ErrSchemaDrift):
 		return "upstream response schema changed"
 	case errors.Is(err, ErrRemoteNotFound):
 		return "upstream content deleted"
-	case errors.Is(err, ErrUnsupportedClient):
-		return "知识星球已拒绝 Cookie/非官方工具访问；需迁移到官方 OAuth Skill"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err.Error()
 	default:

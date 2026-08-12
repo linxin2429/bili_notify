@@ -23,7 +23,7 @@ describe('requestJSON', () => {
 
     lost.mockClear()
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { code: 'authentication_failed', message: 'Knowledge Planet authentication failed' } }), { status: 401, headers: { 'Content-Type': 'application/json', 'X-Request-ID': 'req-platform' } })))
-    const platform = await requestJSON('/api/v4/accounts/zsxq/token', z.object({ ok: z.boolean() })).catch(value => value as ApiError)
+    const platform = await requestJSON('/api/v4/accounts/zsxq/credential', z.object({ ok: z.boolean() })).catch(value => value as ApiError)
     expect(platform).toMatchObject({ kind: 'http', status: 401, code: 'authentication_failed' })
     expect(lost).not.toHaveBeenCalled()
   })

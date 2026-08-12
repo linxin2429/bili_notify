@@ -22,9 +22,9 @@ export function SourcesPage() {
   const createZSXQ = useMutation({ mutationFn: (input: ZSXQSourceDraft) => resources.createZSXQSource(csrf, { group_id: input.groupID, note: input.note, enabled: input.enabled, zsxq_topic_mode: input.topicMode, zsxq_authors: authorsForMode(input.topicMode, input.authors) }), onSuccess: async () => { await refresh(); setAdding(undefined) }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const update = useMutation({ mutationFn: (input: EditSourceDraft) => resources.updateSource(csrf, { id: input.id, platform: input.platform, name: input.name, note: input.note, enabled: input.enabled, zsxq_topic_mode: input.topicMode, zsxq_authors: input.topicMode ? authorsForMode(input.topicMode, input.authors) : [] }), onSuccess: async () => { await refresh(); setEditing(undefined) }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const remove = useMutation({ mutationFn: (id: string) => resources.deleteSource(csrf, id), onSuccess: async () => { await refresh(); setRemoving(null) }, onError: error => notify(apiErrorMessage(error), 'danger') })
-  const logoutZSXQ = useMutation({
-    mutationFn: () => resources.deleteZSXQSession(csrf),
-    onSuccess: async () => { setConfirmZSXQLogout(false); notify('已退出知识星球登录', 'success'); await refresh() },
+  const deleteZSXQCredential = useMutation({
+    mutationFn: () => resources.deleteZSXQCredential(csrf),
+    onSuccess: async () => { setConfirmZSXQLogout(false); notify('已删除知识星球密钥', 'success'); await refresh() },
     onError: error => notify(apiErrorMessage(error), 'danger'),
   })
   const [confirmZSXQLogout, setConfirmZSXQLogout] = useState(false)
@@ -36,15 +36,15 @@ export function SourcesPage() {
   const biliAction = <Button variant="primary" onPress={() => setAdding('bilibili')}><Plus aria-hidden="true" />添加 B 站采集源</Button>
   const zsxqAction = zsxqConnected
     ? <Button variant="primary" onPress={() => setAdding('zsxq')}><Plus aria-hidden="true" />添加知识星球采集源</Button>
-    : <Link className="button button--primary" to="/integrations/zsxq-login">连接账号后添加</Link>
+    : <Link className="button button--primary" to="/integrations/zsxq-login">连接密钥后添加</Link>
   return <div className="page-stack"><PageHeader title="采集源" subtitle="平台账号只提供当前访问凭证；来源独立决定需要归档哪些内容。首次启用只建立历史基线，不发送旧内容通知。" />
     <Card>
       <div className="card-title">
-        <div><h2>知识星球账号</h2><p>{zsxqAccount?.status === 'connected' ? `${zsxqAccount.display_name || ''} ${zsxqAccount.masked_phone || ''}` : '尚未连接'}</p></div>
+        <div><h2>知识星球密钥连接</h2><p>{zsxqAccount?.status === 'connected' ? `${zsxqAccount.display_name || ''} ${zsxqAccount.masked_phone || ''}` : '尚未连接'}</p></div>
         <Badge tone={zsxqAccount?.status === 'connected' ? 'success' : 'warning'}>{accountStatusLabel(zsxqAccount?.status)}</Badge>
       </div>
       {zsxqAccount?.last_error && <Alert tone="danger">{zsxqAccount.last_error}</Alert>}
-      <div className="button-row"><Link className="button button--primary" to="/integrations/zsxq-login">导入 Session</Link>{zsxqAccount?.status === 'connected' && <Button danger onPress={() => setConfirmZSXQLogout(true)}>退出登录</Button>}</div>
+      <div className="button-row"><Link className="button button--primary" to="/integrations/zsxq-login">{zsxqAccount?.status === 'connected' ? '更新密钥' : '连接密钥'}</Link>{zsxqAccount?.status === 'connected' && <Button danger onPress={() => setConfirmZSXQLogout(true)}>删除密钥</Button>}</div>
     </Card>
     <SourceSection title="B 站" empty="尚未添加 B 站 UP" action={biliAction} sources={bili} edit={setEditing} remove={setRemoving} timeZone={timeZone} />
     <SourceSection title="知识星球" empty="尚未添加知识星球" action={zsxqAction} sources={planets} edit={setEditing} remove={setRemoving} timeZone={timeZone} />
@@ -52,7 +52,7 @@ export function SourcesPage() {
     {adding === 'zsxq' && <ZSXQSourceDialog groups={zsxqGroups.data || []} existing={planets} loading={zsxqGroups.isPending} loadError={zsxqGroups.error ? apiErrorMessage(zsxqGroups.error) : ''} busy={createZSXQ.isPending} error={createZSXQ.error ? apiErrorMessage(createZSXQ.error) : ''} onRetry={() => void zsxqGroups.refetch()} onClose={() => setAdding(undefined)} onSave={value => createZSXQ.mutate(value)} />}
     {editing && <EditSourceDialog value={editing} busy={update.isPending} error={update.error ? apiErrorMessage(update.error) : ''} onClose={() => setEditing(undefined)} onSave={value => update.mutate(value)} />}
     <Dialog open={Boolean(removing)} title="删除采集源" onClose={() => setRemoving(null)} actions={<><Button onPress={() => setRemoving(null)}>取消</Button><Button variant="primary" danger busy={remove.isPending} onPress={() => removing && remove.mutate(removing.id)}>删除采集源</Button></>}><p>会取消未投递任务并删除该来源的内容、评论与本地附件。需要再次采集时必须手动重新添加。</p></Dialog>
-    <Dialog open={confirmZSXQLogout} title="退出知识星球登录" onClose={() => setConfirmZSXQLogout(false)} actions={<><Button onPress={() => setConfirmZSXQLogout(false)}>取消</Button><Button variant="primary" danger busy={logoutZSXQ.isPending} onPress={() => logoutZSXQ.mutate()}>确认退出</Button></>}><p>退出后已启用的知识星球采集将暂停，直到重新登录。本地已归档内容不会删除。</p></Dialog>
+    <Dialog open={confirmZSXQLogout} title="删除知识星球密钥" onClose={() => setConfirmZSXQLogout(false)} actions={<><Button onPress={() => setConfirmZSXQLogout(false)}>取消</Button><Button variant="primary" danger busy={deleteZSXQCredential.isPending} onPress={() => deleteZSXQCredential.mutate()}>确认删除</Button></>}><p>删除后知识星球采集将暂停，直到重新连接密钥。本地已归档内容、来源和同步水位不会删除。</p></Dialog>
   </div>
 }
 
@@ -72,7 +72,7 @@ function validAuthors(mode: TopicMode, authors: AuthorDraft[]) { return mode ===
 
 function TopicFilterFields({ mode, setMode, authors, setAuthors }: { mode: TopicMode; setMode: (mode: TopicMode) => void; authors: AuthorDraft[]; setAuthors: (authors: AuthorDraft[]) => void }) {
   const patchAuthor = (index: number, patch: Partial<AuthorDraft>) => setAuthors(authors.map((author, authorIndex) => authorIndex === index ? { ...author, ...patch } : author))
-  return <><SelectField label="采集范围" value={mode} onChange={value => setMode(value as TopicMode)} options={[{ value: 'all', label: '采集全部主题' }, { value: 'selected_authors', label: '仅采集指定作者' }]} />{mode === 'selected_authors' && <div className="form-stack"><p className="field__description">用户 ID 可从知识星球网页开发工具中主题响应的 <code>owner.user_id</code> 查看；名称仅用于帮助辨认，不影响匹配。</p>{authors.map((author, index) => <div className="form-stack" key={index}><TextField label={`作者 ${index + 1} 用户 ID`} value={author.userID} onChange={userID => patchAuthor(index, { userID })} required inputMode="numeric" /><TextField label={`作者 ${index + 1} 名称`} value={author.name} onChange={name => patchAuthor(index, { name })} /><Button danger onPress={() => setAuthors(authors.filter((_, authorIndex) => authorIndex !== index))}>移除作者 {index + 1}</Button></div>)}<Button variant="outline" onPress={() => setAuthors([...authors, { userID: '', name: '' }])}><Plus aria-hidden="true" />添加作者</Button>{!validAuthors(mode, authors) && <Alert tone="danger">请至少添加一位作者，用户 ID 必须是非零开头的数字且不能重复。</Alert>}</div>}</>
+  return <><SelectField label="采集范围" value={mode} onChange={value => setMode(value as TopicMode)} options={[{ value: 'all', label: '采集全部主题' }, { value: 'selected_authors', label: '仅采集指定作者' }]} />{mode === 'selected_authors' && <div className="form-stack"><p className="field__description">填写知识星球用户 ID；名称仅用于帮助辨认，不影响匹配。</p>{authors.map((author, index) => <div className="form-stack" key={index}><TextField label={`作者 ${index + 1} 用户 ID`} value={author.userID} onChange={userID => patchAuthor(index, { userID })} required inputMode="numeric" /><TextField label={`作者 ${index + 1} 名称`} value={author.name} onChange={name => patchAuthor(index, { name })} /><Button danger onPress={() => setAuthors(authors.filter((_, authorIndex) => authorIndex !== index))}>移除作者 {index + 1}</Button></div>)}<Button variant="outline" onPress={() => setAuthors([...authors, { userID: '', name: '' }])}><Plus aria-hidden="true" />添加作者</Button>{!validAuthors(mode, authors) && <Alert tone="danger">请至少添加一位作者，用户 ID 必须是非零开头的数字且不能重复。</Alert>}</div>}</>
 }
 
 function BilibiliSourceDialog({ busy, error, onClose, onSave }: { busy: boolean; error: string; onClose: () => void; onSave: (value: BilibiliSourceDraft) => void }) {

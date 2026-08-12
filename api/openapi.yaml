@@ -630,10 +630,10 @@ paths:
       operationId: deleteBilibiliSession
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
       responses: {'204': {description: Bilibili account disconnected.}}
-  /api/v4/accounts/zsxq/token:
-    post:
+  /api/v4/accounts/zsxq/credential:
+    put:
       tags: [accounts]
-      operationId: importZSXQToken
+      operationId: updateZSXQCredential
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
       requestBody:
         required: true
@@ -642,20 +642,21 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [cookie]
-              properties: {cookie: {type: string, minLength: 1}}
+              required: [api_key]
+              properties: {api_key: {type: string, minLength: 1, maxLength: 8192, writeOnly: true}}
       responses:
-        '201':
+        '200':
           description: Connected Knowledge Planet account.
           content: {application/json: {schema: {$ref: '#/components/schemas/PlatformAccount'}}}
-        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '403': {$ref: '#/components/responses/PermissionError'}
         '422': {$ref: '#/components/responses/InvalidRequest'}
-  /api/v4/accounts/zsxq/session:
+        '429': {$ref: '#/components/responses/RateLimitError'}
+        '502': {$ref: '#/components/responses/UpstreamError'}
     delete:
       tags: [accounts]
-      operationId: deleteZSXQSession
+      operationId: deleteZSXQCredential
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
-      responses: {'204': {description: Knowledge Planet account disconnected.}}
+      responses: {'204': {description: Knowledge Planet credential deleted.}}
   /api/v4/accounts/zsxq/groups:
     get:
       tags: [accounts]
@@ -919,8 +920,17 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    PermissionError:
+      description: The authenticated upstream account lacks permission for the operation.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
     RateLimitError:
-      description: Authentication attempts are rate limited.
+      description: The request was rate limited.
       headers:
         X-Request-ID:
           $ref: '#/components/headers/RequestID'
@@ -929,7 +939,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
     UpstreamError:
-      description: Upstream notification provider failed.
+      description: An upstream service failed.
       headers:
         X-Request-ID:
           $ref: '#/components/headers/RequestID'
