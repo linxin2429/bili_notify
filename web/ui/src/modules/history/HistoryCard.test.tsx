@@ -46,8 +46,8 @@ describe('HistoryCard', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.content.mockResolvedValue({ content: base, attachments: [
-      { id: 'img', content_id: base.id, external_id: 'img', type: 'image', local_path: 'a.jpg', file_name: 'a.jpg' },
-      { id: 'file', content_id: base.id, external_id: 'file', type: 'file', file_name: '资料.pdf', size: 2048, local_path: 'docs/file.pdf', localize_error: '预算不足' },
+      { id: 'img', content_id: base.id, external_id: 'img', type: 'image', localized: true, file_name: 'a.jpg' },
+      { id: 'file', content_id: base.id, external_id: 'file', type: 'file', file_name: '资料.pdf', size: 2048, localized: true, localize_error: '预算不足' },
     ] })
     api.contentComments.mockResolvedValue({ children: [], incomplete: false })
   })

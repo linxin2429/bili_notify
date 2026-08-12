@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-    "/api/v3/session": {
+    "/api/v4/session": {
         parameters: {
             query?: never;
             header?: never;
@@ -20,7 +20,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/setup": {
+    "/api/v4/setup": {
         parameters: {
             query?: never;
             header?: never;
@@ -36,7 +36,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/session/password": {
+    "/api/v4/session/password": {
         parameters: {
             query?: never;
             header?: never;
@@ -52,7 +52,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/runtime": {
+    "/api/v4/runtime": {
         parameters: {
             query?: never;
             header?: never;
@@ -68,7 +68,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/settings": {
+    "/api/v4/settings": {
         parameters: {
             query?: never;
             header?: never;
@@ -84,7 +84,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/channels": {
+    "/api/v4/channels": {
         parameters: {
             query?: never;
             header?: never;
@@ -100,7 +100,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/channels/{id}": {
+    "/api/v4/channels/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -118,7 +118,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/channels/{id}/test": {
+    "/api/v4/channels/{id}/test": {
         parameters: {
             query?: never;
             header?: never;
@@ -136,7 +136,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/channels/{id}/microsoft-login": {
+    "/api/v4/channels/{id}/microsoft-login": {
         parameters: {
             query?: never;
             header?: never;
@@ -154,7 +154,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/deliveries": {
+    "/api/v4/deliveries": {
         parameters: {
             query?: never;
             header?: never;
@@ -170,7 +170,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/deliveries/{id}/retry": {
+    "/api/v4/deliveries/{id}/retry": {
         parameters: {
             query?: never;
             header?: never;
@@ -188,7 +188,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/microsoft-logins": {
+    "/api/v4/microsoft-logins": {
         parameters: {
             query?: never;
             header?: never;
@@ -204,7 +204,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/audit-logs": {
+    "/api/v4/audit-logs": {
         parameters: {
             query?: never;
             header?: never;
@@ -220,7 +220,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/status": {
+    "/api/v4/ai/status": {
         parameters: {
             query?: never;
             header?: never;
@@ -236,7 +236,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/profiles": {
+    "/api/v4/ai/profiles": {
         parameters: {
             query?: never;
             header?: never;
@@ -252,7 +252,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/profiles/{id}": {
+    "/api/v4/ai/profiles/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -270,7 +270,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/profiles/{id}/test": {
+    "/api/v4/ai/profiles/{id}/test": {
         parameters: {
             query?: never;
             header?: never;
@@ -288,7 +288,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/profiles/{id}/availability": {
+    "/api/v4/ai/profiles/{id}/availability": {
         parameters: {
             query?: never;
             header?: never;
@@ -306,7 +306,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/prompts": {
+    "/api/v4/ai/prompts": {
         parameters: {
             query?: never;
             header?: never;
@@ -322,7 +322,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/prompts/{id}": {
+    "/api/v4/ai/prompts/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -340,7 +340,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/transcriptions": {
+    "/api/v4/ai/transcriptions": {
         parameters: {
             query?: never;
             header?: never;
@@ -356,7 +356,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/summaries": {
+    "/api/v4/ai/summaries": {
         parameters: {
             query?: never;
             header?: never;
@@ -372,7 +372,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/jobs": {
+    "/api/v4/ai/jobs": {
         parameters: {
             query?: never;
             header?: never;
@@ -388,7 +388,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/jobs/{id}": {
+    "/api/v4/ai/jobs/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -406,7 +406,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/jobs/{id}/cancel": {
+    "/api/v4/ai/jobs/{id}/cancel": {
         parameters: {
             query?: never;
             header?: never;
@@ -424,7 +424,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ai/jobs/{id}/retry": {
+    "/api/v4/ai/jobs/{id}/retry": {
         parameters: {
             query?: never;
             header?: never;
@@ -442,7 +442,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/ws": {
+    "/api/v4/ws": {
         parameters: {
             query?: never;
             header?: never;
@@ -462,7 +462,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/accounts": {
+    "/api/v4/accounts": {
         parameters: {
             query?: never;
             header?: never;
@@ -478,7 +478,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/accounts/bilibili/qr": {
+    "/api/v4/accounts/bilibili/qr": {
         parameters: {
             query?: never;
             header?: never;
@@ -494,7 +494,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/accounts/bilibili/qr/{id}": {
+    "/api/v4/accounts/bilibili/qr/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -510,7 +510,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/accounts/bilibili/session": {
+    "/api/v4/accounts/bilibili/session": {
         parameters: {
             query?: never;
             header?: never;
@@ -526,7 +526,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/accounts/zsxq/sms-code": {
+    "/api/v4/accounts/zsxq/sms-code": {
         parameters: {
             query?: never;
             header?: never;
@@ -542,7 +542,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/accounts/zsxq/session": {
+    "/api/v4/accounts/zsxq/session": {
         parameters: {
             query?: never;
             header?: never;
@@ -558,7 +558,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/accounts/zsxq/sync-sources": {
+    "/api/v4/accounts/zsxq/sync-sources": {
         parameters: {
             query?: never;
             header?: never;
@@ -574,7 +574,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/sources": {
+    "/api/v4/sources": {
         parameters: {
             query?: never;
             header?: never;
@@ -590,7 +590,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/sources/{id}": {
+    "/api/v4/sources/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -608,7 +608,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/contents": {
+    "/api/v4/contents": {
         parameters: {
             query?: never;
             header?: never;
@@ -624,7 +624,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/contents/{id}": {
+    "/api/v4/contents/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -640,7 +640,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/contents/{id}/comments": {
+    "/api/v4/contents/{id}/comments": {
         parameters: {
             query?: never;
             header?: never;
@@ -656,7 +656,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/contents/{id}/attachments/{attachment_id}": {
+    "/api/v4/contents/{id}/attachments/{attachment_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -846,7 +846,7 @@ export interface components {
             /** Format: int64 */
             duration_sec?: number;
             remote_host?: string;
-            local_path?: string;
+            localized: boolean;
             localize_error?: string;
         };
         CommentTreeNode: {
@@ -858,23 +858,17 @@ export interface components {
             parent_id?: string;
             author_id?: string;
             /** @enum {string} */
-            author_role?: "owner" | "admin" | "guest" | "partner" | "member" | "up";
+            author_role: "owner" | "admin" | "guest" | "partner" | "member" | "up";
             /** Format: date-time */
             updated_at?: string;
-            /** Format: date-time */
-            first_seen_at?: string;
             /** Format: date-time */
             deleted_at?: string;
             media?: components["schemas"]["Attachment"][];
             children?: components["schemas"]["CommentTreeNode"][];
-            rpid: string;
-            parent?: string;
-            mid: string;
             name: string;
             message: string;
             /** Format: date-time */
-            time: string;
-            is_up?: boolean;
+            published_at: string;
             is_trigger?: boolean;
         };
         ContentPage: {
@@ -950,10 +944,11 @@ export interface components {
         Delivery: {
             id: string;
             /** @enum {string} */
-            kind: "content" | "comment_digest" | "ai";
-            dynamic?: components["schemas"]["DynamicPreview"];
-            comment?: components["schemas"]["CommentPreview"];
-            ai?: components["schemas"]["AIDeliveryPreview"];
+            kind: "content" | "comment" | "ai" | "system";
+            /** @enum {string} */
+            platform?: "bilibili" | "zsxq";
+            source_id?: string;
+            content_id?: string;
             channel_id: string;
             /** @enum {string} */
             state: "pending" | "blocked";
@@ -963,38 +958,8 @@ export interface components {
             last_error?: string;
             /** Format: date-time */
             created_at: string;
-        };
-        DynamicPreview: {
-            id: string;
-            uid: string;
-            up_name: string;
-            type: string;
-            /** Format: date-time */
-            published_at: string;
-            summary: string;
-            url: string;
-        };
-        CommentPreview: {
-            rpid: string;
-            up_uid: string;
-            up_name: string;
-            content_type: string;
-            content_id: string;
-            content_title?: string;
-            content_url: string;
-            /** Format: date-time */
-            published_at: string;
-        };
-        AIDeliveryPreview: {
-            job_id: string;
-            dynamic_id: string;
-            up_name?: string;
             title?: string;
-            /** @enum {string} */
-            stage: "transcription" | "summary";
-            succeeded: boolean;
-            summary: string;
-            error_message?: string;
+            summary?: string;
         };
         SentStatus: {
             /** @constant */
@@ -1121,6 +1086,21 @@ export interface components {
             page?: number;
             profile_id: string;
         };
+        AIContentSnapshot: {
+            content_id: string;
+            bvid?: string;
+            author?: string;
+            title?: string;
+            url?: string;
+        };
+        AIJobTranscriptionInput: {
+            bvid: string;
+            page?: number;
+        };
+        AIJobSummaryInput: {
+            text?: string;
+            transcription_job_id?: string;
+        };
         AISummaryInput: {
             client_request_id: string;
             text?: string;
@@ -1169,15 +1149,16 @@ export interface components {
             prompt_id?: string;
             /** @enum {string} */
             origin: "workbench" | "dynamic";
-            source_dynamic_id?: string;
+            source_content_id?: string;
             depends_on_job_id?: string;
             attempts: number;
             error_code?: string;
             last_error?: string;
-            input?: {
-                [key: string]: unknown;
-            };
-            result?: components["schemas"]["AITranscriptionResult"] | components["schemas"]["AISummaryResult"];
+            source?: components["schemas"]["AIContentSnapshot"];
+            transcription_input?: components["schemas"]["AIJobTranscriptionInput"];
+            summary_input?: components["schemas"]["AIJobSummaryInput"];
+            transcription_result?: components["schemas"]["AITranscriptionResult"];
+            summary_result?: components["schemas"]["AISummaryResult"];
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */

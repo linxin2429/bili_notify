@@ -255,7 +255,7 @@ func (s *Server) createAITranscriptionAPI(w http.ResponseWriter, r *http.Request
 	}
 	job, created, err := s.store.WithContext(r.Context()).CreateAIJob(model.AIJob{
 		ClientRequestID: input.ClientRequestID, Kind: model.AIJobTranscription, ProfileID: input.ProfileID,
-		Input: model.AITranscriptionInput{BVID: input.BVID, Page: input.Page},
+		TranscriptionInput: &model.AITranscriptionInput{BVID: input.BVID, Page: input.Page},
 	})
 	if err == nil {
 		setAuditResourceID(r, job.ID)
@@ -289,7 +289,7 @@ func (s *Server) createAISummaryAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	job, created, err := s.store.WithContext(r.Context()).CreateAIJob(model.AIJob{
 		ClientRequestID: input.ClientRequestID, Kind: model.AIJobSummary, ProfileID: input.ProfileID, PromptID: input.PromptID,
-		Input: model.AISummaryInput{Text: input.Text, TranscriptionID: input.TranscriptionJobID},
+		SummaryInput: &model.AISummaryInput{Text: input.Text, TranscriptionID: input.TranscriptionJobID},
 	})
 	if err == nil {
 		setAuditResourceID(r, job.ID)

@@ -16,11 +16,11 @@ describe('resource transport', () => {
 
   it('builds every read endpoint from typed resource parameters', async () => {
     const responses = new Map<string, unknown>([
-      ['/api/v3/runtime', runtime], ['/api/v3/settings', settings], ['/api/v3/accounts', [account]], ['/api/v3/sources?platform=bilibili', [source]],
-      ['/api/v3/contents?platform=bilibili&limit=20', page([content])], ['/api/v3/contents/bilibili%3Acontent%3Ad', contentDetail],
-      ['/api/v3/contents/bilibili%3Acontent%3Ad/comments', commentTree], ['/api/v3/channels', [channel]],
-      ['/api/v3/deliveries?limit=20&after=cursor', page([makeDelivery()])], ['/api/v3/accounts/bilibili/qr', null], ['/api/v3/microsoft-logins', []],
-      ['/api/v3/audit-logs?action=up.create', page([makeAudit({ action: 'up.create' })])],
+      ['/api/v4/runtime', runtime], ['/api/v4/settings', settings], ['/api/v4/accounts', [account]], ['/api/v4/sources?platform=bilibili', [source]],
+      ['/api/v4/contents?platform=bilibili&limit=20', page([content])], ['/api/v4/contents/bilibili%3Acontent%3Ad', contentDetail],
+      ['/api/v4/contents/bilibili%3Acontent%3Ad/comments', commentTree], ['/api/v4/channels', [channel]],
+      ['/api/v4/deliveries?limit=20&after=cursor', page([makeDelivery()])], ['/api/v4/accounts/bilibili/qr', null], ['/api/v4/microsoft-logins', []],
+      ['/api/v4/audit-logs?action=up.create', page([makeAudit({ action: 'up.create' })])],
     ])
     const fetch = vi.fn(async (input: string | URL | Request) => json(responses.get(requestPath(input))))
     vi.stubGlobal('fetch', fetch)
@@ -74,7 +74,7 @@ describe('resource transport', () => {
     expect(fetch).toHaveBeenCalledTimes(13)
     for (const [, init] of fetch.mock.calls) expect(new Headers(init?.headers).get('X-CSRF-Token')).toBe('csrf')
     expect(fetch.mock.calls.map(([path]) => requestPath(path))).toEqual(expect.arrayContaining([
-      '/api/v3/sources/bilibili%3Aup%3A4%2F2', '/api/v3/channels/c%2F1', '/api/v3/deliveries/d%2F1/retry', '/api/v3/accounts/bilibili/qr/login%2F1',
+      '/api/v4/sources/bilibili%3Aup%3A4%2F2', '/api/v4/channels/c%2F1', '/api/v4/deliveries/d%2F1/retry', '/api/v4/accounts/bilibili/qr/login%2F1',
     ]))
     expect(fetch.mock.calls[1]?.[1]).toMatchObject({ method: 'PUT', body: JSON.stringify({ name: '改名', note: '备注', enabled: false }) })
     expect(fetch.mock.calls[4]?.[1]).toMatchObject({
@@ -101,15 +101,15 @@ describe('resource transport', () => {
     await resources.updateAIProfileAvailability('csrf', profile.id, false)
     await resources.testAIProfile('csrf', profile.id)
 
-    expect(fetch).toHaveBeenCalledWith('/api/v3/ai/profiles/profile%2F1', expect.objectContaining({
+    expect(fetch).toHaveBeenCalledWith('/api/v4/ai/profiles/profile%2F1', expect.objectContaining({
       method: 'PUT',
       body: JSON.stringify({
         name: '转写', kind: 'transcription', base_url: 'https://example.com/v1', model: 'gpt-transcribe',
         api_key: '', language: 'zh', timeout_sec: 600, enabled: true, default: true,
       }),
     }))
-    expect(fetch).toHaveBeenCalledWith('/api/v3/ai/profiles/profile%2F1/availability', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ enabled: false }) }))
-    expect(fetch).toHaveBeenCalledWith('/api/v3/ai/profiles/profile%2F1/test', expect.objectContaining({ method: 'POST' }))
+    expect(fetch).toHaveBeenCalledWith('/api/v4/ai/profiles/profile%2F1/availability', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ enabled: false }) }))
+    expect(fetch).toHaveBeenCalledWith('/api/v4/ai/profiles/profile%2F1/test', expect.objectContaining({ method: 'POST' }))
   })
 })
 

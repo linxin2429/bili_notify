@@ -10,7 +10,7 @@ import {
 import type { AIProfileDraft, AIPromptDraft, AuditQuery, ChannelDraft, ContentQuery, RuntimeSettings, Source } from './types'
 import { queryString, requestJSON } from './client'
 
-const apiRoot = '/api/v3'
+const apiRoot = '/api/v4'
 const array = <T extends z.ZodType>(schema: T) => z.array(schema)
 
 export const resources = {

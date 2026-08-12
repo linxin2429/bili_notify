@@ -1,77 +1,104 @@
 {
-  "dynamics": {
-    "items": [
-      {
-        "id": "dynamic-1",
-        "uid": "42",
-        "up_name": "Contract UP",
-        "type": "DYNAMIC_TYPE_AV",
-        "published_at": "2026-08-06T01:02:03Z",
-        "discovered_at": "2026-08-06T01:03:03Z",
-        "baseline": false,
-        "title": "Contract video",
-        "summary": "Contract summary",
-        "url": "https://t.bilibili.com/1",
-        "media": [{"kind":"cover","url":"https://example.com/cover.jpg","width":1280,"height":720}],
-        "stats": {"forwards":1,"comments":2,"likes":3},
-        "video": {"duration":"01:23","views":"456","danmaku":"7"},
-        "original": {"id":"original-1","summary":"Original summary","url":"https://t.bilibili.com/0"}
-      }
-    ],
+  "contents": {
+    "items": [{
+      "id": "bilibili:content:dynamic-1",
+      "platform": "bilibili",
+      "source_id": "bilibili:up:42",
+      "external_id": "dynamic-1",
+      "author_id": "42",
+      "author_name": "Contract UP",
+      "upstream_type": "DYNAMIC_TYPE_AV",
+      "type": "video",
+      "title": "Contract video",
+      "text": "Contract summary",
+      "url": "https://t.bilibili.com/1",
+      "published_at": "2026-08-06T01:02:03Z",
+      "first_seen_at": "2026-08-06T01:03:03Z",
+      "last_synced_at": "2026-08-06T01:04:03Z",
+      "stats": {"comments":2,"forwards":1,"likes":3},
+      "baseline": false
+    }],
     "page": {"next_cursor":"","has_more":false}
   },
-  "comments": {
-    "items": [
-      {
-        "rpid":"reply-1",
-        "up_uid":"42",
-        "up_name":"Contract UP",
-        "content_type":"video",
-        "content_id":"BV1contract",
-        "content_title":"Contract video",
-        "content_url":"https://www.bilibili.com/video/BV1contract",
-        "published_at":"2026-08-06T01:02:03Z",
-        "discovered_at":"2026-08-06T01:03:03Z",
-        "baseline":false
-      }
-    ],
-    "page":{"next_cursor":"","has_more":false}
+  "content_detail": {
+    "content": {
+      "id": "bilibili:content:dynamic-1",
+      "platform": "bilibili",
+      "source_id": "bilibili:up:42",
+      "external_id": "dynamic-1",
+      "author_id": "42",
+      "author_name": "Contract UP",
+      "upstream_type": "DYNAMIC_TYPE_AV",
+      "type": "video",
+      "title": "Contract video",
+      "text": "Contract summary",
+      "url": "https://t.bilibili.com/1",
+      "published_at": "2026-08-06T01:02:03Z",
+      "first_seen_at": "2026-08-06T01:03:03Z",
+      "last_synced_at": "2026-08-06T01:04:03Z",
+      "stats": {"comments":2,"forwards":1,"likes":3},
+      "baseline": false
+    },
+    "attachments": [{
+      "id": "bilibili:content:dynamic-1:attachment:cover",
+      "content_id": "bilibili:content:dynamic-1",
+      "external_id": "cover",
+      "type": "image",
+      "file_name": "cover.jpg",
+      "mime": "image/jpeg",
+      "size": 1024,
+      "width": 1280,
+      "height": 720,
+      "remote_host": "i0.hdslb.com",
+      "localized": true
+    }]
   },
-  "comment_detail": {
-    "rpid":"reply-1",
-    "up_uid":"42",
-    "up_name":"Contract UP",
-    "content_type":"video",
-    "content_id":"BV1contract",
-    "content_title":"Contract video",
-    "content_url":"https://www.bilibili.com/video/BV1contract",
-    "published_at":"2026-08-06T01:02:03Z",
-    "thread":[
-      {"rpid":"root-1","mid":"100","name":"Viewer","message":"Question","time":"2026-08-06T01:01:03Z"},
-      {"rpid":"reply-1","parent":"root-1","mid":"42","name":"Contract UP","message":"Answer","time":"2026-08-06T01:02:03Z","is_up":true,"is_trigger":true}
-    ]
+  "comment_tree": {
+    "children": [{
+      "id": "bilibili:comment:root-1",
+      "platform": "bilibili",
+      "content_id": "bilibili:content:dynamic-1",
+      "root_id": "bilibili:comment:root-1",
+      "author_id": "100",
+      "author_role": "member",
+      "name": "Viewer",
+      "message": "Question",
+      "published_at": "2026-08-06T01:01:03Z",
+      "children": [{
+        "id": "bilibili:comment:reply-1",
+        "platform": "bilibili",
+        "content_id": "bilibili:content:dynamic-1",
+        "root_id": "bilibili:comment:root-1",
+        "parent_id": "bilibili:comment:root-1",
+        "author_id": "42",
+        "author_role": "up",
+        "name": "Contract UP",
+        "message": "Answer",
+        "published_at": "2026-08-06T01:02:03Z",
+        "is_trigger": true
+      }]
+    }],
+    "incomplete": false
   },
   "audit_logs": {
-    "items":[
-      {
-        "id":1,
-        "occurred_at":"2026-08-06T01:02:03Z",
-        "request_id":"request-1",
-        "actor":"administrator",
-        "session_id":"session-1",
-        "remote_ip":"192.0.2.1",
-        "user_agent":"contract-test",
-        "action":"up.create",
-        "resource_type":"up",
-        "resource_id":"42",
-        "outcome":"success",
-        "http_method":"POST",
-        "route":"/api/v3/ups",
-        "status_code":201,
-        "duration_ms":5,
-        "details":{"enabled":true}
-      }
-    ],
+    "items":[{
+      "id":1,
+      "occurred_at":"2026-08-06T01:02:03Z",
+      "request_id":"request-1",
+      "actor":"administrator",
+      "session_id":"session-1",
+      "remote_ip":"192.0.2.1",
+      "user_agent":"contract-test",
+      "action":"up.create",
+      "resource_type":"up",
+      "resource_id":"42",
+      "outcome":"success",
+      "http_method":"POST",
+      "route":"/api/v4/ups",
+      "status_code":201,
+      "duration_ms":5,
+      "details":{"enabled":true}
+    }],
     "page":{"next_cursor":"","has_more":false}
   }
 }

@@ -30,6 +30,7 @@ import (
 
 var (
 	ErrNotFound                       = errors.New("record not found")
+	ErrSourceExists                   = errors.New("source already exists")
 	ErrInitialized                    = errors.New("administrator is already initialized")
 	ErrRuntimeSettingsVersionMismatch = errors.New("runtime settings version mismatch")
 	// ErrDeliveryNotBlocked reports that a delivery cannot be manually retried.
@@ -81,7 +82,7 @@ func Open(ctx context.Context, path string, v *vault.Vault, providers ...oteltra
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("securing database file: %w", err)
 	}
-	if err := runMigrations(ctx, sqlDB); err != nil {
+	if err := runMigrations(ctx, sqlDB, v); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
 	}
@@ -202,7 +203,6 @@ func (s *Store) RuntimeSettings() (model.RuntimeSettings, error) {
 	if record.Version != runtimeSettingsVersion && record.Version != 2 {
 		return model.RuntimeSettings{}, fmt.Errorf("%w: found version %d, want %d; start with a fresh data volume", ErrRuntimeSettingsVersionMismatch, record.Version, runtimeSettingsVersion)
 	}
-	record.RuntimeSettings = collectorCompatibilitySettings(record.RuntimeSettings)
 	if err := record.RuntimeSettings.Validate(); err != nil {
 		return model.RuntimeSettings{}, fmt.Errorf("validating stored runtime settings: %w", err)
 	}
@@ -226,7 +226,6 @@ func (s *Store) runtimeSettingsRecord() (runtimeSettingsRecord, error) {
 }
 
 func (s *Store) PutRuntimeSettings(settings model.RuntimeSettings) error {
-	settings = collectorCompatibilitySettings(settings)
 	if err := settings.Validate(); err != nil {
 		return err
 	}
@@ -247,21 +246,14 @@ func (s *Store) PutRuntimeSettings(settings model.RuntimeSettings) error {
 	})
 }
 
-// collectorCompatibilitySettings is not an API compatibility layer: it maps
-// the v3 platform-specific settings into the still-internal Bilibili engine
-// fields until that engine is split into the same collector shape as ZSXQ.
-func collectorCompatibilitySettings(settings model.RuntimeSettings) model.RuntimeSettings {
-	return settings
-}
-
 func (s *Store) ListUPs() ([]model.UP, error) {
-	var rows []upRow
-	if err := s.db.Find(&rows).Error; err != nil {
+	var rows []sourceRow
+	if err := s.db.Where("platform = ?", model.PlatformBilibili).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	ups := make([]model.UP, 0, len(rows))
 	for _, row := range rows {
-		ups = append(ups, row.toModel())
+		ups = append(ups, upFromSourceRow(row))
 	}
 	if err := s.enrichUPRouting(ups); err != nil {
 		return nil, err
@@ -271,15 +263,15 @@ func (s *Store) ListUPs() ([]model.UP, error) {
 }
 
 func (s *Store) UP(uid string) (model.UP, error) {
-	var row upRow
-	err := s.db.Where("uid = ?", uid).Take(&row).Error
+	var row sourceRow
+	err := s.db.Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return model.UP{}, ErrNotFound
 	}
 	if err != nil {
 		return model.UP{}, err
 	}
-	ups := []model.UP{row.toModel()}
+	ups := []model.UP{upFromSourceRow(row)}
 	if err := s.enrichUPRouting(ups); err != nil {
 		return model.UP{}, err
 	}
@@ -292,12 +284,13 @@ func (s *Store) PutUP(up model.UP) error {
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var count int64
-		if err := tx.Model(&upRow{}).Where("uid = ?", up.UID).Count(&count).Error; err != nil {
+		sourceID := model.SourceID(model.PlatformBilibili, up.UID)
+		if err := tx.Model(&sourceRow{}).Where("id = ?", sourceID).Count(&count).Error; err != nil {
 			return err
 		}
 		if count == 0 {
 			var total int64
-			if err := tx.Model(&upRow{}).Count(&total).Error; err != nil {
+			if err := tx.Model(&sourceRow{}).Where("platform = ?", model.PlatformBilibili).Count(&total).Error; err != nil {
 				return err
 			}
 			if total >= 100 {
@@ -306,18 +299,14 @@ func (s *Store) PutUP(up model.UP) error {
 		}
 		wasEnabled := false
 		if count > 0 {
-			var existing upRow
-			if err := tx.Where("uid = ?", up.UID).Take(&existing).Error; err != nil {
+			var existing sourceRow
+			if err := tx.Where("id = ?", sourceID).Take(&existing).Error; err != nil {
 				return err
 			}
 			wasEnabled = existing.Enabled != 0
 		}
-		row := upFromModel(up)
-		if err := tx.Save(&row).Error; err != nil {
-			return err
-		}
 		source := model.Source{
-			ID: model.SourceID(model.PlatformBilibili, up.UID), Platform: model.PlatformBilibili,
+			ID: sourceID, Platform: model.PlatformBilibili,
 			Type: model.SourceBilibiliUP, ExternalID: up.UID, Name: up.Name, Enabled: up.Enabled,
 			BaselineState: model.BaselinePending,
 		}
@@ -325,9 +314,10 @@ func (s *Store) PutUP(up model.UP) error {
 			source.BaselineState = model.BaselineComplete
 		}
 		sourceRow := sourceFromModel(source)
+		sourceRow.ExclusiveBaselineReady = boolToInt(up.ExclusiveBaselineReady)
 		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"name", "enabled", "baseline_state"}),
+			DoUpdates: clause.AssignmentColumns([]string{"name", "enabled", "baseline_state", "exclusive_baseline_ready"}),
 		}).Create(&sourceRow).Error; err != nil {
 			return err
 		}
@@ -339,89 +329,20 @@ func (s *Store) PutUP(up model.UP) error {
 }
 
 func (s *Store) DeleteUP(uid string) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		var dynamicIDs []string
-		if err := tx.Model(&dynamicRow{}).Where("uid = ?", uid).Pluck("id", &dynamicIDs).Error; err != nil {
-			return err
-		}
-		dynamicSet := make(map[string]struct{}, len(dynamicIDs))
-		for _, id := range dynamicIDs {
-			dynamicSet[model.ContentID(model.PlatformBilibili, id)] = struct{}{}
-		}
-		var deliveryRows []deliveryRow
-		if err := tx.Find(&deliveryRows).Error; err != nil {
-			return err
-		}
-		sourceID := model.SourceID(model.PlatformBilibili, uid)
-		for _, row := range deliveryRows {
-			delivery, err := decodeDelivery(row)
-			if err != nil {
-				return err
-			}
-			belongsToUP := delivery.EffectiveKind() == model.DeliveryKindDynamic && (delivery.Dynamic.UID == uid || delivery.Dynamic.UID == sourceID)
-			if delivery.EffectiveKind() == model.DeliveryKindComment && delivery.Comment != nil {
-				belongsToUP = delivery.Comment.UPUID == uid || delivery.Comment.UPUID == sourceID
-			}
-			if delivery.EffectiveKind() == model.DeliveryKindAI && delivery.AI != nil {
-				_, belongsToUP = dynamicSet[delivery.AI.DynamicID]
-			}
-			if belongsToUP {
-				if err := tx.Where("id = ?", row.ID).Delete(&deliveryRow{}).Error; err != nil {
-					return err
-				}
-			}
-		}
-		if err := tx.Where("uid = ?", uid).Delete(&upRow{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("uid = ?", uid).Delete(&seenDynamicRow{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("uid = ?", uid).Delete(&seenCommentRow{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("uid = ?", uid).Delete(&commentTargetRow{}).Error; err != nil {
-			return err
-		}
-		if len(dynamicIDs) > 0 {
-			contentIDs := make([]string, 0, len(dynamicIDs))
-			for _, id := range dynamicIDs {
-				contentIDs = append(contentIDs, model.ContentID(model.PlatformBilibili, id))
-			}
-			if err := tx.Where("source_dynamic_id IN ?", contentIDs).Delete(&aiJobRow{}).Error; err != nil {
-				return err
-			}
-		}
-		if err := tx.Where("uid = ?", uid).Delete(&dynamicRow{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("up_uid = ?", uid).Delete(&commentRow{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("up_uid = ?", uid).Delete(&upFollowRelationRow{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("source_id = ?", sourceID).Delete(&seenItemRow{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("source_id = ?", sourceID).Delete(&outboxRow{}).Error; err != nil {
-			return err
-		}
-		return tx.Where("id = ?", sourceID).Delete(&sourceRow{}).Error
-	})
+	return s.deleteSource(model.SourceID(model.PlatformBilibili, uid), uid)
 }
 
 func (s *Store) SetUPResult(uid, name string, at time.Time, pollErr error) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		var row upRow
-		err := tx.Where("uid = ?", uid).Take(&row).Error
+		var row sourceRow
+		err := tx.Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).Take(&row).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		up := row.toModel()
+		up := upFromSourceRow(row)
 		up.LastPollAt = at
 		if name != "" {
 			up.Name = name
@@ -434,16 +355,23 @@ func (s *Store) SetUPResult(uid, name string, at time.Time, pollErr error) error
 			up.LastError = pollErr.Error()
 			up.ConsecutiveFail++
 		}
-		row = upFromModel(up)
-		if err := tx.Save(&row).Error; err != nil {
-			return err
-		}
 		updates := map[string]any{"name": up.Name, "last_poll_at": at.Unix(), "last_error": up.LastError, "consecutive_fails": up.ConsecutiveFail}
 		if pollErr == nil {
 			updates["last_success_at"] = at.Unix()
 		}
 		return tx.Model(&sourceRow{}).Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).Updates(updates).Error
 	})
+}
+
+func upFromSourceRow(row sourceRow) model.UP {
+	return model.UP{
+		UID: row.ExternalID, Name: row.Name, Enabled: row.Enabled != 0,
+		BaselineReady:          row.BaselineState == string(model.BaselineComplete),
+		ExclusiveBaselineReady: row.ExclusiveBaselineReady != 0,
+		LastPollAt:             pointerTime(row.LastPollAt), LastSuccessAt: pointerTime(row.LastSuccessAt),
+		LastError: row.LastError, ConsecutiveFail: row.ConsecutiveFails,
+		FollowState: model.FollowUnknown, CollectionRoute: model.CollectionRouteSpace,
+	}
 }
 
 func (s *Store) ListChannels() ([]model.Channel, error) {
@@ -453,8 +381,8 @@ func (s *Store) ListChannels() ([]model.Channel, error) {
 	}
 	channels := make([]model.Channel, 0, len(rows))
 	for _, row := range rows {
-		var ch model.Channel
-		if err := openJSON(s.vault, tableChannels, row.ID, row.Sealed, &ch); err != nil {
+		ch, err := s.channelFromRow(row)
+		if err != nil {
 			return nil, err
 		}
 		channels = append(channels, ch)
@@ -472,11 +400,7 @@ func (s *Store) Channel(id string) (model.Channel, error) {
 	if err != nil {
 		return model.Channel{}, err
 	}
-	var ch model.Channel
-	if err := openJSON(s.vault, tableChannels, row.ID, row.Sealed, &ch); err != nil {
-		return model.Channel{}, err
-	}
-	return ch, nil
+	return s.channelFromRow(row)
 }
 
 func (s *Store) PutChannel(ch model.Channel) (model.Channel, error) {
@@ -493,11 +417,18 @@ func (s *Store) PutChannel(ch model.Channel) (model.Channel, error) {
 		ch.CreatedAt = now
 	}
 	ch.UpdatedAt = now
-	sealed, err := sealJSON(s.vault, tableChannels, ch.ID, ch)
+	public, secret := splitChannelSettings(ch.Settings)
+	publicJSON, err := json.Marshal(public)
 	if err != nil {
 		return model.Channel{}, err
 	}
-	if err := s.db.Save(&channelRow{ID: ch.ID, Sealed: sealed}).Error; err != nil {
+	sealed, err := sealJSON(s.vault, tableChannelSecrets, ch.ID, secret)
+	if err != nil {
+		return model.Channel{}, err
+	}
+	row := channelRow{ID: ch.ID, Name: ch.Name, Type: string(ch.Type), Enabled: boolToInt(ch.Enabled),
+		PublicSettingsJSON: string(publicJSON), SecretSealed: sealed, CreatedAt: ch.CreatedAt.Unix(), UpdatedAt: ch.UpdatedAt.Unix()}
+	if err := s.db.Save(&row).Error; err != nil {
 		return model.Channel{}, err
 	}
 	return ch, nil
@@ -513,7 +444,9 @@ func (s *Store) UpdateChannelSettings(id string, settings map[string]string) (mo
 			}
 			return err
 		}
-		if err := openJSON(s.vault, tableChannels, row.ID, row.Sealed, &channel); err != nil {
+		var err error
+		channel, err = s.channelFromRow(row)
+		if err != nil {
 			return err
 		}
 		if channel.Settings == nil {
@@ -526,19 +459,41 @@ func (s *Store) UpdateChannelSettings(id string, settings map[string]string) (mo
 		if err := channel.Validate(); err != nil {
 			return err
 		}
-		sealed, err := sealJSON(s.vault, tableChannels, channel.ID, channel)
+		public, secret := splitChannelSettings(channel.Settings)
+		publicJSON, err := json.Marshal(public)
 		if err != nil {
 			return err
 		}
-		return tx.Save(&channelRow{ID: channel.ID, Sealed: sealed}).Error
+		sealed, err := sealJSON(s.vault, tableChannelSecrets, channel.ID, secret)
+		if err != nil {
+			return err
+		}
+		return tx.Save(&channelRow{ID: channel.ID, Name: channel.Name, Type: string(channel.Type), Enabled: boolToInt(channel.Enabled),
+			PublicSettingsJSON: string(publicJSON), SecretSealed: sealed, CreatedAt: channel.CreatedAt.Unix(), UpdatedAt: channel.UpdatedAt.Unix()}).Error
 	})
 	return channel, err
+}
+
+func (s *Store) channelFromRow(row channelRow) (model.Channel, error) {
+	settings := make(map[string]string)
+	if err := json.Unmarshal([]byte(row.PublicSettingsJSON), &settings); err != nil {
+		return model.Channel{}, fmt.Errorf("decoding channel %s public settings: %w", row.ID, err)
+	}
+	var secret map[string]string
+	if err := openJSON(s.vault, tableChannelSecrets, row.ID, row.SecretSealed, &secret); err != nil {
+		return model.Channel{}, fmt.Errorf("opening channel %s secrets: %w", row.ID, err)
+	}
+	for key, value := range secret {
+		settings[key] = value
+	}
+	return model.Channel{ID: row.ID, Name: row.Name, Type: model.ChannelType(row.Type), Enabled: row.Enabled != 0,
+		Settings: settings, CreatedAt: time.Unix(row.CreatedAt, 0), UpdatedAt: time.Unix(row.UpdatedAt, 0)}, nil
 }
 
 func (s *Store) DeleteChannel(id string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var count int64
-		if err := tx.Model(&deliveryRow{}).Where("channel_id = ?", id).Count(&count).Error; err != nil {
+		if err := tx.Model(&outboxRow{}).Where("channel_id = ?", id).Count(&count).Error; err != nil {
 			return err
 		}
 		if count > 0 {
@@ -556,26 +511,14 @@ func (s *Store) DeleteChannel(id string) error {
 }
 
 func (s *Store) SaveSession(session model.BiliSession) error {
-	sealed, err := sealJSON(s.vault, tableAuthSession, authSessionID, session)
-	if err != nil {
-		return err
-	}
 	sealedCookies, err := sealJSON(s.vault, tablePlatformAccounts, string(model.PlatformBilibili), session.Cookies)
 	if err != nil {
 		return err
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		var previous model.BiliSession
-		var row authSessionRow
-		err := tx.Where("id = ?", authSessionID).Take(&row).Error
-		if err == nil {
-			if err := openJSON(s.vault, tableAuthSession, authSessionID, row.Sealed, &previous); err != nil {
-				return err
-			}
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		if err := tx.Save(&authSessionRow{ID: authSessionID, Sealed: sealed}).Error; err != nil {
+		var previous platformAccountRow
+		err := tx.Where("platform = ?", model.PlatformBilibili).Take(&previous).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
 		now := session.UpdatedAt
@@ -601,7 +544,7 @@ func (s *Store) SaveSession(session model.BiliSession) error {
 		if err := tx.Save(&account).Error; err != nil {
 			return err
 		}
-		if session.AccountUID == "" || session.AccountUID == previous.AccountUID {
+		if session.AccountUID == "" || session.AccountUID == previous.ExternalID {
 			return nil
 		}
 		if err := tx.Where("1 = 1").Delete(&upFollowRelationRow{}).Error; err != nil {
@@ -615,33 +558,29 @@ func (s *Store) SaveSession(session model.BiliSession) error {
 }
 
 func (s *Store) Session() (model.BiliSession, error) {
-	var row authSessionRow
-	err := s.db.Where("id = ?", authSessionID).Take(&row).Error
+	var row platformAccountRow
+	err := s.db.Where("platform = ?", model.PlatformBilibili).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return model.BiliSession{}, ErrNotFound
 	}
 	if err != nil {
 		return model.BiliSession{}, err
 	}
-	var session model.BiliSession
-	if err := openJSON(s.vault, tableAuthSession, authSessionID, row.Sealed, &session); err != nil {
+	var cookies map[string]string
+	if err := openJSON(s.vault, tablePlatformAccounts, string(model.PlatformBilibili), row.SealedSession, &cookies); err != nil {
 		return model.BiliSession{}, err
 	}
-	return session, nil
+	return model.BiliSession{Cookies: cookies, AccountUID: row.ExternalID, AccountName: row.DisplayName, UpdatedAt: time.Unix(row.UpdatedAt, 0)}, nil
 }
 
 func (s *Store) ClearSession() error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id = ?", authSessionID).Delete(&authSessionRow{}).Error; err != nil {
-			return err
-		}
-		return tx.Where("platform = ?", model.PlatformBilibili).Delete(&platformAccountRow{}).Error
-	})
+	return s.db.Where("platform = ?", model.PlatformBilibili).Delete(&platformAccountRow{}).Error
 }
 
 func (s *Store) Seen(uid, dynamicID string) (bool, error) {
 	var count int64
-	err := s.db.Model(&seenDynamicRow{}).Where("uid = ? AND dynamic_id = ?", uid, dynamicID).Count(&count).Error
+	err := s.db.Model(&seenItemRow{}).Where("platform = ? AND source_id = ? AND entity_type = ? AND entity_id = ?",
+		model.PlatformBilibili, model.SourceID(model.PlatformBilibili, uid), "content", model.ContentID(model.PlatformBilibili, dynamicID)).Count(&count).Error
 	return count > 0, err
 }
 
@@ -659,14 +598,30 @@ func (m DynamicBaselineMode) includes(dynamic model.Dynamic) bool {
 }
 
 // RecordDynamics archives full content and atomically marks unseen dynamics and creates deliveries.
-func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs []string, baselineMode DynamicBaselineMode) (int, error) {
+func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, _ []string, baselineMode DynamicBaselineMode) (int, error) {
 	created := 0
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		autoAI, err := automaticAIEnabledTx(tx)
 		if err != nil {
 			return err
 		}
+		existing := make(map[string]bool, len(dynamics))
+		for _, dynamic := range dynamics {
+			if dynamic.ID == "" {
+				continue
+			}
+			var count int64
+			contentID := model.ContentID(model.PlatformBilibili, dynamic.ID)
+			if err := tx.Model(&contentRow{}).Where("id = ?", contentID).Count(&count).Error; err != nil {
+				return err
+			}
+			existing[contentID] = count != 0
+		}
 		if err := archiveDynamicsTx(tx, dynamics, baselineMode); err != nil {
+			return err
+		}
+		channelIDs, err := enabledChannelIDsTx(tx)
+		if err != nil {
 			return err
 		}
 		now := time.Now()
@@ -674,26 +629,23 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 			if dynamic.ID == "" {
 				continue
 			}
-			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seenDynamicRow{
-				UID:       uid,
-				DynamicID: dynamic.ID,
-				SeenAt:    dynamic.PublishedAt.Unix(),
-			})
-			if res.Error != nil {
-				return res.Error
-			}
-			if res.RowsAffected == 0 {
+			contentID := model.ContentID(model.PlatformBilibili, dynamic.ID)
+			if existing[contentID] {
 				continue
 			}
 			if baselineMode.includes(dynamic) {
 				continue
 			}
 			origin := originTraceparent(tx.Statement.Context)
+			snapshot := dynamic
+			snapshot.ID = contentID
+			snapshot.Platform = model.PlatformBilibili
+			snapshot.UID = model.SourceID(model.PlatformBilibili, uid)
 			for _, channelID := range channelIDs {
 				d := model.Delivery{
-					ID:                dynamic.ID + ":" + channelID,
+					ID:                stableHash("content", contentID, channelID),
 					Kind:              model.DeliveryKindDynamic,
-					Dynamic:           dynamic,
+					Dynamic:           snapshot,
 					ChannelID:         channelID,
 					State:             model.DeliveryPending,
 					NextAt:            now,
@@ -705,35 +657,30 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, channelIDs 
 				}
 			}
 			if autoAI {
-				if _, err := s.createAutomaticAIJobsTx(tx, dynamic, channelIDs); err != nil {
+				if _, err := s.createAutomaticAIJobsTx(tx, dynamic, model.SourceID(model.PlatformBilibili, uid), channelIDs); err != nil {
 					return fmt.Errorf("creating automatic AI pipeline for dynamic %s: %w", dynamic.ID, err)
 				}
 			}
 			created++
 		}
 		if baselineMode != DynamicBaselineNone {
-			var row upRow
-			if err := tx.Where("uid = ?", uid).Take(&row).Error; err != nil {
+			var row sourceRow
+			if err := tx.Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).Take(&row).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return ErrNotFound
 				}
 				return err
 			}
-			up := row.toModel()
+			up := upFromSourceRow(row)
 			if baselineMode == DynamicBaselineAll {
 				up.BaselineReady = true
 			}
 			up.ExclusiveBaselineReady = true
-			updated := upFromModel(up)
-			if err := tx.Save(&updated).Error; err != nil {
-				return err
-			}
+			updates := map[string]any{"exclusive_baseline_ready": boolToInt(up.ExclusiveBaselineReady)}
 			if baselineMode == DynamicBaselineAll {
-				return tx.Model(&sourceRow{}).
-					Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).
-					Update("baseline_state", model.BaselineComplete).Error
+				updates["baseline_state"] = model.BaselineComplete
 			}
-			return nil
+			return tx.Model(&sourceRow{}).Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).Updates(updates).Error
 		}
 		return nil
 	})
@@ -750,13 +697,14 @@ func (s *Store) UpsertCommentTargets(uid string, discovered []model.CommentTarge
 	}
 	var kept []model.CommentTarget
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var rows []commentTargetRow
-		if err := tx.Where("uid = ?", uid).Find(&rows).Error; err != nil {
+		sourceID := model.SourceID(model.PlatformBilibili, uid)
+		var rows []syncTargetRow
+		if err := tx.Where("platform = ? AND source_id = ?", model.PlatformBilibili, sourceID).Find(&rows).Error; err != nil {
 			return err
 		}
 		byKey := make(map[string]model.CommentTarget, len(rows)+len(discovered))
 		for _, row := range rows {
-			t := row.toModel()
+			t := row.toCommentTarget()
 			byKey[t.Key()] = t
 		}
 		for _, target := range discovered {
@@ -787,52 +735,71 @@ func (s *Store) UpsertCommentTargets(uid string, discovered []model.CommentTarge
 			merged = merged[:n]
 		}
 		kept = merged
-		if err := tx.Where("uid = ?", uid).Delete(&commentTargetRow{}).Error; err != nil {
+		if err := tx.Where("platform = ? AND source_id = ?", model.PlatformBilibili, sourceID).Delete(&syncTargetRow{}).Error; err != nil {
 			return err
 		}
 		for _, target := range kept {
-			row := commentTargetFromModel(target)
+			row := syncTargetFromModel(target)
 			if err := tx.Create(&row).Error; err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-	return kept, err
+	if err != nil {
+		return nil, err
+	}
+	return kept, s.enrichCommentTargets(kept)
 }
 
 func (s *Store) ListCommentTargets(uid string) ([]model.CommentTarget, error) {
-	var rows []commentTargetRow
-	if err := s.db.Where("uid = ?", uid).Find(&rows).Error; err != nil {
+	var rows []syncTargetRow
+	if err := s.db.Where("platform = ? AND source_id = ?", model.PlatformBilibili, model.SourceID(model.PlatformBilibili, uid)).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	targets := make([]model.CommentTarget, 0, len(rows))
 	for _, row := range rows {
-		targets = append(targets, row.toModel())
+		targets = append(targets, row.toCommentTarget())
 	}
-	return targets, nil
+	return targets, s.enrichCommentTargets(targets)
 }
 
 func (s *Store) ListAllCommentTargets() ([]model.CommentTarget, error) {
-	var rows []commentTargetRow
-	if err := s.db.Find(&rows).Error; err != nil {
+	var rows []syncTargetRow
+	if err := s.db.Where("platform = ?", model.PlatformBilibili).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	targets := make([]model.CommentTarget, 0, len(rows))
 	for _, row := range rows {
-		targets = append(targets, row.toModel())
+		targets = append(targets, row.toCommentTarget())
 	}
-	return targets, nil
+	return targets, s.enrichCommentTargets(targets)
+}
+
+func (s *Store) enrichCommentTargets(targets []model.CommentTarget) error {
+	for index := range targets {
+		var source sourceRow
+		if err := s.db.Select("name").Where("id = ?", model.SourceID(model.PlatformBilibili, targets[index].UID)).Take(&source).Error; err != nil {
+			return err
+		}
+		var content contentRow
+		if err := s.db.Select("upstream_type").Where("id = ?", model.ContentID(model.PlatformBilibili, targets[index].DynamicID)).Take(&content).Error; err != nil {
+			return err
+		}
+		targets[index].UPName = source.Name
+		targets[index].ContentType = content.UpstreamType
+	}
+	return nil
 }
 
 func (s *Store) PutCommentTargets(uid string, targets []model.CommentTarget) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("uid = ?", uid).Delete(&commentTargetRow{}).Error; err != nil {
+		if err := tx.Where("platform = ? AND source_id = ?", model.PlatformBilibili, model.SourceID(model.PlatformBilibili, uid)).Delete(&syncTargetRow{}).Error; err != nil {
 			return err
 		}
 		for _, target := range targets {
 			target.UID = uid
-			row := commentTargetFromModel(target)
+			row := syncTargetFromModel(target)
 			if err := tx.Create(&row).Error; err != nil {
 				return err
 			}
@@ -843,95 +810,29 @@ func (s *Store) PutCommentTargets(uid string, targets []model.CommentTarget) err
 
 func (s *Store) UpdateCommentTarget(target model.CommentTarget) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		var row commentTargetRow
-		err := tx.Where("uid = ? AND comment_type = ? AND comment_oid = ?", target.UID, target.CommentType, target.CommentOID).Take(&row).Error
+		var row syncTargetRow
+		err := tx.Where("platform = ? AND source_id = ? AND comment_type = ? AND comment_oid = ?", model.PlatformBilibili,
+			model.SourceID(model.PlatformBilibili, target.UID), target.CommentType, target.CommentOID).Take(&row).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		updated := commentTargetFromModel(target)
+		updated := syncTargetFromModel(target)
 		return tx.Save(&updated).Error
 	})
 }
 
 func (s *Store) CommentSeen(uid, rpid string) (bool, error) {
 	var count int64
-	err := s.db.Model(&seenCommentRow{}).Where("uid = ? AND rpid = ?", uid, rpid).Count(&count).Error
+	err := s.db.Model(&seenItemRow{}).Where("platform = ? AND source_id = ? AND entity_type = ? AND entity_id = ?", model.PlatformBilibili,
+		model.SourceID(model.PlatformBilibili, uid), "comment", model.CommentID(model.PlatformBilibili, rpid)).Count(&count).Error
 	return count > 0, err
 }
 
-// RecordCommentNotifications archives full threads, marks UP reply rpids seen, and enqueues deliveries.
-func (s *Store) RecordCommentNotifications(target model.CommentTarget, notes []model.CommentNotification, channelIDs []string, baseline bool) (int, error) {
-	created := 0
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := archiveCommentsTx(tx, notes, baseline); err != nil {
-			return err
-		}
-		now := time.Now()
-		for _, note := range notes {
-			if note.RPID == "" {
-				continue
-			}
-			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seenCommentRow{
-				UID:    target.UID,
-				RPID:   note.RPID,
-				SeenAt: note.PublishedAt.Unix(),
-			})
-			if res.Error != nil {
-				return res.Error
-			}
-			if res.RowsAffected == 0 {
-				continue
-			}
-			if baseline {
-				continue
-			}
-			origin := originTraceparent(tx.Statement.Context)
-			for _, channelID := range channelIDs {
-				n := note
-				d := model.Delivery{
-					ID:                "comment:" + note.RPID + ":" + channelID,
-					Kind:              model.DeliveryKindComment,
-					Comment:           &n,
-					ChannelID:         channelID,
-					State:             model.DeliveryPending,
-					NextAt:            now,
-					CreatedAt:         now,
-					OriginTraceparent: origin,
-				}
-				if err := putDeliveryTx(tx, d); err != nil {
-					return err
-				}
-			}
-			created++
-		}
-		var row commentTargetRow
-		err := tx.Where("uid = ? AND comment_type = ? AND comment_oid = ?", target.UID, target.CommentType, target.CommentOID).Take(&row).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		item := row.toModel()
-		item.BaselineReady = true
-		item.LastPollAt = now
-		item.LastError = target.LastError
-		item.Closed = target.Closed
-		item.CommentCount = target.CommentCount
-		updated := commentTargetFromModel(item)
-		return tx.Save(&updated).Error
-	})
-	if err != nil {
-		return 0, err
-	}
-	return created, nil
-}
-
 func (s *Store) ListDeliveries(limit int) ([]model.Delivery, error) {
-	var rows []deliveryRow
+	var rows []outboxRow
 	q := s.db.Order("next_at ASC, id ASC")
 	if limit > 0 {
 		q = q.Limit(limit)
@@ -949,10 +850,47 @@ type DeliveryQuery struct {
 	AfterID        string
 }
 
+type DeliverySummary struct {
+	ID        string              `json:"id"`
+	Kind      string              `json:"kind"`
+	Platform  model.Platform      `json:"platform,omitempty"`
+	SourceID  string              `json:"source_id,omitempty"`
+	ContentID string              `json:"content_id,omitempty"`
+	ChannelID string              `json:"channel_id"`
+	State     model.DeliveryState `json:"state"`
+	Attempts  int                 `json:"attempts"`
+	NextAt    time.Time           `json:"next_at"`
+	LastError string              `json:"last_error,omitempty"`
+	CreatedAt time.Time           `json:"created_at"`
+	Title     string              `json:"title,omitempty"`
+	Summary   string              `json:"summary,omitempty"`
+}
+
+func (s *Store) QueryDeliverySummaries(query DeliveryQuery) ([]DeliverySummary, error) {
+	var rows []outboxRow
+	db := s.db.Select("id", "kind", "platform", "source_id", "content_id", "channel_id", "state", "attempts", "next_at", "last_error", "created_at", "title", "summary").Order("created_at DESC, id DESC")
+	if !query.AfterCreatedAt.IsZero() && strings.TrimSpace(query.AfterID) != "" {
+		db = db.Where("created_at < ? OR (created_at = ? AND id < ?)", query.AfterCreatedAt.Unix(), query.AfterCreatedAt.Unix(), query.AfterID)
+	}
+	if query.Limit > 0 {
+		db = db.Limit(query.Limit)
+	}
+	if err := db.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	items := make([]DeliverySummary, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, DeliverySummary{ID: row.ID, Kind: row.Kind, Platform: model.Platform(row.Platform), SourceID: row.SourceID,
+			ContentID: row.ContentID, ChannelID: row.ChannelID, State: model.DeliveryState(row.State), Attempts: row.Attempts,
+			NextAt: time.Unix(row.NextAt, 0), LastError: row.LastError, CreatedAt: time.Unix(row.CreatedAt, 0), Title: row.Title, Summary: row.Summary})
+	}
+	return items, nil
+}
+
 // QueryDeliveries returns deliveries ordered by immutable creation time and id
 // so scheduling updates cannot move an item across cursor boundaries.
 func (s *Store) QueryDeliveries(query DeliveryQuery) ([]model.Delivery, error) {
-	var rows []deliveryRow
+	var rows []outboxRow
 	q := s.db.Order("created_at DESC, id DESC")
 	if !query.AfterCreatedAt.IsZero() && strings.TrimSpace(query.AfterID) != "" {
 		q = q.Where("created_at < ? OR (created_at = ? AND id < ?)", query.AfterCreatedAt.Unix(), query.AfterCreatedAt.Unix(), query.AfterID)
@@ -967,7 +905,7 @@ func (s *Store) QueryDeliveries(query DeliveryQuery) ([]model.Delivery, error) {
 }
 
 func (s *Store) DueDeliveries(now time.Time, limit int) ([]model.Delivery, error) {
-	var rows []deliveryRow
+	var rows []outboxRow
 	q := s.db.Where("state = ? AND next_at <= ?", string(model.DeliveryPending), now.Unix()).Order("next_at ASC")
 	if limit > 0 {
 		q = q.Limit(limit)
@@ -978,14 +916,39 @@ func (s *Store) DueDeliveries(now time.Time, limit int) ([]model.Delivery, error
 	return decodeDeliveries(rows)
 }
 
+type OutboxStats struct {
+	Pending int64
+	Blocked int64
+	Oldest  time.Time
+}
+
+func (s *Store) DeliveryStats() (OutboxStats, error) {
+	var row struct {
+		Pending       int64  `gorm:"column:pending"`
+		Blocked       int64  `gorm:"column:blocked"`
+		OldestCreated *int64 `gorm:"column:oldest_created"`
+	}
+	err := s.db.Model(&outboxRow{}).Select(
+		"COALESCE(SUM(CASE WHEN state = 'pending' THEN 1 ELSE 0 END), 0) AS pending, " +
+			"COALESCE(SUM(CASE WHEN state = 'blocked' THEN 1 ELSE 0 END), 0) AS blocked, MIN(created_at) AS oldest_created").Scan(&row).Error
+	if err != nil {
+		return OutboxStats{}, err
+	}
+	stats := OutboxStats{Pending: row.Pending, Blocked: row.Blocked}
+	if row.OldestCreated != nil {
+		stats.Oldest = time.Unix(*row.OldestCreated, 0)
+	}
+	return stats, nil
+}
+
 func (s *Store) CompleteDelivery(id string) error {
-	return s.db.Where("id = ?", id).Delete(&deliveryRow{}).Error
+	return s.db.Where("id = ?", id).Delete(&outboxRow{}).Error
 }
 
 // RetryDelivery makes one blocked delivery immediately eligible for the
 // background dispatcher without discarding its attempt history or progress.
 func (s *Store) RetryDelivery(id string, now time.Time) error {
-	result := s.db.Model(&deliveryRow{}).Where("id = ? AND state = ?", id, string(model.DeliveryBlocked)).Updates(map[string]any{
+	result := s.db.Model(&outboxRow{}).Where("id = ? AND state = ?", id, string(model.DeliveryBlocked)).Updates(map[string]any{
 		"state":   string(model.DeliveryPending),
 		"next_at": now.Unix(),
 	})
@@ -996,7 +959,7 @@ func (s *Store) RetryDelivery(id string, now time.Time) error {
 		return nil
 	}
 	var count int64
-	if err := s.db.Model(&deliveryRow{}).Where("id = ?", id).Count(&count).Error; err != nil {
+	if err := s.db.Model(&outboxRow{}).Where("id = ?", id).Count(&count).Error; err != nil {
 		return err
 	}
 	if count == 0 {
@@ -1006,74 +969,69 @@ func (s *Store) RetryDelivery(id string, now time.Time) error {
 }
 
 func (s *Store) FailDelivery(id string, blocked bool, next time.Time, deliveryErr error, progress *model.DeliveryProgress) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		var row deliveryRow
-		if err := tx.Where("id = ?", id).Take(&row).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		d, err := decodeDelivery(row)
-		if err != nil {
-			return err
-		}
-		d.Attempts++
-		d.NextAt = next
-		d.LastError = deliveryErr.Error()
-		if progress != nil {
-			d.Progress = progress
-		}
-		if blocked {
-			d.State = model.DeliveryBlocked
-		}
-		return putDeliveryTx(tx, d)
-	})
+	progressJSON, err := json.Marshal(progress)
+	if err != nil {
+		return err
+	}
+	updates := map[string]any{"attempts": gorm.Expr("attempts + 1"), "next_at": next.Unix(), "last_error": deliveryErr.Error(), "progress_json": string(progressJSON)}
+	if blocked {
+		updates["state"] = model.DeliveryBlocked
+	}
+	result := s.db.Model(&outboxRow{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) UnblockChannel(channelID string) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		var rows []deliveryRow
-		if err := tx.Where("channel_id = ? AND state = ?", channelID, string(model.DeliveryBlocked)).Find(&rows).Error; err != nil {
-			return err
-		}
-		now := time.Now().Unix()
-		for _, row := range rows {
-			d, err := decodeDelivery(row)
-			if err != nil {
-				return err
-			}
-			d.State = model.DeliveryPending
-			d.NextAt = time.Unix(now, 0)
-			if err := putDeliveryTx(tx, d); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	return s.db.Model(&outboxRow{}).Where("channel_id = ? AND state = ?", channelID, model.DeliveryBlocked).
+		Updates(map[string]any{"state": model.DeliveryPending, "next_at": time.Now().Unix()}).Error
 }
 
 func putDeliveryTx(tx *gorm.DB, d model.Delivery) error {
+	platform, sourceID, contentID, err := validateDeliverySnapshot(d)
+	if err != nil {
+		return fmt.Errorf("validating delivery: %w", err)
+	}
 	raw, err := json.Marshal(d)
 	if err != nil {
 		return fmt.Errorf("encoding delivery: %w", err)
 	}
-	kind := string(d.EffectiveKind())
-	row := deliveryRow{
-		ID:          d.ID,
-		Kind:        kind,
-		ChannelID:   d.ChannelID,
-		State:       string(d.State),
-		Attempts:    d.Attempts,
-		NextAt:      d.NextAt.Unix(),
-		LastError:   d.LastError,
-		CreatedAt:   d.CreatedAt.Unix(),
-		PayloadJSON: string(raw),
+	kind, title, summary := "content", d.Dynamic.Title, d.Dynamic.Summary
+	switch d.Kind {
+	case model.DeliveryKindComment:
+		kind, title = "comment", d.Comment.ContentTitle
+		if len(d.Comment.Thread) != 0 {
+			summary = d.Comment.Thread[len(d.Comment.Thread)-1].Message
+		}
+	case model.DeliveryKindAI:
+		kind, title, summary = "ai", d.AI.Title, d.AI.Body
+	default:
+		if d.Dynamic.UID == "system" {
+			kind = "system"
+		}
 	}
-	return tx.Save(&row).Error
+	progress, err := json.Marshal(d.Progress)
+	if err != nil {
+		return fmt.Errorf("encoding delivery progress: %w", err)
+	}
+	row := outboxRow{
+		ID: d.ID, Kind: kind, Platform: platform, SourceID: sourceID, ContentID: contentID,
+		ChannelID: d.ChannelID, IdempotencyKey: d.ID, State: string(d.State), Attempts: d.Attempts,
+		NextAt: d.NextAt.Unix(), LastError: d.LastError, CreatedAt: d.CreatedAt.Unix(), Title: title,
+		Summary: summary, PayloadJSON: string(raw), ProgressJSON: string(progress), OriginTraceparent: d.OriginTraceparent,
+	}
+	return tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"state", "attempts", "next_at", "last_error", "progress_json"}),
+	}).Create(&row).Error
 }
 
-func decodeDeliveries(rows []deliveryRow) ([]model.Delivery, error) {
+func decodeDeliveries(rows []outboxRow) ([]model.Delivery, error) {
 	out := make([]model.Delivery, 0, len(rows))
 	for _, row := range rows {
 		d, err := decodeDelivery(row)
@@ -1085,7 +1043,7 @@ func decodeDeliveries(rows []deliveryRow) ([]model.Delivery, error) {
 	return out, nil
 }
 
-func decodeDelivery(row deliveryRow) (model.Delivery, error) {
+func decodeDelivery(row outboxRow) (model.Delivery, error) {
 	var d model.Delivery
 	if err := json.Unmarshal([]byte(row.PayloadJSON), &d); err != nil {
 		return model.Delivery{}, fmt.Errorf("decoding delivery %s: %w", row.ID, err)
@@ -1098,9 +1056,22 @@ func decodeDelivery(row deliveryRow) (model.Delivery, error) {
 	d.NextAt = time.Unix(row.NextAt, 0)
 	d.LastError = row.LastError
 	d.CreatedAt = time.Unix(row.CreatedAt, 0)
-	if row.Kind != "" {
-		d.Kind = model.DeliveryKind(row.Kind)
+	switch row.Kind {
+	case "content", "system":
+		d.Kind = model.DeliveryKindDynamic
+	case "comment":
+		d.Kind = model.DeliveryKindComment
+	case "ai":
+		d.Kind = model.DeliveryKindAI
+	default:
+		return model.Delivery{}, fmt.Errorf("decoding delivery %s: unsupported kind %q", row.ID, row.Kind)
 	}
+	if row.ProgressJSON != "" {
+		if err := json.Unmarshal([]byte(row.ProgressJSON), &d.Progress); err != nil {
+			return model.Delivery{}, fmt.Errorf("decoding delivery %s progress: %w", row.ID, err)
+		}
+	}
+	d.OriginTraceparent = row.OriginTraceparent
 	return d, nil
 }
 

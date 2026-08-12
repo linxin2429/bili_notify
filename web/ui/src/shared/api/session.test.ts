@@ -6,7 +6,7 @@ describe('session transport', () => {
 
   it('accepts the replacement CSRF token returned after changing the password', async () => {
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      expect(input).toBe('/api/v3/session/password')
+      expect(input).toBe('/api/v4/session/password')
       expect(init?.method).toBe('PUT')
       return new Response(JSON.stringify({ csrf_token: 'replacement-csrf' }), {
         status: 200,
@@ -16,7 +16,7 @@ describe('session transport', () => {
     vi.stubGlobal('fetch', fetch)
 
     await expect(sessionAPI.changePassword('old-csrf', 'current-password', 'replacement-password')).resolves.toEqual({ csrf_token: 'replacement-csrf' })
-    expect(fetch).toHaveBeenCalledWith('/api/v3/session/password', expect.objectContaining({
+    expect(fetch).toHaveBeenCalledWith('/api/v4/session/password', expect.objectContaining({
       method: 'PUT',
       body: JSON.stringify({ current_password: 'current-password', new_password: 'replacement-password' }),
     }))

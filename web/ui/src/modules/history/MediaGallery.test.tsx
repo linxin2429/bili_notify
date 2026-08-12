@@ -5,24 +5,24 @@ import type { Attachment } from '../../shared/api/types'
 import { galleryImagesFromAttachments, MediaGrid, MediaLightbox } from './MediaGallery'
 
 const image = (id: string, path = `${id}.jpg`): Attachment => ({
-  id, content_id: 'content', external_id: id, type: 'image', local_path: path, file_name: `${id}.jpg`,
+  id, content_id: 'content', external_id: id, type: 'image', localized: Boolean(path), file_name: `${id}.jpg`,
 })
 
 describe('MediaGallery', () => {
   it('builds gallery images only from localized attachments', () => {
     expect(galleryImagesFromAttachments('content', [
       image('a'),
-      { id: 'b', content_id: 'content', external_id: 'b', type: 'image' },
-      { id: 'c', content_id: 'content', external_id: 'c', type: 'file', local_path: 'c.pdf' },
-    ])).toEqual([{ id: 'a', url: '/api/v3/contents/content/attachments/a', width: undefined, height: undefined, alt: 'a.jpg' }])
+      { id: 'b', content_id: 'content', external_id: 'b', type: 'image', localized: false },
+      { id: 'c', content_id: 'content', external_id: 'c', type: 'file', localized: true },
+    ])).toEqual([{ id: 'a', url: '/api/v4/contents/content/attachments/a', width: undefined, height: undefined, alt: 'a.jpg' }])
   })
 
   it('renders a media grid, opens lightbox, and navigates without wrapping', async () => {
     const user = userEvent.setup()
     const images = [
-      { id: '1', url: '/api/v3/contents/c/attachments/1', alt: '一' },
-      { id: '2', url: '/api/v3/contents/c/attachments/2', alt: '二' },
-      { id: '3', url: '/api/v3/contents/c/attachments/3', alt: '三' },
+      { id: '1', url: '/api/v4/contents/c/attachments/1', alt: '一' },
+      { id: '2', url: '/api/v4/contents/c/attachments/2', alt: '二' },
+      { id: '3', url: '/api/v4/contents/c/attachments/3', alt: '三' },
     ]
     render(<MediaGrid images={images} />)
     expect(screen.getByLabelText('放大第 1 张图片')).toBeInTheDocument()

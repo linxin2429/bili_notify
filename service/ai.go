@@ -285,7 +285,7 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 	parent = e.propagator.Extract(parent, carrier)
 	ctx, span := e.tracer.Start(parent, "ai.job.execute", trace.WithAttributes(
 		attribute.String("ai.job.id", job.ID), attribute.String("ai.job.kind", string(job.Kind)),
-		attribute.String("ai.job.origin", string(job.Origin)), attribute.String("content.dynamic.id", job.SourceDynamicID),
+		attribute.String("ai.job.origin", string(job.Origin)), attribute.String("content.dynamic.id", job.SourceContentID),
 	))
 	ctx, cancel := context.WithCancel(ctx)
 	e.runningMu.Lock()
@@ -313,11 +313,11 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 	var stream grpc.ServerStreamingClient[aiworkerpb.WorkerEvent]
 	switch job.Kind {
 	case model.AIJobTranscription:
-		input, ok := job.Input.(model.AITranscriptionInput)
-		if !ok {
+		if job.TranscriptionInput == nil {
 			e.fail(ctx, job.ID, "invalid_input", "转写任务输入无效")
 			return
 		}
+		input := *job.TranscriptionInput
 		session, sessionErr := e.store.Session()
 		if sessionErr != nil {
 			e.fail(ctx, job.ID, "bilibili_authentication", "B站登录不可用")
@@ -328,11 +328,11 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 			FailureCacheTtlSec: int64(defaultAIFailureCacheTTL / time.Second), CacheMaxBytes: defaultAICacheMaxBytes,
 		})
 	case model.AIJobSummary:
-		input, ok := job.Input.(model.AISummaryInput)
-		if !ok {
+		if job.SummaryInput == nil {
 			e.fail(ctx, job.ID, "invalid_input", "总结任务输入无效")
 			return
 		}
+		input := *job.SummaryInput
 		text := input.Text
 		if input.TranscriptionID != "" {
 			source, sourceErr := e.store.AIJob(input.TranscriptionID)
@@ -340,12 +340,11 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 				e.fail(ctx, job.ID, "source_unavailable", "来源转写任务不可用")
 				return
 			}
-			result, ok := source.Result.(model.AITranscriptionResult)
-			if !ok {
+			if source.TranscriptionResult == nil {
 				e.fail(ctx, job.ID, "source_unavailable", "来源转写结果无效")
 				return
 			}
-			text = result.Text()
+			text = source.TranscriptionResult.Text()
 		}
 		if prompt == nil {
 			e.fail(ctx, job.ID, "prompt_unavailable", "提示词模板不可用")
@@ -378,17 +377,17 @@ func (e *AIEngine) execute(parent context.Context, client aiworkerpb.AIWorkerCli
 			}
 		}
 		if result := event.GetTranscription(); result != nil {
-			if err := e.store.WithContext(ctx).FinishAIJob(job.ID, transcriptionModel(result)); err != nil {
+			if err := e.store.WithContext(ctx).FinishTranscription(job.ID, transcriptionModel(result)); err != nil {
 				e.logger.ErrorContext(ctx, "persisting transcription failed", "event", "ai.job.persist_failed", "job_id", job.ID, "error", err)
 			}
 			return
 		}
 		if result := event.GetSummary(); result != nil {
-			usage := map[string]any{}
+			var usage json.RawMessage
 			if result.Usage != nil {
-				usage = result.Usage.AsMap()
+				usage, _ = result.Usage.MarshalJSON()
 			}
-			if err := e.store.WithContext(ctx).FinishAIJob(job.ID, model.AISummaryResult{Markdown: result.Markdown, Usage: usage}); err != nil {
+			if err := e.store.WithContext(ctx).FinishSummary(job.ID, model.AISummaryResult{Markdown: result.Markdown, Usage: usage}); err != nil {
 				e.logger.ErrorContext(ctx, "persisting summary failed", "event", "ai.job.persist_failed", "job_id", job.ID, "error", err)
 			}
 			return
@@ -413,9 +412,9 @@ func transcriptionModel(result *aiworkerpb.TranscriptionResult) model.AITranscri
 		}
 		pages = append(pages, model.AITranscriptPage{Page: int(page.Page), CID: page.Cid, Title: page.Title, DurationMS: page.DurationMs, Segments: segments})
 	}
-	usage := map[string]any{}
+	var usage json.RawMessage
 	if result.Usage != nil {
-		usage = result.Usage.AsMap()
+		usage, _ = result.Usage.MarshalJSON()
 	}
 	return model.AITranscriptionResult{BVID: result.Bvid, Title: result.Title, Pages: pages, Usage: usage}
 }

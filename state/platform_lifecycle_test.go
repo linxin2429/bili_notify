@@ -1,7 +1,6 @@
 package state
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -235,114 +234,6 @@ func TestContentArchiveQueryAndDeletionLifecycle(t *testing.T) {
 	assert.Equal(t, "restored", loaded.Text)
 }
 
-func TestPromotePlatformOutbox(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		seed   func(t *testing.T, store *Store, now time.Time)
-		verify func(t *testing.T, delivery model.Delivery)
-	}{
-		{
-			name: "content with image and file",
-			seed: func(t *testing.T, store *Store, now time.Time) {
-				source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "content"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "content", Name: "Planet"}
-				require.NoError(t, store.PutSource(source))
-				content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "topic"), Platform: model.PlatformZSXQ, SourceID: source.ID, ExternalID: "topic", AuthorName: "Author", UpstreamType: "talk", Type: model.ContentDiscussion, Title: "Topic", Text: "Body", URL: "https://example.test/topic", PublishedAt: now}
-				attachments := []model.Attachment{
-					{ID: "image", ContentID: content.ID, ExternalID: "image", Type: model.AttachmentImage, MIME: "image/png", Size: 1024, Width: 10, Height: 20, LocalPath: "media/image.png"},
-					{ID: "file", ContentID: content.ID, ExternalID: "file", Type: model.AttachmentFile, Size: 2 * 1024 * 1024},
-				}
-				require.NoError(t, store.ArchiveContentAndEnqueue(content, attachments, []string{"channel"}, true))
-			},
-			verify: func(t *testing.T, delivery model.Delivery) {
-				assert.Equal(t, model.DeliveryKindDynamic, delivery.Kind)
-				assert.Equal(t, model.PlatformZSXQ, delivery.Dynamic.Platform)
-				assert.Equal(t, "Planet", delivery.Dynamic.SourceName)
-				require.Len(t, delivery.Dynamic.Media, 1)
-				assert.Equal(t, "media/image.png", delivery.Dynamic.Media[0].LocalPath)
-				require.Len(t, delivery.Dynamic.Links, 1)
-				assert.Equal(t, "file (2.0 MiB)", delivery.Dynamic.Links[0].Text)
-			},
-		},
-		{
-			name: "owner comment digest",
-			seed: func(t *testing.T, store *Store, now time.Time) {
-				source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "comments"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "comments", Name: "Planet"}
-				require.NoError(t, store.PutSource(source))
-				content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "comments"), Platform: model.PlatformZSXQ, SourceID: source.ID, ExternalID: "comments", UpstreamType: "talk", Type: model.ContentDiscussion, Title: "Topic", URL: "https://example.test/comments", PublishedAt: now}
-				root := model.CommentNode{ID: model.CommentID(model.PlatformZSXQ, "root"), RPID: "root", Role: model.RoleMember, Time: now}
-				_, err := store.SyncCommentTree(content, []model.CommentNode{root}, true, true, "baseline", nil)
-				require.NoError(t, err)
-				owner := model.CommentNode{ID: model.CommentID(model.PlatformZSXQ, "owner"), RPID: "owner-rpid", RootID: root.ID, ParentID: root.ID, Role: model.RoleOwner, Time: now.Add(time.Second)}
-				_, err = store.SyncCommentTree(content, []model.CommentNode{root, owner}, true, false, "batch", []string{"channel"})
-				require.NoError(t, err)
-			},
-			verify: func(t *testing.T, delivery model.Delivery) {
-				assert.Equal(t, model.DeliveryKindComment, delivery.Kind)
-				require.NotNil(t, delivery.Comment)
-				assert.Equal(t, model.PlatformZSXQ, delivery.Comment.Platform)
-				assert.Equal(t, "星球主", delivery.Comment.UPName)
-				assert.Equal(t, "owner-rpid", delivery.Comment.RPID)
-				require.Len(t, delivery.Comment.Thread, 2)
-				assert.True(t, delivery.Comment.Thread[1].IsTrigger)
-			},
-		},
-	}
-	for index, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			store := openTestStore(t, byte(160+index))
-			now := time.Date(2026, time.August, 10, 5, 6, 7, 0, time.UTC)
-			tt.seed(t, store, now)
-
-			promoted, err := store.PromotePlatformOutbox(time.Now().Add(time.Minute), 0)
-			require.NoError(t, err)
-			assert.Equal(t, 1, promoted)
-			deliveries, err := store.ListDeliveries(10)
-			require.NoError(t, err)
-			require.Len(t, deliveries, 1)
-			tt.verify(t, deliveries[0])
-
-			promoted, err = store.PromotePlatformOutbox(time.Now().Add(time.Minute), 1)
-			require.NoError(t, err)
-			assert.Zero(t, promoted)
-		})
-	}
-}
-
-func TestPromotePlatformOutboxRejectsInvalidRows(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		row  outboxRow
-	}{
-		{name: "unsupported kind", row: outboxRow{Kind: "ai", PayloadJSON: `{}`}},
-		{name: "invalid content", row: outboxRow{Kind: "content", PayloadJSON: `{`}},
-		{name: "missing content source", row: outboxRow{Kind: "content", SourceID: "missing", PayloadJSON: `{"id":"zsxq:content:1","platform":"zsxq","source_id":"missing","external_id":"1","upstream_type":"talk","type":"discussion","published_at":"2026-08-10T00:00:00Z"}`}},
-		{name: "invalid digest", row: outboxRow{Kind: "comment_digest", PayloadJSON: `{`}},
-	}
-	for index, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			store := openTestStore(t, byte(170+index))
-			now := time.Date(2026, time.August, 10, 6, 7, 8, 0, time.UTC)
-			row := tt.row
-			row.ID = "outbox"
-			row.State = "pending"
-			row.NextAt = now.Unix()
-			row.CreatedAt = now.Unix()
-			require.NoError(t, store.db.Create(&row).Error)
-
-			promoted, err := store.PromotePlatformOutbox(now, 1)
-			assert.Zero(t, promoted)
-			assert.Error(t, err)
-			var count int64
-			require.NoError(t, store.db.Model(&outboxRow{}).Where("id = ?", row.ID).Count(&count).Error)
-			assert.Equal(t, int64(1), count)
-		})
-	}
-}
-
 func TestDeleteSourceRemovesPlatformState(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, 180)
@@ -350,22 +241,19 @@ func TestDeleteSourceRemovesPlatformState(t *testing.T) {
 	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "delete"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "delete", Name: "Planet"}
 	require.NoError(t, store.PutSource(source))
 	content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "delete"), Platform: model.PlatformZSXQ, SourceID: source.ID, ExternalID: "delete", UpstreamType: "talk", Type: model.ContentDiscussion, PublishedAt: now}
-	require.NoError(t, store.ArchiveContentAndEnqueue(content, nil, []string{"promoted", "pending"}, true))
-	require.NoError(t, store.db.Model(&outboxRow{}).Where("channel_id = ?", "pending").Update("state", "blocked").Error)
-	promoted, err := store.PromotePlatformOutbox(time.Now().Add(time.Minute), 1)
+	channel, err := store.PutChannel(model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.test/hook"}})
 	require.NoError(t, err)
-	assert.Equal(t, 1, promoted)
+	require.NoError(t, store.ArchiveContentAndEnqueue(content, nil, nil, true))
+	require.NoError(t, store.db.Model(&outboxRow{}).Where("channel_id = ?", channel.ID).Update("state", "blocked").Error)
 
 	require.NoError(t, store.DeleteSource(source.ID))
 	_, err = store.Source(source.ID)
 	assert.ErrorIs(t, err, ErrNotFound)
 	_, _, err = store.Content(content.ID)
 	assert.ErrorIs(t, err, ErrNotFound)
-	var outboxCount, deliveryCount, seenCount int64
-	require.NoError(t, store.db.Model(&outboxRow{}).Count(&outboxCount).Error)
-	require.NoError(t, store.db.Model(&deliveryRow{}).Count(&deliveryCount).Error)
+	var deliveryCount, seenCount int64
+	require.NoError(t, store.db.Model(&outboxRow{}).Count(&deliveryCount).Error)
 	require.NoError(t, store.db.Model(&seenItemRow{}).Count(&seenCount).Error)
-	assert.Zero(t, outboxCount)
 	assert.Zero(t, deliveryCount)
 	assert.Zero(t, seenCount)
 	assert.ErrorIs(t, store.DeleteSource(source.ID), ErrNotFound)
@@ -388,45 +276,6 @@ func TestHumanBytes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tt.want, humanBytes(tt.size))
-		})
-	}
-}
-
-func TestPlatformDeliveryPreservesProgressAndRejectsBadProgress(t *testing.T) {
-	t.Parallel()
-	store := openTestStore(t, 181)
-	now := time.Date(2026, time.August, 10, 8, 9, 10, 0, time.UTC)
-	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "progress"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "progress", Name: "Planet"}
-	require.NoError(t, store.PutSource(source))
-	content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "progress"), Platform: model.PlatformZSXQ, SourceID: source.ID, ExternalID: "progress", UpstreamType: "talk", Type: model.ContentDiscussion, PublishedAt: now}
-	payload, err := json.Marshal(content)
-	require.NoError(t, err)
-	rows := []outboxRow{
-		{ID: "valid-progress", Kind: "content", SourceID: source.ID, ChannelID: "one", State: "", NextAt: now.Unix(), CreatedAt: now.Unix(), PayloadJSON: string(payload), ProgressJSON: `{"next_part":2}`},
-		{ID: "bad-progress", Kind: "content", SourceID: source.ID, ChannelID: "two", State: "pending", NextAt: now.Unix(), CreatedAt: now.Unix(), PayloadJSON: string(payload), ProgressJSON: `{`},
-	}
-	for _, row := range rows {
-		require.NoError(t, store.db.Create(&row).Error)
-	}
-
-	for _, tt := range []struct {
-		name         string
-		row          outboxRow
-		wantProgress bool
-	}{
-		{name: "valid progress", row: rows[0], wantProgress: true},
-		{name: "bad progress", row: rows[1], wantProgress: false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			delivery, err := platformDelivery(store.db, tt.row)
-			require.NoError(t, err)
-			assert.Equal(t, model.DeliveryPending, delivery.State)
-			if tt.wantProgress {
-				assert.NotNil(t, delivery.Progress)
-			} else {
-				assert.Nil(t, delivery.Progress)
-			}
 		})
 	}
 }

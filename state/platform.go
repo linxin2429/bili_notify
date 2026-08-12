@@ -86,16 +86,10 @@ func (s *Store) PlatformAccount(platform model.Platform) (model.PlatformAccount,
 	}
 	account := platformAccountModel(row)
 	if len(row.SealedSession) != 0 {
-		if row.SealedAAD == tableAuthSession && platform == model.PlatformBilibili {
-			var legacy model.BiliSession
-			if err := openJSON(s.vault, tableAuthSession, authSessionID, row.SealedSession, &legacy); err != nil {
-				return model.PlatformAccount{}, err
-			}
-			account.Session = legacy.Cookies
-			if account.ExternalID == "" {
-				account.ExternalID, account.DisplayName = legacy.AccountUID, legacy.AccountName
-			}
-		} else if err := openJSON(s.vault, tablePlatformAccounts, string(platform), row.SealedSession, &account.Session); err != nil {
+		if row.SealedAAD != tablePlatformAccounts {
+			return model.PlatformAccount{}, fmt.Errorf("account %s has invalid sealed AAD %q", platform, row.SealedAAD)
+		}
+		if err := openJSON(s.vault, tablePlatformAccounts, string(platform), row.SealedSession, &account.Session); err != nil {
 			return model.PlatformAccount{}, err
 		}
 	}
@@ -161,26 +155,27 @@ func platformAccountModel(row platformAccountRow) model.PlatformAccount {
 }
 
 type sourceRow struct {
-	ID               string `gorm:"column:id;primaryKey"`
-	Platform         string `gorm:"column:platform"`
-	Type             string `gorm:"column:type"`
-	ExternalID       string `gorm:"column:external_id"`
-	Name             string `gorm:"column:name"`
-	Note             string `gorm:"column:note"`
-	OwnerID          string `gorm:"column:owner_id"`
-	OwnerName        string `gorm:"column:owner_name"`
-	Enabled          int    `gorm:"column:enabled"`
-	BaselineState    string `gorm:"column:baseline_state"`
-	BackfillCursor   string `gorm:"column:backfill_cursor"`
-	HighWatermark    string `gorm:"column:high_watermark"`
-	BackfillDone     int64  `gorm:"column:backfill_done"`
-	BackfillTotal    int64  `gorm:"column:backfill_total"`
-	LastPollAt       *int64 `gorm:"column:last_poll_at"`
-	LastSuccessAt    *int64 `gorm:"column:last_success_at"`
-	LastCommentAt    *int64 `gorm:"column:last_comment_at"`
-	SyncLagSec       int64  `gorm:"column:sync_lag_sec"`
-	LastError        string `gorm:"column:last_error"`
-	ConsecutiveFails int    `gorm:"column:consecutive_fails"`
+	ID                     string `gorm:"column:id;primaryKey"`
+	Platform               string `gorm:"column:platform"`
+	Type                   string `gorm:"column:type"`
+	ExternalID             string `gorm:"column:external_id"`
+	Name                   string `gorm:"column:name"`
+	Note                   string `gorm:"column:note"`
+	OwnerID                string `gorm:"column:owner_id"`
+	OwnerName              string `gorm:"column:owner_name"`
+	Enabled                int    `gorm:"column:enabled"`
+	BaselineState          string `gorm:"column:baseline_state"`
+	BackfillCursor         string `gorm:"column:backfill_cursor"`
+	HighWatermark          string `gorm:"column:high_watermark"`
+	BackfillDone           int64  `gorm:"column:backfill_done"`
+	BackfillTotal          int64  `gorm:"column:backfill_total"`
+	LastPollAt             *int64 `gorm:"column:last_poll_at"`
+	LastSuccessAt          *int64 `gorm:"column:last_success_at"`
+	LastCommentAt          *int64 `gorm:"column:last_comment_at"`
+	SyncLagSec             int64  `gorm:"column:sync_lag_sec"`
+	LastError              string `gorm:"column:last_error"`
+	ConsecutiveFails       int    `gorm:"column:consecutive_fails"`
+	ExclusiveBaselineReady int    `gorm:"column:exclusive_baseline_ready"`
 }
 
 func (sourceRow) TableName() string { return "sources" }
@@ -192,7 +187,53 @@ func (s *Store) PutSource(source model.Source) error {
 	if err := source.Validate(); err != nil {
 		return err
 	}
-	return s.db.Save(sourceFromModel(source)).Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		wasEnabled := false
+		var existing sourceRow
+		err := tx.Where("id = ?", source.ID).Take(&existing).Error
+		if err == nil {
+			wasEnabled = existing.Enabled != 0
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err := tx.Save(sourceFromModel(source)).Error; err != nil {
+			return err
+		}
+		if source.Platform == model.PlatformBilibili && !wasEnabled && source.Enabled {
+			return tx.Model(&upFollowRelationRow{}).Where("up_uid = ?", source.ExternalID).Update("space_synced", 0).Error
+		}
+		return nil
+	})
+}
+
+// CreateSource inserts one new source while enforcing platform identity and
+// the configured Bilibili source limit in the same transaction.
+func (s *Store) CreateSource(source model.Source) error {
+	if source.BaselineState == "" {
+		source.BaselineState = model.BaselinePending
+	}
+	if err := source.Validate(); err != nil {
+		return err
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var existing int64
+		if err := tx.Model(&sourceRow{}).Where("id = ?", source.ID).Count(&existing).Error; err != nil {
+			return err
+		}
+		if existing != 0 {
+			return ErrSourceExists
+		}
+		if source.Platform == model.PlatformBilibili {
+			var total int64
+			if err := tx.Model(&sourceRow{}).Where("platform = ?", model.PlatformBilibili).Count(&total).Error; err != nil {
+				return err
+			}
+			if total >= 100 {
+				return errors.New("at most 100 UPs can be configured")
+			}
+		}
+		return tx.Create(sourceFromModel(source)).Error
+	})
 }
 
 // MergeVisibleSources inserts/updates upstream-owned metadata without changing
@@ -253,24 +294,43 @@ func (s *Store) ListSources(platform model.Platform) ([]model.Source, error) {
 }
 
 func (s *Store) DeleteSource(id string) error {
+	uid := ""
+	if strings.HasPrefix(id, "bilibili:up:") {
+		uid = strings.TrimPrefix(id, "bilibili:up:")
+	}
+	return s.deleteSource(id, uid)
+}
+
+func (s *Store) deleteSource(id, bilibiliUID string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		var deliveries []deliveryRow
-		if err := tx.Find(&deliveries).Error; err != nil {
+		var paths []string
+		if err := tx.Table("attachments").Joins("JOIN contents ON contents.id = attachments.content_id").
+			Where("contents.source_id = ? AND attachments.local_path != ''", id).Pluck("attachments.local_path", &paths).Error; err != nil {
 			return err
 		}
-		for _, row := range deliveries {
-			delivery, err := decodeDelivery(row)
-			if err != nil {
+		now := time.Now().Unix()
+		for _, relativePath := range paths {
+			if err := validateStoredRelativePath(relativePath); err != nil {
+				return fmt.Errorf("invalid localized attachment path %q: %w", relativePath, err)
+			}
+			task := mediaCleanupTaskRow{ID: stableHash("media-cleanup", relativePath), RelativePath: relativePath,
+				State: "pending", NextAt: now, CreatedAt: now, UpdatedAt: now}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&task).Error; err != nil {
 				return err
 			}
-			belongsToSource := delivery.EffectiveKind() == model.DeliveryKindDynamic && delivery.Dynamic.UID == id
-			if delivery.EffectiveKind() == model.DeliveryKindComment && delivery.Comment != nil {
-				belongsToSource = delivery.Comment.UPUID == id
-			}
-			if belongsToSource {
-				if err := tx.Where("id = ?", row.ID).Delete(&deliveryRow{}).Error; err != nil {
-					return err
-				}
+		}
+		if err := tx.Where("source_id = ?", id).Delete(&outboxRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("source_id = ?", id).Delete(&seenItemRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("source_content_id IN (SELECT id FROM contents WHERE source_id = ?)", id).Delete(&aiJobRow{}).Error; err != nil {
+			return err
+		}
+		if bilibiliUID != "" {
+			if err := tx.Where("up_uid = ?", bilibiliUID).Delete(&upFollowRelationRow{}).Error; err != nil {
+				return err
 			}
 		}
 		result := tx.Where("id = ?", id).Delete(&sourceRow{})
@@ -280,11 +340,33 @@ func (s *Store) DeleteSource(id string) error {
 		if result.RowsAffected == 0 {
 			return ErrNotFound
 		}
-		if err := tx.Where("source_id = ?", id).Delete(&seenItemRow{}).Error; err != nil {
-			return err
-		}
-		return tx.Where("source_id = ? AND state IN ?", id, []string{"pending", "blocked"}).Delete(&outboxRow{}).Error
+		return nil
 	})
+}
+
+type mediaCleanupTaskRow struct {
+	ID           string `gorm:"column:id;primaryKey"`
+	RelativePath string `gorm:"column:relative_path"`
+	State        string `gorm:"column:state"`
+	Attempts     int    `gorm:"column:attempts"`
+	NextAt       int64  `gorm:"column:next_at"`
+	LastError    string `gorm:"column:last_error"`
+	CreatedAt    int64  `gorm:"column:created_at"`
+	UpdatedAt    int64  `gorm:"column:updated_at"`
+}
+
+func (mediaCleanupTaskRow) TableName() string { return "media_cleanup_tasks" }
+
+func validateStoredRelativePath(value string) error {
+	if value == "" || strings.ContainsRune(value, '\x00') || strings.HasPrefix(value, "/") || strings.HasPrefix(value, `\`) {
+		return errors.New("path must be relative")
+	}
+	for _, segment := range strings.FieldsFunc(strings.ReplaceAll(value, `\`, "/"), func(r rune) bool { return r == '/' }) {
+		if segment == ".." {
+			return errors.New("path traversal is not allowed")
+		}
+	}
+	return nil
 }
 
 func sourceFromModel(source model.Source) sourceRow {
@@ -309,7 +391,7 @@ func (r sourceRow) toModel() model.Source {
 	}
 }
 
-type contentRowV3 struct {
+type contentRow struct {
 	ID                string `gorm:"column:id;primaryKey"`
 	Platform          string `gorm:"column:platform"`
 	SourceID          string `gorm:"column:source_id"`
@@ -334,7 +416,7 @@ type contentRowV3 struct {
 	RawJSON           string `gorm:"column:raw_json"`
 }
 
-func (contentRowV3) TableName() string { return "contents" }
+func (contentRow) TableName() string { return "contents" }
 
 type attachmentRow struct {
 	ID            string `gorm:"column:id;primaryKey"`
@@ -386,25 +468,39 @@ type seenItemRow struct {
 
 func (seenItemRow) TableName() string { return "seen_items" }
 
-type outboxRow struct {
-	ID                string `gorm:"column:id;primaryKey"`
-	Kind              string `gorm:"column:kind"`
-	Platform          string `gorm:"column:platform"`
-	SourceID          string `gorm:"column:source_id"`
-	ContentID         string `gorm:"column:content_id"`
-	ChannelID         string `gorm:"column:channel_id"`
-	IdempotencyKey    string `gorm:"column:idempotency_key"`
-	State             string `gorm:"column:state"`
-	Attempts          int    `gorm:"column:attempts"`
-	NextAt            int64  `gorm:"column:next_at"`
-	LastError         string `gorm:"column:last_error"`
-	CreatedAt         int64  `gorm:"column:created_at"`
-	PayloadJSON       string `gorm:"column:payload_json"`
-	ProgressJSON      string `gorm:"column:progress_json"`
-	OriginTraceparent string `gorm:"column:origin_traceparent"`
+type syncTargetRow struct {
+	Platform      string `gorm:"column:platform;primaryKey"`
+	ContentID     string `gorm:"column:content_id;primaryKey"`
+	SourceID      string `gorm:"column:source_id"`
+	CommentType   int    `gorm:"column:comment_type"`
+	CommentOID    string `gorm:"column:comment_oid"`
+	Title         string `gorm:"column:title"`
+	URL           string `gorm:"column:url"`
+	PublishedAt   int64  `gorm:"column:published_at"`
+	CommentCount  int64  `gorm:"column:comment_count"`
+	Closed        int    `gorm:"column:closed"`
+	BaselineReady int    `gorm:"column:baseline_ready"`
+	LastSyncedAt  *int64 `gorm:"column:last_synced_at"`
+	LastError     string `gorm:"column:last_error"`
 }
 
-func (outboxRow) TableName() string { return "outbox" }
+func (syncTargetRow) TableName() string { return "sync_targets" }
+
+func syncTargetFromModel(target model.CommentTarget) syncTargetRow {
+	contentID := model.ContentID(model.PlatformBilibili, target.DynamicID)
+	return syncTargetRow{Platform: string(model.PlatformBilibili), ContentID: contentID,
+		SourceID: model.SourceID(model.PlatformBilibili, target.UID), CommentType: target.CommentType,
+		CommentOID: target.CommentOID, Title: target.Title, URL: target.URL, PublishedAt: target.PublishedAt.Unix(),
+		CommentCount: target.CommentCount, Closed: boolToInt(target.Closed), BaselineReady: boolToInt(target.BaselineReady),
+		LastSyncedAt: unixPointer(target.LastPollAt), LastError: target.LastError}
+}
+
+func (row syncTargetRow) toCommentTarget() model.CommentTarget {
+	return model.CommentTarget{UID: strings.TrimPrefix(row.SourceID, "bilibili:up:"), DynamicID: strings.TrimPrefix(row.ContentID, "bilibili:content:"),
+		Title: row.Title, URL: row.URL, CommentType: row.CommentType, CommentOID: row.CommentOID,
+		PublishedAt: time.Unix(row.PublishedAt, 0), CommentCount: row.CommentCount, Closed: row.Closed != 0,
+		BaselineReady: row.BaselineReady != 0, LastPollAt: pointerTime(row.LastSyncedAt), LastError: row.LastError}
+}
 
 // ArchiveContent stores a current upstream snapshot and attachments. FirstSeenAt
 // is immutable across edits, deletion and restoration.
@@ -416,10 +512,10 @@ func (s *Store) ArchiveContent(content model.Content, attachments []model.Attach
 
 // ArchiveContentAndEnqueue commits archive/seen/outbox as one transaction.
 // notify must be false for initial baselines and historical backfill.
-func (s *Store) ArchiveContentAndEnqueue(content model.Content, attachments []model.Attachment, channelIDs []string, notify bool) error {
+func (s *Store) ArchiveContentAndEnqueue(content model.Content, attachments []model.Attachment, _ []string, notify bool) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var existing int64
-		if err := tx.Model(&contentRowV3{}).Where("id = ?", content.ID).Count(&existing).Error; err != nil {
+		if err := tx.Model(&contentRow{}).Where("id = ?", content.ID).Count(&existing).Error; err != nil {
 			return err
 		}
 		if err := archiveContentTx(tx, content, attachments); err != nil {
@@ -428,17 +524,21 @@ func (s *Store) ArchiveContentAndEnqueue(content model.Content, attachments []mo
 		if existing != 0 || !notify {
 			return nil
 		}
-		payload, err := json.Marshal(content)
+		channelIDs, err := enabledChannelIDsTx(tx)
 		if err != nil {
 			return err
 		}
-		now := time.Now().Unix()
+		now := time.Now()
+		dynamic, err := contentDeliverySnapshotTx(tx, content, attachments)
+		if err != nil {
+			return err
+		}
 		for _, channelID := range channelIDs {
 			key := "content:" + content.ID
-			row := outboxRow{ID: stableHash(key, channelID), Kind: "content", Platform: string(content.Platform), SourceID: content.SourceID,
-				ContentID: content.ID, ChannelID: channelID, IdempotencyKey: key, State: "pending", NextAt: now, CreatedAt: now,
-				PayloadJSON: string(payload), ProgressJSON: "{}"}
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+			delivery := model.Delivery{ID: stableHash(key, channelID), Kind: model.DeliveryKindDynamic, Dynamic: dynamic,
+				ChannelID: channelID, State: model.DeliveryPending, NextAt: now, CreatedAt: now,
+				OriginTraceparent: originTraceparent(tx.Statement.Context)}
+			if err := putDeliveryTx(tx, delivery); err != nil {
 				return err
 			}
 		}
@@ -490,7 +590,7 @@ func archiveContentTx(tx *gorm.DB, content model.Content, attachments []model.At
 	if err != nil {
 		return err
 	}
-	row := contentRowV3{
+	row := contentRow{
 		ID: content.ID, Platform: string(content.Platform), SourceID: content.SourceID, ExternalID: content.ExternalID,
 		AuthorID: content.AuthorID, AuthorName: content.AuthorName, UpstreamType: content.UpstreamType, Type: string(content.Type),
 		Title: content.Title, BodyText: content.Text, SafeHTML: content.SafeHTML, URL: content.URL, PublishedAt: content.PublishedAt.Unix(),
@@ -566,7 +666,7 @@ func (s *Store) QueryContents(query PlatformContentQuery) ([]model.Content, erro
 	if !query.AfterAt.IsZero() && query.AfterID != "" {
 		db = db.Where("published_at < ? OR (published_at = ? AND id < ?)", query.AfterAt.Unix(), query.AfterAt.Unix(), query.AfterID)
 	}
-	var rows []contentRowV3
+	var rows []contentRow
 	if err := db.Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -578,7 +678,7 @@ func (s *Store) QueryContents(query PlatformContentQuery) ([]model.Content, erro
 }
 
 func (s *Store) Content(id string) (model.Content, []model.Attachment, error) {
-	var row contentRowV3
+	var row contentRow
 	err := s.db.Where("id = ?", id).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return model.Content{}, nil, ErrNotFound
@@ -613,13 +713,13 @@ func (s *Store) MarkContentDeleted(contentID string, deletedAt time.Time) error 
 	if deletedAt.IsZero() {
 		deletedAt = time.Now()
 	}
-	result := s.db.Model(&contentRowV3{}).Where("id = ? AND deleted_at IS NULL", contentID).Update("deleted_at", deletedAt.Unix())
+	result := s.db.Model(&contentRow{}).Where("id = ? AND deleted_at IS NULL", contentID).Update("deleted_at", deletedAt.Unix())
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
 		var count int64
-		if err := s.db.Model(&contentRowV3{}).Where("id = ?", contentID).Count(&count).Error; err != nil {
+		if err := s.db.Model(&contentRow{}).Where("id = ?", contentID).Count(&count).Error; err != nil {
 			return err
 		}
 		if count == 0 {
@@ -629,7 +729,7 @@ func (s *Store) MarkContentDeleted(contentID string, deletedAt time.Time) error 
 	return nil
 }
 
-func contentModel(row contentRowV3) model.Content {
+func contentModel(row contentRow) model.Content {
 	content := model.Content{
 		ID: row.ID, Platform: model.Platform(row.Platform), SourceID: row.SourceID, ExternalID: row.ExternalID,
 		AuthorID: row.AuthorID, AuthorName: row.AuthorName, UpstreamType: row.UpstreamType, Type: model.ContentType(row.Type),
@@ -654,7 +754,7 @@ func (row attachmentRow) toModel(includeRemote bool) model.Attachment {
 // SyncCommentTree archives every comment first, derives target-author triggers
 // only from never-before-seen IDs, and creates one digest per channel. A complete
 // snapshot is required before missing rows are marked deleted.
-func (s *Store) SyncCommentTree(content model.Content, nodes []model.CommentNode, complete, baseline bool, batchID string, channelIDs []string) ([]model.CommentDigest, error) {
+func (s *Store) SyncCommentTree(content model.Content, nodes []model.CommentNode, complete, baseline bool, batchID string, target *model.CommentTarget) ([]model.CommentDigest, error) {
 	var digests []model.CommentDigest
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := archiveContentTx(tx, content, nil); err != nil {
@@ -753,7 +853,10 @@ func (s *Store) SyncCommentTree(content model.Content, nodes []model.CommentNode
 		current := commentModels(currentRows)
 		_, malformed := model.BuildCommentTree(current)
 		malformed = malformed || incomingMalformed
-		if err := tx.Model(&contentRowV3{}).Where("id = ?", content.ID).Update("tree_incomplete", boolToInt(malformed || !complete)).Error; err != nil {
+		if err := tx.Model(&contentRow{}).Where("id = ?", content.ID).Update("tree_incomplete", boolToInt(malformed || !complete)).Error; err != nil {
+			return err
+		}
+		if err := updateCommentSyncTargetTx(tx, content, complete, now, target); err != nil {
 			return err
 		}
 		if len(newTriggerIDs) == 0 {
@@ -776,19 +879,24 @@ func (s *Store) SyncCommentTree(content model.Content, nodes []model.CommentNode
 			digest.Paths = append(digest.Paths, model.CommentPath{TriggerID: id, Nodes: path})
 		}
 		digest.Incomplete = malformed || !complete
-		payload, err := json.Marshal(digest)
-		if err != nil {
-			return err
-		}
 		key := digest.DigestKey()
 		if batchID != "" {
 			key += ":" + batchID
 		}
+		channelIDs, err := enabledChannelIDsTx(tx)
+		if err != nil {
+			return err
+		}
 		for _, channelID := range channelIDs {
 			id := stableHash("comment_digest", channelID, key)
-			row := outboxRow{ID: id, Kind: "comment_digest", Platform: string(content.Platform), SourceID: content.SourceID, ContentID: content.ID,
-				ChannelID: channelID, IdempotencyKey: key, State: "pending", NextAt: now.Unix(), CreatedAt: now.Unix(), PayloadJSON: string(payload), ProgressJSON: "{}"}
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+			note, err := commentDigestNotificationTx(tx, digest, key, now)
+			if err != nil {
+				return err
+			}
+			delivery := model.Delivery{ID: id, Kind: model.DeliveryKindComment, Comment: &note,
+				ChannelID: channelID, State: model.DeliveryPending, NextAt: now, CreatedAt: now,
+				OriginTraceparent: originTraceparent(tx.Statement.Context)}
+			if err := putDeliveryTx(tx, delivery); err != nil {
 				return err
 			}
 		}
@@ -798,6 +906,32 @@ func (s *Store) SyncCommentTree(content model.Content, nodes []model.CommentNode
 	return digests, err
 }
 
+func updateCommentSyncTargetTx(tx *gorm.DB, content model.Content, complete bool, syncedAt time.Time, target *model.CommentTarget) error {
+	row := syncTargetRow{
+		Platform:      string(content.Platform),
+		ContentID:     content.ID,
+		SourceID:      content.SourceID,
+		BaselineReady: boolToInt(complete),
+		LastSyncedAt:  unixPointer(syncedAt),
+	}
+	updates := []string{"source_id", "baseline_ready", "last_synced_at", "last_error"}
+	if target != nil {
+		if content.Platform != model.PlatformBilibili || target.UID == "" || model.SourceID(model.PlatformBilibili, target.UID) != content.SourceID {
+			return errors.New("Bilibili comment target does not match content")
+		}
+		updated := *target
+		updated.BaselineReady = true
+		updated.LastPollAt = syncedAt
+		updated.LastError = ""
+		row = syncTargetFromModel(updated)
+		updates = []string{"source_id", "comment_type", "comment_oid", "title", "url", "published_at", "comment_count", "closed", "baseline_ready", "last_synced_at", "last_error"}
+	}
+	return tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "platform"}, {Name: "content_id"}},
+		DoUpdates: clause.AssignmentColumns(updates),
+	}).Create(&row).Error
+}
+
 func (s *Store) CommentTree(contentID string) ([]model.CommentNode, bool, error) {
 	var rows []commentNodeRow
 	if err := s.db.Where("content_id = ?", contentID).Order("published_at, id").Find(&rows).Error; err != nil {
@@ -805,7 +939,7 @@ func (s *Store) CommentTree(contentID string) ([]model.CommentNode, bool, error)
 	}
 	if len(rows) == 0 {
 		var count int64
-		if err := s.db.Model(&contentRowV3{}).Where("id = ?", contentID).Count(&count).Error; err != nil {
+		if err := s.db.Model(&contentRow{}).Where("id = ?", contentID).Count(&count).Error; err != nil {
 			return nil, false, err
 		}
 		if count == 0 {
@@ -816,130 +950,75 @@ func (s *Store) CommentTree(contentID string) ([]model.CommentNode, bool, error)
 	if tree == nil {
 		tree = make([]model.CommentNode, 0)
 	}
-	var content contentRowV3
+	var content contentRow
 	if err := s.db.Select("tree_incomplete").Where("id = ?", contentID).Take(&content).Error; err == nil {
 		incomplete = incomplete || content.TreeIncomplete != 0
 	}
 	return tree, incomplete, nil
 }
 
-// PromotePlatformOutbox atomically hands v3 tasks to the established channel
-// dispatcher. The outbox row is removed only after the delivery row exists, so
-// a crash cannot lose a task during the hand-off.
-func (s *Store) PromotePlatformOutbox(now time.Time, limit int) (int, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	promoted := 0
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var rows []outboxRow
-		if err := tx.Where("state = ? AND next_at <= ?", "pending", now.Unix()).Order("next_at, id").Limit(limit).Find(&rows).Error; err != nil {
-			return err
-		}
-		for _, row := range rows {
-			delivery, err := platformDelivery(tx, row)
-			if err != nil {
-				return fmt.Errorf("decoding platform outbox %s: %w", row.ID, err)
-			}
-			if err := putDeliveryTx(tx, delivery); err != nil {
-				return err
-			}
-			if err := tx.Where("id = ?", row.ID).Delete(&outboxRow{}).Error; err != nil {
-				return err
-			}
-			promoted++
-		}
-		return nil
-	})
-	return promoted, err
+func enabledChannelIDsTx(tx *gorm.DB) ([]string, error) {
+	var ids []string
+	return ids, tx.Model(&channelRow{}).Where("enabled = ?", 1).Order("id").Pluck("id", &ids).Error
 }
 
-func platformDelivery(tx *gorm.DB, row outboxRow) (model.Delivery, error) {
-	delivery := model.Delivery{ID: row.ID, ChannelID: row.ChannelID, State: model.DeliveryState(row.State), Attempts: row.Attempts,
-		NextAt: time.Unix(row.NextAt, 0), LastError: row.LastError, CreatedAt: time.Unix(row.CreatedAt, 0), OriginTraceparent: row.OriginTraceparent}
-	if delivery.State == "" {
-		delivery.State = model.DeliveryPending
+func contentDeliverySnapshotTx(tx *gorm.DB, content model.Content, attachments []model.Attachment) (model.Dynamic, error) {
+	var source sourceRow
+	if err := tx.Select("name").Where("id = ?", content.SourceID).Take(&source).Error; err != nil {
+		return model.Dynamic{}, err
 	}
-	if row.ProgressJSON != "" {
-		var progress model.DeliveryProgress
-		if err := json.Unmarshal([]byte(row.ProgressJSON), &progress); err == nil {
-			delivery.Progress = &progress
+	dynamic := model.Dynamic{ID: content.ID, Platform: content.Platform, SourceName: source.Name, UID: content.SourceID,
+		UPName: content.AuthorName, Type: string(content.Type), PublishedAt: content.PublishedAt, Summary: content.Text,
+		Description: content.Text, URL: content.URL, Title: content.Title}
+	for _, attachment := range attachments {
+		if attachment.Type == model.AttachmentImage && attachment.LocalPath != "" {
+			dynamic.Media = append(dynamic.Media, model.DynamicMedia{Kind: model.DynamicMediaImage, Width: attachment.Width,
+				Height: attachment.Height, LocalPath: attachment.LocalPath, ContentType: attachment.MIME, Size: attachment.Size})
+			continue
+		}
+		label := attachment.FileName
+		if label == "" {
+			label = string(attachment.Type)
+		}
+		if attachment.Size > 0 {
+			label += fmt.Sprintf(" (%s)", humanBytes(attachment.Size))
+		}
+		dynamic.Links = append(dynamic.Links, model.DynamicLink{Text: label, URL: content.URL})
+	}
+	return dynamic, nil
+}
+
+func commentDigestNotificationTx(tx *gorm.DB, digest model.CommentDigest, key string, now time.Time) (model.CommentNotification, error) {
+	thread, seen, published := make([]model.CommentNode, 0), make(map[string]bool), time.Time{}
+	for _, path := range digest.Paths {
+		for _, node := range path.Nodes {
+			if !seen[node.ID] {
+				node.IsTrigger = node.ID == path.TriggerID
+				thread, seen[node.ID] = append(thread, node), true
+			}
+			if node.Time.After(published) {
+				published = node.Time
+			}
 		}
 	}
-	switch row.Kind {
-	case "content":
-		var content model.Content
-		if err := json.Unmarshal([]byte(row.PayloadJSON), &content); err != nil {
-			return model.Delivery{}, err
-		}
-		var source sourceRow
-		if err := tx.Select("name").Where("id = ?", row.SourceID).Take(&source).Error; err != nil {
-			return model.Delivery{}, err
-		}
-		delivery.Kind = model.DeliveryKindDynamic
-		delivery.Dynamic = model.Dynamic{ID: content.ID, Platform: content.Platform, SourceName: source.Name,
-			UID: content.SourceID, UPName: content.AuthorName,
-			Type: string(content.Type), PublishedAt: content.PublishedAt, Summary: content.Text, Description: content.Text,
-			URL: content.URL, Title: content.Title}
-		var attachments []attachmentRow
-		if err := tx.Where("content_id = ?", content.ID).Order("id").Find(&attachments).Error; err != nil {
-			return model.Delivery{}, err
-		}
-		for _, attachment := range attachments {
-			if attachment.Type == string(model.AttachmentImage) && attachment.LocalPath != "" {
-				delivery.Dynamic.Media = append(delivery.Dynamic.Media, model.DynamicMedia{Kind: model.DynamicMediaImage,
-					Width: attachment.Width, Height: attachment.Height, LocalPath: attachment.LocalPath, ContentType: attachment.MIME, Size: attachment.Size})
-				continue
-			}
-			label := attachment.FileName
-			if label == "" {
-				label = string(model.AttachmentType(attachment.Type))
-			}
-			if attachment.Size > 0 {
-				label += fmt.Sprintf(" (%s)", humanBytes(attachment.Size))
-			}
-			delivery.Dynamic.Links = append(delivery.Dynamic.Links, model.DynamicLink{Text: label, URL: content.URL})
-		}
-	case "comment_digest":
-		var digest model.CommentDigest
-		if err := json.Unmarshal([]byte(row.PayloadJSON), &digest); err != nil {
-			return model.Delivery{}, err
-		}
-		thread := make([]model.CommentNode, 0)
-		seen := make(map[string]bool)
-		published := time.Time{}
-		for _, path := range digest.Paths {
-			for _, node := range path.Nodes {
-				if !seen[node.ID] {
-					node.IsTrigger = node.ID == path.TriggerID
-					thread = append(thread, node)
-					seen[node.ID] = true
-				}
-				if node.Time.After(published) {
-					published = node.Time
-				}
-			}
-		}
-		var source sourceRow
-		if err := tx.Select("name").Where("id = ?", row.SourceID).Take(&source).Error; err != nil {
-			return model.Delivery{}, err
-		}
-		label, contentType := "UP主", "bilibili"
-		if digest.Platform == model.PlatformZSXQ {
-			label, contentType = "星球主", "zsxq"
-		}
-		note := model.CommentNotification{RPID: row.IdempotencyKey, Platform: digest.Platform, SourceName: source.Name,
-			UPUID: digest.SourceID, UPName: label,
-			ContentType: contentType, ContentID: digest.ContentID, ContentTitle: digest.Title, ContentURL: digest.ContentURL,
-			PublishedAt: published, Incomplete: digest.Incomplete, Thread: thread}
-		if len(digest.Triggers) == 1 {
-			note.RPID = digest.Triggers[0].RPID
-		}
-		delivery.Kind, delivery.Comment = model.DeliveryKindComment, &note
-	default:
-		return model.Delivery{}, fmt.Errorf("unsupported outbox kind %q", row.Kind)
+	if published.IsZero() {
+		published = now
 	}
-	return delivery, nil
+	var source sourceRow
+	if err := tx.Select("name").Where("id = ?", digest.SourceID).Take(&source).Error; err != nil {
+		return model.CommentNotification{}, fmt.Errorf("loading comment digest source %s: %w", digest.SourceID, err)
+	}
+	label, contentType := "UP主", "bilibili"
+	if digest.Platform == model.PlatformZSXQ {
+		label, contentType = "星球主", "zsxq"
+	}
+	note := model.CommentNotification{RPID: key, Platform: digest.Platform, SourceName: source.Name,
+		UPUID: digest.SourceID, UPName: label, ContentType: contentType, ContentID: digest.ContentID,
+		ContentTitle: digest.Title, ContentURL: digest.ContentURL, PublishedAt: published, Incomplete: digest.Incomplete, Thread: thread}
+	if len(digest.Triggers) == 1 {
+		note.RPID = digest.Triggers[0].RPID
+	}
+	return note, nil
 }
 
 func humanBytes(size int64) string {

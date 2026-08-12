@@ -167,7 +167,7 @@ describe('resource pages', () => {
     api.sources.mockResolvedValue([planet])
     api.contents.mockResolvedValue({ items: [topic], page: { next_cursor: '', has_more: false } })
     api.content.mockResolvedValue({ content: topic, attachments: [
-      { id: 'local', content_id: topic.id, external_id: 'file-1', type: 'file', file_name: '资料.pdf', size: 2048, local_path: 'media/zsxq/file.pdf' },
+      { id: 'local', content_id: topic.id, external_id: 'file-1', type: 'file', file_name: '资料.pdf', size: 2048, localized: true },
       { id: 'remote', content_id: topic.id, external_id: 'file-2', type: 'file', file_name: '', size: 0, localize_error: '超过下载预算' },
     ] })
     api.contentComments.mockResolvedValue({ children: [{ id: 'zsxq:comment:owner', platform: 'zsxq', content_id: topic.id, rpid: 'owner', mid: 'owner', name: '星球主', message: '补充说明', time: '2026-08-09T10:00:00Z', author_role: 'owner', is_trigger: true, deleted_at: '2026-08-09T11:00:00Z', children: [] }], incomplete: true })

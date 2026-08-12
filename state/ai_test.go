@@ -30,6 +30,7 @@ func TestAutomaticAIPipelineContinuesCollectionTraceAndEnqueuesTerminalNotificat
 	t.Parallel()
 	store := openTestStore(t, 116)
 	configureAutomaticAI(t, store, true)
+	putEnabledTestChannel(t, store)
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Name: "UP", Enabled: true}))
 	provider := sdktrace.NewTracerProvider()
 	t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
@@ -50,7 +51,7 @@ func TestAutomaticAIPipelineContinuesCollectionTraceAndEnqueuesTerminalNotificat
 	transcription, summary := jobs[0], jobs[1]
 	assert.Equal(t, model.AIJobOriginDynamic, transcription.Origin)
 	assert.Equal(t, transcription.ID, summary.DependsOnJobID)
-	assert.Equal(t, model.AISummaryInput{TranscriptionID: transcription.ID}, summary.Input)
+	assert.Equal(t, model.AISummaryInput{TranscriptionID: transcription.ID}, *summary.SummaryInput)
 	for _, job := range jobs {
 		parent := propagation.TraceContext{}.Extract(context.Background(), propagation.MapCarrier{"traceparent": job.OriginTraceparent})
 		assert.Equal(t, collectionContext.TraceID(), trace.SpanContextFromContext(parent).TraceID())
@@ -62,19 +63,19 @@ func TestAutomaticAIPipelineContinuesCollectionTraceAndEnqueuesTerminalNotificat
 	require.NoError(t, err)
 	assert.Equal(t, transcription.ID, claimed.ID)
 	transcript := model.AITranscriptionResult{BVID: "BV1xx411c7mD", Title: "video", Pages: []model.AITranscriptPage{{Page: 1, Title: "P1", Segments: []model.AITranscriptSegment{{StartMS: 1000, EndMS: 2000, Text: "hello"}}}}}
-	require.NoError(t, store.WithContext(ctx).FinishAIJob(transcription.ID, transcript))
+	require.NoError(t, store.WithContext(ctx).FinishTranscription(transcription.ID, transcript))
 	claimed, err = store.ClaimAIJob(model.AIJobSummary)
 	require.NoError(t, err)
 	assert.Equal(t, summary.ID, claimed.ID)
-	require.NoError(t, store.WithContext(ctx).FinishAIJob(summary.ID, model.AISummaryResult{Markdown: "summary"}))
+	require.NoError(t, store.WithContext(ctx).FinishSummary(summary.ID, model.AISummaryResult{Markdown: "summary"}))
 
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 3)
-	kinds := []model.DeliveryKind{deliveries[0].EffectiveKind(), deliveries[1].EffectiveKind(), deliveries[2].EffectiveKind()}
+	kinds := []model.DeliveryKind{deliveries[0].Kind, deliveries[1].Kind, deliveries[2].Kind}
 	assert.ElementsMatch(t, []model.DeliveryKind{model.DeliveryKindDynamic, model.DeliveryKindAI, model.DeliveryKindAI}, kinds)
 	for _, delivery := range deliveries {
-		if delivery.EffectiveKind() == model.DeliveryKindAI {
+		if delivery.Kind == model.DeliveryKindAI {
 			require.NotNil(t, delivery.AI)
 			assert.True(t, delivery.AI.Succeeded)
 			assert.NotEmpty(t, delivery.OriginTraceparent)
@@ -126,6 +127,7 @@ func TestAutomaticAITranscriptionFailureSkipsSummaryAndNotifiesOnce(t *testing.T
 	t.Parallel()
 	store := openTestStore(t, 117)
 	configureAutomaticAI(t, store, true)
+	putEnabledTestChannel(t, store)
 	_, err := store.RecordDynamics("42", []model.Dynamic{{ID: "failed-video", BVID: "BV1xx411c7mD", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_AV", PublishedAt: time.Now()}}, []string{"channel"}, DynamicBaselineNone)
 	require.NoError(t, err)
 	transcription, err := store.ClaimAIJob(model.AIJobTranscription)
@@ -244,11 +246,11 @@ func TestAIJobLifecycleAndEncryptedDetail(t *testing.T) {
 	prompt, err := store.PutAIPrompt(model.AIPromptTemplate{Name: "default", ChunkPrompt: "chunk {{text}}", ReducePrompt: "reduce {{summaries}}", Default: true})
 	require.NoError(t, err)
 
-	job, created, err := store.CreateAIJob(model.AIJob{ClientRequestID: "request-1", Kind: model.AIJobTranscription, ProfileID: profile.ID, Input: model.AITranscriptionInput{BVID: "BV1xx411c7mD"}})
+	job, created, err := store.CreateAIJob(model.AIJob{ClientRequestID: "request-1", Kind: model.AIJobTranscription, ProfileID: profile.ID, TranscriptionInput: &model.AITranscriptionInput{BVID: "BV1xx411c7mD"}})
 	require.NoError(t, err)
 	assert.True(t, created)
 	assert.Equal(t, model.AIJobQueued, job.State)
-	duplicate, created, err := store.CreateAIJob(model.AIJob{ClientRequestID: "request-1", Kind: model.AIJobTranscription, ProfileID: profile.ID, Input: model.AITranscriptionInput{BVID: "BV1xx411c7mD"}})
+	duplicate, created, err := store.CreateAIJob(model.AIJob{ClientRequestID: "request-1", Kind: model.AIJobTranscription, ProfileID: profile.ID, TranscriptionInput: &model.AITranscriptionInput{BVID: "BV1xx411c7mD"}})
 	require.NoError(t, err)
 	assert.False(t, created)
 	assert.Equal(t, job.ID, duplicate.ID)
@@ -266,17 +268,17 @@ func TestAIJobLifecycleAndEncryptedDetail(t *testing.T) {
 	assert.Equal(t, 1, claimed.Attempts)
 	require.NoError(t, store.UpdateAIJobProgress(job.ID, "transcribing", 60))
 	result := model.AITranscriptionResult{BVID: "BV1xx411c7mD", Title: "video", Pages: []model.AITranscriptPage{{Page: 1, Segments: []model.AITranscriptSegment{{StartMS: 10, EndMS: 20, Text: "hello"}}}}}
-	require.NoError(t, store.FinishAIJob(job.ID, result))
+	require.NoError(t, store.FinishTranscription(job.ID, result))
 
 	detail, err := store.AIJob(job.ID)
 	require.NoError(t, err)
 	assert.Equal(t, model.AIJobSucceeded, detail.State)
-	assert.Equal(t, result, detail.Result)
+	assert.Equal(t, result, *detail.TranscriptionResult)
 	page, err := store.ListAIJobs(model.AIJobQuery{Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, page.Items, 1)
-	assert.Nil(t, page.Items[0].Input)
-	assert.Nil(t, page.Items[0].Result)
+	assert.Nil(t, page.Items[0].TranscriptionInput)
+	assert.Nil(t, page.Items[0].TranscriptionResult)
 	assert.ErrorIs(t, store.CancelAIJob(job.ID), ErrAIJobNotCancelable)
 	require.NoError(t, store.DeleteAIJob(job.ID))
 	require.NoError(t, store.DeleteAIPrompt(prompt.ID))
@@ -348,7 +350,7 @@ func TestAIJobFailureRetryLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	prompt, err := store.PutAIPrompt(model.AIPromptTemplate{Name: "prompt", ChunkPrompt: "{{text}}", ReducePrompt: "{{summaries}}"})
 	require.NoError(t, err)
-	job, created, err := store.CreateAIJob(model.AIJob{ClientRequestID: "failure-retry", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, Input: model.AISummaryInput{Text: "source"}})
+	job, created, err := store.CreateAIJob(model.AIJob{ClientRequestID: "failure-retry", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, SummaryInput: &model.AISummaryInput{Text: "source"}})
 	require.NoError(t, err)
 	assert.True(t, created)
 

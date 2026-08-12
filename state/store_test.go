@@ -140,7 +140,7 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	deliveries, err = store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, "2", deliveries[0].Dynamic.ID)
+	assert.Equal(t, model.ContentID(model.PlatformBilibili, "2"), deliveries[0].Dynamic.ID)
 
 	persisted := deliveries[0].Dynamic
 	assert.Equal(t, "video title", persisted.Title)
@@ -186,18 +186,17 @@ func TestExclusiveDynamicBaselineKeepsNormalDeliveries(t *testing.T) {
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, "normal", deliveries[0].Dynamic.ID)
+	assert.Equal(t, "bilibili:content:normal", deliveries[0].Dynamic.ID)
 
-	records, total, err := store.QueryDynamics(ContentQuery{UID: "42"})
+	records, err := store.QueryContents(PlatformContentQuery{SourceID: "bilibili:up:42"})
 	require.NoError(t, err)
-	assert.Equal(t, 2, total)
 	require.Len(t, records, 2)
-	byID := make(map[string]DynamicRecord, len(records))
+	byID := make(map[string]model.Content, len(records))
 	for _, record := range records {
 		byID[record.ID] = record
 	}
-	assert.True(t, byID["exclusive"].Baseline)
-	assert.False(t, byID["normal"].Baseline)
+	assert.True(t, byID["bilibili:content:exclusive"].Baseline)
+	assert.False(t, byID["bilibili:content:normal"].Baseline)
 }
 
 func TestMigrationRequiresExclusiveBaselineForExistingUPs(t *testing.T) {
@@ -448,7 +447,7 @@ func TestCommentTargetsAndOutbox(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
-	channel, err := store.PutChannel(model.Channel{
+	_, err = store.PutChannel(model.Channel{
 		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
 		Settings: map[string]string{"webhook": "https://example.com/hook"},
 	})
@@ -459,6 +458,13 @@ func TestCommentTargetsAndOutbox(t *testing.T) {
 		{UID: "42", DynamicID: "d1", ContentType: "DYNAMIC_TYPE_AV", Title: "v1", URL: "https://t.bilibili.com/d1", CommentType: 1, CommentOID: "100", PublishedAt: now.Add(-time.Hour)},
 		{UID: "42", DynamicID: "d2", ContentType: "DYNAMIC_TYPE_WORD", Title: "w2", URL: "https://t.bilibili.com/d2", CommentType: 17, CommentOID: "200", PublishedAt: now},
 		{UID: "42", DynamicID: "d0", ContentType: "DYNAMIC_TYPE_WORD", URL: "https://t.bilibili.com/d0", CommentType: 17, CommentOID: "50", PublishedAt: now.Add(-2 * time.Hour)},
+	}
+	for _, target := range discovered {
+		_, recordErr := store.RecordDynamics("42", []model.Dynamic{{
+			ID: target.DynamicID, UID: "42", UPName: "up", Type: target.ContentType,
+			PublishedAt: target.PublishedAt, URL: target.URL, Title: target.Title,
+		}}, nil, DynamicBaselineAll)
+		require.NoError(t, recordErr)
 	}
 	kept, err := store.UpsertCommentTargets("42", discovered, 2)
 	require.NoError(t, err)
@@ -478,14 +484,17 @@ func TestCommentTargetsAndOutbox(t *testing.T) {
 	assert.Equal(t, int64(9), again[0].CommentCount)
 
 	target := again[0]
-	note := model.CommentNotification{
-		RPID: "r1", UPUID: "42", UPName: "up", ContentType: "DYNAMIC_TYPE_WORD",
-		ContentID: "d2", ContentURL: target.URL, PublishedAt: now,
-		Thread: []model.CommentNode{{RPID: "r0", Name: "fan", Message: "hi"}, {RPID: "r1", Name: "up", Message: "reply", IsUP: true, IsTrigger: true}},
+	content := model.Content{
+		ID: model.ContentID(model.PlatformBilibili, target.DynamicID), Platform: model.PlatformBilibili,
+		SourceID: model.SourceID(model.PlatformBilibili, target.UID), ExternalID: target.DynamicID,
+		UpstreamType: target.ContentType, Type: model.ContentDynamic, Title: target.Title,
+		URL: target.URL, PublishedAt: target.PublishedAt,
 	}
-	created, err := store.RecordCommentNotifications(target, []model.CommentNotification{note}, []string{channel.ID}, true)
+	root := model.CommentNode{RPID: "r0", Name: "fan", Role: model.RoleMember, Message: "hi", Time: now}
+	reply := model.CommentNode{RPID: "r1", Parent: "r0", Name: "up", Role: model.RoleUP, Message: "reply", Time: now}
+	digests, err := store.SyncCommentTree(content, []model.CommentNode{root, reply}, true, true, "baseline", &target)
 	require.NoError(t, err)
-	assert.Equal(t, 0, created)
+	assert.Empty(t, digests)
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	assert.Empty(t, deliveries)
@@ -493,16 +502,14 @@ func TestCommentTargetsAndOutbox(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, seen)
 
-	note2 := note
-	note2.RPID = "r2"
-	note2.Thread = append(note2.Thread, model.CommentNode{RPID: "r2", Name: "up", Message: "again", IsUP: true, IsTrigger: true})
-	created, err = store.RecordCommentNotifications(target, []model.CommentNotification{note, note2}, []string{channel.ID}, false)
+	reply2 := model.CommentNode{RPID: "r2", Parent: "r0", Name: "up", Role: model.RoleUP, Message: "again", Time: now.Add(time.Second)}
+	digests, err = store.SyncCommentTree(content, []model.CommentNode{root, reply, reply2}, true, false, "incremental", &target)
 	require.NoError(t, err)
-	assert.Equal(t, 1, created)
+	require.Len(t, digests, 1)
 	deliveries, err = store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, model.DeliveryKindComment, deliveries[0].EffectiveKind())
+	assert.Equal(t, model.DeliveryKindComment, deliveries[0].Kind)
 	require.NotNil(t, deliveries[0].Comment)
 	assert.Equal(t, "r2", deliveries[0].Comment.RPID)
 
@@ -601,6 +608,7 @@ func TestRecordFeedDynamicsAdvancesCursorWithDurableOutbox(t *testing.T) {
 	require.NoError(t, store.PutFollowRelations("100", map[string]model.FollowState{"42": model.Followed}, time.Now()))
 	require.NoError(t, store.MarkSpaceSynced("100", "42", time.Now()))
 	require.NoError(t, store.InitializeFeed("100", "old", time.Now()))
+	putEnabledTestChannel(t, store)
 
 	dynamic := model.Dynamic{ID: "dynamic-1", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now(), Summary: "new"}
 	created, err := store.RecordFeedDynamics("100", "new", []model.Dynamic{dynamic}, []string{"channel"}, nil)
@@ -615,5 +623,5 @@ func TestRecordFeedDynamicsAdvancesCursorWithDurableOutbox(t *testing.T) {
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, "dynamic-1", deliveries[0].Dynamic.ID)
+	assert.Equal(t, model.ContentID(model.PlatformBilibili, "dynamic-1"), deliveries[0].Dynamic.ID)
 }

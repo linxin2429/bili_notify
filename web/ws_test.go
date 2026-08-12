@@ -52,9 +52,10 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 		events:      events,
 		connections: make(map[string]map[*websocket.Conn]struct{}),
 	}
+	server.sourceAdmin = newWebTestSourceAdmin(t, server, store, events)
 	httpServer := httptest.NewTLSServer(server.adminHandler())
 	t.Cleanup(httpServer.Close)
-	wsURL := "wss" + strings.TrimPrefix(httpServer.URL, "https") + "/api/v3/ws"
+	wsURL := "wss" + strings.TrimPrefix(httpServer.URL, "https") + "/api/v4/ws"
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancel)
@@ -81,7 +82,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	assert.Equal(t, "sync.required", initial.Event)
 	assert.Equal(t, allResourceTopics(), initial.Topics)
 
-	badRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v3/sources", strings.NewReader(`{"platform":"bilibili","external_id":"42","name":"Test UP","enabled":true}`))
+	badRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v4/sources", strings.NewReader(`{"platform":"bilibili","external_id":"42","name":"Test UP","enabled":true}`))
 	require.NoError(t, err)
 	badRequest.Header.Set("Content-Type", "application/json")
 	badRequest.Header.Set("X-CSRF-Token", "invalid")
@@ -91,7 +92,7 @@ func TestWebSocketRequiresSessionAndPublishesHTTPUpdates(t *testing.T) {
 	t.Cleanup(func() { _ = badResponse.Body.Close() })
 	assert.Equal(t, http.StatusForbidden, badResponse.StatusCode)
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v3/sources", strings.NewReader(`{"platform":"bilibili","external_id":"42","name":"Test UP","enabled":true}`))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v4/sources", strings.NewReader(`{"platform":"bilibili","external_id":"42","name":"Test UP","enabled":true}`))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-CSRF-Token", csrf)
@@ -227,8 +228,8 @@ func TestWebSocketIsClosedByLogoutAndPasswordChange(t *testing.T) {
 		path   string
 		body   string
 	}{
-		{name: "logout", method: http.MethodDelete, path: "/api/v3/session"},
-		{name: "password change", method: http.MethodPut, path: "/api/v3/session/password", body: `{"current_password":"correct horse battery staple","new_password":"replacement horse battery staple"}`},
+		{name: "logout", method: http.MethodDelete, path: "/api/v4/session"},
+		{name: "password change", method: http.MethodPut, path: "/api/v4/session/password", body: `{"current_password":"correct horse battery staple","new_password":"replacement horse battery staple"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -296,7 +297,7 @@ func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
 	deliveries := make([]model.Delivery, 100)
 	for i := range deliveries {
 		deliveries[i] = model.Delivery{
-			ID: "delivery",
+			ID: "delivery", Kind: model.DeliveryKindDynamic,
 			Dynamic: model.Dynamic{
 				ID: "dynamic", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_DRAW",
 				PublishedAt: time.Now(), Summary: strings.Repeat("正文", 5000), URL: "https://t.bilibili.com/1",
@@ -313,56 +314,6 @@ func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
 	assert.Less(t, len(raw), 1<<20)
 	assert.NotContains(t, string(raw), "不应进入管理台")
 	assert.LessOrEqual(t, len([]rune(views[0].Dynamic.Summary)), 241)
-}
-
-func TestDynamicHistoryViewsBoundTextAndMedia(t *testing.T) {
-	t.Parallel()
-	media := make([]model.DynamicMedia, 0, 20)
-	for i := range 20 {
-		media = append(media, model.DynamicMedia{
-			Kind: model.DynamicMediaImage,
-			URL:  "https://i0.hdslb.com/bfs/image/" + strings.Repeat("x", 8) + string(rune('a'+i%26)) + ".jpg",
-		})
-	}
-	view := toDynamicHistoryView(state.DynamicRecord{
-		ID: "dyn", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_FORWARD",
-		PublishedAt: time.Now(), DiscoveredAt: time.Now(),
-		Summary: strings.Repeat("正文", 5000), Description: strings.Repeat("简介", 5000),
-		Media: media,
-		Stats: &model.DynamicStats{Forwards: 1, Comments: 2, Likes: 3},
-		Video: &model.DynamicVideo{Duration: "01:09", Views: "8468", Danmaku: "8"},
-		Original: &state.DynamicPreview{
-			ID: "orig", Summary: strings.Repeat("原文", 5000), Description: strings.Repeat("原简介", 5000),
-			Media: media, Video: &model.DynamicVideo{Duration: "02:00"},
-		},
-	})
-	assert.LessOrEqual(t, len([]rune(view.Summary)), historyPreviewTextLimit+1)
-	assert.LessOrEqual(t, len([]rune(view.Description)), historyPreviewTextLimit+1)
-	assert.LessOrEqual(t, len(view.Media), historyPreviewMediaLimit)
-	require.NotNil(t, view.Original)
-	assert.LessOrEqual(t, len([]rune(view.Original.Summary)), historyPreviewTextLimit+1)
-	assert.LessOrEqual(t, len(view.Original.Media), historyPreviewMediaLimit)
-	require.NotNil(t, view.Stats)
-	assert.Equal(t, int64(3), view.Stats.Likes)
-	require.NotNil(t, view.Video)
-	assert.Equal(t, "01:09", view.Video.Duration)
-	require.NotNil(t, view.Original.Video)
-	assert.Equal(t, "02:00", view.Original.Video.Duration)
-	raw, err := json.Marshal(view)
-	require.NoError(t, err)
-	assert.Less(t, len(raw), 64<<10)
-}
-
-func TestDynamicHistoryViewSerializesRequiredEmptyTextFields(t *testing.T) {
-	t.Parallel()
-	view := toDynamicHistoryView(state.DynamicRecord{
-		ID: "dyn", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD",
-		PublishedAt: time.Now(), DiscoveredAt: time.Now(),
-	})
-	raw, err := json.Marshal(view)
-	require.NoError(t, err)
-	assert.Contains(t, string(raw), `"summary":""`)
-	assert.Contains(t, string(raw), `"url":""`)
 }
 
 func TestAPIErrorClassification(t *testing.T) {
@@ -405,7 +356,7 @@ func dialTestWebSocketResponse(ctx context.Context, server *httptest.Server, tok
 	headers := http.Header{}
 	headers.Set("Cookie", (&http.Cookie{Name: sessionCookie, Value: token}).String())
 	headers.Set("Origin", origin)
-	wsURL := "wss" + strings.TrimPrefix(server.URL, "https") + "/api/v3/ws"
+	wsURL := "wss" + strings.TrimPrefix(server.URL, "https") + "/api/v4/ws"
 	return websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: server.Client(), HTTPHeader: headers})
 }
 

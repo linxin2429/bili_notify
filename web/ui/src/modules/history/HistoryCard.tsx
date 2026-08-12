@@ -261,7 +261,7 @@ export function CommentBranch({ node, timeZone }: { node: CommentTreeNode; timeZ
       {role && <Badge tone="info">{role}</Badge>}
       {node.is_trigger && <Badge tone="success">新增触发</Badge>}
       {node.deleted_at && <Badge tone="danger">已删除</Badge>}
-      <time>{formatDate(node.time, timeZone)}</time>
+      <time>{formatDate(node.published_at, timeZone)}</time>
     </div>
     <p>{node.message}</p>
     {node.children?.map(child => (

@@ -21,7 +21,7 @@ tags:
   - name: accounts
   - name: sources
 paths:
-  /api/v3/session:
+  /api/v4/session:
     get:
       tags: [session]
       security: []
@@ -64,7 +64,7 @@ paths:
           $ref: '#/components/responses/AuthenticationError'
         '403':
           $ref: '#/components/responses/CSRFError'
-  /api/v3/setup:
+  /api/v4/setup:
     post:
       tags: [session]
       security: []
@@ -86,7 +86,7 @@ paths:
           $ref: '#/components/responses/RateLimitError'
         '500':
           $ref: '#/components/responses/InternalError'
-  /api/v3/session/password:
+  /api/v4/session/password:
     put:
       tags: [session]
       operationId: changePassword
@@ -109,7 +109,7 @@ paths:
           $ref: '#/components/responses/CSRFError'
         '500':
           $ref: '#/components/responses/InternalError'
-  /api/v3/runtime:
+  /api/v4/runtime:
     get:
       tags: [runtime]
       operationId: getRuntime
@@ -127,7 +127,7 @@ paths:
           $ref: '#/components/responses/AuthenticationError'
         '500':
           $ref: '#/components/responses/InternalError'
-  /api/v3/settings:
+  /api/v4/settings:
     get:
       tags: [runtime]
       operationId: getSettings
@@ -158,7 +158,7 @@ paths:
           $ref: '#/components/responses/CSRFError'
         '500':
           $ref: '#/components/responses/InternalError'
-  /api/v3/channels:
+  /api/v4/channels:
     get:
       tags: [channels]
       operationId: listChannels
@@ -200,7 +200,7 @@ paths:
           $ref: '#/components/responses/CSRFError'
         '500':
           $ref: '#/components/responses/InternalError'
-  /api/v3/channels/{id}:
+  /api/v4/channels/{id}:
     parameters:
       - $ref: '#/components/parameters/ChannelID'
     put:
@@ -243,7 +243,7 @@ paths:
           $ref: '#/components/responses/NotFoundError'
         '500':
           $ref: '#/components/responses/InternalError'
-  /api/v3/channels/{id}/test:
+  /api/v4/channels/{id}/test:
     parameters:
       - $ref: '#/components/parameters/ChannelID'
     post:
@@ -269,7 +269,7 @@ paths:
           $ref: '#/components/responses/NotFoundError'
         '502':
           $ref: '#/components/responses/UpstreamError'
-  /api/v3/channels/{id}/microsoft-login:
+  /api/v4/channels/{id}/microsoft-login:
     parameters:
       - $ref: '#/components/parameters/ChannelID'
     post:
@@ -309,7 +309,7 @@ paths:
           $ref: '#/components/responses/AuthenticationError'
         '403':
           $ref: '#/components/responses/CSRFError'
-  /api/v3/deliveries:
+  /api/v4/deliveries:
     get:
       tags: [deliveries]
       operationId: listDeliveries
@@ -332,7 +332,7 @@ paths:
           $ref: '#/components/responses/AuthenticationError'
         '500':
           $ref: '#/components/responses/InternalError'
-  /api/v3/deliveries/{id}/retry:
+  /api/v4/deliveries/{id}/retry:
     parameters:
       - $ref: '#/components/parameters/DeliveryID'
     post:
@@ -362,7 +362,7 @@ paths:
           $ref: '#/components/responses/ConflictError'
         '500':
           $ref: '#/components/responses/InternalError'
-  /api/v3/microsoft-logins:
+  /api/v4/microsoft-logins:
     get:
       tags: [login]
       operationId: listMicrosoftLogins
@@ -380,7 +380,7 @@ paths:
                   $ref: '#/components/schemas/MicrosoftLogin'
         '401':
           $ref: '#/components/responses/AuthenticationError'
-  /api/v3/audit-logs:
+  /api/v4/audit-logs:
     get:
       tags: [audit]
       operationId: listAuditLogs
@@ -417,14 +417,14 @@ paths:
           $ref: '#/components/responses/AuthenticationError'
         '500':
           $ref: '#/components/responses/InternalError'
-  /api/v3/ai/status:
+  /api/v4/ai/status:
     get:
       tags: [ai]
       operationId: getAIWorkerStatus
       responses:
         '200': {description: Current AI Worker capabilities., content: {application/json: {schema: {$ref: '#/components/schemas/AIWorkerStatus'}}}}
         '401': {$ref: '#/components/responses/AuthenticationError'}
-  /api/v3/ai/profiles:
+  /api/v4/ai/profiles:
     get:
       tags: [ai]
       operationId: listAIProfiles
@@ -438,7 +438,7 @@ paths:
       responses:
         '201': {description: Created model profile., content: {application/json: {schema: {$ref: '#/components/schemas/AIProfile'}}}}
         '400': {$ref: '#/components/responses/InvalidRequest'}
-  /api/v3/ai/profiles/{id}:
+  /api/v4/ai/profiles/{id}:
     parameters: [{$ref: '#/components/parameters/AIID'}]
     put:
       tags: [ai]
@@ -455,7 +455,7 @@ paths:
       responses:
         '204': {description: Profile deleted.}
         '409': {$ref: '#/components/responses/ConflictError'}
-  /api/v3/ai/profiles/{id}/test:
+  /api/v4/ai/profiles/{id}/test:
     parameters: [{$ref: '#/components/parameters/AIID'}]
     post:
       tags: [ai]
@@ -464,7 +464,7 @@ paths:
       responses:
         '200': {description: Completed real provider connectivity probe., content: {application/json: {schema: {$ref: '#/components/schemas/AIProfileTestResult'}}}}
         '404': {$ref: '#/components/responses/NotFoundError'}
-  /api/v3/ai/profiles/{id}/availability:
+  /api/v4/ai/profiles/{id}/availability:
     parameters: [{$ref: '#/components/parameters/AIID'}]
     put:
       tags: [ai]
@@ -475,7 +475,7 @@ paths:
         '200': {description: Updated model profile availability., content: {application/json: {schema: {$ref: '#/components/schemas/AIProfile'}}}}
         '400': {$ref: '#/components/responses/InvalidRequest'}
         '404': {$ref: '#/components/responses/NotFoundError'}
-  /api/v3/ai/prompts:
+  /api/v4/ai/prompts:
     get:
       tags: [ai]
       operationId: listAIPrompts
@@ -489,7 +489,7 @@ paths:
       responses:
         '201': {description: Created prompt., content: {application/json: {schema: {$ref: '#/components/schemas/AIPrompt'}}}}
         '400': {$ref: '#/components/responses/InvalidRequest'}
-  /api/v3/ai/prompts/{id}:
+  /api/v4/ai/prompts/{id}:
     parameters: [{$ref: '#/components/parameters/AIID'}]
     put:
       tags: [ai]
@@ -506,7 +506,7 @@ paths:
       responses:
         '204': {description: Prompt deleted.}
         '409': {$ref: '#/components/responses/ConflictError'}
-  /api/v3/ai/transcriptions:
+  /api/v4/ai/transcriptions:
     post:
       tags: [ai]
       operationId: createAITranscription
@@ -515,7 +515,7 @@ paths:
       responses:
         '202': {description: Durable transcription job., content: {application/json: {schema: {$ref: '#/components/schemas/AIJob'}}}}
         '400': {$ref: '#/components/responses/InvalidRequest'}
-  /api/v3/ai/summaries:
+  /api/v4/ai/summaries:
     post:
       tags: [ai]
       operationId: createAISummary
@@ -524,7 +524,7 @@ paths:
       responses:
         '202': {description: Durable summary job., content: {application/json: {schema: {$ref: '#/components/schemas/AIJob'}}}}
         '400': {$ref: '#/components/responses/InvalidRequest'}
-  /api/v3/ai/jobs:
+  /api/v4/ai/jobs:
     get:
       tags: [ai]
       operationId: listAIJobs
@@ -535,7 +535,7 @@ paths:
         - {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
       responses:
         '200': {description: AI job page; list entries omit encrypted input and result., content: {application/json: {schema: {$ref: '#/components/schemas/AIJobPage'}}}}
-  /api/v3/ai/jobs/{id}:
+  /api/v4/ai/jobs/{id}:
     parameters: [{$ref: '#/components/parameters/AIID'}]
     get:
       tags: [ai]
@@ -550,7 +550,7 @@ paths:
       responses:
         '204': {description: Terminal job deleted.}
         '409': {$ref: '#/components/responses/ConflictError'}
-  /api/v3/ai/jobs/{id}/cancel:
+  /api/v4/ai/jobs/{id}/cancel:
     parameters: [{$ref: '#/components/parameters/AIID'}]
     post:
       tags: [ai]
@@ -559,7 +559,7 @@ paths:
       responses:
         '202': {description: Cancellation accepted., content: {application/json: {schema: {type: object, additionalProperties: false, required: [status], properties: {status: {const: canceled}}}}}}
         '409': {$ref: '#/components/responses/ConflictError'}
-  /api/v3/ai/jobs/{id}/retry:
+  /api/v4/ai/jobs/{id}/retry:
     parameters: [{$ref: '#/components/parameters/AIID'}]
     post:
       tags: [ai]
@@ -568,7 +568,7 @@ paths:
       responses:
         '202': {description: Job queued again., content: {application/json: {schema: {$ref: '#/components/schemas/QueuedStatus'}}}}
         '409': {$ref: '#/components/responses/ConflictError'}
-  /api/v3/ws:
+  /api/v4/ws:
     get:
       tags: [runtime]
       operationId: connectRealtime
@@ -582,7 +582,7 @@ paths:
           $ref: '#/components/responses/AuthenticationError'
         '403':
           $ref: '#/components/responses/CSRFError'
-  /api/v3/accounts:
+  /api/v4/accounts:
     get:
       tags: [accounts]
       operationId: listPlatformAccounts
@@ -592,7 +592,7 @@ paths:
           content:
             application/json:
               schema: {type: array, items: {$ref: '#/components/schemas/PlatformAccount'}}
-  /api/v3/accounts/bilibili/qr:
+  /api/v4/accounts/bilibili/qr:
     get:
       tags: [accounts]
       operationId: getBilibiliQRLogin
@@ -613,7 +613,7 @@ paths:
         '201':
           description: Bilibili QR login transaction.
           content: {application/json: {schema: {$ref: '#/components/schemas/BilibiliLogin'}}}
-  /api/v3/accounts/bilibili/qr/{id}:
+  /api/v4/accounts/bilibili/qr/{id}:
     delete:
       tags: [accounts]
       operationId: cancelBilibiliQRLogin
@@ -622,13 +622,13 @@ paths:
         - {$ref: '#/components/parameters/CSRFToken'}
       responses:
         '204': {description: QR login transaction cancelled.}
-  /api/v3/accounts/bilibili/session:
+  /api/v4/accounts/bilibili/session:
     delete:
       tags: [accounts]
       operationId: deleteBilibiliSession
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
       responses: {'204': {description: Bilibili account disconnected.}}
-  /api/v3/accounts/zsxq/sms-code:
+  /api/v4/accounts/zsxq/sms-code:
     post:
       tags: [accounts]
       operationId: sendZSXQSMSCode
@@ -643,7 +643,7 @@ paths:
           description: Ephemeral login transaction.
           content: {application/json: {schema: {$ref: '#/components/schemas/ZSXQLoginTransaction'}}}
         '429': {$ref: '#/components/responses/RateLimitError'}
-  /api/v3/accounts/zsxq/session:
+  /api/v4/accounts/zsxq/session:
     post:
       tags: [accounts]
       operationId: createZSXQSession
@@ -666,7 +666,7 @@ paths:
       operationId: deleteZSXQSession
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
       responses: {'204': {description: Knowledge Planet account disconnected.}}
-  /api/v3/accounts/zsxq/sync-sources:
+  /api/v4/accounts/zsxq/sync-sources:
     post:
       tags: [accounts, sources]
       operationId: syncZSXQSources
@@ -675,7 +675,7 @@ paths:
         '200':
           description: Visible Knowledge Planet sources.
           content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Source'}}}}
-  /api/v3/sources:
+  /api/v4/sources:
     get:
       tags: [sources]
       operationId: listSources
@@ -694,7 +694,7 @@ paths:
         content: {application/json: {schema: {$ref: '#/components/schemas/CreateSourceRequest'}}}
       responses:
         '201': {description: Source created, content: {application/json: {schema: {$ref: '#/components/schemas/Source'}}}}
-  /api/v3/sources/{id}:
+  /api/v4/sources/{id}:
     parameters: [{name: id, in: path, required: true, schema: {type: string}}]
     put:
       tags: [sources]
@@ -709,7 +709,7 @@ paths:
       operationId: deleteSource
       parameters: [{$ref: '#/components/parameters/CSRFToken'}]
       responses: {'204': {description: Source and archive removed.}}
-  /api/v3/contents:
+  /api/v4/contents:
     get:
       tags: [history]
       operationId: listContents
@@ -725,7 +725,7 @@ paths:
         '200':
           description: Unified content page.
           content: {application/json: {schema: {$ref: '#/components/schemas/ContentPage'}}}
-  /api/v3/contents/{id}:
+  /api/v4/contents/{id}:
     get:
       tags: [history]
       operationId: getContent
@@ -741,7 +741,7 @@ paths:
                 properties:
                   content: {$ref: '#/components/schemas/Content'}
                   attachments: {type: array, items: {$ref: '#/components/schemas/Attachment'}}
-  /api/v3/contents/{id}/comments:
+  /api/v4/contents/{id}/comments:
     get:
       tags: [history]
       operationId: getContentCommentTree
@@ -757,7 +757,7 @@ paths:
                 properties:
                   children: {type: array, items: {$ref: '#/components/schemas/CommentTreeNode'}}
                   incomplete: {type: boolean}
-  /api/v3/contents/{id}/attachments/{attachment_id}:
+  /api/v4/contents/{id}/attachments/{attachment_id}:
     get:
       tags: [history]
       operationId: downloadAttachment
@@ -1123,7 +1123,7 @@ components:
     Attachment:
       type: object
       additionalProperties: false
-      required: [id, content_id, external_id, type]
+      required: [id, content_id, external_id, type, localized]
       properties:
         id: {type: string}
         content_id: {type: string}
@@ -1136,12 +1136,12 @@ components:
         height: {type: integer}
         duration_sec: {type: integer, format: int64}
         remote_host: {type: string}
-        local_path: {type: string}
+        localized: {type: boolean}
         localize_error: {type: string}
     CommentTreeNode:
       type: object
       additionalProperties: false
-      required: [id, platform, content_id, rpid, mid, name, message, time]
+      required: [id, platform, content_id, author_role, name, message, published_at]
       properties:
         id: {type: string}
         platform: {type: string, enum: [bilibili, zsxq]}
@@ -1151,17 +1151,12 @@ components:
         author_id: {type: string}
         author_role: {type: string, enum: [owner, admin, guest, partner, member, up]}
         updated_at: {type: string, format: date-time}
-        first_seen_at: {type: string, format: date-time}
         deleted_at: {type: string, format: date-time}
         media: {type: array, items: {$ref: '#/components/schemas/Attachment'}}
         children: {type: array, items: {$ref: '#/components/schemas/CommentTreeNode'}}
-        rpid: {type: string}
-        parent: {type: string}
-        mid: {type: string}
         name: {type: string}
         message: {type: string}
-        time: {type: string, format: date-time}
-        is_up: {type: boolean}
+        published_at: {type: string, format: date-time}
         is_trigger: {type: boolean}
     ContentPage:
       type: object
@@ -1289,57 +1284,18 @@ components:
       required: [id, kind, channel_id, state, attempts, next_at, created_at]
       properties:
         id: {type: string}
-        kind: {type: string, enum: [content, comment_digest, ai]}
-        dynamic:
-          $ref: '#/components/schemas/DynamicPreview'
-        comment:
-          $ref: '#/components/schemas/CommentPreview'
-        ai:
-          $ref: '#/components/schemas/AIDeliveryPreview'
+        kind: {type: string, enum: [content, comment, ai, system]}
+        platform: {type: string, enum: [bilibili, zsxq]}
+        source_id: {type: string}
+        content_id: {type: string}
         channel_id: {type: string}
         state: {type: string, enum: [pending, blocked]}
         attempts: {type: integer, minimum: 0}
         next_at: {type: string, format: date-time}
         last_error: {type: string}
         created_at: {type: string, format: date-time}
-    DynamicPreview:
-      type: object
-      additionalProperties: false
-      required: [id, uid, up_name, type, published_at, summary, url]
-      properties:
-        id: {type: string}
-        uid: {type: string}
-        up_name: {type: string}
-        type: {type: string}
-        published_at: {type: string, format: date-time}
-        summary: {type: string}
-        url: {type: string}
-    CommentPreview:
-      type: object
-      additionalProperties: false
-      required: [rpid, up_uid, up_name, content_type, content_id, content_url, published_at]
-      properties:
-        rpid: {type: string}
-        up_uid: {type: string}
-        up_name: {type: string}
-        content_type: {type: string}
-        content_id: {type: string}
-        content_title: {type: string}
-        content_url: {type: string}
-        published_at: {type: string, format: date-time}
-    AIDeliveryPreview:
-      type: object
-      additionalProperties: false
-      required: [job_id, dynamic_id, stage, succeeded, summary]
-      properties:
-        job_id: {type: string}
-        dynamic_id: {type: string}
-        up_name: {type: string}
         title: {type: string}
-        stage: {type: string, enum: [transcription, summary]}
-        succeeded: {type: boolean}
         summary: {type: string}
-        error_message: {type: string}
     SentStatus:
       type: object
       additionalProperties: false
@@ -1511,6 +1467,29 @@ components:
         bvid: {type: string, pattern: '^BV[0-9A-Za-z]{10}$'}
         page: {type: integer, minimum: 0}
         profile_id: {type: string, minLength: 1}
+    AIContentSnapshot:
+      type: object
+      additionalProperties: false
+      required: [content_id]
+      properties:
+        content_id: {type: string}
+        bvid: {type: string}
+        author: {type: string}
+        title: {type: string}
+        url: {type: string}
+    AIJobTranscriptionInput:
+      type: object
+      additionalProperties: false
+      required: [bvid]
+      properties:
+        bvid: {type: string}
+        page: {type: integer, minimum: 0}
+    AIJobSummaryInput:
+      type: object
+      additionalProperties: false
+      properties:
+        text: {type: string}
+        transcription_job_id: {type: string}
     AISummaryInput:
       type: object
       additionalProperties: false
@@ -1570,16 +1549,21 @@ components:
         profile_id: {type: string}
         prompt_id: {type: string}
         origin: {type: string, enum: [workbench, dynamic]}
-        source_dynamic_id: {type: string}
+        source_content_id: {type: string}
         depends_on_job_id: {type: string}
         attempts: {type: integer, minimum: 0}
         error_code: {type: string}
         last_error: {type: string}
-        input: {type: object, additionalProperties: true}
-        result:
-          oneOf:
-            - $ref: '#/components/schemas/AITranscriptionResult'
-            - $ref: '#/components/schemas/AISummaryResult'
+        source:
+          $ref: '#/components/schemas/AIContentSnapshot'
+        transcription_input:
+          $ref: '#/components/schemas/AIJobTranscriptionInput'
+        summary_input:
+          $ref: '#/components/schemas/AIJobSummaryInput'
+        transcription_result:
+          $ref: '#/components/schemas/AITranscriptionResult'
+        summary_result:
+          $ref: '#/components/schemas/AISummaryResult'
         created_at: {type: string, format: date-time}
         started_at: {type: string, format: date-time}
         finished_at: {type: string, format: date-time}

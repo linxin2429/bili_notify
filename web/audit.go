@@ -91,7 +91,7 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-ID", requestID)
 		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, requestID))
-		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/v3/ws" {
+		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/v4/ws" {
 			next.ServeHTTP(w, r)
 			return
 		}

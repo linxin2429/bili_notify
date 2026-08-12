@@ -127,11 +127,11 @@ func (s *Store) MarkSpaceSynced(accountUID, upUID string, at time.Time) error {
 func (s *Store) SetUPResults(uids []string, at time.Time, pollErr error) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		for _, uid := range uids {
-			var row upRow
-			if err := tx.Where("uid = ?", uid).Take(&row).Error; err != nil {
+			var row sourceRow
+			if err := tx.Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).Take(&row).Error; err != nil {
 				return err
 			}
-			up := row.toModel()
+			up := upFromSourceRow(row)
 			up.LastPollAt = at
 			if pollErr == nil {
 				up.LastSuccessAt = at
@@ -140,10 +140,6 @@ func (s *Store) SetUPResults(uids []string, at time.Time, pollErr error) error {
 			} else {
 				up.LastError = pollErr.Error()
 				up.ConsecutiveFail++
-			}
-			updated := upFromModel(up)
-			if err := tx.Save(&updated).Error; err != nil {
-				return err
 			}
 			sourceUpdates := map[string]any{"last_poll_at": at.Unix(), "last_error": up.LastError, "consecutive_fails": up.ConsecutiveFail}
 			if pollErr == nil {
@@ -157,7 +153,7 @@ func (s *Store) SetUPResults(uids []string, at time.Time, pollErr error) error {
 	})
 }
 
-func (s *Store) RecordFeedDynamics(accountUID, baseline string, dynamics []model.Dynamic, channelIDs, failedUIDs []string) (int, error) {
+func (s *Store) RecordFeedDynamics(accountUID, baseline string, dynamics []model.Dynamic, _ []string, failedUIDs []string) (int, error) {
 	if accountUID == "" || baseline == "" {
 		return 0, errors.New("account uid and update baseline are required")
 	}
@@ -167,7 +163,20 @@ func (s *Store) RecordFeedDynamics(accountUID, baseline string, dynamics []model
 		if err != nil {
 			return err
 		}
+		existing := make(map[string]bool, len(dynamics))
+		for _, dynamic := range dynamics {
+			var count int64
+			contentID := model.ContentID(model.PlatformBilibili, dynamic.ID)
+			if err := tx.Model(&contentRow{}).Where("id = ?", contentID).Count(&count).Error; err != nil {
+				return err
+			}
+			existing[contentID] = count != 0
+		}
 		if err := archiveDynamicsTx(tx, dynamics, DynamicBaselineNone); err != nil {
+			return err
+		}
+		channelIDs, err := enabledChannelIDsTx(tx)
+		if err != nil {
 			return err
 		}
 		now := time.Now()
@@ -175,17 +184,17 @@ func (s *Store) RecordFeedDynamics(accountUID, baseline string, dynamics []model
 			if dynamic.ID == "" || dynamic.UID == "" {
 				continue
 			}
-			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seenDynamicRow{UID: dynamic.UID, DynamicID: dynamic.ID, SeenAt: dynamic.PublishedAt.Unix()})
-			if res.Error != nil {
-				return res.Error
-			}
-			if res.RowsAffected == 0 {
+			contentID := model.ContentID(model.PlatformBilibili, dynamic.ID)
+			if existing[contentID] {
 				continue
 			}
 			origin := originTraceparent(tx.Statement.Context)
+			snapshot := dynamic
+			snapshot.ID, snapshot.Platform = contentID, model.PlatformBilibili
+			snapshot.UID = model.SourceID(model.PlatformBilibili, dynamic.UID)
 			for _, channelID := range channelIDs {
 				delivery := model.Delivery{
-					ID: dynamic.ID + ":" + channelID, Kind: model.DeliveryKindDynamic, Dynamic: dynamic,
+					ID: stableHash("content", contentID, channelID), Kind: model.DeliveryKindDynamic, Dynamic: snapshot,
 					ChannelID: channelID, State: model.DeliveryPending, NextAt: now, CreatedAt: now,
 					OriginTraceparent: origin,
 				}
@@ -194,7 +203,7 @@ func (s *Store) RecordFeedDynamics(accountUID, baseline string, dynamics []model
 				}
 			}
 			if autoAI {
-				if _, err := s.createAutomaticAIJobsTx(tx, dynamic, channelIDs); err != nil {
+				if _, err := s.createAutomaticAIJobsTx(tx, dynamic, model.SourceID(model.PlatformBilibili, dynamic.UID), channelIDs); err != nil {
 					return fmt.Errorf("creating automatic AI pipeline for dynamic %s: %w", dynamic.ID, err)
 				}
 			}

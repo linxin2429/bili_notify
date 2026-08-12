@@ -57,16 +57,26 @@ func TestUnblockChannelRequeuesBlockedDeliveries(t *testing.T) {
 		{ID: "pending", UID: "42", PublishedAt: time.Now()},
 	}, []string{channel.ID}, DynamicBaselineNone)
 	require.NoError(t, err)
-	require.NoError(t, store.FailDelivery("blocked:"+channel.ID, true, time.Now().Add(time.Hour), errors.New("blocked"), nil))
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 2)
+	var blockedID string
+	for _, delivery := range deliveries {
+		if delivery.Dynamic.ID == model.ContentID(model.PlatformBilibili, "blocked") {
+			blockedID = delivery.ID
+		}
+	}
+	require.NotEmpty(t, blockedID)
+	require.NoError(t, store.FailDelivery(blockedID, true, time.Now().Add(time.Hour), errors.New("blocked"), nil))
 
 	require.NoError(t, store.UnblockChannel(channel.ID))
-	deliveries, err := store.ListDeliveries(0)
+	deliveries, err = store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 2)
 	states := make(map[string]model.DeliveryState, len(deliveries))
 	for _, delivery := range deliveries {
 		states[delivery.Dynamic.ID] = delivery.State
 	}
-	assert.Equal(t, model.DeliveryPending, states["blocked"])
-	assert.Equal(t, model.DeliveryPending, states["pending"])
+	assert.Equal(t, model.DeliveryPending, states[model.ContentID(model.PlatformBilibili, "blocked")])
+	assert.Equal(t, model.DeliveryPending, states[model.ContentID(model.PlatformBilibili, "pending")])
 }

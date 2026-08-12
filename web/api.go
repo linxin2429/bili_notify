@@ -18,38 +18,38 @@ import (
 )
 
 func (s *Server) registerAdminAPI(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v3/runtime", s.requireSession(false, s.runtimeAPI))
-	mux.HandleFunc("GET /api/v3/settings", s.requireSession(false, s.settingsAPI))
-	mux.HandleFunc("GET /api/v3/channels", s.requireSession(false, s.channelsAPI))
-	mux.HandleFunc("POST /api/v3/channels", s.audit("channel.create", "channel", "", s.requireSession(true, s.createChannelAPI)))
-	mux.HandleFunc("PUT /api/v3/channels/{id}", s.audit("channel.update", "channel", "id", s.requireSession(true, s.updateChannelAPI)))
-	mux.HandleFunc("DELETE /api/v3/channels/{id}", s.audit("channel.delete", "channel", "id", s.requireSession(true, s.deleteChannelAPI)))
-	mux.HandleFunc("POST /api/v3/channels/{id}/test", s.audit("channel.test", "channel", "id", s.requireSession(true, s.testChannelAPI)))
-	mux.HandleFunc("GET /api/v3/deliveries", s.requireSession(false, s.deliveriesAPI))
-	mux.HandleFunc("POST /api/v3/deliveries/{id}/retry", s.audit("delivery.retry", "delivery", "id", s.requireSession(true, s.retryDeliveryAPI)))
-	mux.HandleFunc("GET /api/v3/microsoft-logins", s.requireSession(false, s.microsoftLoginsAPI))
-	mux.HandleFunc("POST /api/v3/channels/{id}/microsoft-login", s.audit("microsoft.login.start", "channel", "id", s.requireSession(true, s.startMicrosoftLoginAPI)))
-	mux.HandleFunc("DELETE /api/v3/channels/{id}/microsoft-login", s.audit("microsoft.login.cancel", "channel", "id", s.requireSession(true, s.cancelMicrosoftLoginAPI)))
-	mux.HandleFunc("PUT /api/v3/settings", s.audit("settings.update", "settings", "", s.requireSession(true, s.updateSettingsAPI)))
-	mux.HandleFunc("GET /api/v3/audit-logs", s.requireSession(false, s.queryAuditLogsAPI))
-	mux.HandleFunc("GET /api/v3/ai/status", s.requireSession(false, s.aiStatusAPI))
-	mux.HandleFunc("GET /api/v3/ai/profiles", s.requireSession(false, s.listAIProfilesAPI))
-	mux.HandleFunc("POST /api/v3/ai/profiles", s.audit("ai.profile.create", "ai_profile", "", s.requireSession(true, s.createAIProfileAPI)))
-	mux.HandleFunc("PUT /api/v3/ai/profiles/{id}", s.audit("ai.profile.update", "ai_profile", "id", s.requireSession(true, s.updateAIProfileAPI)))
-	mux.HandleFunc("PUT /api/v3/ai/profiles/{id}/availability", s.audit("ai.profile.availability.update", "ai_profile", "id", s.requireSession(true, s.updateAIProfileAvailabilityAPI)))
-	mux.HandleFunc("DELETE /api/v3/ai/profiles/{id}", s.audit("ai.profile.delete", "ai_profile", "id", s.requireSession(true, s.deleteAIProfileAPI)))
-	mux.HandleFunc("POST /api/v3/ai/profiles/{id}/test", s.audit("ai.profile.test", "ai_profile", "id", s.requireSession(true, s.testAIProfileAPI)))
-	mux.HandleFunc("GET /api/v3/ai/prompts", s.requireSession(false, s.listAIPromptsAPI))
-	mux.HandleFunc("POST /api/v3/ai/prompts", s.audit("ai.prompt.create", "ai_prompt", "", s.requireSession(true, s.createAIPromptAPI)))
-	mux.HandleFunc("PUT /api/v3/ai/prompts/{id}", s.audit("ai.prompt.update", "ai_prompt", "id", s.requireSession(true, s.updateAIPromptAPI)))
-	mux.HandleFunc("DELETE /api/v3/ai/prompts/{id}", s.audit("ai.prompt.delete", "ai_prompt", "id", s.requireSession(true, s.deleteAIPromptAPI)))
-	mux.HandleFunc("POST /api/v3/ai/transcriptions", s.audit("ai.transcription.create", "ai_job", "", s.requireSession(true, s.createAITranscriptionAPI)))
-	mux.HandleFunc("POST /api/v3/ai/summaries", s.audit("ai.summary.create", "ai_job", "", s.requireSession(true, s.createAISummaryAPI)))
-	mux.HandleFunc("GET /api/v3/ai/jobs", s.requireSession(false, s.listAIJobsAPI))
-	mux.HandleFunc("GET /api/v3/ai/jobs/{id}", s.requireSession(false, s.getAIJobAPI))
-	mux.HandleFunc("POST /api/v3/ai/jobs/{id}/cancel", s.audit("ai.job.cancel", "ai_job", "id", s.requireSession(true, s.cancelAIJobAPI)))
-	mux.HandleFunc("POST /api/v3/ai/jobs/{id}/retry", s.audit("ai.job.retry", "ai_job", "id", s.requireSession(true, s.retryAIJobAPI)))
-	mux.HandleFunc("DELETE /api/v3/ai/jobs/{id}", s.audit("ai.job.delete", "ai_job", "id", s.requireSession(true, s.deleteAIJobAPI)))
+	mux.HandleFunc("GET /api/v4/runtime", s.requireSession(false, s.runtimeAPI))
+	mux.HandleFunc("GET /api/v4/settings", s.requireSession(false, s.settingsAPI))
+	mux.HandleFunc("GET /api/v4/channels", s.requireSession(false, s.channelsAPI))
+	mux.HandleFunc("POST /api/v4/channels", s.audit("channel.create", "channel", "", s.requireSession(true, s.createChannelAPI)))
+	mux.HandleFunc("PUT /api/v4/channels/{id}", s.audit("channel.update", "channel", "id", s.requireSession(true, s.updateChannelAPI)))
+	mux.HandleFunc("DELETE /api/v4/channels/{id}", s.audit("channel.delete", "channel", "id", s.requireSession(true, s.deleteChannelAPI)))
+	mux.HandleFunc("POST /api/v4/channels/{id}/test", s.audit("channel.test", "channel", "id", s.requireSession(true, s.testChannelAPI)))
+	mux.HandleFunc("GET /api/v4/deliveries", s.requireSession(false, s.deliveriesAPI))
+	mux.HandleFunc("POST /api/v4/deliveries/{id}/retry", s.audit("delivery.retry", "delivery", "id", s.requireSession(true, s.retryDeliveryAPI)))
+	mux.HandleFunc("GET /api/v4/microsoft-logins", s.requireSession(false, s.microsoftLoginsAPI))
+	mux.HandleFunc("POST /api/v4/channels/{id}/microsoft-login", s.audit("microsoft.login.start", "channel", "id", s.requireSession(true, s.startMicrosoftLoginAPI)))
+	mux.HandleFunc("DELETE /api/v4/channels/{id}/microsoft-login", s.audit("microsoft.login.cancel", "channel", "id", s.requireSession(true, s.cancelMicrosoftLoginAPI)))
+	mux.HandleFunc("PUT /api/v4/settings", s.audit("settings.update", "settings", "", s.requireSession(true, s.updateSettingsAPI)))
+	mux.HandleFunc("GET /api/v4/audit-logs", s.requireSession(false, s.queryAuditLogsAPI))
+	mux.HandleFunc("GET /api/v4/ai/status", s.requireSession(false, s.aiStatusAPI))
+	mux.HandleFunc("GET /api/v4/ai/profiles", s.requireSession(false, s.listAIProfilesAPI))
+	mux.HandleFunc("POST /api/v4/ai/profiles", s.audit("ai.profile.create", "ai_profile", "", s.requireSession(true, s.createAIProfileAPI)))
+	mux.HandleFunc("PUT /api/v4/ai/profiles/{id}", s.audit("ai.profile.update", "ai_profile", "id", s.requireSession(true, s.updateAIProfileAPI)))
+	mux.HandleFunc("PUT /api/v4/ai/profiles/{id}/availability", s.audit("ai.profile.availability.update", "ai_profile", "id", s.requireSession(true, s.updateAIProfileAvailabilityAPI)))
+	mux.HandleFunc("DELETE /api/v4/ai/profiles/{id}", s.audit("ai.profile.delete", "ai_profile", "id", s.requireSession(true, s.deleteAIProfileAPI)))
+	mux.HandleFunc("POST /api/v4/ai/profiles/{id}/test", s.audit("ai.profile.test", "ai_profile", "id", s.requireSession(true, s.testAIProfileAPI)))
+	mux.HandleFunc("GET /api/v4/ai/prompts", s.requireSession(false, s.listAIPromptsAPI))
+	mux.HandleFunc("POST /api/v4/ai/prompts", s.audit("ai.prompt.create", "ai_prompt", "", s.requireSession(true, s.createAIPromptAPI)))
+	mux.HandleFunc("PUT /api/v4/ai/prompts/{id}", s.audit("ai.prompt.update", "ai_prompt", "id", s.requireSession(true, s.updateAIPromptAPI)))
+	mux.HandleFunc("DELETE /api/v4/ai/prompts/{id}", s.audit("ai.prompt.delete", "ai_prompt", "id", s.requireSession(true, s.deleteAIPromptAPI)))
+	mux.HandleFunc("POST /api/v4/ai/transcriptions", s.audit("ai.transcription.create", "ai_job", "", s.requireSession(true, s.createAITranscriptionAPI)))
+	mux.HandleFunc("POST /api/v4/ai/summaries", s.audit("ai.summary.create", "ai_job", "", s.requireSession(true, s.createAISummaryAPI)))
+	mux.HandleFunc("GET /api/v4/ai/jobs", s.requireSession(false, s.listAIJobsAPI))
+	mux.HandleFunc("GET /api/v4/ai/jobs/{id}", s.requireSession(false, s.getAIJobAPI))
+	mux.HandleFunc("POST /api/v4/ai/jobs/{id}/cancel", s.audit("ai.job.cancel", "ai_job", "id", s.requireSession(true, s.cancelAIJobAPI)))
+	mux.HandleFunc("POST /api/v4/ai/jobs/{id}/retry", s.audit("ai.job.retry", "ai_job", "id", s.requireSession(true, s.retryAIJobAPI)))
+	mux.HandleFunc("DELETE /api/v4/ai/jobs/{id}", s.audit("ai.job.delete", "ai_job", "id", s.requireSession(true, s.deleteAIJobAPI)))
 }
 
 type runtimeView struct {
@@ -102,7 +102,7 @@ func (s *Server) deliveriesAPI(w http.ResponseWriter, r *http.Request) {
 		query.AfterCreatedAt = time.Unix(cursor.Sort, 0)
 		query.AfterID = cursor.Key
 	}
-	deliveries, err := s.store.WithContext(r.Context()).QueryDeliveries(query)
+	deliveries, err := s.store.WithContext(r.Context()).QueryDeliverySummaries(query)
 	if err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, err)
 		return
@@ -116,7 +116,10 @@ func (s *Server) deliveriesAPI(w http.ResponseWriter, r *http.Request) {
 		last := deliveries[len(deliveries)-1]
 		next = encodeListCursor(last.CreatedAt.Unix(), last.ID)
 	}
-	writeJSON(w, http.StatusOK, cursorPageResponse{Items: deliveryViews(deliveries), Page: cursorPage{NextCursor: next, HasMore: hasMore}})
+	for index := range deliveries {
+		deliveries[index].Summary = previewText(deliveries[index].Summary, 240)
+	}
+	writeJSON(w, http.StatusOK, cursorPageResponse{Items: deliveries, Page: cursorPage{NextCursor: next, HasMore: hasMore}})
 }
 
 func (s *Server) biliLoginAPI(w http.ResponseWriter, _ *http.Request) {

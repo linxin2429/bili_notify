@@ -16,7 +16,7 @@ export interface GalleryImage {
 
 export function galleryImagesFromAttachments(contentID: string, attachments: Attachment[]): GalleryImage[] {
   return attachments
-    .filter(item => item.type === 'image' && item.local_path)
+    .filter(item => item.type === 'image' && item.localized)
     .map(item => ({
       id: item.id,
       url: attachmentURL(contentID, item),

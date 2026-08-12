@@ -17,12 +17,12 @@ func TestAuditLogQuery(t *testing.T) {
 		query AuditQuery
 		want  string
 	}{
-		{name: "newest first", query: AuditQuery{}, want: "up.create"},
+		{name: "newest first", query: AuditQuery{}, want: "source.create"},
 		{name: "action", query: AuditQuery{Action: "auth.login"}, want: "auth.login"},
-		{name: "outcome", query: AuditQuery{Outcome: AuditSuccess}, want: "up.create"},
-		{name: "resource", query: AuditQuery{ResourceType: "up"}, want: "up.create"},
-		{name: "search resource id", query: AuditQuery{Q: "42"}, want: "up.create"},
-		{name: "half open time", query: AuditQuery{From: base.Add(time.Minute), To: base.Add(2 * time.Minute)}, want: "up.create"},
+		{name: "outcome", query: AuditQuery{Outcome: AuditSuccess}, want: "source.create"},
+		{name: "resource", query: AuditQuery{ResourceType: "source"}, want: "source.create"},
+		{name: "search resource id", query: AuditQuery{Q: "42"}, want: "source.create"},
+		{name: "half open time", query: AuditQuery{From: base.Add(time.Minute), To: base.Add(2 * time.Minute)}, want: "source.create"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -48,7 +48,7 @@ func TestAuditLogPrune(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, total)
 	require.Len(t, items, 1)
-	assert.Equal(t, "up.create", items[0].Action)
+	assert.Equal(t, "source.create", items[0].Action)
 }
 
 func seedAuditStore(t *testing.T, base time.Time) *Store {
@@ -57,8 +57,8 @@ func seedAuditStore(t *testing.T, base time.Time) *Store {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	entries := []AuditLog{
-		{OccurredAt: base, RequestID: "request-1", Actor: "anonymous", RemoteIP: "192.0.2.1", Action: "auth.login", Outcome: AuditDenied, HTTPMethod: "POST", Route: "/api/v3/session", StatusCode: 401, ErrorCode: "invalid_credentials"},
-		{OccurredAt: base.Add(time.Minute), RequestID: "request-2", Actor: "administrator", SessionID: "session", RemoteIP: "192.0.2.2", Action: "up.create", ResourceType: "up", ResourceID: "42", Outcome: AuditSuccess, HTTPMethod: "POST", Route: "/api/v3/ups", StatusCode: 201, Details: map[string]any{"enabled": true}},
+		{OccurredAt: base, RequestID: "request-1", Actor: "anonymous", RemoteIP: "192.0.2.1", Action: "auth.login", Outcome: AuditDenied, HTTPMethod: "POST", Route: "/api/v4/session", StatusCode: 401, ErrorCode: "invalid_credentials"},
+		{OccurredAt: base.Add(time.Minute), RequestID: "request-2", Actor: "administrator", SessionID: "session", RemoteIP: "192.0.2.2", Action: "source.create", ResourceType: "source", ResourceID: "bilibili:up:42", Outcome: AuditSuccess, HTTPMethod: "POST", Route: "/api/v4/sources", StatusCode: 201, Details: map[string]any{"enabled": true}},
 	}
 	for _, entry := range entries {
 		_, err := store.AppendAudit(entry)

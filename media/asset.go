@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"unicode"
 
 	"github.com/linxin2429/bili_notify/model"
+	"github.com/spf13/pathologize"
 )
 
 var ErrBudgetExhausted = errors.New("media storage budget exhausted")
@@ -114,14 +114,9 @@ func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, 
 	if response.ContentLength > limit {
 		return 0, ErrTooLarge
 	}
-	fileName := safeFilename(item.FileName)
-	if fileName == "" {
-		fileName = safeFilename(item.ExternalID)
-	}
-	if fileName == "" {
-		fileName = "attachment"
-	}
-	rel := filepath.ToSlash(filepath.Join("media", string(platform), safePathSegment(sourceID), safePathSegment(contentID), safePathSegment(item.ExternalID)+"-"+fileName))
+	fileName := pathologize.Clean(filepath.Base(strings.ReplaceAll(firstNonEmpty(item.FileName, item.ExternalID, "attachment"), `\`, "/")))
+	externalID := pathologize.Clean(filepath.Base(strings.ReplaceAll(firstNonEmpty(item.ExternalID, "attachment"), `\`, "/")))
+	rel := filepath.ToSlash(pathologize.Join("media", string(platform), sourceID, contentID, externalID+"-"+fileName))
 	abs, err := Resolve(downloader.DataDir, rel)
 	if err != nil {
 		return 0, err
@@ -129,13 +124,7 @@ func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, 
 	if err := rejectSymlinkPath(downloader.DataDir, filepath.Dir(abs), true); err != nil {
 		return 0, err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
-		return 0, err
-	}
-	if err := rejectSymlinkPath(downloader.DataDir, filepath.Dir(abs), false); err != nil {
-		return 0, err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(abs), ".asset-*")
+	temporary, err := os.CreateTemp(downloader.DataDir, ".asset-*")
 	if err != nil {
 		return 0, err
 	}
@@ -166,11 +155,12 @@ func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, 
 	if err := temporary.Close(); err != nil {
 		return 0, err
 	}
-	if err := os.Rename(temporaryName, abs); err != nil {
+	finalRelative, err := moveIntoMedia(downloader.DataDir, temporaryName, abs)
+	if err != nil {
 		return 0, err
 	}
 	committed = true
-	item.LocalPath = rel
+	item.LocalPath = finalRelative
 	item.Size = written
 	if item.MIME == "" {
 		item.MIME = response.Header.Get("Content-Type")
@@ -212,25 +202,6 @@ func (downloader *AttachmentDownloader) safeClient(ctx context.Context) *http.Cl
 		copy.Transport = transport
 	}
 	return &copy
-}
-
-func safeFilename(value string) string {
-	value = filepath.Base(strings.TrimSpace(value))
-	var builder strings.Builder
-	for _, character := range value {
-		if unicode.IsLetter(character) || unicode.IsDigit(character) || strings.ContainsRune("._- ()[]", character) {
-			builder.WriteRune(character)
-		} else {
-			builder.WriteRune('_')
-		}
-	}
-	return strings.Trim(builder.String(), " .")
-}
-
-func safePathSegment(value string) string {
-	value = strings.TrimSpace(value)
-	value = strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(value)
-	return safeFilename(value)
 }
 
 func directorySize(root string) (int64, error) {

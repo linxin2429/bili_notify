@@ -16,6 +16,6 @@ const outboxSchema = {
 
 export const shellOutboxQuery = () => queryOptions({
   queryKey: ['runtime', 'shell-outbox'] as const,
-  queryFn: async ({ signal }) => requestJSON('/api/v3/runtime', outboxSchema, { signal }),
+  queryFn: async ({ signal }) => requestJSON('/api/v4/runtime', outboxSchema, { signal }),
   staleTime: 10_000,
 })

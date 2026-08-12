@@ -24,21 +24,21 @@ func TestRESTResourceContracts(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	response := fixture.request(t, http.MethodGet, "/api/v3/runtime", nil, false)
+	response := fixture.request(t, http.MethodGet, "/api/v4/runtime", nil, false)
 	require.Equal(t, http.StatusOK, response.Code)
 	var runtime runtimeView
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &runtime))
 	assert.NotEmpty(t, runtime.Timezone)
 	assert.False(t, runtime.UpdatedAt.IsZero())
 
-	response = fixture.request(t, http.MethodGet, "/api/v3/sources?platform=bilibili", nil, false)
+	response = fixture.request(t, http.MethodGet, "/api/v4/sources?platform=bilibili", nil, false)
 	require.Equal(t, http.StatusOK, response.Code)
 	var sources []model.Source
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &sources))
 	require.Len(t, sources, 1)
 	assert.Equal(t, "42", sources[0].ExternalID)
 
-	response = fixture.request(t, http.MethodGet, "/api/v3/channels", nil, false)
+	response = fixture.request(t, http.MethodGet, "/api/v4/channels", nil, false)
 	require.Equal(t, http.StatusOK, response.Code)
 	var channels []channelView
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &channels))
@@ -46,7 +46,7 @@ func TestRESTResourceContracts(t *testing.T) {
 	assert.Equal(t, []string{"webhook"}, channels[0].ConfiguredSecrets)
 	assert.NotContains(t, response.Body.String(), "https://example.com/webhook")
 
-	response = fixture.request(t, http.MethodGet, "/api/v3/deliveries", nil, false)
+	response = fixture.request(t, http.MethodGet, "/api/v4/deliveries", nil, false)
 	require.Equal(t, http.StatusOK, response.Code)
 	assert.JSONEq(t, `{"items":[],"page":{"next_cursor":"","has_more":false}}`, response.Body.String())
 }
@@ -69,33 +69,27 @@ func TestWebSocketEventContract(t *testing.T) {
 func TestRESTContentContracts(t *testing.T) {
 	t.Parallel()
 	fixed := contractTime()
+	content := model.Content{ID: "bilibili:content:dynamic-1", Platform: model.PlatformBilibili, SourceID: "bilibili:up:42", ExternalID: "dynamic-1",
+		AuthorID: "42", AuthorName: "Contract UP", UpstreamType: "DYNAMIC_TYPE_AV", Type: model.ContentVideo, Title: "Contract video",
+		Text: "Contract summary", URL: "https://t.bilibili.com/1", PublishedAt: fixed, FirstSeenAt: fixed.Add(time.Minute), LastSyncedAt: fixed.Add(2 * time.Minute),
+		Stats: map[string]int64{"forwards": 1, "comments": 2, "likes": 3}}
 	responses := map[string]any{
-		"dynamics": cursorPageResponse{Items: []dynamicHistoryView{{
-			ID: "dynamic-1", UID: "42", UPName: "Contract UP", Type: "DYNAMIC_TYPE_AV",
-			PublishedAt: fixed, DiscoveredAt: fixed.Add(time.Minute), Title: "Contract video",
-			Summary: "Contract summary", URL: "https://t.bilibili.com/1",
-			Media:    []model.DynamicMedia{{Kind: model.DynamicMediaCover, URL: "https://example.com/cover.jpg", Width: 1280, Height: 720}},
-			Stats:    &model.DynamicStats{Forwards: 1, Comments: 2, Likes: 3},
-			Video:    &model.DynamicVideo{Duration: "01:23", Views: "456", Danmaku: "7"},
-			Original: &state.DynamicPreview{ID: "original-1", Summary: "Original summary", URL: "https://t.bilibili.com/0"},
-		}}, Page: cursorPage{}},
-		"comments": cursorPageResponse{Items: []commentHistoryView{{
-			RPID: "reply-1", UPUID: "42", UPName: "Contract UP", ContentType: "video", ContentID: "BV1contract",
-			ContentTitle: "Contract video", ContentURL: "https://www.bilibili.com/video/BV1contract",
-			PublishedAt: fixed, DiscoveredAt: fixed.Add(time.Minute),
-		}}, Page: cursorPage{}},
-		"comment_detail": model.CommentNotification{
-			RPID: "reply-1", UPUID: "42", UPName: "Contract UP", ContentType: "video", ContentID: "BV1contract",
-			ContentTitle: "Contract video", ContentURL: "https://www.bilibili.com/video/BV1contract", PublishedAt: fixed,
-			Thread: []model.CommentNode{
-				{RPID: "root-1", Mid: "100", Name: "Viewer", Message: "Question", Time: fixed.Add(-time.Minute)},
-				{RPID: "reply-1", Parent: "root-1", Mid: "42", Name: "Contract UP", Message: "Answer", Time: fixed, IsUP: true, IsTrigger: true},
-			},
-		},
+		"contents": cursorPageResponse{Items: []model.Content{content}, Page: cursorPage{}},
+		"content_detail": contentDetailView{Content: content, Attachments: []attachmentView{{
+			ID: content.ID + ":attachment:cover", ContentID: content.ID, ExternalID: "cover", Type: model.AttachmentImage,
+			FileName: "cover.jpg", MIME: "image/jpeg", Size: 1024, Width: 1280, Height: 720, RemoteHost: "i0.hdslb.com", Localized: true,
+		}}},
+		"comment_tree": commentTreeView{Children: []commentNodeView{{
+			ID: "bilibili:comment:root-1", Platform: model.PlatformBilibili, ContentID: content.ID, RootID: "bilibili:comment:root-1",
+			AuthorID: "100", Role: model.RoleMember, Name: "Viewer", Message: "Question", PublishedAt: fixed.Add(-time.Minute),
+			Children: []commentNodeView{{ID: "bilibili:comment:reply-1", Platform: model.PlatformBilibili, ContentID: content.ID,
+				RootID: "bilibili:comment:root-1", ParentID: "bilibili:comment:root-1", AuthorID: "42", Role: model.RoleUP,
+				Name: "Contract UP", Message: "Answer", PublishedAt: fixed, IsTrigger: true}},
+		}}},
 		"audit_logs": cursorPageResponse{Items: []state.AuditLog{{
 			ID: 1, OccurredAt: fixed, RequestID: "request-1", Actor: "administrator", SessionID: "session-1",
 			RemoteIP: "192.0.2.1", UserAgent: "contract-test", Action: "up.create", ResourceType: "up", ResourceID: "42",
-			Outcome: state.AuditSuccess, HTTPMethod: http.MethodPost, Route: "/api/v3/ups", StatusCode: http.StatusCreated,
+			Outcome: state.AuditSuccess, HTTPMethod: http.MethodPost, Route: "/api/v4/ups", StatusCode: http.StatusCreated,
 			DurationMS: 5, Details: map[string]any{"enabled": true},
 		}}, Page: cursorPage{}},
 	}

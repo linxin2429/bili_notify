@@ -56,9 +56,9 @@ describe('history helpers', () => {
   })
 
   it('builds attachment and original content URLs safely', () => {
-    const local: Attachment = { id: 'a', content_id: 'c', external_id: 'e', type: 'image', local_path: 'media/a.jpg' }
-    const remote: Attachment = { id: 'b', content_id: 'c', external_id: 'e', type: 'file' }
-    expect(attachmentURL('c/1', local)).toBe('/api/v3/contents/c%2F1/attachments/a')
+    const local: Attachment = { id: 'a', content_id: 'c', external_id: 'e', type: 'image', localized: true }
+    const remote: Attachment = { id: 'b', content_id: 'c', external_id: 'e', type: 'file', localized: false }
+    expect(attachmentURL('c/1', local)).toBe('/api/v4/contents/c%2F1/attachments/a')
     expect(attachmentURL('c', remote)).toBe('')
     expect(originalContentURL({ platform: 'bilibili', url: 'https://www.bilibili.com/video/BV1xx411c7mD' })).toContain('BV1xx411c7mD')
     expect(originalContentURL({ platform: 'zsxq', url: 'https://wx.zsxq.com/topic' })).toBe('https://wx.zsxq.com/topic')
@@ -75,9 +75,9 @@ describe('history helpers', () => {
     expect(videoEmbedURL({ platform: 'bilibili', type: 'video', upstream_type: 'DYNAMIC_TYPE_AV', url: 'https://www.bilibili.com/video/BV1xx411c7mD' })).toContain('player.bilibili.com')
     expect(videoEmbedURL({ platform: 'zsxq', type: 'video', upstream_type: 'video', url: 'https://example.com' })).toBe('')
     const attachments: Attachment[] = [
-      { id: '1', content_id: 'c', external_id: '1', type: 'image', local_path: 'a.jpg' },
-      { id: '2', content_id: 'c', external_id: '2', type: 'image' },
-      { id: '3', content_id: 'c', external_id: '3', type: 'file', local_path: 'b.pdf' },
+      { id: '1', content_id: 'c', external_id: '1', type: 'image', localized: true },
+      { id: '2', content_id: 'c', external_id: '2', type: 'image', localized: false },
+      { id: '3', content_id: 'c', external_id: '3', type: 'file', localized: true },
     ]
     expect(imageAttachments(attachments)).toHaveLength(1)
     expect(nonImageAttachments(attachments).map(item => item.id)).toEqual(['2', '3'])

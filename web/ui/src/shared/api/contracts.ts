@@ -30,21 +30,10 @@ export const channelSchema = z.object({
   created_at: z.string(), updated_at: z.string(),
 }).strict() satisfies z.ZodType<Schemas['Channel']>
 
-const dynamicDeliveryPreviewSchema = z.object({
-  id: z.string(), uid: z.string(), up_name: z.string(), type: z.string(), published_at: z.string(), summary: z.string(), url: z.string(),
-}).strict() satisfies z.ZodType<Schemas['DynamicPreview']>
-const commentDeliveryPreviewSchema = z.object({
-  rpid: z.string(), up_uid: z.string(), up_name: z.string(), content_type: z.string(), content_id: z.string(),
-  content_title: z.string().optional(), content_url: z.string(), published_at: z.string(),
-}).strict() satisfies z.ZodType<Schemas['CommentPreview']>
-const aiDeliveryPreviewSchema = z.object({
-  job_id: z.string(), dynamic_id: z.string(), up_name: z.string().optional(), title: z.string().optional(),
-  stage: z.enum(['transcription', 'summary']), succeeded: z.boolean(), summary: z.string(), error_message: z.string().optional(),
-}).strict() satisfies z.ZodType<Schemas['AIDeliveryPreview']>
 export const deliverySchema = z.object({
-  id: z.string(), kind: z.enum(['content', 'comment_digest', 'ai']), dynamic: dynamicDeliveryPreviewSchema.optional(),
-  comment: commentDeliveryPreviewSchema.optional(), ai: aiDeliveryPreviewSchema.optional(), channel_id: z.string(), state: z.enum(['pending', 'blocked']),
-  attempts: z.number().int(), next_at: z.string(), last_error: z.string().optional(), created_at: z.string(),
+  id: z.string(), kind: z.enum(['content', 'comment', 'ai', 'system']), platform: z.enum(['bilibili', 'zsxq']).optional(),
+  source_id: z.string().optional(), content_id: z.string().optional(), channel_id: z.string(), state: z.enum(['pending', 'blocked']),
+  attempts: z.number().int(), next_at: z.string(), last_error: z.string().optional(), created_at: z.string(), title: z.string().optional(), summary: z.string().optional(),
 }).strict() satisfies z.ZodType<Schemas['Delivery']>
 
 const biliLoginObjectSchema = z.object({
@@ -104,15 +93,14 @@ export const contentSchema = z.object({
 export const attachmentSchema = z.object({
   id: z.string(), content_id: z.string(), external_id: z.string(), type: z.enum(['image', 'file', 'audio', 'video', 'link']),
   file_name: z.string().optional(), mime: z.string().optional(), size: z.number().int().optional(), width: z.number().int().optional(),
-  height: z.number().int().optional(), duration_sec: z.number().int().optional(), remote_host: z.string().optional(), local_path: z.string().optional(), localize_error: z.string().optional(),
+  height: z.number().int().optional(), duration_sec: z.number().int().optional(), remote_host: z.string().optional(), localized: z.boolean(), localize_error: z.string().optional(),
 }).strict() satisfies z.ZodType<Schemas['Attachment']>
 
 export const commentTreeNodeSchema: z.ZodType<Schemas['CommentTreeNode']> = z.lazy(() => z.object({
   id: z.string(), platform: z.enum(['bilibili', 'zsxq']), content_id: z.string(), root_id: z.string().optional(), parent_id: z.string().optional(),
-  author_id: z.string().optional(), author_role: z.enum(['owner', 'admin', 'guest', 'partner', 'member', 'up']).optional(),
-  updated_at: z.string().optional(), first_seen_at: z.string().optional(), deleted_at: z.string().optional(), media: z.array(attachmentSchema).optional(),
-  children: z.array(commentTreeNodeSchema).optional(), rpid: z.string(), parent: z.string().optional(), mid: z.string(), name: z.string(),
-  message: z.string(), time: z.string(), is_up: z.boolean().optional(), is_trigger: z.boolean().optional(),
+  author_id: z.string().optional(), author_role: z.enum(['owner', 'admin', 'guest', 'partner', 'member', 'up']),
+  updated_at: z.string().optional(), deleted_at: z.string().optional(), media: z.array(attachmentSchema).optional(),
+  children: z.array(commentTreeNodeSchema).optional(), name: z.string(), message: z.string(), published_at: z.string(), is_trigger: z.boolean().optional(),
 }).strict())
 
 export const auditLogSchema = z.object({
@@ -165,9 +153,12 @@ export const aiSummaryResultSchema = z.object({ markdown: z.string(), usage: z.r
 export const aiJobSchema = z.object({
   id: z.string(), client_request_id: z.string().optional(), kind: z.enum(['transcription', 'summary']),
   state: z.enum(['queued', 'running', 'succeeded', 'failed', 'canceled', 'skipped']), stage: z.string(), progress: z.number().int(),
-  profile_id: z.string(), prompt_id: z.string().optional(), origin: z.enum(['workbench', 'dynamic']), source_dynamic_id: z.string().optional(),
+  profile_id: z.string(), prompt_id: z.string().optional(), origin: z.enum(['workbench', 'dynamic']), source_content_id: z.string().optional(),
   depends_on_job_id: z.string().optional(), attempts: z.number().int(), error_code: z.string().optional(), last_error: z.string().optional(),
-  input: z.record(z.string(), z.unknown()).optional(), result: z.union([aiTranscriptionResultSchema, aiSummaryResultSchema]).optional(),
+  source: z.object({ content_id: z.string(), bvid: z.string().optional(), author: z.string().optional(), title: z.string().optional(), url: z.string().optional() }).strict().optional(),
+  transcription_input: z.object({ bvid: z.string(), page: z.number().int().optional() }).strict().optional(),
+  summary_input: z.object({ text: z.string().optional(), transcription_job_id: z.string().optional() }).strict().optional(),
+  transcription_result: aiTranscriptionResultSchema.optional(), summary_result: aiSummaryResultSchema.optional(),
   created_at: z.string(), started_at: z.string().optional(), finished_at: z.string().optional(), updated_at: z.string(),
 }).strict()
 export const aiJobPageSchema = z.object({ items: z.array(aiJobSchema), total: z.number().int(), limit: z.number().int(), offset: z.number().int() }).strict()

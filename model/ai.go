@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -144,7 +145,7 @@ type AITranscriptionResult struct {
 	BVID  string             `json:"bvid"`
 	Title string             `json:"title"`
 	Pages []AITranscriptPage `json:"pages"`
-	Usage map[string]any     `json:"usage,omitempty"`
+	Usage json.RawMessage    `json:"usage,omitempty"`
 }
 
 func (r AITranscriptionResult) Text() string {
@@ -161,34 +162,46 @@ func (r AITranscriptionResult) Text() string {
 }
 
 type AISummaryResult struct {
-	Markdown string         `json:"markdown"`
-	Usage    map[string]any `json:"usage,omitempty"`
+	Markdown string          `json:"markdown"`
+	Usage    json.RawMessage `json:"usage,omitempty"`
+}
+
+type AIContentSnapshot struct {
+	ContentID string `json:"content_id"`
+	SourceID  string `json:"source_id"`
+	BVID      string `json:"bvid,omitempty"`
+	Author    string `json:"author,omitempty"`
+	Title     string `json:"title,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 type AIJob struct {
-	ID                string      `json:"id"`
-	ClientRequestID   string      `json:"client_request_id,omitempty"`
-	Kind              AIJobKind   `json:"kind"`
-	State             AIJobState  `json:"state"`
-	Stage             string      `json:"stage"`
-	Progress          int         `json:"progress"`
-	ProfileID         string      `json:"profile_id"`
-	PromptID          string      `json:"prompt_id,omitempty"`
-	Origin            AIJobOrigin `json:"origin"`
-	SourceDynamicID   string      `json:"source_dynamic_id,omitempty"`
-	DependsOnJobID    string      `json:"depends_on_job_id,omitempty"`
-	OriginTraceparent string      `json:"-"`
-	OriginTracestate  string      `json:"-"`
-	TargetChannelIDs  []string    `json:"-"`
-	Attempts          int         `json:"attempts"`
-	ErrorCode         string      `json:"error_code,omitempty"`
-	LastError         string      `json:"last_error,omitempty"`
-	Input             any         `json:"input,omitempty"`
-	Result            any         `json:"result,omitempty"`
-	CreatedAt         time.Time   `json:"created_at"`
-	StartedAt         time.Time   `json:"started_at,omitzero"`
-	FinishedAt        time.Time   `json:"finished_at,omitzero"`
-	UpdatedAt         time.Time   `json:"updated_at"`
+	ID                  string                 `json:"id"`
+	ClientRequestID     string                 `json:"client_request_id,omitempty"`
+	Kind                AIJobKind              `json:"kind"`
+	State               AIJobState             `json:"state"`
+	Stage               string                 `json:"stage"`
+	Progress            int                    `json:"progress"`
+	ProfileID           string                 `json:"profile_id"`
+	PromptID            string                 `json:"prompt_id,omitempty"`
+	Origin              AIJobOrigin            `json:"origin"`
+	SourceContentID     string                 `json:"source_content_id,omitempty"`
+	Source              *AIContentSnapshot     `json:"source,omitempty"`
+	DependsOnJobID      string                 `json:"depends_on_job_id,omitempty"`
+	OriginTraceparent   string                 `json:"-"`
+	OriginTracestate    string                 `json:"-"`
+	TargetChannelIDs    []string               `json:"-"`
+	Attempts            int                    `json:"attempts"`
+	ErrorCode           string                 `json:"error_code,omitempty"`
+	LastError           string                 `json:"last_error,omitempty"`
+	TranscriptionInput  *AITranscriptionInput  `json:"transcription_input,omitempty"`
+	SummaryInput        *AISummaryInput        `json:"summary_input,omitempty"`
+	TranscriptionResult *AITranscriptionResult `json:"transcription_result,omitempty"`
+	SummaryResult       *AISummaryResult       `json:"summary_result,omitempty"`
+	CreatedAt           time.Time              `json:"created_at"`
+	StartedAt           time.Time              `json:"started_at,omitzero"`
+	FinishedAt          time.Time              `json:"finished_at,omitzero"`
+	UpdatedAt           time.Time              `json:"updated_at"`
 }
 
 func (j AIJob) Terminal() bool {

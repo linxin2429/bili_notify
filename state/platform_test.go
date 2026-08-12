@@ -1,6 +1,8 @@
 package state
 
 import (
+	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -8,6 +10,52 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCreateSourceEnforcesIdentityAndLimitAtomically(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		prepare func(*testing.T, *Store, model.Source)
+		wantErr error
+		wantMsg string
+	}{
+		{name: "creates source"},
+		{name: "rejects duplicate", prepare: func(t *testing.T, store *Store, source model.Source) {
+			t.Helper()
+			require.NoError(t, store.CreateSource(source))
+		}, wantErr: ErrSourceExists},
+		{name: "rejects 101st Bilibili source", prepare: func(t *testing.T, store *Store, _ model.Source) {
+			t.Helper()
+			for index := range 100 {
+				uid := strconv.Itoa(index + 1000)
+				require.NoError(t, store.PutSource(model.Source{ID: model.SourceID(model.PlatformBilibili, uid), Platform: model.PlatformBilibili, Type: model.SourceBilibiliUP, ExternalID: uid, Name: uid, BaselineState: model.BaselinePending}))
+			}
+		}, wantMsg: "at most 100 UPs"},
+	}
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store := openTestStore(t, byte(160+index))
+			source := model.Source{ID: model.SourceID(model.PlatformBilibili, "42"), Platform: model.PlatformBilibili, Type: model.SourceBilibiliUP, ExternalID: "42", Name: "UP", BaselineState: model.BaselinePending}
+			if tt.prepare != nil {
+				tt.prepare(t, store, source)
+			}
+			err := store.CreateSource(source)
+			if tt.wantErr != nil || tt.wantMsg != "" {
+				require.Error(t, err)
+				if tt.wantErr != nil {
+					assert.True(t, errors.Is(err, tt.wantErr))
+				}
+				assert.Contains(t, err.Error(), tt.wantMsg)
+				return
+			}
+			require.NoError(t, err)
+			loaded, loadErr := store.Source(source.ID)
+			require.NoError(t, loadErr)
+			assert.Equal(t, source.Name, loaded.Name)
+		})
+	}
+}
 
 func TestPlatformIdentityAndEncryptedAccountSession(t *testing.T) {
 	t.Parallel()
@@ -38,19 +86,21 @@ func TestPlatformIdentityAndEncryptedAccountSession(t *testing.T) {
 func TestSyncCommentTreeDigestDeletionEditAndRestore(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, 152)
+	putEnabledTestChannel(t, store)
+	putEnabledTestChannel(t, store)
 	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "9", Name: "Planet", OwnerID: "owner"}
 	require.NoError(t, store.PutSource(source))
 	content := model.Content{ID: model.ContentID(model.PlatformZSXQ, "topic"), Platform: model.PlatformZSXQ, SourceID: source.ID, ExternalID: "topic", UpstreamType: "talk", Type: model.ContentDiscussion, PublishedAt: time.Now()}
 	root := model.CommentNode{ID: model.CommentID(model.PlatformZSXQ, "root"), RPID: "root", Role: model.RoleMember, AuthorID: "member", Time: time.Now()}
 	owner := model.CommentNode{ID: model.CommentID(model.PlatformZSXQ, "owner"), RPID: "owner", ParentID: root.ID, RootID: root.ID, Role: model.RoleOwner, AuthorID: "owner", Time: time.Now().Add(time.Second)}
 
-	digests, err := store.SyncCommentTree(content, []model.CommentNode{root, owner}, true, true, "baseline", []string{"a", "b"})
+	digests, err := store.SyncCommentTree(content, []model.CommentNode{root, owner}, true, true, "baseline", nil)
 	require.NoError(t, err)
 	assert.Empty(t, digests)
 
 	newOwner := owner
 	newOwner.ID, newOwner.RPID, newOwner.Message = model.CommentID(model.PlatformZSXQ, "owner-2"), "owner-2", "new"
-	digests, err = store.SyncCommentTree(content, []model.CommentNode{root, owner, newOwner}, true, false, "batch", []string{"a", "b"})
+	digests, err = store.SyncCommentTree(content, []model.CommentNode{root, owner, newOwner}, true, false, "batch", nil)
 	require.NoError(t, err)
 	require.Len(t, digests, 1)
 	require.Len(t, digests[0].Triggers, 1)
@@ -61,7 +111,7 @@ func TestSyncCommentTreeDigestDeletionEditAndRestore(t *testing.T) {
 	assert.Equal(t, int64(2), outboxCount)
 
 	newOwner.Message = "edited"
-	digests, err = store.SyncCommentTree(content, []model.CommentNode{root, owner, newOwner}, true, false, "edit", []string{"a"})
+	digests, err = store.SyncCommentTree(content, []model.CommentNode{root, owner, newOwner}, true, false, "edit", nil)
 	require.NoError(t, err)
 	assert.Empty(t, digests)
 	require.NoError(t, store.SyncCommentTreeNoDigestForTest(content, []model.CommentNode{root, owner}, true))
@@ -69,7 +119,7 @@ func TestSyncCommentTreeDigestDeletionEditAndRestore(t *testing.T) {
 	require.NoError(t, store.db.Where("id = ?", newOwner.ID).Take(&deleted).Error)
 	require.NotNil(t, deleted.DeletedAt)
 
-	digests, err = store.SyncCommentTree(content, []model.CommentNode{root, owner, newOwner}, true, false, "restore", []string{"a"})
+	digests, err = store.SyncCommentTree(content, []model.CommentNode{root, owner, newOwner}, true, false, "restore", nil)
 	require.NoError(t, err)
 	assert.Empty(t, digests)
 	require.NoError(t, store.db.Where("id = ?", newOwner.ID).Take(&deleted).Error)

@@ -83,8 +83,14 @@ func (r upRow) toModel() model.UP {
 }
 
 type channelRow struct {
-	ID     string `gorm:"column:id;primaryKey"`
-	Sealed []byte `gorm:"column:sealed;not null"`
+	ID                 string `gorm:"column:id;primaryKey"`
+	Name               string `gorm:"column:name;not null"`
+	Type               string `gorm:"column:type;not null"`
+	Enabled            int    `gorm:"column:enabled;not null"`
+	PublicSettingsJSON string `gorm:"column:public_settings_json;not null"`
+	SecretSealed       []byte `gorm:"column:secret_sealed;not null"`
+	CreatedAt          int64  `gorm:"column:created_at;not null"`
+	UpdatedAt          int64  `gorm:"column:updated_at;not null"`
 }
 
 func (channelRow) TableName() string { return tableChannels }
@@ -121,30 +127,31 @@ type aiPromptRow struct {
 func (aiPromptRow) TableName() string { return tableAIPrompts }
 
 type aiJobRow struct {
-	ID                string `gorm:"column:id;primaryKey"`
-	ClientRequestID   string `gorm:"column:client_request_id;not null"`
-	Kind              string `gorm:"column:kind;not null"`
-	State             string `gorm:"column:state;not null"`
-	Stage             string `gorm:"column:stage;not null;default:''"`
-	Progress          int    `gorm:"column:progress;not null;default:0"`
-	ProfileID         string `gorm:"column:profile_id;not null"`
-	PromptID          string `gorm:"column:prompt_id;not null;default:''"`
-	Origin            string `gorm:"column:origin;not null;default:'workbench'"`
-	SourceDynamicID   string `gorm:"column:source_dynamic_id;not null;default:''"`
-	DependsOnJobID    string `gorm:"column:depends_on_job_id;not null;default:''"`
-	OriginTraceparent string `gorm:"column:origin_traceparent;not null;default:''"`
-	OriginTracestate  string `gorm:"column:origin_tracestate;not null;default:''"`
-	TargetChannelIDs  string `gorm:"column:target_channel_ids;not null;default:'[]'"`
-	Attempts          int    `gorm:"column:attempts;not null;default:0"`
-	ErrorCode         string `gorm:"column:error_code;not null;default:''"`
-	LastError         string `gorm:"column:last_error;not null;default:''"`
-	InputSealed       []byte `gorm:"column:input_sealed;not null"`
-	ConfigSealed      []byte `gorm:"column:config_sealed;not null"`
-	ResultSealed      []byte `gorm:"column:result_sealed"`
-	CreatedAt         int64  `gorm:"column:created_at;not null"`
-	StartedAt         *int64 `gorm:"column:started_at"`
-	FinishedAt        *int64 `gorm:"column:finished_at"`
-	UpdatedAt         int64  `gorm:"column:updated_at;not null"`
+	ID                 string `gorm:"column:id;primaryKey"`
+	ClientRequestID    string `gorm:"column:client_request_id;not null"`
+	Kind               string `gorm:"column:kind;not null"`
+	State              string `gorm:"column:state;not null"`
+	Stage              string `gorm:"column:stage;not null;default:''"`
+	Progress           int    `gorm:"column:progress;not null;default:0"`
+	ProfileID          string `gorm:"column:profile_id;not null"`
+	PromptID           string `gorm:"column:prompt_id;not null;default:''"`
+	Origin             string `gorm:"column:origin;not null;default:'workbench'"`
+	SourceContentID    string `gorm:"column:source_content_id;not null;default:''"`
+	SourceSnapshotJSON string `gorm:"column:source_snapshot_json;not null;default:'{}'"`
+	DependsOnJobID     string `gorm:"column:depends_on_job_id;not null;default:''"`
+	OriginTraceparent  string `gorm:"column:origin_traceparent;not null;default:''"`
+	OriginTracestate   string `gorm:"column:origin_tracestate;not null;default:''"`
+	TargetChannelIDs   string `gorm:"column:target_channel_ids;not null;default:'[]'"`
+	Attempts           int    `gorm:"column:attempts;not null;default:0"`
+	ErrorCode          string `gorm:"column:error_code;not null;default:''"`
+	LastError          string `gorm:"column:last_error;not null;default:''"`
+	InputSealed        []byte `gorm:"column:input_sealed;not null"`
+	ConfigSealed       []byte `gorm:"column:config_sealed;not null"`
+	ResultSealed       []byte `gorm:"column:result_sealed"`
+	CreatedAt          int64  `gorm:"column:created_at;not null"`
+	StartedAt          *int64 `gorm:"column:started_at"`
+	FinishedAt         *int64 `gorm:"column:finished_at"`
+	UpdatedAt          int64  `gorm:"column:updated_at;not null"`
 }
 
 func (aiJobRow) TableName() string { return "ai_jobs" }
@@ -169,141 +176,24 @@ type upFollowRelationRow struct {
 
 func (upFollowRelationRow) TableName() string { return "up_follow_relations" }
 
-type seenDynamicRow struct {
-	UID       string `gorm:"column:uid;primaryKey"`
-	DynamicID string `gorm:"column:dynamic_id;primaryKey"`
-	SeenAt    int64  `gorm:"column:seen_at;not null"`
+type outboxRow struct {
+	ID                string `gorm:"column:id;primaryKey"`
+	Kind              string `gorm:"column:kind;not null"`
+	Platform          string `gorm:"column:platform;not null;default:''"`
+	SourceID          string `gorm:"column:source_id;not null;default:''"`
+	ContentID         string `gorm:"column:content_id;not null;default:''"`
+	ChannelID         string `gorm:"column:channel_id;not null"`
+	IdempotencyKey    string `gorm:"column:idempotency_key;not null"`
+	State             string `gorm:"column:state;not null"`
+	Attempts          int    `gorm:"column:attempts;not null;default:0"`
+	NextAt            int64  `gorm:"column:next_at;not null"`
+	LastError         string `gorm:"column:last_error;not null;default:''"`
+	CreatedAt         int64  `gorm:"column:created_at;not null"`
+	Title             string `gorm:"column:title;not null;default:''"`
+	Summary           string `gorm:"column:summary;not null;default:''"`
+	PayloadJSON       string `gorm:"column:payload_json;not null"`
+	ProgressJSON      string `gorm:"column:progress_json;not null;default:'{}'"`
+	OriginTraceparent string `gorm:"column:origin_traceparent;not null;default:''"`
 }
 
-func (seenDynamicRow) TableName() string { return "seen_dynamics" }
-
-type seenCommentRow struct {
-	UID    string `gorm:"column:uid;primaryKey"`
-	RPID   string `gorm:"column:rpid;primaryKey"`
-	SeenAt int64  `gorm:"column:seen_at;not null"`
-}
-
-func (seenCommentRow) TableName() string { return "seen_comments" }
-
-type commentTargetRow struct {
-	UID           string `gorm:"column:uid;primaryKey"`
-	CommentType   int    `gorm:"column:comment_type;primaryKey"`
-	CommentOID    string `gorm:"column:comment_oid;primaryKey"`
-	UPName        string `gorm:"column:up_name;not null;default:''"`
-	DynamicID     string `gorm:"column:dynamic_id;not null;default:''"`
-	ContentType   string `gorm:"column:content_type;not null;default:''"`
-	Title         string `gorm:"column:title;not null;default:''"`
-	URL           string `gorm:"column:url;not null;default:''"`
-	PublishedAt   int64  `gorm:"column:published_at;not null;default:0"`
-	CommentCount  int64  `gorm:"column:comment_count;not null;default:0"`
-	Closed        int    `gorm:"column:closed;not null;default:0"`
-	BaselineReady int    `gorm:"column:baseline_ready;not null;default:0"`
-	LastPollAt    *int64 `gorm:"column:last_poll_at"`
-	LastError     string `gorm:"column:last_error;not null;default:''"`
-}
-
-func (commentTargetRow) TableName() string { return "comment_targets" }
-
-func commentTargetFromModel(t model.CommentTarget) commentTargetRow {
-	row := commentTargetRow{
-		UID:           t.UID,
-		CommentType:   t.CommentType,
-		CommentOID:    t.CommentOID,
-		UPName:        t.UPName,
-		DynamicID:     t.DynamicID,
-		ContentType:   t.ContentType,
-		Title:         t.Title,
-		URL:           t.URL,
-		PublishedAt:   t.PublishedAt.Unix(),
-		CommentCount:  t.CommentCount,
-		Closed:        boolToInt(t.Closed),
-		BaselineReady: boolToInt(t.BaselineReady),
-		LastError:     t.LastError,
-	}
-	if !t.LastPollAt.IsZero() {
-		v := t.LastPollAt.Unix()
-		row.LastPollAt = &v
-	}
-	if t.PublishedAt.IsZero() {
-		row.PublishedAt = 0
-	}
-	return row
-}
-
-func (r commentTargetRow) toModel() model.CommentTarget {
-	t := model.CommentTarget{
-		UID:           r.UID,
-		UPName:        r.UPName,
-		DynamicID:     r.DynamicID,
-		ContentType:   r.ContentType,
-		Title:         r.Title,
-		URL:           r.URL,
-		CommentType:   r.CommentType,
-		CommentOID:    r.CommentOID,
-		PublishedAt:   time.Unix(r.PublishedAt, 0),
-		CommentCount:  r.CommentCount,
-		Closed:        r.Closed != 0,
-		BaselineReady: r.BaselineReady != 0,
-		LastError:     r.LastError,
-	}
-	if r.LastPollAt != nil {
-		t.LastPollAt = time.Unix(*r.LastPollAt, 0)
-	}
-	if r.PublishedAt == 0 {
-		t.PublishedAt = time.Time{}
-	}
-	return t
-}
-
-type deliveryRow struct {
-	ID          string `gorm:"column:id;primaryKey"`
-	Kind        string `gorm:"column:kind;not null"`
-	ChannelID   string `gorm:"column:channel_id;not null"`
-	State       string `gorm:"column:state;not null"`
-	Attempts    int    `gorm:"column:attempts;not null;default:0"`
-	NextAt      int64  `gorm:"column:next_at;not null"`
-	LastError   string `gorm:"column:last_error;not null;default:''"`
-	CreatedAt   int64  `gorm:"column:created_at;not null"`
-	PayloadJSON string `gorm:"column:payload_json;not null"`
-}
-
-func (deliveryRow) TableName() string { return "deliveries" }
-
-type dynamicRow struct {
-	ID           string `gorm:"column:id;primaryKey"`
-	BVID         string `gorm:"column:bvid;not null;default:''"`
-	UID          string `gorm:"column:uid;not null"`
-	UPName       string `gorm:"column:up_name;not null"`
-	Type         string `gorm:"column:type;not null"`
-	PublishedAt  int64  `gorm:"column:published_at;not null"`
-	DiscoveredAt int64  `gorm:"column:discovered_at;not null"`
-	Baseline     int    `gorm:"column:baseline;not null;default:0"`
-	Title        string `gorm:"column:title;not null;default:''"`
-	Summary      string `gorm:"column:summary;not null;default:''"`
-	Description  string `gorm:"column:description;not null;default:''"`
-	URL          string `gorm:"column:url;not null;default:''"`
-	TargetURL    string `gorm:"column:target_url;not null;default:''"`
-	Badge        string `gorm:"column:badge;not null;default:''"`
-	SearchText   string `gorm:"column:search_text;not null"`
-	PayloadJSON  string `gorm:"column:payload_json;not null"`
-}
-
-func (dynamicRow) TableName() string { return "dynamics" }
-
-type commentRow struct {
-	RPID         string `gorm:"column:rpid;primaryKey"`
-	UPUID        string `gorm:"column:up_uid;not null"`
-	UPName       string `gorm:"column:up_name;not null"`
-	ContentType  string `gorm:"column:content_type;not null;default:''"`
-	ContentID    string `gorm:"column:content_id;not null;default:''"`
-	ContentTitle string `gorm:"column:content_title;not null;default:''"`
-	ContentURL   string `gorm:"column:content_url;not null;default:''"`
-	PublishedAt  int64  `gorm:"column:published_at;not null"`
-	DiscoveredAt int64  `gorm:"column:discovered_at;not null"`
-	Baseline     int    `gorm:"column:baseline;not null;default:0"`
-	Incomplete   int    `gorm:"column:incomplete;not null;default:0"`
-	SearchText   string `gorm:"column:search_text;not null"`
-	PayloadJSON  string `gorm:"column:payload_json;not null"`
-}
-
-func (commentRow) TableName() string { return "comments" }
+func (outboxRow) TableName() string { return "outbox" }

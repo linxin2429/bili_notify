@@ -58,7 +58,7 @@ docker run --detach \
   "${image}" >/dev/null
 
 wait_for_probe "liveness" --url http://127.0.0.1:9090/healthz
-wait_for_probe "admin session" --insecure --url https://127.0.0.1:8443/api/v3/session --contains '"setup_required":true'
+wait_for_probe "admin session" --insecure --url https://127.0.0.1:8443/api/v4/session --contains '"setup_required":true'
 wait_for_probe "admin UI" --insecure --url https://127.0.0.1:8443/ --contains '<div id="root"></div>'
 
 [[ $(docker inspect --format '{{.Config.User}}' "${container}") == "65532:65532" ]]
@@ -68,14 +68,14 @@ setup_code=$(wait_for_setup_code)
 docker exec "${container}" /bili-notify healthcheck \
   --insecure \
   --method POST \
-  --url https://127.0.0.1:8443/api/v3/setup \
+  --url https://127.0.0.1:8443/api/v4/setup \
   --body "{\"setup_code\":\"${setup_code}\",\"password\":\"correct horse battery staple\"}"
 
 docker stop --time 20 "${container}" >/dev/null
 [[ $(docker inspect --format '{{.State.ExitCode}}' "${container}") == "0" ]]
 docker start "${container}" >/dev/null
 wait_for_probe "liveness after restart" --url http://127.0.0.1:9090/healthz
-wait_for_probe "admin session after restart" --insecure --url https://127.0.0.1:8443/api/v3/session --contains '"setup_required":false'
+wait_for_probe "admin session after restart" --insecure --url https://127.0.0.1:8443/api/v4/session --contains '"setup_required":false'
 
 docker stop --time 20 "${container}" >/dev/null
 [[ $(docker inspect --format '{{.State.ExitCode}}' "${container}") == "0" ]]

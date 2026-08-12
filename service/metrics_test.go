@@ -24,7 +24,7 @@ func TestMetricsContract(t *testing.T) {
 	metrics.RecordWorkflow(t.Context(), "collection", "success", 250*time.Millisecond)
 	metrics.RecordContent(t.Context(), "dynamic", 2, time.Now().Add(-30*time.Second), time.Now())
 	metrics.RecordDelivery(t.Context(), string(model.ChannelWeCom), "success", 500*time.Millisecond)
-	metrics.SetOutbox([]model.Delivery{{State: model.DeliveryPending}, {State: model.DeliveryBlocked}}, 2*time.Minute)
+	metrics.SetOutbox(1, 1, 2*time.Minute)
 	metrics.SetAuth(true)
 	metrics.SetStatus(true, false, 3, 2, 2, 1, 4)
 
