@@ -134,7 +134,9 @@ func TestZSXQGroupDiscoveryAndSourceCreation(t *testing.T) {
 	t.Parallel()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v2/groups", r.URL.Path)
-		assert.Equal(t, "session-secret", r.Header.Get("Authorization"))
+		cookie, err := r.Cookie(zsxq.AccessTokenKey)
+		require.NoError(t, err)
+		assert.Equal(t, "session-secret", cookie.Value)
 		writeJSON(w, http.StatusOK, map[string]any{"succeeded": true, "code": 0, "resp_data": map[string]any{"groups": []map[string]any{
 			{"group_id": 9, "name": "账号星球", "owner": map[string]any{"user_id": 8, "name": "星主"}},
 		}}})
@@ -142,7 +144,7 @@ func TestZSXQGroupDiscoveryAndSourceCreation(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	fixture := newAdminAPIFixture(t, nil)
 	require.NoError(t, fixture.store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "7", DisplayName: "成员", Status: model.AccountConnected, Session: map[string]string{zsxq.AccessTokenKey: "session-secret"}}))
-	client, err := zsxq.New(upstream.Client(), "web-zsxq-test", zsxq.WithBaseURL(upstream.URL))
+	client, err := zsxq.New(upstream.Client(), zsxq.WithBaseURL(upstream.URL))
 	require.NoError(t, err)
 	manager, err := zsxq.NewAccountManager(client, fixture.store)
 	require.NoError(t, err)
@@ -835,12 +837,14 @@ func TestZSXQAPIErrorMappingAndTokenImport(t *testing.T) {
 		t.Parallel()
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
-			case "/v3/users/self":
-				if r.Header.Get("Authorization") == "bad" {
+			case "/v2/groups":
+				cookie, err := r.Cookie(zsxq.AccessTokenKey)
+				require.NoError(t, err)
+				if cookie.Value == "bad" {
 					_ = json.NewEncoder(w).Encode(map[string]any{"succeeded": false, "code": 10001})
 					return
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"succeeded": true, "code": 0, "resp_data": map[string]any{"user": map[string]any{"uid": 9, "name": "Member"}}})
+				_ = json.NewEncoder(w).Encode(map[string]any{"succeeded": true, "code": 0, "resp_data": map[string]any{"groups": []any{}}})
 			default:
 				http.NotFound(w, r)
 			}
@@ -848,7 +852,7 @@ func TestZSXQAPIErrorMappingAndTokenImport(t *testing.T) {
 		t.Cleanup(upstream.Close)
 
 		fixture := newAdminAPIFixture(t, nil)
-		client, err := zsxq.New(upstream.Client(), "web-zsxq-test", zsxq.WithBaseURL(upstream.URL))
+		client, err := zsxq.New(upstream.Client(), zsxq.WithBaseURL(upstream.URL))
 		require.NoError(t, err)
 		manager, err := zsxq.NewAccountManager(client, fixture.store)
 		require.NoError(t, err)

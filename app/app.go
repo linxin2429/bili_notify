@@ -190,7 +190,7 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if dependencies.ZSXQAPIURL != "" {
 		zsxqOptions = append(zsxqOptions, zsxq.WithBaseURL(dependencies.ZSXQAPIURL))
 	}
-	zsxqClient, err := zsxq.New(zsxqHTTPClient, "bili-notify/"+version, zsxqOptions...)
+	zsxqClient, err := zsxq.New(zsxqHTTPClient, zsxqOptions...)
 	if err != nil {
 		return fmt.Errorf("initializing Knowledge Planet client: %w", err)
 	}

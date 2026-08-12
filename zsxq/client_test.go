@@ -1,9 +1,6 @@
 package zsxq
 
 import (
-	"crypto/hmac"
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,27 +14,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestClientSignsExplicitTokenRequest(t *testing.T) {
+func TestClientSendsWebSessionRequest(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 12, 1, 2, 3, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/v3/users/self", r.URL.Path)
-		assert.Equal(t, "secret-token", r.Header.Get("Authorization"))
-		assert.Equal(t, "2.83.0", r.Header.Get("X-Version"))
-		assert.Equal(t, "request-id", r.Header.Get("X-Request-Id"))
-		assert.Equal(t, "device-id", r.Header.Get("X-Aduid"))
-		plain := fmt.Sprintf("%d\nGET\n/v3/users/self", now.Unix())
-		digest := hmac.New(sha1.New, []byte(signingSecret))
-		_, _ = digest.Write([]byte(plain))
-		assert.Equal(t, hex.EncodeToString(digest.Sum(nil)), r.Header.Get("X-Signature"))
-		writeEnvelope(t, w, map[string]any{"user": map[string]any{"uid": 42, "name": "Member"}})
+		assert.Equal(t, "/v2/groups", r.URL.Path)
+		cookie, err := r.Cookie(AccessTokenKey)
+		require.NoError(t, err)
+		assert.Equal(t, "secret-token", cookie.Value)
+		assert.Empty(t, r.Header.Get("Authorization"))
+		assert.Equal(t, "2.37.0", r.Header.Get("X-Version"))
+		assert.Equal(t, fmt.Sprint(now.Unix()), r.Header.Get("X-Timestamp"))
+		assert.Equal(t, "application/json, text/plain, */*", r.Header.Get("Accept"))
+		assert.Equal(t, "zh-CN,zh;q=0.9,en;q=0.8", r.Header.Get("Accept-Language"))
+		assert.Equal(t, webUserAgent, r.Header.Get("User-Agent"))
+		assert.Empty(t, r.Header.Get("X-Signature"))
+		writeEnvelope(t, w, map[string]any{"groups": []any{}})
 	}))
 	t.Cleanup(server.Close)
-	client, err := New(server.Client(), "test", WithBaseURL(server.URL), withProtocolValues(func() time.Time { return now }, func() string { return "request-id" }, "device-id"))
+	client, err := New(server.Client(), WithBaseURL(server.URL), withNow(func() time.Time { return now }))
 	require.NoError(t, err)
-	user, err := client.Me(t.Context(), "secret-token")
+	groups, err := client.Groups(t.Context(), "secret-token")
 	require.NoError(t, err)
-	assert.Equal(t, User{ID: "42", Name: "Member"}, user)
+	assert.Empty(t, groups)
 }
 
 func TestClientGroups(t *testing.T) {
@@ -59,11 +58,13 @@ func TestClientGroups(t *testing.T) {
 			t.Parallel()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, "/v2/groups", r.URL.Path)
-				assert.Equal(t, "secret-token", r.Header.Get("Authorization"))
+				cookie, err := r.Cookie(AccessTokenKey)
+				require.NoError(t, err)
+				assert.Equal(t, "secret-token", cookie.Value)
 				writeEnvelope(t, w, map[string]any{"groups": tt.groups})
 			}))
 			t.Cleanup(server.Close)
-			client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+			client, err := New(server.Client(), WithBaseURL(server.URL))
 			require.NoError(t, err)
 			groups, err := client.Groups(t.Context(), "secret-token")
 			if tt.wantErr != nil {
@@ -82,7 +83,7 @@ func TestAccountManagerGroupsInvalidatesRejectedSession(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	t.Cleanup(server.Close)
-	client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+	client, err := New(server.Client(), WithBaseURL(server.URL))
 	require.NoError(t, err)
 	store := &accountStoreStub{account: model.PlatformAccount{Platform: model.PlatformZSXQ, Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: "rejected"}}}
 	manager, err := NewAccountManager(client, store)
@@ -91,6 +92,28 @@ func TestAccountManagerGroupsInvalidatesRejectedSession(t *testing.T) {
 	require.ErrorIs(t, err, ErrAuthentication)
 	assert.Equal(t, model.AccountInvalid, store.account.Status)
 	assert.Empty(t, store.account.Session)
+}
+
+func TestAccountManagerImportsSessionThroughGroupDiscovery(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v2/groups", r.URL.Path)
+		writeEnvelope(t, w, map[string]any{"groups": []any{}})
+	}))
+	t.Cleanup(server.Close)
+	client, err := New(server.Client(), WithBaseURL(server.URL))
+	require.NoError(t, err)
+	store := &accountStoreStub{}
+	manager, err := NewAccountManager(client, store)
+	require.NoError(t, err)
+
+	account, err := manager.ImportCookie(t.Context(), "zsxq_access_token=session")
+	require.NoError(t, err)
+	assert.Empty(t, account.ExternalID)
+	assert.Equal(t, "知识星球网页会话", account.DisplayName)
+	assert.Equal(t, model.AccountConnected, account.Status)
+	assert.Nil(t, account.Session)
+	assert.Equal(t, "session", store.account.Session[AccessTokenKey])
 }
 
 func TestClientClassifiesFailuresWithoutLeakingBodies(t *testing.T) {
@@ -118,12 +141,54 @@ func TestClientClassifiesFailuresWithoutLeakingBodies(t *testing.T) {
 				_, _ = w.Write([]byte(tt.body))
 			}))
 			t.Cleanup(server.Close)
-			client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+			client, err := New(server.Client(), WithBaseURL(server.URL))
 			require.NoError(t, err)
-			_, err = client.Me(t.Context(), "token")
+			_, err = client.Groups(t.Context(), "token")
 			require.Error(t, err)
 			assert.ErrorIs(t, err, tt.want)
 			assert.NotContains(t, err.Error(), tt.body)
+		})
+	}
+}
+
+func TestClientClassifiesLoginRedirect(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Redirect(w, &http.Request{}, "https://wx.zsxq.com/dweb2/login", http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+	client, err := New(server.Client(), WithBaseURL(server.URL))
+	require.NoError(t, err)
+
+	_, err = client.Groups(t.Context(), "expired")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrAuthentication)
+}
+
+func TestDecodeTopicDetailShapes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		payload string
+		wantID  string
+		wantErr error
+	}{
+		{name: "wrapped info response", payload: `{"topic":{"topic_id":1,"type":"talk"}}`, wantID: "1"},
+		{name: "direct info response", payload: `{"topic_id":2,"type":"talk"}`, wantID: "2"},
+		{name: "missing topic id", payload: `{"type":"talk"}`, wantErr: ErrSchemaDrift},
+		{name: "invalid JSON", payload: `{`, wantErr: ErrSchemaDrift},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			topic, err := decodeTopicDetail(json.RawMessage(tt.payload))
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantID, topic.TopicID.String())
 		})
 	}
 }
@@ -134,9 +199,11 @@ func TestClientTopicParsesPreviewCommentsAndResolvesFileOnDemand(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
-		assert.Equal(t, "token", r.Header.Get("Authorization"))
+		cookie, err := r.Cookie(AccessTokenKey)
+		require.NoError(t, err)
+		assert.Equal(t, "token", cookie.Value)
 		switch r.URL.Path {
-		case "/v2/topics/22255155254188541":
+		case "/v2/topics/22255155254188541/info":
 			writeEnvelope(t, w, map[string]any{"topic": map[string]any{
 				"topic_id": 22255155254188541, "type": "talk", "title": "SemiAnalysis的NV...",
 				"create_time": "2026-08-12T14:55:00.479+0800", "comments_count": 1,
@@ -157,7 +224,7 @@ func TestClientTopicParsesPreviewCommentsAndResolvesFileOnDemand(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+	client, err := New(server.Client(), WithBaseURL(server.URL))
 	require.NoError(t, err)
 	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "28882581855851"), Platform: model.PlatformZSXQ,
 		Type: model.SourceZSXQPlanet, ExternalID: "28882581855851", OwnerID: "548818848124544"}
@@ -166,9 +233,9 @@ func TestClientTopicParsesPreviewCommentsAndResolvesFileOnDemand(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snapshot.Attachments, 1)
 	require.Len(t, snapshot.ShownComments, 1)
-	assert.Equal(t, []string{"/v2/topics/22255155254188541"}, paths)
+	assert.Equal(t, []string{"/v2/topics/22255155254188541/info"}, paths)
 	require.NoError(t, client.populateFileDownloadURLs(t.Context(), "token", snapshot.Attachments))
-	assert.Equal(t, []string{"/v2/topics/22255155254188541", "/v2/files/814511428244812/download_url"}, paths)
+	assert.Equal(t, []string{"/v2/topics/22255155254188541/info", "/v2/files/814511428244812/download_url"}, paths)
 	assert.Equal(t, "正文 #SemiAnalysis#", snapshot.Content.Text)
 	assert.Empty(t, snapshot.Content.Title)
 	assert.Equal(t, server.URL+"/signed/file", snapshot.Attachments[0].RemoteURL)
@@ -198,7 +265,7 @@ func TestClientFileDownloadResolution(t *testing.T) {
 				_, _ = w.Write([]byte(tt.body))
 			}))
 			t.Cleanup(server.Close)
-			client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+			client, err := New(server.Client(), WithBaseURL(server.URL))
 			require.NoError(t, err)
 			attachments := []model.Attachment{{ExternalID: "1", Type: model.AttachmentFile}}
 
@@ -279,5 +346,5 @@ func TestUnsupportedClientBusinessCode(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUnsupportedClient)
 	assert.NotContains(t, publicError(err), "1059")
-	assert.Contains(t, publicError(err), "官方 OAuth Skill")
+	assert.Contains(t, publicError(err), "重新导入 Session")
 }

@@ -35,7 +35,7 @@ func TestSyncDynamicsArchivesBaselineWithoutChannels(t *testing.T) {
 	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
 		ExternalID: "9", Name: "Planet", OwnerID: "8", Enabled: true, BaselineState: model.BaselinePending}
 	require.NoError(t, store.PutSource(source))
-	client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+	client, err := New(server.Client(), WithBaseURL(server.URL))
 	require.NoError(t, err)
 	collector, err := NewCollector(store, client, model.DefaultRuntimeSettings, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
@@ -72,7 +72,9 @@ func TestSyncDynamicsUsesLatestTokenWithoutChangingSourceAvailability(t *testing
 			var requests atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
-				assert.Equal(t, "new-token", r.Header.Get("Authorization"))
+				cookie, err := r.Cookie(AccessTokenKey)
+				require.NoError(t, err)
+				assert.Equal(t, "new-token", cookie.Value)
 				if tt.status != http.StatusOK {
 					w.WriteHeader(tt.status)
 					return
@@ -90,7 +92,7 @@ func TestSyncDynamicsUsesLatestTokenWithoutChangingSourceAvailability(t *testing
 				ExternalID: "9", Name: "Planet", Enabled: tt.enabled, BaselineState: model.BaselineComplete}
 			require.NoError(t, store.PutSource(source))
 			require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "new-user", DisplayName: "New", Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: "new-token"}}))
-			client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+			client, err := New(server.Client(), WithBaseURL(server.URL))
 			require.NoError(t, err)
 			collector, err := NewCollector(store, client, model.DefaultRuntimeSettings, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			require.NoError(t, err)
@@ -134,7 +136,7 @@ func TestSyncDynamicsFiltersAuthorsAcrossLivePages(t *testing.T) {
 	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "9", Name: "Planet", Enabled: true,
 		BaselineState: model.BaselineComplete, HighWatermark: encodeWatermark(watermarkContent), ZSXQTopicMode: model.ZSXQTopicSelectedAuthors, ZSXQAuthors: []model.ZSXQAuthor{{UserID: "8", Name: "Selected"}}}
 	require.NoError(t, store.PutSource(source))
-	client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+	client, err := New(server.Client(), WithBaseURL(server.URL))
 	require.NoError(t, err)
 	collector, err := NewCollector(store, client, model.DefaultRuntimeSettings, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
@@ -157,7 +159,9 @@ func TestSyncCommentsUsesCompleteTopicPreview(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/signed/file" {
-			assert.Equal(t, "new-session", r.Header.Get("Authorization"))
+			cookie, err := r.Cookie(AccessTokenKey)
+			require.NoError(t, err)
+			assert.Equal(t, "new-session", cookie.Value)
 		}
 		switch r.URL.Path {
 		case "/v2/topics/1/comments":
@@ -190,7 +194,7 @@ func TestSyncCommentsUsesCompleteTopicPreview(t *testing.T) {
 		ExternalID: "1", AuthorID: "8", AuthorName: "Owner", UpstreamType: "talk", Type: model.ContentDiscussion,
 		PublishedAt: time.Date(2026, time.August, 10, 0, 0, 0, 0, time.UTC)}
 	require.NoError(t, store.ArchiveContent(content, nil))
-	client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+	client, err := New(server.Client(), WithBaseURL(server.URL))
 	require.NoError(t, err)
 	collector, err := NewCollector(store, client, model.DefaultRuntimeSettings, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
