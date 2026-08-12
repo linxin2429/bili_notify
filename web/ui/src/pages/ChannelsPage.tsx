@@ -102,7 +102,7 @@ function ChannelDialog({ channel, busy, error, onClose, onSave }: { channel?: Ch
       {type === 'wecom' && <SecretField label="Webhook URL" name="webhook" values={secrets} configured={channel?.configured_secrets || []} onChange={secret} />}
       <SwitchField checked={enabled} onChange={setEnabled}>启用渠道</SwitchField>
       {type === 'microsoft' && <Alert>附件投递需要 Mail.ReadWrite 权限；升级后的已有渠道也必须重新完成设备码授权，再启用渠道。</Alert>}
-	  {type === 'feishu' && <Alert>应用必须启用机器人，拥有消息发送、图片与文件上传权限，并已加入目标群。</Alert>}
+	  {type === 'feishu' && <Alert>应用必须启用机器人并加入目标群；至少开通“以应用的身份发消息”（im:message:send_as_bot）权限。发送图片和文件还需对应的上传权限。权限变更后必须发布新版本才会生效。</Alert>}
       <button type="submit" hidden tabIndex={-1} aria-hidden="true" />
     </form>
   </Dialog>

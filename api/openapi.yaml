@@ -267,6 +267,8 @@ paths:
           $ref: '#/components/responses/CSRFError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '422':
+          $ref: '#/components/responses/ChannelConfigurationError'
         '502':
           $ref: '#/components/responses/UpstreamError'
   /api/v4/channels/{id}/microsoft-login:
@@ -928,6 +930,15 @@ components:
             $ref: '#/components/schemas/ErrorEnvelope'
     UpstreamError:
       description: Upstream notification provider failed.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ChannelConfigurationError:
+      description: The notification provider rejected a fixable channel configuration or permission setting.
       headers:
         X-Request-ID:
           $ref: '#/components/headers/RequestID'

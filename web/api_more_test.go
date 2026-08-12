@@ -453,6 +453,31 @@ func TestChannelTestHTTPFailureTimeoutAndAuditRedaction(t *testing.T) {
 	}
 }
 
+func TestChannelTestReturnsActionableFeishuPermissionError(t *testing.T) {
+	t.Parallel()
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"code":230002,"msg":"permission detail must-not-leak"}`
+		if strings.Contains(request.URL.Path, "tenant_access_token") {
+			body = `{"code":0,"tenant_access_token":"tenant-token","expire":7200}`
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		}
+		return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	t.Cleanup(client.CloseIdleConnections)
+	fixture := newAdminAPIFixture(t, client)
+	channel, err := fixture.store.PutChannel(model.Channel{
+		Name: "feishu", Type: model.ChannelFeishu, Enabled: true,
+		Settings: map[string]string{"app_id": "app-id", "app_secret": "app-secret", "chat_id": "oc_group"},
+	})
+	require.NoError(t, err)
+
+	response := fixture.request(t, http.MethodPost, "/api/v4/channels/"+channel.ID+"/test", nil, true)
+	assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+	assertAPIError(t, response, http.StatusUnprocessableEntity, "channel_configuration")
+	assert.Contains(t, response.Body.String(), "添加到 Chat ID 对应的群聊")
+	assert.NotContains(t, response.Body.String(), "must-not-leak")
+}
+
 func TestContentAPIs(t *testing.T) {
 	t.Parallel()
 	fixture := newAdminAPIFixture(t, nil)

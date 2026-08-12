@@ -61,8 +61,9 @@ func TestClassifyFilesUsesActualSafeLocalState(t *testing.T) {
 func TestFeishuSendsApplicationFileAfterBody(t *testing.T) {
 	t.Parallel()
 	const appID = "file-app"
-	feishuTokens.Delete(appID)
-	t.Cleanup(func() { feishuTokens.Delete(appID) })
+	cacheKey := feishuTokenCacheKey(appID, "secret")
+	feishuTokens.Delete(cacheKey)
+	t.Cleanup(func() { feishuTokens.Delete(cacheKey) })
 	dataDir, relative := writeTestAttachment(t, []byte("feishu-file"))
 	var calls []string
 	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {

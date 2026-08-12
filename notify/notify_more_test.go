@@ -24,8 +24,9 @@ import (
 func TestFeishuUploadsLocalImages(t *testing.T) {
 	t.Parallel()
 	const appID = "contract-app"
-	feishuTokens.Delete(appID)
-	t.Cleanup(func() { feishuTokens.Delete(appID) })
+	cacheKey := feishuTokenCacheKey(appID, "app-secret")
+	feishuTokens.Delete(cacheKey)
+	t.Cleanup(func() { feishuTokens.Delete(cacheKey) })
 	dataDir := t.TempDir()
 	localPath := filepath.Join("media", "42", "dynamic", "image.png")
 	absPath := filepath.Join(dataDir, localPath)
@@ -161,6 +162,32 @@ func TestFeishuTenantTokenCache(t *testing.T) {
 				assert.Equal(t, "token-app-a", first)
 				assert.Equal(t, "token-app-b", second)
 				assert.Equal(t, first, firstAgain)
+				assert.Equal(t, int32(2), requests.Load())
+			},
+		},
+		{
+			name: "rotated secret does not reuse the previous credential token",
+			run: func(t *testing.T) {
+				caches := &sync.Map{}
+				var requests atomic.Int32
+				transport := func(request *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					var credentials map[string]string
+					require.NoError(t, json.NewDecoder(request.Body).Decode(&credentials))
+					body := fmt.Sprintf(`{"code":0,"tenant_access_token":%q,"expire":7200}`, "token-"+credentials["app_secret"])
+					return responseFor(request, http.StatusOK, body), nil
+				}
+				oldSender := feishuTokenTestSender(caches, "app-a", transport)
+				oldSender.appSecret = "old-secret"
+				newSender := feishuTokenTestSender(caches, "app-a", transport)
+				newSender.appSecret = "new-secret"
+
+				oldToken, err := oldSender.feishuTenantToken(t.Context())
+				require.NoError(t, err)
+				newToken, err := newSender.feishuTenantToken(t.Context())
+				require.NoError(t, err)
+				assert.Equal(t, "token-old-secret", oldToken)
+				assert.Equal(t, "token-new-secret", newToken)
 				assert.Equal(t, int32(2), requests.Load())
 			},
 		},

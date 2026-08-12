@@ -86,6 +86,45 @@ func IsPermanent(err error) bool {
 	return errors.As(err, &permanent)
 }
 
+// ActionableError carries a stable, secret-free explanation that the admin UI
+// may show while preserving the detailed protocol error for logs and retries.
+type ActionableError struct {
+	Message string
+	Err     error
+}
+
+func (e *ActionableError) Error() string { return e.Err.Error() }
+func (e *ActionableError) Unwrap() error { return e.Err }
+
+func ActionableMessage(err error) (string, bool) {
+	var actionable *ActionableError
+	if !errors.As(err, &actionable) || actionable.Message == "" {
+		return "", false
+	}
+	return actionable.Message, true
+}
+
+type upstreamBusinessError struct {
+	operation  string
+	statusCode int
+	code       int64
+}
+
+func (e *upstreamBusinessError) Error() string {
+	if e.statusCode != 0 {
+		return fmt.Sprintf("%s returned HTTP %d with business code %d", e.operation, e.statusCode, e.code)
+	}
+	return fmt.Sprintf("%s returned business code %d", e.operation, e.code)
+}
+
+func businessError(err error) (*upstreamBusinessError, bool) {
+	var businessErr *upstreamBusinessError
+	if !errors.As(err, &businessErr) {
+		return nil, false
+	}
+	return businessErr, true
+}
+
 // RetryAfterError carries an upstream's minimum retry delay without exposing
 // its response body. Delivery scheduling still applies the configured backoff
 // when it is longer.
@@ -485,7 +524,18 @@ func (s *robotSender) SendProgressive(ctx context.Context, message Message, prog
 		current = *progress
 	}
 	if s.kind == model.ChannelFeishu {
-		return s.sendFeishuProgressive(ctx, message, &current)
+		updated, err := s.sendFeishuProgressive(ctx, message, &current)
+		if businessErr, ok := businessError(err); ok && businessErr.operation == "feishu message" {
+			message := feishuActionableMessage(businessErr.code)
+			if message == "" {
+				return updated, err
+			}
+			return updated, &ActionableError{
+				Message: message,
+				Err:     err,
+			}
+		}
+		return updated, err
 	}
 	var files []model.DeliveryFile
 	if s.kind == model.ChannelWeCom {
@@ -537,6 +587,21 @@ func (s *robotSender) SendProgressive(ctx context.Context, message Message, prog
 		current.FilesSent = i + 1
 	}
 	return &current, nil
+}
+
+func feishuActionableMessage(code int64) string {
+	switch code {
+	case 230002:
+		return "飞书机器人不在目标群中。请把当前应用的机器人添加到 Chat ID 对应的群聊，并确认机器人在群内有发言权限。"
+	case 230006:
+		return "飞书应用尚未启用机器人能力。请在飞书开放平台启用机器人，发布新版本后再测试。"
+	case 230013:
+		return "目标群或用户不在飞书机器人的可用范围内。请调整应用可用范围，并确认 Chat ID 指向群聊而不是单聊。"
+	case 230035, 99991672:
+		return "飞书应用缺少发消息权限。请开通“以应用的身份发消息”（im:message:send_as_bot），发布新版本后再测试。"
+	default:
+		return ""
+	}
 }
 
 func splitRobotMessage(message Message, kind model.ChannelType) []Message {
@@ -733,14 +798,19 @@ type feishuTokenCache struct {
 	expires time.Time
 }
 
-var feishuTokens sync.Map // appID -> *feishuTokenCache
+var feishuTokens sync.Map // credential fingerprint -> *feishuTokenCache
+
+func feishuTokenCacheKey(appID, appSecret string) string {
+	digest := sha256.Sum256([]byte(appSecret))
+	return appID + ":" + hex.EncodeToString(digest[:])
+}
 
 func (s *robotSender) feishuTenantToken(ctx context.Context) (string, error) {
 	caches := s.feishuTokenCaches
 	if caches == nil {
 		caches = &feishuTokens
 	}
-	raw, _ := caches.LoadOrStore(s.appID, &feishuTokenCache{})
+	raw, _ := caches.LoadOrStore(feishuTokenCacheKey(s.appID, s.appSecret), &feishuTokenCache{})
 	cache := raw.(*feishuTokenCache)
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
@@ -784,7 +854,14 @@ func (s *robotSender) feishuTenantToken(ctx context.Context) (string, error) {
 		return "", &PermanentError{Err: fmt.Errorf("decoding feishu tenant token: %w", err)}
 	}
 	if result.Code != 0 || result.TenantAccessToken == "" {
-		return "", &PermanentError{Err: fmt.Errorf("feishu tenant token failed: code=%d", result.Code)}
+		err := &PermanentError{Err: fmt.Errorf("feishu tenant token failed: code=%d", result.Code)}
+		if result.Code == 10014 {
+			return "", &ActionableError{
+				Message: "飞书拒绝了 App ID 与 App Secret。请从同一个应用的“凭证与基础信息”页面重新复制两项凭证；如果重置过 App Secret，必须填写最新值。",
+				Err:     err,
+			}
+		}
+		return "", err
 	}
 	expire := result.Expire
 	if expire <= 0 {
@@ -1051,7 +1128,7 @@ func doBusinessRequest(ctx context.Context, client *http.Client, req *http.Reque
 		return &PermanentError{Err: fmt.Errorf("%s returned invalid business code", operation)}
 	}
 	if code != 0 {
-		return &PermanentError{Err: fmt.Errorf("%s returned business code %d", operation, int64(code))}
+		return &PermanentError{Err: &upstreamBusinessError{operation: operation, code: int64(code)}}
 	}
 	return nil
 }
@@ -1070,6 +1147,14 @@ func doJSONRequest(ctx context.Context, client *http.Client, req *http.Request, 
 		return retryableHTTPError(operation, resp)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if !oversized {
+			var result map[string]any
+			if json.Unmarshal(body, &result) == nil {
+				if code, codeErr := businessCode(result); codeErr == nil && code != 0 {
+					return &PermanentError{Err: &upstreamBusinessError{operation: operation, statusCode: resp.StatusCode, code: code}}
+				}
+			}
+		}
 		return &PermanentError{Err: fmt.Errorf("%s returned HTTP %d", operation, resp.StatusCode)}
 	}
 	if oversized {

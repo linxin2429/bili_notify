@@ -1326,6 +1326,16 @@ export interface components {
                 "application/json": components["schemas"]["ErrorEnvelope"];
             };
         };
+        /** @description The notification provider rejected a fixable channel configuration or permission setting. */
+        ChannelConfigurationError: {
+            headers: {
+                "X-Request-ID": components["headers"]["RequestID"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
         /** @description Internal server failure. */
         InternalError: {
             headers: {
@@ -1639,6 +1649,7 @@ export interface operations {
             401: components["responses"]["AuthenticationError"];
             403: components["responses"]["CSRFError"];
             404: components["responses"]["NotFoundError"];
+            422: components["responses"]["ChannelConfigurationError"];
             502: components["responses"]["UpstreamError"];
         };
     };

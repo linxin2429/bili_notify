@@ -62,7 +62,7 @@ B站适配器使用二维码生成、二维码轮询、导航验证、关注关�
 
 动态类型按实际内容归一化：B 站返回为 `DYNAMIC_TYPE_DRAW` 但图文卡片没有图片时记为 `DYNAMIC_TYPE_WORD`；有图片时仍为 `DRAW`。评论区坐标优先取动态 `basic.comment_type` 与 `basic.comment_id_str`，且始终以 B 站原始类型解释坐标；因此无图文字 opus 仍可能使用相簿评论区 11。缺失 `basic` 时仅对可确定映射的原始类型兜底（视频 avid、文字/转发动态 id、专栏 cvid）。图文动态在无 `basic` 时不得猜测 11/17，直接跳过跟踪。转发评论区挂在转发自身。PGC 与通用卡片不进入评论跟踪。
 
-SMTP 只支持隐式 TLS 和 STARTTLS，并校验证书。Microsoft 使用 OAuth 2.0 设备码与委托 `Mail.Send`、`Mail.ReadWrite` 权限，访问令牌过期时自动刷新并持久化。钉钉与企业微信使用 HTTPS Webhook；飞书只使用应用机器人，要求 `app_id`、`app_secret` 和目标群 `chat_id`，应用必须启用机器人、拥有消息发送及图片/文件上传权限并已加入目标群。权限扩大的升级会禁用 Microsoft 渠道并清除旧授权；飞书升级会删除废弃的 Webhook/签名秘密，并禁用缺少 `chat_id` 的渠道。
+SMTP 只支持隐式 TLS 和 STARTTLS，并校验证书。Microsoft 使用 OAuth 2.0 设备码与委托 `Mail.Send`、`Mail.ReadWrite` 权限，访问令牌过期时自动刷新并持久化。钉钉与企业微信使用 HTTPS Webhook；飞书只使用应用机器人，要求 `app_id`、`app_secret` 和目标群 `chat_id`，应用必须启用机器人并加入目标群，至少开通“以应用的身份发消息”（`im:message:send_as_bot`）权限且在权限变更后发布新版本；图片和文件投递还需对应的上传权限。飞书 tenant token 缓存按 App ID 与 App Secret 的单向指纹隔离，凭据轮换必须立即重新鉴权，不能继续复用旧凭据取得的 token。权限扩大的升级会禁用 Microsoft 渠道并清除旧授权；飞书升级会删除废弃的 Webhook/签名秘密，并禁用缺少 `chat_id` 的渠道。飞书测试会把已知业务码映射成可执行的配置提示，例如 `10014` 表示应用凭据无效、`230002` 表示机器人尚未加入目标群；上游响应正文仍不得进入日志或 API 响应。
 
 所有通知 HTTP 协议响应最多读取 1 MiB；成功响应超过上限、JSON 损坏、业务码缺失或类型漂移都视为永久协议错误，避免把无法证明成功的响应误判为已投递。网络故障、HTTP 429 和 5xx 可重试，`Retry-After`（秒数或 HTTP 日期）是重试调度的最小等待时间；4xx、OAuth 凭据失效和明确业务错误进入阻塞。错误只保留操作名、HTTP 状态和业务码，不拼接响应正文、请求 URL、OAuth 描述或飞书 `msg`，避免 Webhook 查询签名、令牌及上游回显秘密进入日志。
 

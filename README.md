@@ -82,7 +82,7 @@ Microsoft 渠道通过 Microsoft Graph 与 OAuth 2.0 设备码授权发送邮件
 
 ### 群机器人
 
-钉钉填写 HTTPS Webhook 与签名密钥，企业微信填写带机器人 key 的 HTTPS Webhook。飞书使用应用机器人，填写 App ID、App Secret 和目标群 Chat ID；应用需启用机器人、拥有消息发送及图片/文件上传权限，并已加入目标群。Webhook、签名密钥和 App Secret 都加密保存。
+钉钉填写 HTTPS Webhook 与签名密钥，企业微信填写带机器人 key 的 HTTPS Webhook。飞书使用应用机器人，填写 App ID、App Secret 和目标群 Chat ID；应用需启用机器人、加入目标群，至少开通“以应用的身份发消息”（`im:message:send_as_bot`）权限，并在变更权限后发布新版本；图片和文件投递还需对应的上传权限。Webhook、签名密钥和 App Secret 都加密保存。
 
 知识星球的图片继续按各渠道的图片能力展示；`file`、`audio`、`video` 附件作为普通文件投递。SMTP 不设置应用侧硬上限，Microsoft 支持至 150 MiB，飞书至 30 MiB，企业微信支持 5 B–20 MiB，钉钉暂不上传文件。文件未归档、丢失、为空或超限时，正文会列出跳过原因，其余正文和附件仍会发送。
 
