@@ -41,7 +41,7 @@ type SettingsService interface {
 type SourceAdmin interface {
 	List(context.Context, model.Platform) ([]model.Source, error)
 	Create(context.Context, model.Source) error
-	Update(context.Context, string, string, string, bool) (model.Source, error)
+	Update(context.Context, string, string, string, bool, model.ZSXQTopicMode, []model.ZSXQAuthor) (model.Source, error)
 	Delete(context.Context, string) error
 }
 

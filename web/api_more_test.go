@@ -153,7 +153,7 @@ func TestZSXQGroupDiscoveryAndSourceCreation(t *testing.T) {
 	assert.JSONEq(t, `[{"id":"9","name":"账号星球","owner_id":"8","owner_name":"星主"}]`, response.Body.String())
 	assert.NotContains(t, response.Body.String(), "session-secret")
 
-	response = fixture.request(t, http.MethodPost, "/api/v4/sources/zsxq", map[string]any{"group_id": "9", "note": "重点", "enabled": true}, true)
+	response = fixture.request(t, http.MethodPost, "/api/v4/sources/zsxq", map[string]any{"group_id": "9", "note": "重点", "enabled": true, "zsxq_topic_mode": "all", "zsxq_authors": []any{}}, true)
 	assert.Equal(t, http.StatusCreated, response.Code)
 	var source model.Source
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &source))
@@ -161,8 +161,18 @@ func TestZSXQGroupDiscoveryAndSourceCreation(t *testing.T) {
 	assert.Equal(t, "8", source.OwnerID)
 	assert.Equal(t, "星主", source.OwnerName)
 	assert.Equal(t, "重点", source.Note)
+	assert.Equal(t, model.ZSXQTopicAll, source.ZSXQTopicMode)
 
-	response = fixture.request(t, http.MethodPost, "/api/v4/sources/zsxq", map[string]any{"group_id": "10", "note": "", "enabled": true}, true)
+	response = fixture.request(t, http.MethodPut, "/api/v4/sources/zsxq:planet:9", map[string]any{
+		"name": "账号星球", "note": "重点", "enabled": true, "zsxq_topic_mode": "selected_authors",
+		"zsxq_authors": []map[string]any{{"user_id": " 18 ", "name": " 作者甲 "}, {"user_id": "19"}},
+	}, true)
+	assert.Equal(t, http.StatusOK, response.Code)
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &source))
+	assert.Equal(t, model.ZSXQTopicSelectedAuthors, source.ZSXQTopicMode)
+	assert.Equal(t, []model.ZSXQAuthor{{UserID: "18", Name: "作者甲"}, {UserID: "19"}}, source.ZSXQAuthors)
+
+	response = fixture.request(t, http.MethodPost, "/api/v4/sources/zsxq", map[string]any{"group_id": "10", "note": "", "enabled": true, "zsxq_topic_mode": "all", "zsxq_authors": []any{}}, true)
 	assertAPIError(t, response, http.StatusUnprocessableEntity, "validation_failed")
 	response = fixture.request(t, http.MethodPost, "/api/v4/sources", map[string]any{}, true)
 	assert.Equal(t, http.StatusMethodNotAllowed, response.Code)

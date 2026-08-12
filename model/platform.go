@@ -78,6 +78,18 @@ const (
 	BaselineFailed   BaselineState = "failed"
 )
 
+type ZSXQTopicMode string
+
+const (
+	ZSXQTopicAll             ZSXQTopicMode = "all"
+	ZSXQTopicSelectedAuthors ZSXQTopicMode = "selected_authors"
+)
+
+type ZSXQAuthor struct {
+	UserID string `json:"user_id"`
+	Name   string `json:"name,omitempty"`
+}
+
 // Source is one administrator-selectable collection boundary.
 type Source struct {
 	ID               string        `json:"id"`
@@ -88,6 +100,8 @@ type Source struct {
 	Note             string        `json:"note,omitempty"`
 	OwnerID          string        `json:"owner_id,omitempty"`
 	OwnerName        string        `json:"owner_name,omitempty"`
+	ZSXQTopicMode    ZSXQTopicMode `json:"zsxq_topic_mode,omitempty"`
+	ZSXQAuthors      []ZSXQAuthor  `json:"zsxq_authors,omitempty"`
 	Enabled          bool          `json:"enabled"`
 	BaselineState    BaselineState `json:"baseline_state"`
 	BackfillCursor   string        `json:"backfill_cursor,omitempty"`
@@ -130,6 +144,32 @@ func (s Source) Validate() error {
 	}
 	if s.ID != SourceID(s.Platform, s.ExternalID) {
 		return fmt.Errorf("source id must be %q", SourceID(s.Platform, s.ExternalID))
+	}
+	if s.Platform != PlatformZSXQ {
+		if s.ZSXQTopicMode != "" || len(s.ZSXQAuthors) != 0 {
+			return errors.New("bilibili source cannot have Knowledge Planet topic filters")
+		}
+		return nil
+	}
+	if s.ZSXQTopicMode != ZSXQTopicAll && s.ZSXQTopicMode != ZSXQTopicSelectedAuthors {
+		return errors.New("Knowledge Planet topic mode must be all or selected_authors")
+	}
+	if s.ZSXQTopicMode == ZSXQTopicAll && len(s.ZSXQAuthors) != 0 {
+		return errors.New("Knowledge Planet all topic mode cannot have selected authors")
+	}
+	if s.ZSXQTopicMode == ZSXQTopicSelectedAuthors && len(s.ZSXQAuthors) == 0 {
+		return errors.New("Knowledge Planet selected author mode requires at least one author")
+	}
+	seenAuthors := make(map[string]struct{}, len(s.ZSXQAuthors))
+	for _, author := range s.ZSXQAuthors {
+		userID := strings.TrimSpace(author.UserID)
+		if userID == "" || userID != author.UserID || strings.Trim(userID, "0123456789") != "" || userID[0] == '0' {
+			return fmt.Errorf("invalid Knowledge Planet author user_id %q", author.UserID)
+		}
+		if _, exists := seenAuthors[userID]; exists {
+			return fmt.Errorf("duplicate Knowledge Planet author user_id %q", userID)
+		}
+		seenAuthors[userID] = struct{}{}
 	}
 	return nil
 }

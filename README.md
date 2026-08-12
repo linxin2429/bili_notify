@@ -54,11 +54,13 @@ docker run -d --name bili-notify \
 1. 在“概览”生成二维码并使用哔哩哔哩 App 扫码。
 2. 添加至少一个通知渠道并发送测试通知。
 3. 在“采集源”添加 B 站 UID。首次拉取只建立基线，不通知历史动态；基线内容仍会写入“历史”页。
-4. 如需知识星球，在独立登录页导入网页请求中的 Session，再在“采集源”手动添加星球 ID。账号凭证与来源相互独立，更换账号或 token 不会删除或停用已有来源；已启用来源始终使用最新 token 采集。
+4. 如需知识星球，在独立登录页导入网页请求中的 Session，再从账号可见列表添加星球。每个星球可独立采集全部主题，或填写一个或多个知识星球用户 ID、仅采集这些作者的主题；用户 ID 可从知识星球网页开发工具中主题响应的 `owner.user_id` 查看，作者名称只是便于辨认的备注。账号凭证与来源相互独立，更换账号或 token 不会删除或停用已有来源；已启用来源始终使用最新 token 采集。
 5. 在“历史”中按平台、采集源、时间与关键字浏览统一内容，并展开完整嵌套评论树。所有用户评论都会归档；只有 B 站 UP 本人或知识星球星球主本人的新增节点生成通知，同一轮同一内容合并为一条摘要。
 6. 如需 AI 功能，在“AI 设置”创建转写/总结模型配置档和总结提示词，然后在“AI 工作台”提交 BVID 或文本。若要让 B 站新视频动态自动按“转写 → 总结”处理，请把三个配置分别设为默认且保持模型启用，再到“设置”开启“自动处理新视频动态”；该开关默认关闭，知识星球音视频、首次基线和转发中嵌套的视频不会触发。结果可在 AI 工作台查看。配置档支持任意 OpenAI 兼容的 HTTPS Base URL、API Key 和模型名；API Key 加密保存且不会回传浏览器。
 
 “设置”页可热更新 B 站、知识星球、附件预算、投递与日志参数。保存的是一份完整运行设置：后续任务立即读取新策略，正在执行的任务和已经排定的重试不会被取消或改写。环境变量只在空库首次启动时播种默认值，之后以 `data.db` 为准。B 站种子使用 `BILI_NOTIFY_BILIBILI_DYNAMIC_INTERVAL`、`BILI_NOTIFY_BILIBILI_REQUEST_RATE`、`BILI_NOTIFY_BILIBILI_REQUEST_CONCURRENCY` 等 `BILI_NOTIFY_BILIBILI_*` 名称；知识星球使用 `BILI_NOTIFY_ZSXQ_DYNAMIC_INTERVAL`、`BILI_NOTIFY_ZSXQ_COMMENT_INTERVAL`、`BILI_NOTIFY_ZSXQ_REQUEST_RATE`、`BILI_NOTIFY_ZSXQ_REQUEST_CONCURRENCY`、`BILI_NOTIFY_ZSXQ_RISK_PAUSE`、`BILI_NOTIFY_ZSXQ_ASSET_MAX_FILE_SIZE` 和 `BILI_NOTIFY_ZSXQ_ASSET_TOTAL_BUDGET`。旧变量名不会读取。
+
+知识星球作者范围过滤发生在主题进入本地档案之前：未命中的主题不会保存、下载附件或通知，已归档主题的评论仍会完整同步。修改范围不会删除已有档案、重置水位或重新补采已经越过的历史页；未完成的历史回补从现有游标开始立即使用新范围。
 
 观测接口默认监听容器内 `:9090`，只包含 `/healthz` 和 `/readyz`，Compose 默认不发布到宿主机。Metrics 通过 OTLP 发送到 OpenTelemetry Collector，由 Collector 在 `:9464/metrics` 上转换为 Prometheus/OpenMetrics。
 

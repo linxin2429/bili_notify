@@ -42,6 +42,18 @@ func TestKnowledgePlanetOutboxSnapshotsNonImageAttachments(t *testing.T) {
 	assert.Equal(t, filepath.ToSlash("media/zsxq/file-local.pdf"), after[0].Dynamic.Files[0].LocalPath)
 }
 
+func TestSourcePersistsZSXQTopicFilters(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 198)
+	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "9", Name: "Planet",
+		ZSXQTopicMode: model.ZSXQTopicSelectedAuthors, ZSXQAuthors: []model.ZSXQAuthor{{UserID: "8", Name: "Owner"}, {UserID: "9"}}}
+	require.NoError(t, store.PutSource(source))
+	loaded, err := store.Source(source.ID)
+	require.NoError(t, err)
+	assert.Equal(t, source.ZSXQTopicMode, loaded.ZSXQTopicMode)
+	assert.Equal(t, source.ZSXQAuthors, loaded.ZSXQAuthors)
+}
+
 func TestCreateSourceEnforcesIdentityAndLimitAtomically(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

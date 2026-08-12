@@ -59,8 +59,8 @@ describe('resource transport', () => {
     vi.stubGlobal('fetch', fetch)
 
     await resources.createBilibiliSource('csrf', { uid: '42', name: 'UP', note: '', enabled: true })
-    await resources.createZSXQSource('csrf', { group_id: '9', note: '', enabled: true })
-    await resources.updateSource('csrf', { id: 'bilibili:up:4/2', name: '改名', note: '备注', enabled: false })
+    await resources.createZSXQSource('csrf', { group_id: '9', note: '', enabled: true, zsxq_topic_mode: 'all', zsxq_authors: [] })
+    await resources.updateSource('csrf', { id: 'bilibili:up:4/2', platform: 'bilibili', name: '改名', note: '备注', enabled: false })
     await resources.deleteSource('csrf', 'bilibili:up:4/2')
     const draft = { name: '邮件', type: 'email' as const, enabled: true, settings: { host: 'smtp', port: '465', tls: 'tls', username: '', from: 'a', to: 'b' } }
     await resources.createChannel('csrf', draft)
@@ -80,7 +80,7 @@ describe('resource transport', () => {
       '/api/v4/sources/bilibili%3Aup%3A4%2F2', '/api/v4/channels/c%2F1', '/api/v4/deliveries/d%2F1/retry', '/api/v4/accounts/bilibili/qr/login%2F1',
     ]))
     expect(fetch).toHaveBeenCalledWith('/api/v4/sources/bilibili', expect.objectContaining({ method: 'POST', body: JSON.stringify({ uid: '42', name: 'UP', note: '', enabled: true }) }))
-    expect(fetch).toHaveBeenCalledWith('/api/v4/sources/zsxq', expect.objectContaining({ method: 'POST', body: JSON.stringify({ group_id: '9', note: '', enabled: true }) }))
+    expect(fetch).toHaveBeenCalledWith('/api/v4/sources/zsxq', expect.objectContaining({ method: 'POST', body: JSON.stringify({ group_id: '9', note: '', enabled: true, zsxq_topic_mode: 'all', zsxq_authors: [] }) }))
     expect(fetch).toHaveBeenCalledWith('/api/v4/sources/bilibili%3Aup%3A4%2F2', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ name: '改名', note: '备注', enabled: false }) }))
     expect(fetch.mock.calls[5]?.[1]).toMatchObject({
       method: 'PUT',

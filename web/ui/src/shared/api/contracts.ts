@@ -78,6 +78,7 @@ export const zsxqGroupSchema = z.object({
 export const sourceSchema = z.object({
   id: z.string(), platform: z.enum(['bilibili', 'zsxq']), type: z.enum(['up', 'planet']), external_id: z.string(), name: z.string(), note: z.string().optional(),
   owner_id: z.string().optional(), owner_name: z.string().optional(), enabled: z.boolean(), baseline_state: z.enum(['pending', 'running', 'complete', 'failed']),
+  zsxq_topic_mode: z.enum(['all', 'selected_authors']).optional(), zsxq_authors: z.array(z.object({ user_id: z.string(), name: z.string().optional() }).strict()).optional(),
   backfill_cursor: z.string().optional(), high_watermark: z.string().optional(), backfill_done: z.number().int(), backfill_total: z.number().int(),
   last_poll_at: z.string().optional(), last_success_at: z.string().optional(), last_comment_at: z.string().optional(), sync_lag_sec: z.number().int(),
   last_error: z.string().optional(), consecutive_fails: z.number().int(),

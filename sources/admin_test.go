@@ -65,7 +65,7 @@ func TestAdminOwnsSourceMutationSideEffects(t *testing.T) {
 			if err := admin.Create(ctx, source); err != nil {
 				return err
 			}
-			_, err := admin.Update(ctx, source.ID, "renamed", "note", true)
+			_, err := admin.Update(ctx, source.ID, "renamed", "note", true, "", nil)
 			return err
 		}, wantBili: 2, wantChange: 2},
 		{name: "delete", run: func(ctx context.Context, admin *Admin, source model.Source) error {

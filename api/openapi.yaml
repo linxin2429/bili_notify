@@ -1072,6 +1072,8 @@ components:
         note: {type: string}
         owner_id: {type: string}
         owner_name: {type: string}
+        zsxq_topic_mode: {type: string, enum: [all, selected_authors], description: Present for Knowledge Planet sources.}
+        zsxq_authors: {type: array, items: {$ref: '#/components/schemas/ZSXQAuthor'}, description: Present for Knowledge Planet sources; empty in all mode.}
         enabled: {type: boolean}
         baseline_state: {type: string, enum: [pending, running, complete, failed]}
         backfill_cursor: {type: string}
@@ -1096,11 +1098,20 @@ components:
     CreateZSXQSourceRequest:
       type: object
       additionalProperties: false
-      required: [group_id, note, enabled]
+      required: [group_id, note, enabled, zsxq_topic_mode, zsxq_authors]
       properties:
         group_id: {type: string, pattern: '^[1-9][0-9]*$'}
         note: {type: string}
         enabled: {type: boolean}
+        zsxq_topic_mode: {type: string, enum: [all, selected_authors]}
+        zsxq_authors: {type: array, items: {$ref: '#/components/schemas/ZSXQAuthor'}}
+    ZSXQAuthor:
+      type: object
+      additionalProperties: false
+      required: [user_id]
+      properties:
+        user_id: {type: string, pattern: '^[1-9][0-9]*$'}
+        name: {type: string}
     UpdateSourceRequest:
       type: object
       additionalProperties: false
@@ -1109,6 +1120,8 @@ components:
         name: {type: string}
         note: {type: string}
         enabled: {type: boolean}
+        zsxq_topic_mode: {type: string, enum: [all, selected_authors], description: Required for Knowledge Planet sources and omitted for Bilibili sources.}
+        zsxq_authors: {type: array, items: {$ref: '#/components/schemas/ZSXQAuthor'}, description: Required for Knowledge Planet sources and omitted for Bilibili sources.}
     Content:
       type: object
       additionalProperties: false
