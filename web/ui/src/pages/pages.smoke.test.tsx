@@ -110,7 +110,23 @@ describe('resource pages', () => {
     expect(screen.queryByLabelText('星球 ID')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('来源名称')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '保存' }))
-    expect(api.createZSXQSource).toHaveBeenCalledWith('csrf', { group_id: '28882581855851', note: '', enabled: true })
+    expect(api.createZSXQSource).toHaveBeenCalledWith('csrf', { group_id: '28882581855851', note: '', enabled: true, zsxq_topic_mode: 'all', zsxq_authors: [] })
+  })
+
+  it('creates a Knowledge Planet source for multiple selected authors', async () => {
+    api.accounts.mockResolvedValue([{ platform: 'zsxq', status: 'connected', display_name: '星球号' }])
+    api.zsxqGroups.mockResolvedValue([{ id: '9', name: '账号星球' }])
+    const user = userEvent.setup(); renderPage(<SourcesPage />, '/sources')
+    await user.click(await screen.findByRole('button', { name: '添加知识星球采集源' }))
+    await user.selectOptions(await screen.findByLabelText('星球'), '9')
+    await user.selectOptions(screen.getByLabelText('采集范围'), 'selected_authors')
+    await user.click(screen.getByRole('button', { name: '添加作者' }))
+    await user.type(screen.getByLabelText('作者 1 用户 ID'), '8')
+    await user.type(screen.getByLabelText('作者 1 名称'), '作者甲')
+    await user.click(screen.getByRole('button', { name: '添加作者' }))
+    await user.type(screen.getByLabelText('作者 2 用户 ID'), '9')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    expect(api.createZSXQSource).toHaveBeenCalledWith('csrf', { group_id: '9', note: '', enabled: true, zsxq_topic_mode: 'selected_authors', zsxq_authors: [{ user_id: '8', name: '作者甲' }, { user_id: '9' }] })
   })
 
   it('shows already added Knowledge Planet groups but disables them', async () => {
@@ -269,7 +285,7 @@ describe('resource pages', () => {
     const user = userEvent.setup(); renderPage(<SourcesPage />, '/sources')
     await user.click((await screen.findAllByRole('button', { name: /编辑/ }))[0]); await user.type(screen.getByLabelText('备注'), '已修改')
     await user.click(screen.getByLabelText('启用采集')); await user.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(api.updateSource).toHaveBeenCalledWith('csrf', { id: source.id, name: source.name, note: '已修改', enabled: false }))
+    await waitFor(() => expect(api.updateSource).toHaveBeenCalledWith('csrf', { id: source.id, platform: source.platform, name: source.name, note: '已修改', enabled: false, zsxq_topic_mode: undefined, zsxq_authors: [] }))
     await user.click((await screen.findAllByRole('button', { name: /删除/ }))[0]); await user.click(screen.getByRole('button', { name: '删除采集源' }))
     await waitFor(() => expect(api.deleteSource).toHaveBeenCalledWith('csrf', source.id))
   })

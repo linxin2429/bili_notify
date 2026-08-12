@@ -793,6 +793,13 @@ export interface components {
             note?: string;
             owner_id?: string;
             owner_name?: string;
+            /**
+             * @description Present for Knowledge Planet sources.
+             * @enum {string}
+             */
+            zsxq_topic_mode?: "all" | "selected_authors";
+            /** @description Present for Knowledge Planet sources; empty in all mode. */
+            zsxq_authors?: components["schemas"]["ZSXQAuthor"][];
             enabled: boolean;
             /** @enum {string} */
             baseline_state: "pending" | "running" | "complete" | "failed";
@@ -823,11 +830,25 @@ export interface components {
             group_id: string;
             note: string;
             enabled: boolean;
+            /** @enum {string} */
+            zsxq_topic_mode: "all" | "selected_authors";
+            zsxq_authors: components["schemas"]["ZSXQAuthor"][];
+        };
+        ZSXQAuthor: {
+            user_id: string;
+            name?: string;
         };
         UpdateSourceRequest: {
             name: string;
             note: string;
             enabled: boolean;
+            /**
+             * @description Required for Knowledge Planet sources and omitted for Bilibili sources.
+             * @enum {string}
+             */
+            zsxq_topic_mode?: "all" | "selected_authors";
+            /** @description Required for Knowledge Planet sources and omitted for Bilibili sources. */
+            zsxq_authors?: components["schemas"]["ZSXQAuthor"][];
         };
         Content: {
             id: string;

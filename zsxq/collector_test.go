@@ -109,6 +109,47 @@ func TestSyncDynamicsUsesLatestTokenWithoutChangingSourceAvailability(t *testing
 	}
 }
 
+func TestSyncDynamicsFiltersAuthorsAcrossLivePages(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Query().Get("end_time") == "" {
+			writeEnvelope(t, w, map[string]any{"topics": []any{map[string]any{"topic_id": 3, "type": "talk", "create_time": "2026-08-10T03:00:00Z", "talk": map[string]any{"owner": map[string]any{"user_id": 7, "name": "Other"}, "text": "not selected"}}}, "end_time": "next"})
+			return
+		}
+		writeEnvelope(t, w, map[string]any{"topics": []any{
+			map[string]any{"topic_id": 2, "type": "talk", "create_time": "2026-08-10T02:00:00Z", "talk": map[string]any{"owner": map[string]any{"user_id": 8, "name": "Selected"}, "text": "selected"}},
+			map[string]any{"topic_id": 1, "type": "talk", "create_time": "2026-08-10T01:00:00Z", "talk": map[string]any{"owner": map[string]any{"user_id": 8, "name": "Selected"}, "text": "already passed watermark"}},
+		}, "end_time": ""})
+	}))
+	t.Cleanup(server.Close)
+	key, err := vault.New(bytes.Repeat([]byte{184}, 32))
+	require.NoError(t, err)
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), key)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	require.NoError(t, store.PutPlatformAccount(model.PlatformAccount{Platform: model.PlatformZSXQ, ExternalID: "user", Status: model.AccountConnected, Session: map[string]string{AccessTokenKey: "token"}}))
+	watermarkContent := model.Content{ID: model.ContentID(model.PlatformZSXQ, "1"), PublishedAt: time.Date(2026, time.August, 10, 1, 0, 0, 0, time.UTC)}
+	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, "9"), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet, ExternalID: "9", Name: "Planet", Enabled: true,
+		BaselineState: model.BaselineComplete, HighWatermark: encodeWatermark(watermarkContent), ZSXQTopicMode: model.ZSXQTopicSelectedAuthors, ZSXQAuthors: []model.ZSXQAuthor{{UserID: "8", Name: "Selected"}}}
+	require.NoError(t, store.PutSource(source))
+	client, err := New(server.Client(), "test", WithBaseURL(server.URL))
+	require.NoError(t, err)
+	collector, err := NewCollector(store, client, model.DefaultRuntimeSettings, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, err)
+
+	require.NoError(t, collector.SyncDynamics(t.Context()))
+	contents, err := store.QueryContents(state.PlatformContentQuery{Platform: model.PlatformZSXQ, SourceID: source.ID})
+	require.NoError(t, err)
+	require.Len(t, contents, 1)
+	assert.Equal(t, "2", contents[0].ExternalID)
+	assert.Equal(t, int64(2), requests.Load())
+	updated, err := store.Source(source.ID)
+	require.NoError(t, err)
+	assert.Equal(t, encodeWatermark(model.Content{ID: model.ContentID(model.PlatformZSXQ, "3"), PublishedAt: time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC)}), updated.HighWatermark)
+}
+
 func TestSyncCommentsUsesCompleteTopicPreview(t *testing.T) {
 	t.Parallel()
 	var commentsEndpointCalled atomic.Bool

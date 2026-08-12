@@ -176,13 +176,16 @@ func (s *Server) createZSXQSourceV4(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		GroupID string `json:"group_id"`
-		Note    string `json:"note"`
-		Enabled bool   `json:"enabled"`
+		GroupID   string              `json:"group_id"`
+		Note      string              `json:"note"`
+		Enabled   bool                `json:"enabled"`
+		TopicMode model.ZSXQTopicMode `json:"zsxq_topic_mode"`
+		Authors   []model.ZSXQAuthor  `json:"zsxq_authors"`
 	}
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
+	input.Authors = normalizeZSXQAuthors(input.Authors)
 	ctx, cancel := withAPITimeout(r)
 	defer cancel()
 	groups, err := s.zsxqAccounts.Groups(ctx)
@@ -209,7 +212,7 @@ func (s *Server) createZSXQSourceV4(w http.ResponseWriter, r *http.Request) {
 	}
 	source := model.Source{ID: model.SourceID(model.PlatformZSXQ, selected.ID), Platform: model.PlatformZSXQ, Type: model.SourceZSXQPlanet,
 		ExternalID: selected.ID, Name: selected.Name, Note: input.Note, OwnerID: selected.OwnerID, OwnerName: selected.OwnerName,
-		Enabled: input.Enabled, BaselineState: model.BaselinePending}
+		Enabled: input.Enabled, BaselineState: model.BaselinePending, ZSXQTopicMode: input.TopicMode, ZSXQAuthors: input.Authors}
 	s.createSourceV4(w, r, source)
 }
 
@@ -226,26 +229,47 @@ func (s *Server) createSourceV4(w http.ResponseWriter, r *http.Request, source m
 		return
 	}
 	setAuditResourceID(r, source.ID)
-	setAuditDetails(r, map[string]any{"platform": source.Platform, "external_id": source.ExternalID, "enabled": source.Enabled})
+	details := map[string]any{"platform": source.Platform, "external_id": source.ExternalID, "enabled": source.Enabled}
+	if source.Platform == model.PlatformZSXQ {
+		details["zsxq_topic_mode"] = source.ZSXQTopicMode
+		details["zsxq_author_count"] = len(source.ZSXQAuthors)
+	}
+	setAuditDetails(r, details)
 	s.writeAPIResult(w, http.StatusCreated, source, nil)
 }
 
 func (s *Server) updateSourceV4(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Name    string `json:"name"`
-		Note    string `json:"note"`
-		Enabled bool   `json:"enabled"`
+		Name      string              `json:"name"`
+		Note      string              `json:"note"`
+		Enabled   bool                `json:"enabled"`
+		TopicMode model.ZSXQTopicMode `json:"zsxq_topic_mode"`
+		Authors   []model.ZSXQAuthor  `json:"zsxq_authors"`
 	}
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	source, err := s.sourceAdmin.Update(r.Context(), r.PathValue("id"), input.Name, input.Note, input.Enabled)
+	input.Authors = normalizeZSXQAuthors(input.Authors)
+	source, err := s.sourceAdmin.Update(r.Context(), r.PathValue("id"), input.Name, input.Note, input.Enabled, input.TopicMode, input.Authors)
 	if err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, err)
 		return
 	}
-	setAuditDetails(r, map[string]any{"name": source.Name, "note": source.Note, "enabled": source.Enabled})
+	details := map[string]any{"name": source.Name, "note": source.Note, "enabled": source.Enabled}
+	if source.Platform == model.PlatformZSXQ {
+		details["zsxq_topic_mode"] = source.ZSXQTopicMode
+		details["zsxq_author_count"] = len(source.ZSXQAuthors)
+	}
+	setAuditDetails(r, details)
 	s.writeAPIResult(w, http.StatusOK, source, nil)
+}
+
+func normalizeZSXQAuthors(authors []model.ZSXQAuthor) []model.ZSXQAuthor {
+	for index := range authors {
+		authors[index].UserID = strings.TrimSpace(authors[index].UserID)
+		authors[index].Name = strings.TrimSpace(authors[index].Name)
+	}
+	return authors
 }
 
 func (s *Server) deleteSourceV4(w http.ResponseWriter, r *http.Request) {

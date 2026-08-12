@@ -168,6 +168,8 @@ type sourceRow struct {
 	Note                   string `gorm:"column:note"`
 	OwnerID                string `gorm:"column:owner_id"`
 	OwnerName              string `gorm:"column:owner_name"`
+	ZSXQTopicMode          string `gorm:"column:zsxq_topic_mode"`
+	ZSXQAuthorsJSON        string `gorm:"column:zsxq_authors_json"`
 	Enabled                int    `gorm:"column:enabled"`
 	BaselineState          string `gorm:"column:baseline_state"`
 	BackfillCursor         string `gorm:"column:backfill_cursor"`
@@ -188,6 +190,9 @@ func (sourceRow) TableName() string { return "sources" }
 func (s *Store) PutSource(source model.Source) error {
 	if source.BaselineState == "" {
 		source.BaselineState = model.BaselinePending
+	}
+	if source.Platform == model.PlatformZSXQ && source.ZSXQTopicMode == "" {
+		source.ZSXQTopicMode = model.ZSXQTopicAll
 	}
 	if err := source.Validate(); err != nil {
 		return err
@@ -216,6 +221,9 @@ func (s *Store) PutSource(source model.Source) error {
 func (s *Store) CreateSource(source model.Source) error {
 	if source.BaselineState == "" {
 		source.BaselineState = model.BaselinePending
+	}
+	if source.Platform == model.PlatformZSXQ && source.ZSXQTopicMode == "" {
+		source.ZSXQTopicMode = model.ZSXQTopicAll
 	}
 	if err := source.Validate(); err != nil {
 		return err
@@ -346,9 +354,14 @@ func validateStoredRelativePath(value string) error {
 }
 
 func sourceFromModel(source model.Source) sourceRow {
+	if source.ZSXQAuthors == nil {
+		source.ZSXQAuthors = []model.ZSXQAuthor{}
+	}
+	authorsJSON, _ := json.Marshal(source.ZSXQAuthors)
 	return sourceRow{
 		ID: source.ID, Platform: string(source.Platform), Type: string(source.Type), ExternalID: source.ExternalID,
 		Name: source.Name, Note: source.Note, OwnerID: source.OwnerID, OwnerName: source.OwnerName,
+		ZSXQTopicMode: string(source.ZSXQTopicMode), ZSXQAuthorsJSON: string(authorsJSON),
 		Enabled: boolToInt(source.Enabled), BaselineState: string(source.BaselineState), BackfillCursor: source.BackfillCursor,
 		HighWatermark: source.HighWatermark, BackfillDone: source.BackfillDone, BackfillTotal: source.BackfillTotal,
 		LastPollAt: unixPointer(source.LastPollAt), LastSuccessAt: unixPointer(source.LastSuccessAt), LastCommentAt: unixPointer(source.LastCommentAt),
@@ -357,9 +370,12 @@ func sourceFromModel(source model.Source) sourceRow {
 }
 
 func (r sourceRow) toModel() model.Source {
+	var authors []model.ZSXQAuthor
+	_ = json.Unmarshal([]byte(r.ZSXQAuthorsJSON), &authors)
 	return model.Source{
 		ID: r.ID, Platform: model.Platform(r.Platform), Type: model.SourceType(r.Type), ExternalID: r.ExternalID,
 		Name: r.Name, Note: r.Note, OwnerID: r.OwnerID, OwnerName: r.OwnerName, Enabled: r.Enabled != 0,
+		ZSXQTopicMode: model.ZSXQTopicMode(r.ZSXQTopicMode), ZSXQAuthors: authors,
 		BaselineState: model.BaselineState(r.BaselineState), BackfillCursor: r.BackfillCursor, HighWatermark: r.HighWatermark,
 		BackfillDone: r.BackfillDone, BackfillTotal: r.BackfillTotal, LastPollAt: pointerTime(r.LastPollAt),
 		LastSuccessAt: pointerTime(r.LastSuccessAt), LastCommentAt: pointerTime(r.LastCommentAt), SyncLagSec: r.SyncLagSec,

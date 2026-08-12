@@ -51,7 +51,7 @@ func (a *Admin) Create(ctx context.Context, source model.Source) error {
 	return nil
 }
 
-func (a *Admin) Update(ctx context.Context, id, name, note string, enabled bool) (model.Source, error) {
+func (a *Admin) Update(ctx context.Context, id, name, note string, enabled bool, topicMode model.ZSXQTopicMode, authors []model.ZSXQAuthor) (model.Source, error) {
 	repository := a.repository(ctx)
 	source, err := repository.Source(id)
 	if err != nil {
@@ -60,6 +60,11 @@ func (a *Admin) Update(ctx context.Context, id, name, note string, enabled bool)
 	source.Note, source.Enabled = note, enabled
 	if name != "" {
 		source.Name = name
+	}
+	if source.Platform == model.PlatformZSXQ {
+		source.ZSXQTopicMode, source.ZSXQAuthors = topicMode, authors
+	} else if topicMode != "" || len(authors) != 0 {
+		return model.Source{}, errors.New("bilibili source cannot have Knowledge Planet topic filters")
 	}
 	if source.Enabled && source.BaselineState == model.BaselineFailed {
 		source.BaselineState = model.BaselineRunning

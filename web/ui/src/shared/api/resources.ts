@@ -34,8 +34,8 @@ export const resources = {
   aiJob: (id: string, signal?: AbortSignal) => requestJSON(`${apiRoot}/ai/jobs/${encodeURIComponent(id)}`, aiJobSchema, { signal }),
 
   createBilibiliSource: (csrf: string, input: { uid: string; name: string; note: string; enabled: boolean }) => write(`${apiRoot}/sources/bilibili`, sourceSchema, 'POST', csrf, input),
-  createZSXQSource: (csrf: string, input: { group_id: string; note: string; enabled: boolean }) => write(`${apiRoot}/sources/zsxq`, sourceSchema, 'POST', csrf, input),
-  updateSource: (csrf: string, input: Pick<Source, 'id' | 'name' | 'note' | 'enabled'>) => write(`${apiRoot}/sources/${encodeURIComponent(input.id)}`, sourceSchema, 'PUT', csrf, { name: input.name, note: input.note || '', enabled: input.enabled }),
+  createZSXQSource: (csrf: string, input: { group_id: string; note: string; enabled: boolean; zsxq_topic_mode: 'all' | 'selected_authors'; zsxq_authors: Array<{ user_id: string; name?: string }> }) => write(`${apiRoot}/sources/zsxq`, sourceSchema, 'POST', csrf, input),
+  updateSource: (csrf: string, input: Pick<Source, 'id' | 'name' | 'note' | 'enabled' | 'platform' | 'zsxq_topic_mode' | 'zsxq_authors'>) => write(`${apiRoot}/sources/${encodeURIComponent(input.id)}`, sourceSchema, 'PUT', csrf, input.platform === 'zsxq' ? { name: input.name, note: input.note || '', enabled: input.enabled, zsxq_topic_mode: input.zsxq_topic_mode, zsxq_authors: input.zsxq_authors || [] } : { name: input.name, note: input.note || '', enabled: input.enabled }),
   deleteSource: (csrf: string, id: string) => write(`${apiRoot}/sources/${encodeURIComponent(id)}`, emptyResponseSchema, 'DELETE', csrf),
   importZSXQToken: (csrf: string, cookie: string) => write(`${apiRoot}/accounts/zsxq/token`, platformAccountSchema, 'POST', csrf, { cookie }),
   deleteZSXQSession: (csrf: string) => write(`${apiRoot}/accounts/zsxq/session`, emptyResponseSchema, 'DELETE', csrf),

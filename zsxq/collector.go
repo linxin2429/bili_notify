@@ -35,6 +35,7 @@ type collectorStore interface {
 	ArchiveContent(model.Content, []model.Attachment) error
 	ArchiveContentAndEnqueue(model.Content, []model.Attachment, []string, bool) error
 	CommentSyncState(model.Platform, string) (bool, error)
+	Content(string) (model.Content, []model.Attachment, error)
 	ListSources(model.Platform) ([]model.Source, error)
 	MarkContentDeleted(string, time.Time) error
 	PlatformAccount(model.Platform) (model.PlatformAccount, error)
@@ -195,14 +196,20 @@ func (collector *Collector) syncSource(ctx context.Context, token string, source
 	if err != nil {
 		return err
 	}
+	initializing := source.BaselineState == "" || source.BaselineState == model.BaselinePending
+	watermark := source.HighWatermark
+	if !initializing {
+		page, err = collector.liveTopicsThroughWatermark(ctx, token, source, page, watermark)
+		if err != nil {
+			return err
+		}
+	}
 	slices.SortFunc(page.Contents, func(a, b model.Content) int {
 		if order := a.PublishedAt.Compare(b.PublishedAt); order != 0 {
 			return order
 		}
 		return cmp.Compare(a.ID, b.ID)
 	})
-	initializing := source.BaselineState == "" || source.BaselineState == model.BaselinePending
-	watermark := source.HighWatermark
 	if initializing {
 		watermark = newestWatermark(page.Contents)
 		source.HighWatermark = watermark
@@ -213,12 +220,27 @@ func (collector *Collector) syncSource(ctx context.Context, token string, source
 		}
 	}
 	for _, content := range page.Contents {
-		content.Baseline = initializing || !isAfterWatermark(content, watermark)
+		passedWatermark := !initializing && watermark != "" && !isAfterWatermark(content, watermark)
+		if passedWatermark {
+			archived, _, archiveErr := collector.store.Content(content.ID)
+			if errors.Is(archiveErr, state.ErrNotFound) {
+				continue
+			}
+			if archiveErr != nil {
+				return archiveErr
+			}
+			content.Baseline = archived.Baseline
+		} else {
+			if !sourceCollectsTopic(source, content) {
+				continue
+			}
+			content.Baseline = initializing
+		}
 		attachments := page.Attachments[content.ID]
 		if err := collector.localize(ctx, source, content, attachments, token); err != nil {
 			return err
 		}
-		if err := collector.store.ArchiveContentAndEnqueue(content, attachments, nil, !content.Baseline); err != nil {
+		if err := collector.store.ArchiveContentAndEnqueue(content, attachments, nil, !content.Baseline && !passedWatermark); err != nil {
 			return err
 		}
 	}
@@ -228,6 +250,9 @@ func (collector *Collector) syncSource(ctx context.Context, token string, source
 			return err
 		}
 		for _, content := range history.Contents {
+			if !sourceCollectsTopic(source, content) {
+				continue
+			}
 			content.Baseline = true
 			attachments := history.Attachments[content.ID]
 			if err := collector.localize(ctx, source, content, attachments, token); err != nil {
@@ -251,6 +276,67 @@ func (collector *Collector) syncSource(ctx context.Context, token string, source
 	now := time.Now()
 	source.LastPollAt, source.LastSuccessAt, source.LastError, source.ConsecutiveFails = now, now, "", 0
 	return collector.store.PutSource(source)
+}
+
+func (collector *Collector) liveTopicsThroughWatermark(ctx context.Context, token string, source model.Source, first TopicPage, watermark string) (TopicPage, error) {
+	result := first
+	cursor := first.NextCursor
+	seenCursors := make(map[string]bool)
+	if pageReachesWatermark(first.Contents, watermark) {
+		return result, nil
+	}
+	for pageNumber := 1; pageNumber < 10000; pageNumber++ {
+		if cursor == "" {
+			return result, nil
+		}
+		if seenCursors[cursor] {
+			return TopicPage{}, ErrSchemaDrift
+		}
+		seenCursors[cursor] = true
+		next, err := collector.client.Topics(ctx, token, source, cursor, 20)
+		if err != nil {
+			return TopicPage{}, err
+		}
+		for contentID, attachments := range next.Attachments {
+			result.Attachments[contentID] = attachments
+		}
+		result.Contents = append(result.Contents, next.Contents...)
+		if pageReachesWatermark(next.Contents, watermark) {
+			return result, nil
+		}
+		if len(next.Contents) == 0 {
+			return result, nil
+		}
+		if next.NextCursor == cursor {
+			return TopicPage{}, ErrSchemaDrift
+		}
+		cursor = next.NextCursor
+	}
+	return TopicPage{}, errors.New("zsxq topic pagination exceeded safety limit")
+}
+
+func pageReachesWatermark(contents []model.Content, watermark string) bool {
+	if watermark == "" {
+		return false
+	}
+	for _, content := range contents {
+		if compareWatermarks(encodeWatermark(content), watermark) <= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceCollectsTopic(source model.Source, content model.Content) bool {
+	if source.ZSXQTopicMode != model.ZSXQTopicSelectedAuthors {
+		return true
+	}
+	for _, author := range source.ZSXQAuthors {
+		if author.UserID == content.AuthorID {
+			return true
+		}
+	}
+	return false
 }
 
 func (collector *Collector) localize(ctx context.Context, source model.Source, content model.Content, attachments []model.Attachment, token string) error {

@@ -36,6 +36,29 @@ func TestMigrationsIdempotent(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 
+func TestV12MigrationDefaultsExistingZSXQSourcesToAllTopics(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "data.db")
+	db, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	v := mustVault(t, 31)
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS,
+		goose.WithGoMigrations(goose.NewGoMigration(10, &goose.GoFunc{RunTx: migrateV10(v)}, nil)),
+		goose.WithGoMigrations(goose.NewGoMigration(11, &goose.GoFunc{RunTx: migrateV11(v)}, nil)))
+	require.NoError(t, err)
+	_, err = provider.UpTo(t.Context(), 11)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO sources(id,platform,type,external_id,name,baseline_state) VALUES('zsxq:planet:9','zsxq','planet','9','Planet','complete')`)
+	require.NoError(t, err)
+
+	require.NoError(t, runMigrations(t.Context(), db, v))
+	var mode, authors string
+	require.NoError(t, db.QueryRow(`SELECT zsxq_topic_mode,zsxq_authors_json FROM sources WHERE id='zsxq:planet:9'`).Scan(&mode, &authors))
+	assert.Equal(t, "all", mode)
+	assert.JSONEq(t, `[]`, authors)
+}
+
 func TestRefuseLegacyDataDir(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -133,7 +156,7 @@ func TestV10MigrationPreservesV9StateAndRemovesTransitionalTables(t *testing.T) 
 	t.Parallel()
 	db, path, v := preparePopulatedV9(t)
 	require.NoError(t, runMigrations(t.Context(), db, v))
-	assertMigrationVersion(t, db, 11)
+	assertMigrationVersion(t, db, 12)
 	for _, table := range []string{"auth_session", "deliveries", "comments", "dynamics", "seen_comments", "seen_dynamics", "comment_targets", "ups"} {
 		var count int
 		require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count))
