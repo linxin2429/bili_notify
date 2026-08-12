@@ -35,7 +35,7 @@ describe('RealtimeSync', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ setup_required: false, authenticated: true, csrf_token: 'csrf' }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={client}><RealtimeSync onAuthenticationLost={vi.fn()} onProtocolError={vi.fn()}><ConnectionProbe /></RealtimeSync></QueryClientProvider>)
-    expect(FakeWebSocket.latest.url).toContain('/api/v3/ws')
+    expect(FakeWebSocket.latest.url).toContain('/api/v4/ws')
     act(() => { void FakeWebSocket.latest.onclose?.() })
     expect(await screen.findByText('polling')).toBeInTheDocument()
   })

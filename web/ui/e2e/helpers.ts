@@ -43,7 +43,7 @@ export async function createNotificationChannel(page: Page, harness: Harness, se
   await page.getByLabel('渠道名称').fill('E2E 企业微信')
   await page.getByLabel('渠道类型').selectOption({ label: '企业微信机器人' })
   await page.getByLabel('Webhook URL').fill(harness.manifest.webhook_url)
-  const createResponse = page.waitForResponse(response => response.url().endsWith('/api/v3/channels') && response.request().method() === 'POST')
+  const createResponse = page.waitForResponse(response => response.url().endsWith('/api/v4/channels') && response.request().method() === 'POST')
   await page.getByRole('button', { name: '保存' }).click()
   expect(JSON.stringify(await (await createResponse).json())).not.toContain(harness.manifest.webhook_url)
   await expect(page.getByText('E2E 企业微信')).toBeVisible()

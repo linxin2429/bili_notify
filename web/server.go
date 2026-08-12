@@ -38,6 +38,13 @@ type SettingsService interface {
 	UpdateSettings(model.RuntimeSettings) error
 }
 
+type SourceAdmin interface {
+	List(context.Context, model.Platform) ([]model.Source, error)
+	Create(context.Context, model.Source) error
+	Update(context.Context, string, string, string, bool) (model.Source, error)
+	Delete(context.Context, string) error
+}
+
 type Server struct {
 	adminAddr      string
 	observeAddr    string
@@ -46,6 +53,7 @@ type Server struct {
 	engine         *service.Engine
 	ai             *service.AIEngine
 	zsxqLogin      *zsxq.LoginManager
+	sourceAdmin    SourceAdmin
 	settings       SettingsService
 	store          *state.Store
 	events         *service.EventBus
@@ -72,6 +80,10 @@ func WithAIEngine(engine *service.AIEngine) ServerOption {
 
 func WithZSXQLogin(manager *zsxq.LoginManager) ServerOption {
 	return func(server *Server) { server.zsxqLogin = manager }
+}
+
+func WithSourceAdmin(admin SourceAdmin) ServerOption {
+	return func(server *Server) { server.sourceAdmin = admin }
 }
 
 func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, settings SettingsService, store *state.Store, events *service.EventBus, logger, auditLogger *slog.Logger, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, propagator propagation.TextMapPropagator, dataDir string, options ...ServerOption) (*Server, error) {
@@ -105,6 +117,9 @@ func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, s
 	}
 	for _, option := range options {
 		option(server)
+	}
+	if server.sourceAdmin == nil {
+		return nil, errors.New("source admin is required")
 	}
 	return server, nil
 }
@@ -175,14 +190,14 @@ func (s *Server) observeHandler() http.Handler {
 
 func (s *Server) adminHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v3/session", s.sessionState)
-	mux.HandleFunc("POST /api/v3/setup", s.audit("auth.setup", "session", "", s.setup))
-	mux.HandleFunc("POST /api/v3/session", s.audit("auth.login", "session", "", s.login))
-	mux.HandleFunc("DELETE /api/v3/session", s.audit("auth.logout", "session", "", s.requireSession(true, s.logout)))
-	mux.HandleFunc("PUT /api/v3/session/password", s.audit("auth.password.change", "session", "", s.requireSession(true, s.changePassword)))
+	mux.HandleFunc("GET /api/v4/session", s.sessionState)
+	mux.HandleFunc("POST /api/v4/setup", s.audit("auth.setup", "session", "", s.setup))
+	mux.HandleFunc("POST /api/v4/session", s.audit("auth.login", "session", "", s.login))
+	mux.HandleFunc("DELETE /api/v4/session", s.audit("auth.logout", "session", "", s.requireSession(true, s.logout)))
+	mux.HandleFunc("PUT /api/v4/session/password", s.audit("auth.password.change", "session", "", s.requireSession(true, s.changePassword)))
 	s.registerAdminAPI(mux)
 	s.registerPlatformAPI(mux)
-	mux.HandleFunc("GET /api/v3/ws", s.webSocket)
+	mux.HandleFunc("GET /api/v4/ws", s.webSocket)
 	mux.Handle("GET /assets/", http.FileServer(http.FS(s.static)))
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /{path...}", s.index)
@@ -192,7 +207,7 @@ func (s *Server) adminHandler() http.Handler {
 		otelhttp.WithMeterProvider(s.meterProvider),
 		otelhttp.WithPropagators(s.propagator),
 		otelhttp.WithFilter(func(request *http.Request) bool {
-			return strings.HasPrefix(request.URL.Path, "/api/") && request.URL.Path != "/api/v3/ws"
+			return strings.HasPrefix(request.URL.Path, "/api/") && request.URL.Path != "/api/v4/ws"
 		}),
 	)
 }

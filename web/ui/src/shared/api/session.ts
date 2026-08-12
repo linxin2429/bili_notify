@@ -10,7 +10,7 @@ const sessionSchema = simpleSchema<Session>(value => {
 })
 const csrfSchema = simpleSchema<{ csrf_token: string }>(value => record(value) && onlyKeys(value, ['csrf_token']) && typeof value.csrf_token === 'string' ? { csrf_token: value.csrf_token } : null)
 const emptySchema = simpleSchema<undefined>(value => value === undefined ? undefined : null)
-const root = '/api/v3'
+const root = '/api/v4'
 export const sessionAPI = {
   get: (signal?: AbortSignal) => requestJSON(`${root}/session`, sessionSchema, { signal }),
   setup: (code: string, password: string) => requestJSON(`${root}/setup`, csrfSchema, { method: 'POST', body: JSON.stringify({ setup_code: code, password }) }),

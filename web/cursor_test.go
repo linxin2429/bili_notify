@@ -48,8 +48,8 @@ func TestCursorPaginationUsesStableTieBreakers(t *testing.T) {
 		wantFirst  string
 		wantSecond string
 	}{
-		{name: "contents", path: "/api/v3/contents", key: "id", wantFirst: "bilibili:content:dynamic-b", wantSecond: "bilibili:content:dynamic-a"},
-		{name: "audit logs", path: "/api/v3/audit-logs", key: "id", wantFirst: "2", wantSecond: "1"},
+		{name: "contents", path: "/api/v4/contents", key: "id", wantFirst: "bilibili:content:dynamic-b", wantSecond: "bilibili:content:dynamic-a"},
+		{name: "audit logs", path: "/api/v4/audit-logs", key: "id", wantFirst: "2", wantSecond: "1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -79,11 +79,11 @@ func TestDynamicCursorDoesNotAdmitNewerInsertions(t *testing.T) {
 	}
 	archive("dynamic-a", published)
 	archive("dynamic-b", published)
-	first := requestCursorTestPage(t, fixture, "/api/v3/contents?limit=1", "id")
+	first := requestCursorTestPage(t, fixture, "/api/v4/contents?limit=1", "id")
 	require.Equal(t, "bilibili:content:dynamic-b", first.itemKey)
 
 	archive("dynamic-c", published.Add(time.Minute))
-	second := requestCursorTestPage(t, fixture, "/api/v3/contents?limit=1&after="+url.QueryEscape(first.nextCursor), "id")
+	second := requestCursorTestPage(t, fixture, "/api/v4/contents?limit=1&after="+url.QueryEscape(first.nextCursor), "id")
 	assert.Equal(t, "bilibili:content:dynamic-a", second.itemKey)
 }
 

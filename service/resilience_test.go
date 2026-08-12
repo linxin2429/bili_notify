@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -86,6 +87,7 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			store := openServiceTestStore(t)
+			putServiceTestChannel(t, store)
 			up := model.UP{UID: "42", Name: "UP", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}
 			require.NoError(t, store.PutUP(up))
 			if tt.seedSeen {
@@ -100,14 +102,14 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 			settings.BilibiliMaxDynamicPages = tt.maxPages
 			engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), settings, nil, nil)
 
-			require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
+			require.NoError(t, engine.pollUP(t.Context(), up))
 			assert.Equal(t, tt.wantRequests, requests.Load())
-			records, total, err := store.QueryDynamics(state.ContentQuery{UID: up.UID, Limit: 100})
+			records, err := store.QueryContents(state.PlatformContentQuery{SourceID: model.SourceID(model.PlatformBilibili, up.UID), Limit: 100})
 			require.NoError(t, err)
-			assert.Equal(t, len(tt.wantIDs), total)
+			assert.Len(t, records, len(tt.wantIDs))
 			ids := make([]string, 0, len(records))
 			for _, record := range records {
-				ids = append(ids, record.ID)
+				ids = append(ids, record.ExternalID)
 			}
 			assert.ElementsMatch(t, tt.wantIDs, ids)
 			updated, err := store.UP(up.UID)
@@ -192,6 +194,7 @@ func TestPollFeedPaginationInvariants(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			store := openServiceTestStore(t)
+			putServiceTestChannel(t, store)
 			account := model.BiliAccount{UID: "100", Name: "account"}
 			up := model.UP{UID: "42", Name: "UP", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}
 			require.NoError(t, store.PutUP(up))
@@ -203,13 +206,13 @@ func TestPollFeedPaginationInvariants(t *testing.T) {
 			engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), settings, nil, nil)
 			engine.setAccount(account)
 
-			require.NoError(t, engine.pollFeed(t.Context(), account, []model.UP{up}, []string{"channel"}))
+			require.NoError(t, engine.pollFeed(t.Context(), account, []model.UP{up}))
 			feed, err := store.FeedState(account.UID)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantBaseline, feed.UpdateBaseline)
-			_, total, err := store.QueryDynamics(state.ContentQuery{UID: up.UID})
+			records, err := store.QueryContents(state.PlatformContentQuery{SourceID: model.SourceID(model.PlatformBilibili, up.UID)})
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantDynamics, total)
+			assert.Len(t, records, tt.wantDynamics)
 			deliveries, err := store.ListDeliveries(0)
 			require.NoError(t, err)
 			assert.Len(t, deliveries, tt.wantDynamics)
@@ -249,11 +252,11 @@ func TestCommentPaginationMarksTruncatedThreadsIncomplete(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			store := openServiceTestStore(t)
-			target := model.CommentTarget{UID: "42", UPName: "UP", DynamicID: "dynamic", CommentType: 11, CommentOID: "oid", BaselineReady: true}
-			require.NoError(t, store.PutCommentTargets(target.UID, []model.CommentTarget{target}))
+			putServiceTestChannel(t, store)
+			target := seedServiceCommentTarget(t, store, model.CommentTarget{UID: "42", UPName: "UP", DynamicID: "dynamic", CommentType: 11, CommentOID: "oid", BaselineReady: true})
 			engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 1000, 2), nil, nil)
 
-			require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{"channel"}))
+			require.NoError(t, engine.pollCommentTarget(t.Context(), target))
 			deliveries, err := store.ListDeliveries(0)
 			require.NoError(t, err)
 			require.Len(t, deliveries, 1)
@@ -287,11 +290,11 @@ func TestCommentPaginationCollectsMultipleRootAndChildPages(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	store := openServiceTestStore(t)
-	target := model.CommentTarget{UID: "42", UPName: "UP", DynamicID: "dynamic", CommentType: 11, CommentOID: "oid", BaselineReady: true}
-	require.NoError(t, store.PutCommentTargets(target.UID, []model.CommentTarget{target}))
+	putServiceTestChannel(t, store)
+	target := seedServiceCommentTarget(t, store, model.CommentTarget{UID: "42", UPName: "UP", DynamicID: "dynamic", CommentType: 11, CommentOID: "oid", BaselineReady: true})
 	engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 1000, 2), nil, nil)
 
-	require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{"channel"}))
+	require.NoError(t, engine.pollCommentTarget(t.Context(), target))
 	assert.Equal(t, int32(2), rootRequests.Load())
 	assert.Equal(t, int32(2), childRequests.Load())
 	deliveries, err := store.ListDeliveries(0)
@@ -374,16 +377,20 @@ func TestDispatchConcurrencyUsesHotReloadedSetting(t *testing.T) {
 
 func TestDispatchOnceCapsOneCycleAtFiftyDeliveries(t *testing.T) {
 	t.Parallel()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadRequest) }))
+	t.Cleanup(server.Close)
 	store := openServiceTestStore(t)
+	channel, err := store.PutChannel(model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": server.URL}})
+	require.NoError(t, err)
 	for index := 0; index < 60; index++ {
-		_, err := store.RecordDynamics("42", []model.Dynamic{{
+		_, err = store.RecordDynamics("42", []model.Dynamic{{
 			ID: fmt.Sprintf("batch-%d", index), UID: "42", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now(),
-		}}, []string{"removed-channel"}, state.DynamicBaselineNone)
+		}}, []string{channel.ID}, state.DynamicBaselineNone)
 		require.NoError(t, err)
 	}
 	settings := testSettings(30, 1000, 4)
 	settings.DeliveryConcurrency = 8
-	engine := NewEngine(store, bilibili.New(nil, "test"), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), settings, nil, nil)
+	engine := NewEngine(store, bilibili.New(nil, "test"), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), settings, nil, nil, WithNotificationHTTPClient(server.Client()))
 
 	require.NoError(t, engine.dispatchOnce(t.Context()))
 	deliveries, err := store.ListDeliveries(0)
@@ -469,7 +476,7 @@ func TestPollUPHonorsRequestTimeoutAndCancellation(t *testing.T) {
 			if tt.cancelNow {
 				cancel()
 			}
-			err := engine.pollUP(ctx, up, []string{"channel"})
+			err := engine.pollUP(ctx, up)
 			if tt.cancelNow {
 				require.ErrorIs(t, err, context.Canceled)
 				return
@@ -512,7 +519,7 @@ func TestRetryDelayUsesFiveStagesAndSaturates(t *testing.T) {
 }
 
 func BenchmarkDeliveryMessage(b *testing.B) {
-	delivery := model.Delivery{Dynamic: model.Dynamic{
+	delivery := model.Delivery{Kind: model.DeliveryKindDynamic, Dynamic: model.Dynamic{
 		ID: "dynamic", UID: "42", UPName: "benchmark", Type: "DYNAMIC_TYPE_WORD",
 		Summary: "representative notification body", URL: "https://t.bilibili.com/1",
 		Media: []model.DynamicMedia{{URL: "https://i0.hdslb.com/image.jpg"}},
@@ -532,6 +539,43 @@ func openServiceTestStore(t *testing.T) *state.Store {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
 	return store
+}
+
+func putServiceTestChannel(t *testing.T, store *state.Store) model.Channel {
+	t.Helper()
+	channel, err := store.PutChannel(model.Channel{Name: "channel", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com/hook"}})
+	require.NoError(t, err)
+	return channel
+}
+
+func seedServiceCommentTarget(t *testing.T, store *state.Store, target model.CommentTarget) model.CommentTarget {
+	t.Helper()
+	if target.UID == "" {
+		target.UID = "42"
+	}
+	if target.UPName == "" {
+		target.UPName = "UP"
+	}
+	if target.DynamicID == "" {
+		target.DynamicID = "dynamic"
+	}
+	if target.ContentType == "" {
+		target.ContentType = "DYNAMIC_TYPE_WORD"
+	}
+	if target.PublishedAt.IsZero() {
+		target.PublishedAt = time.Now()
+	}
+	if _, err := store.UP(target.UID); errors.Is(err, state.ErrNotFound) {
+		require.NoError(t, store.PutUP(model.UP{UID: target.UID, Name: target.UPName}))
+	} else {
+		require.NoError(t, err)
+	}
+	content := model.Content{ID: model.ContentID(model.PlatformBilibili, target.DynamicID), Platform: model.PlatformBilibili,
+		SourceID: model.SourceID(model.PlatformBilibili, target.UID), ExternalID: target.DynamicID, UpstreamType: target.ContentType,
+		Type: model.ContentDynamic, Title: target.Title, URL: target.URL, PublishedAt: target.PublishedAt}
+	require.NoError(t, store.ArchiveContent(content, nil))
+	require.NoError(t, store.PutCommentTargets(target.UID, []model.CommentTarget{target}))
+	return target
 }
 
 func testLogger() *slog.Logger {

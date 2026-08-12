@@ -85,3 +85,24 @@ func TestAttachmentDownloaderRejectsSymlinkMediaTree(t *testing.T) {
 	assert.Equal(t, 1, result.Failed)
 	assert.True(t, strings.Contains(attachments[0].LocalizeError, "failed"))
 }
+
+func TestAttachmentDownloaderPersistsConflictSafeFinalPath(t *testing.T) {
+	t.Parallel()
+	var body = "first"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	dir := t.TempDir()
+	downloader := &AttachmentDownloader{DataDir: dir, Client: server.Client(), AllowPrivateNetwork: true}
+	first := []model.Attachment{{ID: "a", ContentID: "content", ExternalID: "asset", Type: model.AttachmentFile, FileName: "report.txt", RemoteURL: server.URL}}
+	result := downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "source", "content", first, 100, 1000, nil)
+	require.Equal(t, 1, result.Downloaded)
+	body = "second"
+	second := []model.Attachment{{ID: "b", ContentID: "content", ExternalID: "asset", Type: model.AttachmentFile, FileName: "report.txt", RemoteURL: server.URL}}
+	result = downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "source", "content", second, 100, 1000, nil)
+	require.Equal(t, 1, result.Downloaded)
+	assert.NotEqual(t, first[0].LocalPath, second[0].LocalPath)
+	assert.FileExists(t, filepath.Join(dir, filepath.FromSlash(first[0].LocalPath)))
+	assert.FileExists(t, filepath.Join(dir, filepath.FromSlash(second[0].LocalPath)))
+}

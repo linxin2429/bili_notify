@@ -149,15 +149,7 @@ func (m *Metrics) RecordDelivery(ctx context.Context, channelType, result string
 	m.deliveryDuration.Record(ctx, duration.Seconds(), attrs)
 }
 
-func (m *Metrics) SetOutbox(deliveries []model.Delivery, age time.Duration) {
-	var pending, blocked int64
-	for _, delivery := range deliveries {
-		if delivery.State == model.DeliveryBlocked {
-			blocked++
-		} else {
-			pending++
-		}
-	}
+func (m *Metrics) SetOutbox(pending, blocked int64, age time.Duration) {
 	m.outboxPending.Store(pending)
 	m.outboxBlocked.Store(blocked)
 	m.oldestOutboxAgeBits.Store(math.Float64bits(max(0, age.Seconds())))

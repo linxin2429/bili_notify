@@ -12,10 +12,12 @@ import (
 
 	"github.com/linxin2429/bili_notify/bilibili"
 	"github.com/linxin2429/bili_notify/config"
+	"github.com/linxin2429/bili_notify/internal/requestgate"
 	"github.com/linxin2429/bili_notify/logging"
 	"github.com/linxin2429/bili_notify/media"
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/service"
+	"github.com/linxin2429/bili_notify/sources"
 	"github.com/linxin2429/bili_notify/state"
 	"github.com/linxin2429/bili_notify/telemetry"
 	"github.com/linxin2429/bili_notify/vault"
@@ -150,6 +152,8 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if httpClient == nil {
 		httpClient = newHTTPClient()
 	}
+	bilibiliGate := requestgate.New(httpClient.Transport, settings.BilibiliRequestRate, settings.BilibiliRequestConcurrency, 10*time.Second)
+	httpClient = cloneHTTPClientWithTransport(httpClient, bilibiliGate)
 	var clientOptions []bilibili.Option
 	if dependencies.BilibiliAPIURL != "" {
 		clientOptions = append(clientOptions, bilibili.WithBaseURLs(dependencies.BilibiliAPIURL, dependencies.BilibiliPassportURL))
@@ -171,15 +175,17 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if dependencies.NotificationHTTPClient != nil {
 		engineOptions = append(engineOptions, service.WithNotificationHTTPClient(dependencies.NotificationHTTPClient))
 	}
-	engineOptions = append(engineOptions, service.WithTracerProvider(telemetryRuntime.TracerProvider))
+	engineOptions = append(engineOptions, service.WithTracerProvider(telemetryRuntime.TracerProvider), service.WithRequestPause(bilibiliGate.PauseUntil))
 	engine := service.NewEngine(store, client, logger.With("component", "engine"), metrics, settings, events, downloader, engineOptions...)
 	aiEngine := service.NewAIEngine(store, cfg.EffectiveAIWorkerSocket(), logger.With("component", "ai"), events,
 		service.WithAITelemetry(telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator))
-	settingsManager := newRuntimeSettingsManager(store, engine, loggers, events)
 	zsxqHTTPClient := dependencies.ZSXQHTTPClient
 	if zsxqHTTPClient == nil {
 		zsxqHTTPClient = newHTTPClient()
 	}
+	zsxqGate := requestgate.New(zsxqHTTPClient.Transport, settings.ZSXQRequestRate, settings.ZSXQRequestConcurrency, 10*time.Second)
+	zsxqHTTPClient = cloneHTTPClientWithTransport(zsxqHTTPClient, zsxqGate)
+	settingsManager := newRuntimeSettingsManager(store, engine, loggers, events, bilibiliGate, zsxqGate)
 	var zsxqOptions []zsxq.Option
 	if dependencies.ZSXQAPIURL != "" {
 		zsxqOptions = append(zsxqOptions, zsxq.WithBaseURL(dependencies.ZSXQAPIURL))
@@ -201,7 +207,23 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	}
 	zsxqCollector.SetAttachmentDownloader(&media.AttachmentDownloader{DataDir: cfg.DataDir, Client: zsxqHTTPClient, UserAgent: "bili-notify/" + version})
 	zsxqCollector.SetMetrics(metrics)
-	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator, cfg.DataDir, web.WithAIEngine(aiEngine), web.WithZSXQLogin(zsxqLogin))
+	zsxqCollector.SetRequestPause(zsxqGate.PauseUntil)
+	mediaCleaner, err := media.NewCleaner(cfg.DataDir, store, logger.With("component", "media-cleaner"))
+	if err != nil {
+		return err
+	}
+	sourceAdmin, err := sources.NewAdmin(
+		func(ctx context.Context) sources.Repository { return store.WithContext(ctx) },
+		engine.NotifyUPChanged,
+		func() {
+			events.Publish(service.TopicStatus | service.TopicUPs | service.TopicSources | service.TopicBackfills)
+		},
+		func() { events.Publish(service.TopicSources | service.TopicContents | service.TopicBackfills) },
+	)
+	if err != nil {
+		return err
+	}
+	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator, cfg.DataDir, web.WithAIEngine(aiEngine), web.WithZSXQLogin(zsxqLogin), web.WithSourceAdmin(sourceAdmin))
 	if err != nil {
 		return err
 	}
@@ -210,6 +232,7 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	g.Go(func() error { return engine.Run(gctx) })
 	g.Go(func() error { return aiEngine.Run(gctx) })
 	g.Go(func() error { return zsxqCollector.Run(gctx) })
+	g.Go(func() error { return mediaCleaner.Run(gctx) })
 	g.Go(func() error {
 		return runAuditRetention(gctx, store, settingsManager.Settings, appLogger, telemetryRuntime.Tracer(), metrics)
 	})
@@ -247,6 +270,13 @@ func newHTTPClient() *http.Client {
 		MaxIdleConns:          20,
 	}
 	return &http.Client{Transport: transport, Timeout: 10 * time.Second}
+}
+
+func cloneHTTPClientWithTransport(client *http.Client, transport http.RoundTripper) *http.Client {
+	copy := *client
+	copy.Transport = transport
+	copy.Timeout = 0
+	return &copy
 }
 
 func runAuditRetention(ctx context.Context, store *state.Store, currentSettings func() model.RuntimeSettings, logger *slog.Logger, tracer trace.Tracer, metrics *service.Metrics) error {

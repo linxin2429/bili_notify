@@ -255,6 +255,7 @@ const (
 // terminal state. Body may be large; channel renderers split it safely.
 type AINotification struct {
 	JobID        string    `json:"job_id"`
+	SourceID     string    `json:"source_id"`
 	DynamicID    string    `json:"dynamic_id"`
 	BVID         string    `json:"bvid"`
 	UPName       string    `json:"up_name,omitempty"`
@@ -269,7 +270,7 @@ type AINotification struct {
 
 type Delivery struct {
 	ID        string               `json:"id"`
-	Kind      DeliveryKind         `json:"kind,omitempty"` // empty means dynamic for back-compat
+	Kind      DeliveryKind         `json:"kind"`
 	Dynamic   Dynamic              `json:"dynamic,omitzero"`
 	Comment   *CommentNotification `json:"comment,omitempty"`
 	AI        *AINotification      `json:"ai,omitempty"`
@@ -292,14 +293,6 @@ type DeliveryProgress struct {
 	TextSent      bool `json:"text_sent,omitempty"`
 	TextPartsSent int  `json:"text_parts_sent,omitempty"`
 	ImagesSent    int  `json:"images_sent,omitempty"`
-}
-
-func (d Delivery) EffectiveKind() DeliveryKind {
-	switch d.Kind {
-	case DeliveryKindComment, DeliveryKindAI:
-		return d.Kind
-	}
-	return DeliveryKindDynamic
 }
 
 // CommentTarget is one UP-owned content area tracked for UP-reply discovery.

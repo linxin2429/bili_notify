@@ -76,9 +76,18 @@ func TestDeliveryOriginTraceparentPersistsProducerContext(t *testing.T) {
 			name:       "comment notification",
 			withParent: true,
 			enqueue: func(store *Store) (int, error) {
-				return store.RecordCommentNotifications(model.CommentTarget{UID: "42"}, []model.CommentNotification{{
-					RPID: "reply", UPUID: "42", PublishedAt: time.Now(),
-				}}, []string{"channel"}, false)
+				source := model.Source{ID: model.SourceID(model.PlatformBilibili, "42"), Platform: model.PlatformBilibili, Type: model.SourceBilibiliUP, ExternalID: "42", Name: "UP"}
+				if err := store.PutSource(source); err != nil {
+					return 0, err
+				}
+				content := model.Content{ID: model.ContentID(model.PlatformBilibili, "dynamic"), Platform: model.PlatformBilibili, SourceID: source.ID, ExternalID: "dynamic", UpstreamType: "DYNAMIC_TYPE_WORD", Type: model.ContentDynamic, PublishedAt: time.Now()}
+				root := model.CommentNode{RPID: "root", Role: model.RoleMember, Time: time.Now()}
+				if _, err := store.SyncCommentTree(content, []model.CommentNode{root}, true, true, "baseline", nil); err != nil {
+					return 0, err
+				}
+				reply := model.CommentNode{RPID: "reply", Parent: "root", Role: model.RoleUP, Time: time.Now()}
+				digests, err := store.SyncCommentTree(content, []model.CommentNode{root, reply}, true, false, "incremental", nil)
+				return len(digests), err
 			},
 		},
 		{
@@ -98,6 +107,7 @@ func TestDeliveryOriginTraceparentPersistsProducerContext(t *testing.T) {
 			store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 43), provider)
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			putEnabledTestChannel(t, store)
 
 			producerStore := store
 			var producerContext trace.SpanContext

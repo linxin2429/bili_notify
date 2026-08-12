@@ -8,29 +8,41 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/linxin2429/bili_notify/media"
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/state"
-	"golang.org/x/time/rate"
+	"golang.org/x/sync/errgroup"
 )
 
-// Collector is an independently scheduled ZSXQ workflow. Its limiter, risk
-// pause and single-flight comment guard are intentionally not shared with the
-// Bilibili engine.
+// Collector owns the ZSXQ dynamic and comment schedules. HTTP request budgets
+// and risk pauses are enforced by the shared ZSXQ transport gate.
 type Collector struct {
-	store     *state.Store
+	store     collectorStore
 	client    *Client
 	settings  func() model.RuntimeSettings
 	logger    *slog.Logger
-	limiter   *rate.Limiter
 	assets    *media.AttachmentDownloader
-	commentMu sync.Mutex
 	riskUntil atomic.Int64
+	pause     func(time.Time)
 	metrics   workflowMetrics
+}
+
+type collectorStore interface {
+	ArchiveContent(model.Content, []model.Attachment) error
+	ArchiveContentAndEnqueue(model.Content, []model.Attachment, []string, bool) error
+	CommentSyncState(model.Platform, string) (bool, error)
+	ListSources(model.Platform) ([]model.Source, error)
+	MarkContentDeleted(string, time.Time) error
+	PlatformAccount(model.Platform) (model.PlatformAccount, error)
+	PutCommentSyncState(model.Platform, string, bool, time.Time, string) error
+	PutPlatformAccount(model.PlatformAccount) error
+	PutSource(model.Source) error
+	QueryContents(state.PlatformContentQuery) ([]model.Content, error)
+	RecordDynamics(string, []model.Dynamic, []string, state.DynamicBaselineMode) (int, error)
+	SyncCommentTree(model.Content, []model.CommentNode, bool, bool, string, *model.CommentTarget) ([]model.CommentDigest, error)
 }
 
 type workflowMetrics interface {
@@ -45,51 +57,66 @@ func (collector *Collector) SetMetrics(metrics workflowMetrics) {
 	collector.metrics = metrics
 }
 
-func NewCollector(store *state.Store, client *Client, settings func() model.RuntimeSettings, logger *slog.Logger) (*Collector, error) {
+func (collector *Collector) SetRequestPause(pause func(time.Time)) {
+	if pause != nil {
+		collector.pause = pause
+	}
+}
+
+func NewCollector(store collectorStore, client *Client, settings func() model.RuntimeSettings, logger *slog.Logger) (*Collector, error) {
 	if store == nil || client == nil || settings == nil {
 		return nil, errors.New("zsxq collector store, client and settings are required")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	configured := settings()
-	return &Collector{store: store, client: client, settings: settings, logger: logger,
-		limiter: rate.NewLimiter(rate.Limit(configured.ZSXQRequestRate), max(1, int(configured.ZSXQRequestRate)))}, nil
+	return &Collector{store: store, client: client, settings: settings, logger: logger, pause: func(time.Time) {}}, nil
 }
 
 func (collector *Collector) Run(ctx context.Context) error {
-	settings := collector.settings()
-	dynamicTimer := time.NewTimer(0)
-	commentTimer := time.NewTimer(0)
-	defer dynamicTimer.Stop()
-	defer commentTimer.Stop()
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.Go(func() error { return collector.runDynamicWorker(groupCtx) })
+	group.Go(func() error { return collector.runCommentWorker(groupCtx) })
+	return group.Wait()
+}
+
+func (collector *Collector) runDynamicWorker(ctx context.Context) error {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-dynamicTimer.C:
+		case <-timer.C:
 			started := time.Now()
 			err := collector.SyncDynamics(ctx)
 			collector.recordWorkflow(ctx, "dynamic_sync", err, started)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				collector.logger.WarnContext(ctx, "Knowledge Planet dynamic synchronization failed", "event", "zsxq.dynamic.failed", "error", publicError(err))
 			}
-			settings = collector.settings()
-			dynamicTimer.Reset(time.Duration(settings.ZSXQDynamicIntervalSec) * time.Second)
-		case <-commentTimer.C:
-			settings = collector.settings()
-			if settings.ZSXQCommentsEnabled && collector.commentMu.TryLock() {
-				go func() {
-					defer collector.commentMu.Unlock()
-					started := time.Now()
-					err := collector.SyncComments(ctx)
-					collector.recordWorkflow(ctx, "comment_tree", err, started)
-					if err != nil && !errors.Is(err, context.Canceled) {
-						collector.logger.WarnContext(ctx, "Knowledge Planet comment synchronization failed", "event", "zsxq.comment.failed", "error", publicError(err))
-					}
-				}()
+			timer.Reset(time.Duration(collector.settings().ZSXQDynamicIntervalSec) * time.Second)
+		}
+	}
+}
+
+func (collector *Collector) runCommentWorker(ctx context.Context) error {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-timer.C:
+			settings := collector.settings()
+			if settings.ZSXQCommentsEnabled {
+				started := time.Now()
+				err := collector.SyncComments(ctx)
+				collector.recordWorkflow(ctx, "comment_tree", err, started)
+				if err != nil && !errors.Is(err, context.Canceled) {
+					collector.logger.WarnContext(ctx, "Knowledge Planet comment synchronization failed", "event", "zsxq.comment.failed", "error", publicError(err))
+				}
 			}
-			commentTimer.Reset(time.Duration(settings.ZSXQCommentIntervalSec) * time.Second)
+			timer.Reset(time.Duration(settings.ZSXQCommentIntervalSec) * time.Second)
 		}
 	}
 }
@@ -132,15 +159,11 @@ func (collector *Collector) SyncDynamics(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	channels, err := enabledChannelIDs(collector.store)
-	if err != nil {
-		return err
-	}
 	for _, source := range sources {
 		if !source.Enabled {
 			continue
 		}
-		if err := collector.syncSource(ctx, source, channels, account.Session); err != nil {
+		if err := collector.syncSource(ctx, source, account.Session); err != nil {
 			collector.recordSourceError(source, err)
 			if errors.Is(err, ErrAuthentication) {
 				collector.queueSystemAlert(ctx, fmt.Sprintf("zsxq-auth-%d", account.VerifiedAt.Unix()), "知识星球登录已失效，知识星球采集已暂停；B 站采集和通知投递不受影响。")
@@ -151,6 +174,7 @@ func (collector *Collector) SyncDynamics(ctx context.Context) error {
 			if errors.Is(err, ErrRiskControl) || errors.Is(err, ErrRateLimited) {
 				pause := time.Duration(collector.settings().ZSXQRiskPauseSec) * time.Second
 				until := time.Now().Add(pause)
+				collector.pause(until)
 				collector.riskUntil.Store(until.Unix())
 				account.Status, account.RiskPausedUntil, account.LastError = model.AccountRiskPaused, until, publicError(err)
 				_ = collector.store.PutPlatformAccount(account)
@@ -161,10 +185,7 @@ func (collector *Collector) SyncDynamics(ctx context.Context) error {
 	return nil
 }
 
-func (collector *Collector) syncSource(ctx context.Context, source model.Source, channels []string, cookies map[string]string) error {
-	if err := collector.wait(ctx); err != nil {
-		return err
-	}
+func (collector *Collector) syncSource(ctx context.Context, source model.Source, cookies map[string]string) error {
 	page, err := collector.client.Topics(ctx, source, "", 20)
 	if err != nil {
 		return err
@@ -182,19 +203,19 @@ func (collector *Collector) syncSource(ctx context.Context, source model.Source,
 		source.HighWatermark = watermark
 		source.BackfillCursor = page.NextCursor
 		source.BaselineState = model.BaselineRunning
+		if page.NextCursor == "" {
+			source.BaselineState = model.BaselineComplete
+		}
 	}
 	for _, content := range page.Contents {
 		content.Baseline = initializing || !isAfterWatermark(content, watermark)
 		attachments := page.Attachments[content.ID]
 		collector.localize(ctx, source, content, attachments, cookies)
-		if err := collector.store.ArchiveContentAndEnqueue(content, attachments, channels, !content.Baseline); err != nil {
+		if err := collector.store.ArchiveContentAndEnqueue(content, attachments, nil, !content.Baseline); err != nil {
 			return err
 		}
 	}
 	if source.BaselineState == model.BaselineRunning && source.BackfillCursor != "" {
-		if err := collector.wait(ctx); err != nil {
-			return err
-		}
 		history, err := collector.client.Topics(ctx, source, source.BackfillCursor, 20)
 		if err != nil {
 			return err
@@ -256,10 +277,6 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	channels, err := enabledChannelIDs(collector.store)
-	if err != nil {
-		return err
-	}
 	for _, source := range sources {
 		if !source.Enabled {
 			continue
@@ -272,9 +289,6 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 				return err
 			}
 			for _, archived := range contents {
-				if err := collector.wait(ctx); err != nil {
-					return err
-				}
 				content, attachments, err := collector.client.Topic(ctx, source, archived.ExternalID)
 				if err != nil {
 					if collector.stopPlatformOnError(account, err) {
@@ -310,10 +324,7 @@ func (collector *Collector) SyncComments(ctx context.Context) error {
 					return err
 				}
 				batchID := fmt.Sprintf("zsxq-%d", time.Now().UnixNano())
-				if _, err := collector.store.SyncCommentTree(content, nodes, complete, !baselineReady, batchID, channels); err != nil {
-					return err
-				}
-				if err := collector.store.PutCommentSyncState(model.PlatformZSXQ, content.ID, complete, time.Now(), ""); err != nil {
+				if _, err := collector.store.SyncCommentTree(content, nodes, complete, !baselineReady, batchID, nil); err != nil {
 					return err
 				}
 			}
@@ -337,6 +348,7 @@ func (collector *Collector) stopPlatformOnError(account model.PlatformAccount, e
 	}
 	if errors.Is(err, ErrRiskControl) || errors.Is(err, ErrRateLimited) {
 		until := time.Now().Add(time.Duration(collector.settings().ZSXQRiskPauseSec) * time.Second)
+		collector.pause(until)
 		collector.riskUntil.Store(until.Unix())
 		account.Status, account.RiskPausedUntil, account.LastError = model.AccountRiskPaused, until, publicError(err)
 		_ = collector.store.PutPlatformAccount(account)
@@ -350,9 +362,6 @@ func (collector *Collector) allComments(ctx context.Context, content model.Conte
 	cursor := ""
 	seenCursors := make(map[string]bool)
 	for pageNumber := 0; pageNumber < 10000; pageNumber++ {
-		if err := collector.wait(ctx); err != nil {
-			return nodes, false, err
-		}
 		page, err := collector.client.Comments(ctx, content, ownerID, cursor, 100)
 		if err != nil {
 			return nodes, false, err
@@ -370,13 +379,6 @@ func (collector *Collector) allComments(ctx context.Context, content model.Conte
 	return nodes, false, errors.New("zsxq comment pagination exceeded safety limit")
 }
 
-func (collector *Collector) wait(ctx context.Context) error {
-	settings := collector.settings()
-	collector.limiter.SetLimit(rate.Limit(settings.ZSXQRequestRate))
-	collector.limiter.SetBurst(max(1, int(settings.ZSXQRequestRate)))
-	return collector.limiter.Wait(ctx)
-}
-
 func (collector *Collector) recordSourceError(source model.Source, err error) {
 	source.LastPollAt = time.Now()
 	source.LastError = publicError(err)
@@ -384,28 +386,10 @@ func (collector *Collector) recordSourceError(source model.Source, err error) {
 	_ = collector.store.PutSource(source)
 }
 
-func enabledChannelIDs(store *state.Store) ([]string, error) {
-	channels, err := store.ListChannels()
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(channels))
-	for _, channel := range channels {
-		if channel.Enabled {
-			ids = append(ids, channel.ID)
-		}
-	}
-	return ids, nil
-}
-
 func (collector *Collector) queueSystemAlert(ctx context.Context, id, message string) {
-	channels, err := enabledChannelIDs(collector.store)
-	if err != nil || len(channels) == 0 {
-		return
-	}
 	dynamic := model.Dynamic{ID: "system:" + id, UID: "system", UPName: "Bili Notify", Type: "SYSTEM",
 		PublishedAt: time.Now(), Summary: message}
-	if _, err := collector.store.WithContext(ctx).RecordDynamics("system", []model.Dynamic{dynamic}, channels, state.DynamicBaselineNone); err != nil {
+	if _, err := collector.store.RecordDynamics("system", []model.Dynamic{dynamic}, nil, state.DynamicBaselineNone); err != nil {
 		collector.logger.ErrorContext(ctx, "unable to queue Knowledge Planet system alert", "event", "zsxq.alert.queue_failed", "error", publicError(err))
 	}
 }

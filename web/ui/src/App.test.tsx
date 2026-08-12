@@ -24,29 +24,29 @@ describe('session boundary', () => {
     let loggedOut = false
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const path = requestPath(input)
-      if (path === '/api/v3/session' && init?.method === 'DELETE') { loggedOut = true; return new Response(null, { status: 204 }) }
-      if (path === '/api/v3/session' && init?.method === 'POST') return json({ csrf_token: 'csrf' })
-      if (path === '/api/v3/session') return json(loggedOut ? { setup_required: false, authenticated: false } : { setup_required: false, authenticated: true, csrf_token: 'csrf' })
-      if (path === '/api/v3/runtime') return json(runtime)
-      if (path === '/api/v3/settings') return json(settings)
-      if (path === '/api/v3/accounts') return json([{ platform: 'bilibili', status: 'connected', external_id: '1', display_name: '账号' }, { platform: 'zsxq', status: 'disconnected' }])
-      if (path.startsWith('/api/v3/sources')) return json([])
-      if (path.startsWith('/api/v3/contents')) return json({ items: [], page: emptyPage })
-      if (path === '/api/v3/channels') return json([channel])
-      if (path === '/api/v3/accounts/bilibili/qr') return json(null)
-      if (path === '/api/v3/microsoft-logins') return json([])
-      if (path.startsWith('/api/v3/deliveries')) return json({ items: [], page: emptyPage })
-      if (path.startsWith('/api/v3/audit-logs')) return json({ items: [], page: emptyPage })
-      if (path === '/api/v3/ai/status') return json({ connected: true, version: 'test', yt_dlp_available: true, ffmpeg_available: true, active_transcriptions: 0, active_summaries: 0, cache_bytes: 1024 })
-      if (path === '/api/v3/ai/profiles' && init?.method === 'POST') return json(aiProfiles[0], 201)
-      if (path === '/api/v3/ai/profiles') return json(aiProfiles)
-      if (path.endsWith('/test') && path.startsWith('/api/v3/ai/profiles/')) return json({ ok: true, latency_ms: 12, message: '模型响应正常', provider_http_status: 200 })
-      if (path === '/api/v3/ai/prompts' && init?.method === 'POST') return json(aiPrompts[0], 201)
-      if (path === '/api/v3/ai/prompts') return json(aiPrompts)
-      if (path === '/api/v3/ai/transcriptions' || path === '/api/v3/ai/summaries') return json(aiJobs[0], 202)
+      if (path === '/api/v4/session' && init?.method === 'DELETE') { loggedOut = true; return new Response(null, { status: 204 }) }
+      if (path === '/api/v4/session' && init?.method === 'POST') return json({ csrf_token: 'csrf' })
+      if (path === '/api/v4/session') return json(loggedOut ? { setup_required: false, authenticated: false } : { setup_required: false, authenticated: true, csrf_token: 'csrf' })
+      if (path === '/api/v4/runtime') return json(runtime)
+      if (path === '/api/v4/settings') return json(settings)
+      if (path === '/api/v4/accounts') return json([{ platform: 'bilibili', status: 'connected', external_id: '1', display_name: '账号' }, { platform: 'zsxq', status: 'disconnected' }])
+      if (path.startsWith('/api/v4/sources')) return json([])
+      if (path.startsWith('/api/v4/contents')) return json({ items: [], page: emptyPage })
+      if (path === '/api/v4/channels') return json([channel])
+      if (path === '/api/v4/accounts/bilibili/qr') return json(null)
+      if (path === '/api/v4/microsoft-logins') return json([])
+      if (path.startsWith('/api/v4/deliveries')) return json({ items: [], page: emptyPage })
+      if (path.startsWith('/api/v4/audit-logs')) return json({ items: [], page: emptyPage })
+      if (path === '/api/v4/ai/status') return json({ connected: true, version: 'test', yt_dlp_available: true, ffmpeg_available: true, active_transcriptions: 0, active_summaries: 0, cache_bytes: 1024 })
+      if (path === '/api/v4/ai/profiles' && init?.method === 'POST') return json(aiProfiles[0], 201)
+      if (path === '/api/v4/ai/profiles') return json(aiProfiles)
+      if (path.endsWith('/test') && path.startsWith('/api/v4/ai/profiles/')) return json({ ok: true, latency_ms: 12, message: '模型响应正常', provider_http_status: 200 })
+      if (path === '/api/v4/ai/prompts' && init?.method === 'POST') return json(aiPrompts[0], 201)
+      if (path === '/api/v4/ai/prompts') return json(aiPrompts)
+      if (path === '/api/v4/ai/transcriptions' || path === '/api/v4/ai/summaries') return json(aiJobs[0], 202)
       if (path.endsWith('/retry')) return json({ status: 'queued' }, 202)
-      if (path === '/api/v3/ai/jobs/job-done') return json(aiJobDetail)
-      if (path.startsWith('/api/v3/ai/jobs')) return json({ items: aiJobs, total: aiJobs.length, limit: 50, offset: 0 })
+      if (path === '/api/v4/ai/jobs/job-done') return json(aiJobDetail)
+      if (path.startsWith('/api/v4/ai/jobs')) return json({ items: aiJobs, total: aiJobs.length, limit: 50, offset: 0 })
       throw new Error(`unexpected request ${path}`)
     })
     vi.stubGlobal('fetch', fetch)
@@ -69,7 +69,7 @@ describe('session boundary', () => {
     await user.click(screen.getAllByRole('button', { name: '编辑' })[0]); await user.click(screen.getAllByRole('button', { name: '检测模型连通性' })[0]); await user.click(screen.getAllByRole('button', { name: '编辑' })[2]); await user.type(screen.getByLabelText('System Prompt'), ' updated'); await user.click(screen.getAllByRole('button', { name: '取消编辑' })[1])
     await user.click(screen.getAllByRole('link', { name: /^设置$/ })[0]); expect(await screen.findByRole('heading', { name: '设置' })).toBeInTheDocument()
     const theme = screen.getByLabelText('主题：跟随系统'); await user.click(theme); await user.click(screen.getByLabelText('主题：亮色')); await user.click(screen.getByLabelText('主题：暗色'))
-    await user.click(screen.getByLabelText('退出登录')); await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/v3/session', expect.objectContaining({ method: 'DELETE' })))
+    await user.click(screen.getByLabelText('退出登录')); await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/v4/session', expect.objectContaining({ method: 'DELETE' })))
   })
 })
 
@@ -93,6 +93,6 @@ const aiJobs = [
   { id: 'job-done', kind: 'transcription', state: 'succeeded', stage: 'completed', progress: 100, profile_id: 'transcribe', origin: 'workbench', attempts: 1, created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:00:00Z' },
   { id: 'job-failed', kind: 'summary', state: 'failed', stage: 'failed', progress: 10, profile_id: 'summary', prompt_id: 'prompt', origin: 'workbench', attempts: 1, error_code: 'provider_failure', last_error: 'failed', created_at: '2026-08-09T10:00:00Z', updated_at: '2026-08-09T10:00:00Z' },
 ]
-const aiJobDetail = { ...aiJobs[0], result: { bvid: 'BV1xx411c7mD', title: '视频', pages: [{ page: 1, title: 'P1', duration_ms: 3000, segments: [{ start_ms: 1000, end_ms: 2000, text: '内容' }] }] } }
+const aiJobDetail = { ...aiJobs[0], transcription_result: { bvid: 'BV1xx411c7mD', title: '视频', pages: [{ page: 1, title: 'P1', duration_ms: 3000, segments: [{ start_ms: 1000, end_ms: 2000, text: '内容' }] }] } }
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }) }
 function requestPath(input: string | URL | Request) { return typeof input === 'string' ? input : input instanceof URL ? input.href : input.url }

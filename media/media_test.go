@@ -362,6 +362,6 @@ func TestResolveAndRemoveUP(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 	require.NoError(t, os.WriteFile(path, []byte("x"), 0o600))
 	require.NoError(t, RemoveUP(dir, "42"))
-	_, err := os.Stat(filepath.Join(dir, "media", "bilibili", safePathSegment(model.SourceID(model.PlatformBilibili, "42"))))
+	_, err := os.Stat(filepath.Dir(filepath.Dir(path)))
 	assert.True(t, os.IsNotExist(err))
 }

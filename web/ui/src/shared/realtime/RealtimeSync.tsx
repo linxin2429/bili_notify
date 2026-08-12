@@ -31,7 +31,7 @@ export function RealtimeSync({ children, onAuthenticationLost, onProtocolError }
       if (stopped) return
       transition(retry ? 'reconnecting' : 'connecting')
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-      socket = new WebSocket(`${protocol}//${location.host}/api/v3/ws`)
+      socket = new WebSocket(`${protocol}//${location.host}/api/v4/ws`)
       socket.onopen = () => { retry = 0; transition('live') }
       socket.onmessage = event => {
         const envelope = parseEnvelope(safeJSON(event.data))

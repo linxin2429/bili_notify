@@ -41,8 +41,8 @@ export function avatarText(value: string) {
 
 /** Local attachment download path; empty when not localized. */
 export function attachmentURL(contentID: string, attachment: Attachment) {
-  if (!attachment.local_path) return ''
-  return `/api/v3/contents/${encodeURIComponent(contentID)}/attachments/${encodeURIComponent(attachment.id)}`
+  if (!attachment.localized) return ''
+  return `/api/v4/contents/${encodeURIComponent(contentID)}/attachments/${encodeURIComponent(attachment.id)}`
 }
 
 export function originalContentURL(item: Pick<UnifiedContent, 'platform' | 'url'>) {
@@ -65,9 +65,9 @@ export function videoEmbedURL(item: Pick<UnifiedContent, 'platform' | 'url' | 't
 }
 
 export function imageAttachments(attachments: Attachment[]) {
-  return attachments.filter(item => item.type === 'image' && item.local_path)
+  return attachments.filter(item => item.type === 'image' && item.localized)
 }
 
 export function nonImageAttachments(attachments: Attachment[]) {
-  return attachments.filter(item => item.type !== 'image' || !item.local_path)
+  return attachments.filter(item => item.type !== 'image' || !item.localized)
 }

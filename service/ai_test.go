@@ -100,18 +100,19 @@ func TestAIEngineExecutesQueuedSummaryOverUnixRPC(t *testing.T) {
 	require.NoError(t, err)
 	prompt, err := store.PutAIPrompt(model.AIPromptTemplate{Name: "prompt", ChunkPrompt: "{{text}}", ReducePrompt: "{{summaries}}"})
 	require.NoError(t, err)
-	job, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "summary", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, Input: model.AISummaryInput{Text: "source"}})
+	job, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "summary", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, SummaryInput: &model.AISummaryInput{Text: "source"}})
 	require.NoError(t, err)
-	rpcFailureJob, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "rpc-failure", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, Input: model.AISummaryInput{Text: "rpc-error"}})
+	rpcFailureJob, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "rpc-failure", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, SummaryInput: &model.AISummaryInput{Text: "rpc-error"}})
 	require.NoError(t, err)
-	incompleteJob, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "incomplete", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, Input: model.AISummaryInput{Text: "incomplete"}})
+	incompleteJob, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "incomplete", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, SummaryInput: &model.AISummaryInput{Text: "incomplete"}})
 	require.NoError(t, err)
-	missingSourceJob, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "missing-source", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, Input: model.AISummaryInput{TranscriptionID: "missing"}})
+	missingSourceJob, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "missing-source", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, SummaryInput: &model.AISummaryInput{TranscriptionID: "missing"}})
 	require.NoError(t, err)
 	transcriptionProfile, err := store.PutAIProfile(model.AIProfile{Name: "transcription", Kind: model.AIProfileTranscription, BaseURL: "https://provider.example/v1", Model: "transcription-model", APIKey: "secret", Language: "zh", TimeoutSec: 60, Enabled: true})
 	require.NoError(t, err)
 	require.NoError(t, store.SaveSession(model.BiliSession{Cookies: map[string]string{"SESSDATA": "session"}}))
-	transcriptionJob, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "transcription", Kind: model.AIJobTranscription, ProfileID: transcriptionProfile.ID, Input: model.AITranscriptionInput{BVID: "BV1xx411c7mD", Page: 1}})
+	putServiceTestChannel(t, store)
+	transcriptionJob, _, err := store.CreateAIJob(model.AIJob{ClientRequestID: "transcription", Kind: model.AIJobTranscription, ProfileID: transcriptionProfile.ID, TranscriptionInput: &model.AITranscriptionInput{BVID: "BV1xx411c7mD", Page: 1}})
 	require.NoError(t, err)
 
 	socket := filepath.Join(t.TempDir(), "worker.sock")
@@ -142,10 +143,10 @@ func TestAIEngineExecutesQueuedSummaryOverUnixRPC(t *testing.T) {
 
 	completed, err := store.AIJob(job.ID)
 	require.NoError(t, err)
-	result, ok := completed.Result.(model.AISummaryResult)
-	require.True(t, ok)
+	require.NotNil(t, completed.SummaryResult)
+	result := *completed.SummaryResult
 	assert.Equal(t, "summary: source", result.Markdown)
-	assert.Equal(t, float64(10), result.Usage["input_tokens"])
+	assert.JSONEq(t, `{"input_tokens":10}`, string(result.Usage))
 	assert.Equal(t, 1, completed.Attempts)
 	assert.True(t, engine.Status().Connected)
 	probe := engine.TestProfile(t.Context(), profile)
@@ -154,11 +155,11 @@ func TestAIEngineExecutesQueuedSummaryOverUnixRPC(t *testing.T) {
 	assert.Equal(t, 200, probe.ProviderHTTPStatus)
 	transcription, err := store.AIJob(transcriptionJob.ID)
 	require.NoError(t, err)
-	transcriptionResult, ok := transcription.Result.(model.AITranscriptionResult)
-	require.True(t, ok)
+	require.NotNil(t, transcription.TranscriptionResult)
+	transcriptionResult := *transcription.TranscriptionResult
 	assert.Equal(t, "BV1xx411c7mD", transcriptionResult.BVID)
 	assert.Equal(t, "spoken text", transcriptionResult.Text())
-	assert.Equal(t, float64(12), transcriptionResult.Usage["input_seconds"])
+	assert.JSONEq(t, `{"input_seconds":12}`, string(transcriptionResult.Usage))
 	rpcFailure, err := store.AIJob(rpcFailureJob.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "rate_limited", rpcFailure.ErrorCode)
@@ -186,9 +187,9 @@ func TestAIEnginePropagatesWorkbenchTraceAcrossUnixRPC(t *testing.T) {
 	require.NoError(t, err)
 	prompt, err := store.PutAIPrompt(model.AIPromptTemplate{Name: "prompt", ChunkPrompt: "{{text}}", ReducePrompt: "{{summaries}}"})
 	require.NoError(t, err)
-	originCtx, origin := provider.Tracer("test").Start(t.Context(), "POST /api/v3/ai/summaries", trace.WithSpanKind(trace.SpanKindServer))
+	originCtx, origin := provider.Tracer("test").Start(t.Context(), "POST /api/v4/ai/summaries", trace.WithSpanKind(trace.SpanKindServer))
 	originContext := origin.SpanContext()
-	job, _, err := store.WithContext(originCtx).CreateAIJob(model.AIJob{ClientRequestID: "traced-summary", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, Input: model.AISummaryInput{Text: "source"}})
+	job, _, err := store.WithContext(originCtx).CreateAIJob(model.AIJob{ClientRequestID: "traced-summary", Kind: model.AIJobSummary, ProfileID: profile.ID, PromptID: prompt.ID, SummaryInput: &model.AISummaryInput{Text: "source"}})
 	require.NoError(t, err)
 	origin.End()
 
@@ -253,6 +254,7 @@ func TestAIEngineContinuesDynamicCollectionTraceThroughAutomaticPipeline(t *test
 	settings.AIAutoProcessingEnabled = true
 	require.NoError(t, store.PutRuntimeSettings(settings))
 	require.NoError(t, store.SaveSession(model.BiliSession{Cookies: map[string]string{"SESSDATA": "session"}}))
+	putServiceTestChannel(t, store)
 
 	originCtx, origin := provider.Tracer("test").Start(t.Context(), "collection.poll_up")
 	originContext := origin.SpanContext()
@@ -325,7 +327,7 @@ func TestAIEngineContinuesDynamicCollectionTraceThroughAutomaticPipeline(t *test
 	require.NoError(t, err)
 	aiDeliveries := 0
 	for _, delivery := range deliveries {
-		if delivery.EffectiveKind() != model.DeliveryKindAI {
+		if delivery.Kind != model.DeliveryKindAI {
 			continue
 		}
 		aiDeliveries++

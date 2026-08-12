@@ -8,6 +8,8 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/pressly/goose/v3 v3.24.3
 	github.com/spf13/cobra v1.10.1
+	github.com/spf13/fileflow v0.1.0
+	github.com/spf13/pathologize v1.1.0
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
 	github.com/wneessen/go-mail v0.7.2

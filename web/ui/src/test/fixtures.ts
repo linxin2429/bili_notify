@@ -16,5 +16,5 @@ export function makeDelivery(overrides: Partial<Delivery> = {}): Delivery {
 }
 
 export function makeAudit(overrides: Partial<AuditLog> = {}): AuditLog {
-  return { id: 1, occurred_at: '2026-08-06T10:00:00Z', request_id: 'request-42', actor: 'administrator', session_id: 'session', remote_ip: '192.0.2.1', user_agent: 'browser', action: 'channel.update', resource_type: 'channel', resource_id: 'channel', outcome: 'success', http_method: 'PUT', route: '/api/v3/channels/{id}', status_code: 200, duration_ms: 12, details: {}, ...overrides }
+  return { id: 1, occurred_at: '2026-08-06T10:00:00Z', request_id: 'request-42', actor: 'administrator', session_id: 'session', remote_ip: '192.0.2.1', user_agent: 'browser', action: 'channel.update', resource_type: 'channel', resource_id: 'channel', outcome: 'success', http_method: 'PUT', route: '/api/v4/channels/{id}', status_code: 200, duration_ms: 12, details: {}, ...overrides }
 }

@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/linxin2429/bili_notify/model"
+	"github.com/spf13/fileflow"
+	"github.com/spf13/pathologize"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -157,13 +159,7 @@ func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index 
 	if err := rejectSymlinkPath(d.DataDir, filepath.Dir(abs), true); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
-		return err
-	}
-	if err := rejectSymlinkPath(d.DataDir, filepath.Dir(abs), false); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(abs), ".media-*")
+	tmp, err := os.CreateTemp(d.DataDir, ".media-*")
 	if err != nil {
 		return err
 	}
@@ -185,11 +181,12 @@ func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index 
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, abs); err != nil {
+	finalRelative, err := moveIntoMedia(d.DataDir, tmpName, abs)
+	if err != nil {
 		return err
 	}
 	ok = true
-	item.LocalPath = rel
+	item.LocalPath = finalRelative
 	item.ContentType = contentType
 	item.Size = int64(len(data))
 	return nil
@@ -285,25 +282,55 @@ func (d *Downloader) tracer() trace.Tracer {
 }
 
 func relativePath(uid, dynamicID string, index int, ext string) string {
-	return filepath.ToSlash(filepath.Join("media", string(model.PlatformBilibili),
-		safePathSegment(model.SourceID(model.PlatformBilibili, uid)),
-		safePathSegment(model.ContentID(model.PlatformBilibili, dynamicID)), strconv.Itoa(index)+ext))
+	return filepath.ToSlash(pathologize.Join("media", string(model.PlatformBilibili),
+		model.SourceID(model.PlatformBilibili, uid),
+		model.ContentID(model.PlatformBilibili, dynamicID), strconv.Itoa(index)+ext))
+}
+
+func moveIntoMedia(dataDir, temporaryPath, destination string) (string, error) {
+	flow := fileflow.Flow{DirMode: 0o700}
+	finalPath, err := flow.Move(temporaryPath, destination)
+	if err != nil {
+		return "", fmt.Errorf("committing media file: %w", err)
+	}
+	if err := rejectSymlinkPath(dataDir, finalPath, false); err != nil {
+		_ = os.Remove(finalPath)
+		return "", err
+	}
+	relative, err := filepath.Rel(dataDir, finalPath)
+	if err != nil {
+		_ = os.Remove(finalPath)
+		return "", fmt.Errorf("resolving stored media path: %w", err)
+	}
+	relative = filepath.ToSlash(relative)
+	if _, err := Resolve(dataDir, relative); err != nil {
+		_ = os.Remove(finalPath)
+		return "", err
+	}
+	return relative, nil
 }
 
 // Resolve joins dataDir with a relative media path and rejects path escape.
 func Resolve(dataDir, rel string) (string, error) {
 	rel = filepath.ToSlash(strings.TrimSpace(rel))
-	if rel == "" || strings.Contains(rel, "..") || !strings.HasPrefix(rel, "media/") {
+	if rel == "" || filepath.IsAbs(filepath.FromSlash(rel)) || filepath.VolumeName(filepath.FromSlash(rel)) != "" {
 		return "", errors.New("invalid media path")
 	}
-	abs := filepath.Join(dataDir, filepath.FromSlash(rel))
-	root := filepath.Clean(filepath.Join(dataDir, "media")) + string(os.PathSeparator)
-	clean := filepath.Clean(abs)
-	if clean != filepath.Clean(filepath.Join(dataDir, "media")) && !strings.HasPrefix(clean+string(os.PathSeparator), root) {
-		// allow the file itself under media/
-		if !strings.HasPrefix(clean, root) {
-			return "", errors.New("media path escapes data directory")
+	cleanRelative := filepath.Clean(filepath.FromSlash(rel))
+	parts := strings.Split(cleanRelative, string(os.PathSeparator))
+	if len(parts) < 2 || parts[0] != "media" {
+		return "", errors.New("invalid media path")
+	}
+	for _, part := range parts {
+		if part == ".." || part == "." || part == "" {
+			return "", errors.New("invalid media path")
 		}
+	}
+	root := filepath.Clean(filepath.Join(dataDir, "media"))
+	clean := filepath.Clean(filepath.Join(dataDir, cleanRelative))
+	underRoot, err := filepath.Rel(root, clean)
+	if err != nil || underRoot == ".." || strings.HasPrefix(underRoot, ".."+string(os.PathSeparator)) {
+		return "", errors.New("media path escapes data directory")
 	}
 	return clean, nil
 }
@@ -349,7 +376,7 @@ func RemoveUP(dataDir, uid string) error {
 	if uid == "" || strings.Contains(uid, "..") || strings.ContainsAny(uid, `/\`) {
 		return errors.New("invalid uid")
 	}
-	path := filepath.Join(dataDir, "media", string(model.PlatformBilibili), safePathSegment(model.SourceID(model.PlatformBilibili, uid)))
+	path := pathologize.Join(filepath.Join(dataDir, "media"), string(model.PlatformBilibili), model.SourceID(model.PlatformBilibili, uid))
 	if err := rejectSymlinkPath(dataDir, path, true); err != nil {
 		return err
 	}
@@ -368,7 +395,7 @@ func RemoveSource(dataDir string, platform model.Platform, sourceID string) erro
 	if sourceID == "" || strings.Contains(sourceID, "..") || strings.ContainsAny(sourceID, `/\`) {
 		return errors.New("invalid source id")
 	}
-	path := filepath.Join(dataDir, "media", string(platform), safePathSegment(sourceID))
+	path := pathologize.Join(filepath.Join(dataDir, "media"), string(platform), sourceID)
 	if err := rejectSymlinkPath(dataDir, path, true); err != nil {
 		return err
 	}

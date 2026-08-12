@@ -7,10 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -100,56 +98,6 @@ type commentDeliveryPreview struct {
 	PublishedAt  time.Time `json:"published_at"`
 }
 
-type contentQueryInput struct {
-	UID    string `json:"uid,omitempty"`
-	Q      string `json:"q,omitempty"`
-	From   string `json:"from,omitempty"`
-	To     string `json:"to,omitempty"`
-	Limit  int    `json:"limit,omitempty"`
-	Offset int    `json:"offset,omitempty"`
-}
-
-type dynamicHistoryView struct {
-	ID           string                `json:"id"`
-	BVID         string                `json:"bvid,omitempty"`
-	UID          string                `json:"uid"`
-	UPName       string                `json:"up_name"`
-	Type         string                `json:"type"`
-	PublishedAt  time.Time             `json:"published_at"`
-	DiscoveredAt time.Time             `json:"discovered_at"`
-	Baseline     bool                  `json:"baseline"`
-	Title        string                `json:"title,omitempty"`
-	Summary      string                `json:"summary"`
-	URL          string                `json:"url"`
-	TargetURL    string                `json:"target_url,omitempty"`
-	Badge        string                `json:"badge,omitempty"`
-	Description  string                `json:"description,omitempty"`
-	Media        []model.DynamicMedia  `json:"media,omitempty"`
-	Stats        *model.DynamicStats   `json:"stats,omitempty"`
-	Video        *model.DynamicVideo   `json:"video,omitempty"`
-	Original     *state.DynamicPreview `json:"original,omitempty"`
-	AIPipeline   []model.AIJob         `json:"ai_pipeline,omitempty"`
-}
-
-type dynamicDetailView struct {
-	model.Dynamic
-	AIPipeline []model.AIJob `json:"ai_pipeline"`
-}
-
-type commentHistoryView struct {
-	RPID         string    `json:"rpid"`
-	UPUID        string    `json:"up_uid"`
-	UPName       string    `json:"up_name"`
-	ContentType  string    `json:"content_type,omitempty"`
-	ContentID    string    `json:"content_id,omitempty"`
-	ContentTitle string    `json:"content_title,omitempty"`
-	ContentURL   string    `json:"content_url,omitempty"`
-	PublishedAt  time.Time `json:"published_at"`
-	DiscoveredAt time.Time `json:"discovered_at"`
-	Baseline     bool      `json:"baseline"`
-	Incomplete   bool      `json:"incomplete,omitempty"`
-}
-
 type biliLoginView struct {
 	ID        string    `json:"id"`
 	Status    string    `json:"status"`
@@ -226,7 +174,7 @@ func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
 		if s.propagator != nil {
 			ctx = s.propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
 		}
-		_, span := s.tracer.Start(ctx, "GET /api/v3/ws", trace.WithSpanKind(trace.SpanKindServer))
+		_, span := s.tracer.Start(ctx, "GET /api/v4/ws", trace.WithSpanKind(trace.SpanKindServer))
 		endHandshake = func() { span.End() }
 	}
 	token, _, ok := s.auth.validate(r)
@@ -346,9 +294,9 @@ func deliveryViews(deliveries []model.Delivery) []deliveryView {
 	views := make([]deliveryView, 0, len(deliveries))
 	for _, delivery := range deliveries {
 		kind := "content"
-		if delivery.EffectiveKind() == model.DeliveryKindComment {
+		if delivery.Kind == model.DeliveryKindComment {
 			kind = "comment_digest"
-		} else if delivery.EffectiveKind() == model.DeliveryKindAI {
+		} else if delivery.Kind == model.DeliveryKindAI {
 			kind = "ai"
 		}
 		view := deliveryView{
@@ -356,7 +304,7 @@ func deliveryViews(deliveries []model.Delivery) []deliveryView {
 			ChannelID: delivery.ChannelID, State: delivery.State, Attempts: delivery.Attempts,
 			NextAt: delivery.NextAt, LastError: delivery.LastError, CreatedAt: delivery.CreatedAt,
 		}
-		switch delivery.EffectiveKind() {
+		switch delivery.Kind {
 		case model.DeliveryKindComment:
 			if delivery.Comment == nil {
 				break
@@ -390,99 +338,6 @@ func deliveryViews(deliveries []model.Delivery) []deliveryView {
 		views = append(views, view)
 	}
 	return views
-}
-
-func parseContentQuery(input contentQueryInput) (state.ContentQuery, error) {
-	q := state.ContentQuery{UID: strings.TrimSpace(input.UID), Q: input.Q, Limit: input.Limit, Offset: input.Offset}
-	if input.From != "" {
-		from, err := time.Parse(time.RFC3339, input.From)
-		if err != nil {
-			return state.ContentQuery{}, fmt.Errorf("from must be RFC3339: %w", err)
-		}
-		q.From = from
-	}
-	if input.To != "" {
-		to, err := time.Parse(time.RFC3339, input.To)
-		if err != nil {
-			return state.ContentQuery{}, fmt.Errorf("to must be RFC3339: %w", err)
-		}
-		q.To = to
-	}
-	if !q.From.IsZero() && !q.To.IsZero() && !q.From.Before(q.To) {
-		return state.ContentQuery{}, errors.New("from must be earlier than to")
-	}
-	return q, nil
-}
-
-const (
-	historyPreviewTextLimit  = 2000
-	historyPreviewMediaLimit = 9
-)
-
-func toDynamicHistoryView(item state.DynamicRecord) dynamicHistoryView {
-	return dynamicHistoryView{
-		ID: item.ID, BVID: item.BVID, UID: item.UID, UPName: item.UPName, Type: item.Type,
-		PublishedAt: item.PublishedAt, DiscoveredAt: item.DiscoveredAt, Baseline: item.Baseline,
-		Title: item.Title, Summary: previewText(item.Summary, historyPreviewTextLimit),
-		Description: previewText(item.Description, historyPreviewTextLimit),
-		URL:         item.URL, TargetURL: item.TargetURL, Badge: item.Badge,
-		Media:    boundHistoryMedia(item.ID, item.Media, historyPreviewMediaLimit),
-		Stats:    item.Stats,
-		Video:    item.Video,
-		Original: boundHistoryOriginal(item.Original),
-	}
-}
-
-func boundHistoryMedia(dynamicID string, mediaItems []model.DynamicMedia, limit int) []model.DynamicMedia {
-	if limit <= 0 || len(mediaItems) == 0 {
-		return nil
-	}
-	if len(mediaItems) > limit {
-		mediaItems = mediaItems[:limit]
-	}
-	out := make([]model.DynamicMedia, 0, len(mediaItems))
-	for index, item := range mediaItems {
-		item.URL = strings.TrimSpace(item.URL)
-		if item.LocalPath != "" && dynamicID != "" {
-			item.URL = "/api/v3/dynamics/" + url.PathEscape(dynamicID) + "/media/" + strconv.Itoa(index)
-			item.LocalPath = ""
-			item.ContentType = ""
-			item.Size = 0
-		}
-		if item.URL == "" {
-			continue
-		}
-		out = append(out, item)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func boundHistoryOriginal(original *state.DynamicPreview) *state.DynamicPreview {
-	if original == nil {
-		return nil
-	}
-	return &state.DynamicPreview{
-		ID: original.ID, UID: original.UID, UPName: original.UPName, Type: original.Type,
-		Title:       original.Title,
-		Summary:     previewText(original.Summary, historyPreviewTextLimit),
-		Description: previewText(original.Description, historyPreviewTextLimit),
-		URL:         original.URL, TargetURL: original.TargetURL, Badge: original.Badge,
-		Media: boundHistoryMedia(original.ID, original.Media, historyPreviewMediaLimit),
-		Video: original.Video,
-	}
-}
-
-func toCommentHistoryView(item state.CommentRecord) commentHistoryView {
-	return commentHistoryView{
-		RPID: item.RPID, UPUID: item.UPUID, UPName: item.UPName,
-		ContentType: item.ContentType, ContentID: item.ContentID,
-		ContentTitle: item.ContentTitle, ContentURL: item.ContentURL,
-		PublishedAt: item.PublishedAt, DiscoveredAt: item.DiscoveredAt,
-		Baseline: item.Baseline, Incomplete: item.Incomplete,
-	}
 }
 
 func previewText(value string, limit int) string {

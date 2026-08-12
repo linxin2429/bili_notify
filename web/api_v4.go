@@ -18,28 +18,28 @@ import (
 )
 
 func (s *Server) registerPlatformAPI(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v3/accounts", s.requireSession(false, s.accountsV3))
-	mux.HandleFunc("GET /api/v3/accounts/bilibili/qr", s.requireSession(false, s.biliLoginAPI))
-	mux.HandleFunc("POST /api/v3/accounts/bilibili/qr", s.audit("bilibili.login.start", "platform_account", "", s.requireSession(true, s.startBiliLoginAPI)))
-	mux.HandleFunc("DELETE /api/v3/accounts/bilibili/qr/{id}", s.audit("bilibili.login.cancel", "platform_account", "id", s.requireSession(true, s.cancelBiliLoginAPI)))
-	mux.HandleFunc("DELETE /api/v3/accounts/bilibili/session", s.audit("bilibili.logout", "platform_account", "", s.requireSession(true, s.deleteBilibiliSessionV3)))
-	mux.HandleFunc("POST /api/v3/accounts/zsxq/sms-code", s.audit("zsxq.sms.send", "platform_account", "", s.requireSession(true, s.zsxqSMSCodeV3)))
-	mux.HandleFunc("POST /api/v3/accounts/zsxq/session", s.audit("zsxq.login", "platform_account", "", s.requireSession(true, s.zsxqSessionV3)))
-	mux.HandleFunc("DELETE /api/v3/accounts/zsxq/session", s.audit("zsxq.logout", "platform_account", "", s.requireSession(true, s.deleteZSXQSessionV3)))
-	mux.HandleFunc("POST /api/v3/accounts/zsxq/sync-sources", s.audit("zsxq.sources.sync", "source", "", s.requireSession(true, s.syncZSXQSourcesV3)))
+	mux.HandleFunc("GET /api/v4/accounts", s.requireSession(false, s.accountsV4))
+	mux.HandleFunc("GET /api/v4/accounts/bilibili/qr", s.requireSession(false, s.biliLoginAPI))
+	mux.HandleFunc("POST /api/v4/accounts/bilibili/qr", s.audit("bilibili.login.start", "platform_account", "", s.requireSession(true, s.startBiliLoginAPI)))
+	mux.HandleFunc("DELETE /api/v4/accounts/bilibili/qr/{id}", s.audit("bilibili.login.cancel", "platform_account", "id", s.requireSession(true, s.cancelBiliLoginAPI)))
+	mux.HandleFunc("DELETE /api/v4/accounts/bilibili/session", s.audit("bilibili.logout", "platform_account", "", s.requireSession(true, s.deleteBilibiliSessionV4)))
+	mux.HandleFunc("POST /api/v4/accounts/zsxq/sms-code", s.audit("zsxq.sms.send", "platform_account", "", s.requireSession(true, s.zsxqSMSCodeV4)))
+	mux.HandleFunc("POST /api/v4/accounts/zsxq/session", s.audit("zsxq.login", "platform_account", "", s.requireSession(true, s.zsxqSessionV4)))
+	mux.HandleFunc("DELETE /api/v4/accounts/zsxq/session", s.audit("zsxq.logout", "platform_account", "", s.requireSession(true, s.deleteZSXQSessionV4)))
+	mux.HandleFunc("POST /api/v4/accounts/zsxq/sync-sources", s.audit("zsxq.sources.sync", "source", "", s.requireSession(true, s.syncZSXQSourcesV4)))
 
-	mux.HandleFunc("GET /api/v3/sources", s.requireSession(false, s.sourcesV3))
-	mux.HandleFunc("POST /api/v3/sources", s.audit("source.create", "source", "", s.requireSession(true, s.createSourceV3)))
-	mux.HandleFunc("PUT /api/v3/sources/{id}", s.audit("source.update", "source", "id", s.requireSession(true, s.updateSourceV3)))
-	mux.HandleFunc("DELETE /api/v3/sources/{id}", s.audit("source.delete", "source", "id", s.requireSession(true, s.deleteSourceV3)))
+	mux.HandleFunc("GET /api/v4/sources", s.requireSession(false, s.sourcesV4))
+	mux.HandleFunc("POST /api/v4/sources", s.audit("source.create", "source", "", s.requireSession(true, s.createSourceV4)))
+	mux.HandleFunc("PUT /api/v4/sources/{id}", s.audit("source.update", "source", "id", s.requireSession(true, s.updateSourceV4)))
+	mux.HandleFunc("DELETE /api/v4/sources/{id}", s.audit("source.delete", "source", "id", s.requireSession(true, s.deleteSourceV4)))
 
-	mux.HandleFunc("GET /api/v3/contents", s.requireSession(false, s.contentsV3))
-	mux.HandleFunc("GET /api/v3/contents/{id}", s.requireSession(false, s.contentV3))
-	mux.HandleFunc("GET /api/v3/contents/{id}/comments", s.requireSession(false, s.commentTreeV3))
-	mux.HandleFunc("GET /api/v3/contents/{id}/attachments/{attachment_id}", s.requireSession(false, s.attachmentV3))
+	mux.HandleFunc("GET /api/v4/contents", s.requireSession(false, s.contentsV4))
+	mux.HandleFunc("GET /api/v4/contents/{id}", s.requireSession(false, s.contentV4))
+	mux.HandleFunc("GET /api/v4/contents/{id}/comments", s.requireSession(false, s.commentTreeV4))
+	mux.HandleFunc("GET /api/v4/contents/{id}/attachments/{attachment_id}", s.requireSession(false, s.attachmentV4))
 }
 
-func (s *Server) accountsV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) accountsV4(w http.ResponseWriter, r *http.Request) {
 	accounts, err := s.store.WithContext(r.Context()).ListPlatformAccounts()
 	if err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, err)
@@ -48,7 +48,7 @@ func (s *Server) accountsV3(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, accounts)
 }
 
-func (s *Server) deleteBilibiliSessionV3(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) deleteBilibiliSessionV4(w http.ResponseWriter, _ *http.Request) {
 	if err := s.engine.ClearBilibiliSession(); err != nil {
 		s.writeAPIResult(w, http.StatusNoContent, nil, err)
 		return
@@ -56,7 +56,7 @@ func (s *Server) deleteBilibiliSessionV3(w http.ResponseWriter, _ *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) zsxqSMSCodeV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) zsxqSMSCodeV4(w http.ResponseWriter, r *http.Request) {
 	if s.zsxqLogin == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "integration_unavailable", "Knowledge Planet integration is unavailable")
 		return
@@ -81,7 +81,7 @@ func (s *Server) zsxqSMSCodeV3(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, transaction)
 }
 
-func (s *Server) zsxqSessionV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) zsxqSessionV4(w http.ResponseWriter, r *http.Request) {
 	if s.zsxqLogin == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "integration_unavailable", "Knowledge Planet integration is unavailable")
 		return
@@ -110,7 +110,7 @@ func (s *Server) zsxqSessionV3(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, account)
 }
 
-func (s *Server) deleteZSXQSessionV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) deleteZSXQSessionV4(w http.ResponseWriter, r *http.Request) {
 	if s.zsxqLogin != nil {
 		s.zsxqLogin.ClearSession()
 	}
@@ -126,7 +126,7 @@ func (s *Server) deleteZSXQSessionV3(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) syncZSXQSourcesV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) syncZSXQSourcesV4(w http.ResponseWriter, r *http.Request) {
 	if s.zsxqLogin == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "integration_unavailable", "Knowledge Planet integration is unavailable")
 		return
@@ -170,7 +170,7 @@ func writeZSXQAPIError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (s *Server) sourcesV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) sourcesV4(w http.ResponseWriter, r *http.Request) {
 	platform := model.Platform(strings.TrimSpace(r.URL.Query().Get("platform")))
 	if platform != "" {
 		if err := platform.Validate(); err != nil {
@@ -178,11 +178,11 @@ func (s *Server) sourcesV3(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	sources, err := s.store.WithContext(r.Context()).ListSources(platform)
+	sources, err := s.sourceAdmin.List(r.Context(), platform)
 	s.writeAPIResult(w, http.StatusOK, sources, err)
 }
 
-func (s *Server) createSourceV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) createSourceV4(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Platform   model.Platform `json:"platform"`
 		ExternalID string         `json:"external_id"`
@@ -203,31 +203,19 @@ func (s *Server) createSourceV3(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "validation_failed", err.Error())
 		return
 	}
-	if _, err := s.store.WithContext(r.Context()).Source(source.ID); err == nil {
-		s.writeAPIResult(w, http.StatusCreated, nil, conflictFailure(errors.New("source already exists")))
-		return
-	} else if !errors.Is(err, state.ErrNotFound) {
+	if err := s.sourceAdmin.Create(r.Context(), source); err != nil {
+		if errors.Is(err, state.ErrSourceExists) {
+			err = conflictFailure(err)
+		}
 		s.writeAPIResult(w, http.StatusCreated, nil, err)
 		return
 	}
-	if err := s.store.WithContext(r.Context()).PutSource(source); err != nil {
-		s.writeAPIResult(w, http.StatusCreated, nil, err)
-		return
-	}
-	if err := s.store.WithContext(r.Context()).PutUP(model.UP{UID: source.ExternalID, Name: source.Name, Enabled: source.Enabled}); err != nil {
-		_ = s.store.DeleteSource(source.ID)
-		s.writeAPIResult(w, http.StatusCreated, nil, err)
-		return
-	}
-	s.engine.NotifyUPChanged()
 	setAuditResourceID(r, source.ID)
 	setAuditDetails(r, map[string]any{"platform": source.Platform, "external_id": source.ExternalID, "enabled": source.Enabled})
-	s.events.Publish(service.TopicStatus | service.TopicUPs)
-	s.events.Publish(service.TopicSources)
 	s.writeAPIResult(w, http.StatusCreated, source, nil)
 }
 
-func (s *Server) updateSourceV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) updateSourceV4(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Name    string `json:"name"`
 		Note    string `json:"note"`
@@ -236,66 +224,26 @@ func (s *Server) updateSourceV3(w http.ResponseWriter, r *http.Request) {
 	if !decodeAPIRequest(w, r, &input) {
 		return
 	}
-	source, err := s.store.WithContext(r.Context()).Source(r.PathValue("id"))
+	source, err := s.sourceAdmin.Update(r.Context(), r.PathValue("id"), input.Name, input.Note, input.Enabled)
 	if err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, err)
 		return
-	}
-	source.Note, source.Enabled = input.Note, input.Enabled
-	if input.Name != "" {
-		source.Name = input.Name
-	}
-	if source.Enabled && source.BaselineState == model.BaselineFailed {
-		source.BaselineState = model.BaselineRunning
-	}
-	if err := s.store.WithContext(r.Context()).PutSource(source); err != nil {
-		s.writeAPIResult(w, http.StatusOK, nil, err)
-		return
-	}
-	if source.Platform == model.PlatformBilibili {
-		up, upErr := s.store.WithContext(r.Context()).UP(source.ExternalID)
-		if errors.Is(upErr, state.ErrNotFound) {
-			up = model.UP{UID: source.ExternalID}
-		} else if upErr != nil {
-			s.writeAPIResult(w, http.StatusOK, nil, upErr)
-			return
-		}
-		up.Name, up.Enabled = source.Name, source.Enabled
-		if err := s.store.WithContext(r.Context()).PutUP(up); err != nil {
-			s.writeAPIResult(w, http.StatusOK, nil, err)
-			return
-		}
-		s.engine.NotifyUPChanged()
 	}
 	setAuditDetails(r, map[string]any{"name": source.Name, "note": source.Note, "enabled": source.Enabled})
 	s.writeAPIResult(w, http.StatusOK, source, nil)
-	s.events.Publish(service.TopicSources | service.TopicBackfills)
 }
 
-func (s *Server) deleteSourceV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) deleteSourceV4(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	source, err := s.store.WithContext(r.Context()).Source(id)
+	err := s.sourceAdmin.Delete(r.Context(), id)
 	if err != nil {
 		s.writeAPIResult(w, http.StatusNoContent, nil, err)
 		return
 	}
-	if source.Platform == model.PlatformBilibili {
-		err = s.store.WithContext(r.Context()).DeleteUP(source.ExternalID)
-	} else {
-		err = s.store.WithContext(r.Context()).DeleteSource(id)
-	}
-	if err != nil {
-		s.writeAPIResult(w, http.StatusNoContent, nil, err)
-		return
-	}
-	if s.dataDir != "" {
-		_ = media.RemoveSource(s.dataDir, source.Platform, source.ID)
-	}
-	s.events.Publish(service.TopicSources | service.TopicContents | service.TopicBackfills)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) contentsV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) contentsV4(w http.ResponseWriter, r *http.Request) {
 	limit, ok := parsePageLimit(w, r, 20)
 	if !ok {
 		return
@@ -352,17 +300,89 @@ func (s *Server) contentsV3(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cursorPageResponse{Items: contents, Page: cursorPage{HasMore: hasMore, NextCursor: next}})
 }
 
-func (s *Server) contentV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) contentV4(w http.ResponseWriter, r *http.Request) {
 	content, attachments, err := s.store.WithContext(r.Context()).Content(r.PathValue("id"))
-	s.writeAPIResult(w, http.StatusOK, map[string]any{"content": content, "attachments": attachments}, err)
+	views := make([]attachmentView, 0, len(attachments))
+	for _, attachment := range attachments {
+		views = append(views, newAttachmentView(attachment))
+	}
+	s.writeAPIResult(w, http.StatusOK, contentDetailView{Content: content, Attachments: views}, err)
 }
 
-func (s *Server) commentTreeV3(w http.ResponseWriter, r *http.Request) {
+func (s *Server) commentTreeV4(w http.ResponseWriter, r *http.Request) {
 	tree, incomplete, err := s.store.WithContext(r.Context()).CommentTree(r.PathValue("id"))
-	s.writeAPIResult(w, http.StatusOK, map[string]any{"children": tree, "incomplete": incomplete}, err)
+	children := make([]commentNodeView, 0, len(tree))
+	for _, node := range tree {
+		children = append(children, newCommentNodeView(node))
+	}
+	s.writeAPIResult(w, http.StatusOK, commentTreeView{Children: children, Incomplete: incomplete}, err)
 }
 
-func (s *Server) attachmentV3(w http.ResponseWriter, r *http.Request) {
+type commentTreeView struct {
+	Children   []commentNodeView `json:"children"`
+	Incomplete bool              `json:"incomplete"`
+}
+
+type commentNodeView struct {
+	ID          string            `json:"id"`
+	Platform    model.Platform    `json:"platform"`
+	ContentID   string            `json:"content_id"`
+	RootID      string            `json:"root_id,omitempty"`
+	ParentID    string            `json:"parent_id,omitempty"`
+	AuthorID    string            `json:"author_id,omitempty"`
+	Role        model.AuthorRole  `json:"author_role"`
+	Name        string            `json:"name"`
+	Message     string            `json:"message"`
+	PublishedAt time.Time         `json:"published_at"`
+	UpdatedAt   time.Time         `json:"updated_at,omitzero"`
+	DeletedAt   time.Time         `json:"deleted_at,omitzero"`
+	IsTrigger   bool              `json:"is_trigger,omitempty"`
+	Media       []attachmentView  `json:"media,omitempty"`
+	Children    []commentNodeView `json:"children,omitempty"`
+}
+
+func newCommentNodeView(node model.CommentNode) commentNodeView {
+	view := commentNodeView{ID: node.ID, Platform: node.Platform, ContentID: node.ContentID, RootID: node.RootID,
+		ParentID: node.ParentID, AuthorID: node.AuthorID, Role: node.Role, Name: node.Name, Message: node.Message,
+		PublishedAt: node.Time, UpdatedAt: node.UpdatedAt, DeletedAt: node.DeletedAt, IsTrigger: node.IsTrigger}
+	for _, attachment := range node.Media {
+		view.Media = append(view.Media, newAttachmentView(attachment))
+	}
+	for _, child := range node.Children {
+		view.Children = append(view.Children, newCommentNodeView(child))
+	}
+	return view
+}
+
+type contentDetailView struct {
+	Content     model.Content    `json:"content"`
+	Attachments []attachmentView `json:"attachments"`
+}
+
+type attachmentView struct {
+	ID            string               `json:"id"`
+	ContentID     string               `json:"content_id"`
+	ExternalID    string               `json:"external_id"`
+	Type          model.AttachmentType `json:"type"`
+	FileName      string               `json:"file_name,omitempty"`
+	MIME          string               `json:"mime,omitempty"`
+	Size          int64                `json:"size,omitempty"`
+	Width         int                  `json:"width,omitempty"`
+	Height        int                  `json:"height,omitempty"`
+	DurationSec   int64                `json:"duration_sec,omitempty"`
+	RemoteHost    string               `json:"remote_host,omitempty"`
+	Localized     bool                 `json:"localized"`
+	LocalizeError string               `json:"localize_error,omitempty"`
+}
+
+func newAttachmentView(attachment model.Attachment) attachmentView {
+	return attachmentView{ID: attachment.ID, ContentID: attachment.ContentID, ExternalID: attachment.ExternalID,
+		Type: attachment.Type, FileName: attachment.FileName, MIME: attachment.MIME, Size: attachment.Size,
+		Width: attachment.Width, Height: attachment.Height, DurationSec: attachment.DurationSec,
+		RemoteHost: attachment.RemoteHost, Localized: attachment.LocalPath != "", LocalizeError: attachment.LocalizeError}
+}
+
+func (s *Server) attachmentV4(w http.ResponseWriter, r *http.Request) {
 	attachment, err := s.store.WithContext(r.Context()).Attachment(r.PathValue("id"), r.PathValue("attachment_id"), false)
 	if err != nil {
 		s.writeAPIResult(w, http.StatusOK, nil, err)

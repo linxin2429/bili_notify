@@ -340,7 +340,20 @@ func (s *Store) createAIJobTx(tx *gorm.DB, job model.AIJob, suppliedProfile *mod
 	now := time.Now()
 	job.ID, job.State, job.Stage, job.Progress = id, model.AIJobQueued, "queued", 0
 	job.CreatedAt, job.UpdatedAt = now, now
-	input, err := sealJSON(s.vault, tableAIJobInput, id, job.Input)
+	var inputValue any
+	switch job.Kind {
+	case model.AIJobTranscription:
+		if job.TranscriptionInput == nil {
+			return model.AIJob{}, false, errors.New("transcription input is required")
+		}
+		inputValue = *job.TranscriptionInput
+	case model.AIJobSummary:
+		if job.SummaryInput == nil {
+			return model.AIJob{}, false, errors.New("summary input is required")
+		}
+		inputValue = *job.SummaryInput
+	}
+	input, err := sealJSON(s.vault, tableAIJobInput, id, inputValue)
 	if err != nil {
 		return model.AIJob{}, false, err
 	}
@@ -352,9 +365,13 @@ func (s *Store) createAIJobTx(tx *gorm.DB, job model.AIJob, suppliedProfile *mod
 	if err != nil {
 		return model.AIJob{}, false, err
 	}
+	sourceSnapshot, err := json.Marshal(job.Source)
+	if err != nil {
+		return model.AIJob{}, false, err
+	}
 	row := aiJobRow{
 		ID: id, ClientRequestID: job.ClientRequestID, Kind: string(job.Kind), State: string(job.State), Stage: job.Stage,
-		ProfileID: job.ProfileID, PromptID: job.PromptID, Origin: string(job.Origin), SourceDynamicID: job.SourceDynamicID,
+		ProfileID: job.ProfileID, PromptID: job.PromptID, Origin: string(job.Origin), SourceContentID: job.SourceContentID, SourceSnapshotJSON: string(sourceSnapshot),
 		DependsOnJobID: job.DependsOnJobID, OriginTraceparent: job.OriginTraceparent, OriginTracestate: job.OriginTracestate,
 		TargetChannelIDs: string(channels), InputSealed: input, ConfigSealed: config, CreatedAt: now.Unix(), UpdatedAt: now.Unix(),
 	}
@@ -400,7 +417,7 @@ func (s *Store) defaultAIConfigTx(tx *gorm.DB) (model.AIProfile, model.AIProfile
 	return transcription, summary, prompt, err
 }
 
-func (s *Store) createAutomaticAIJobsTx(tx *gorm.DB, dynamic model.Dynamic, channelIDs []string) (int, error) {
+func (s *Store) createAutomaticAIJobsTx(tx *gorm.DB, dynamic model.Dynamic, sourceID string, channelIDs []string) (int, error) {
 	if dynamic.Type != "DYNAMIC_TYPE_AV" || strings.TrimSpace(dynamic.BVID) == "" {
 		return 0, nil
 	}
@@ -412,9 +429,10 @@ func (s *Store) createAutomaticAIJobsTx(tx *gorm.DB, dynamic model.Dynamic, chan
 	contentID := model.ContentID(model.PlatformBilibili, dynamic.ID)
 	transcription, created, err := s.createAIJobTx(tx, model.AIJob{
 		ClientRequestID: "content:" + contentID + ":transcription", Kind: model.AIJobTranscription,
-		ProfileID: transcriptionProfile.ID, Origin: model.AIJobOriginDynamic, SourceDynamicID: contentID,
+		ProfileID: transcriptionProfile.ID, Origin: model.AIJobOriginDynamic, SourceContentID: contentID,
+		Source:            &model.AIContentSnapshot{ContentID: contentID, SourceID: sourceID, BVID: dynamic.BVID, Author: dynamic.UPName, Title: dynamic.Title, URL: firstNonEmpty(dynamic.TargetURL, dynamic.URL)},
 		OriginTraceparent: traceparent, OriginTracestate: tracestate, TargetChannelIDs: channelIDs,
-		Input: model.AITranscriptionInput{BVID: dynamic.BVID},
+		TranscriptionInput: &model.AITranscriptionInput{BVID: dynamic.BVID},
 	}, &transcriptionProfile, nil)
 	if err != nil {
 		return 0, err
@@ -422,9 +440,10 @@ func (s *Store) createAutomaticAIJobsTx(tx *gorm.DB, dynamic model.Dynamic, chan
 	_, summaryCreated, err := s.createAIJobTx(tx, model.AIJob{
 		ClientRequestID: "content:" + contentID + ":summary", Kind: model.AIJobSummary,
 		ProfileID: summaryProfile.ID, PromptID: prompt.ID, Origin: model.AIJobOriginDynamic,
-		SourceDynamicID: contentID, DependsOnJobID: transcription.ID, OriginTraceparent: traceparent,
+		SourceContentID: contentID, DependsOnJobID: transcription.ID, OriginTraceparent: traceparent,
+		Source:           &model.AIContentSnapshot{ContentID: contentID, SourceID: sourceID, BVID: dynamic.BVID, Author: dynamic.UPName, Title: dynamic.Title, URL: firstNonEmpty(dynamic.TargetURL, dynamic.URL)},
 		OriginTracestate: tracestate, TargetChannelIDs: channelIDs,
-		Input: model.AISummaryInput{TranscriptionID: transcription.ID},
+		SummaryInput: &model.AISummaryInput{TranscriptionID: transcription.ID},
 	}, &summaryProfile, &prompt)
 	if err != nil {
 		return 0, err
@@ -512,9 +531,16 @@ func (s *Store) aiJob(row aiJobRow, detail bool) (model.AIJob, error) {
 	job := model.AIJob{
 		ID: row.ID, ClientRequestID: row.ClientRequestID, Kind: model.AIJobKind(row.Kind), State: model.AIJobState(row.State),
 		Stage: row.Stage, Progress: row.Progress, ProfileID: row.ProfileID, PromptID: row.PromptID, Attempts: row.Attempts,
-		Origin: model.AIJobOrigin(row.Origin), SourceDynamicID: row.SourceDynamicID, DependsOnJobID: row.DependsOnJobID,
+		Origin: model.AIJobOrigin(row.Origin), SourceContentID: row.SourceContentID, DependsOnJobID: row.DependsOnJobID,
 		OriginTraceparent: row.OriginTraceparent, OriginTracestate: row.OriginTracestate, TargetChannelIDs: channels,
 		ErrorCode: row.ErrorCode, LastError: row.LastError, CreatedAt: time.Unix(row.CreatedAt, 0), UpdatedAt: time.Unix(row.UpdatedAt, 0),
+	}
+	if row.SourceSnapshotJSON != "" && row.SourceSnapshotJSON != "null" && row.SourceSnapshotJSON != "{}" {
+		var source model.AIContentSnapshot
+		if err := json.Unmarshal([]byte(row.SourceSnapshotJSON), &source); err != nil {
+			return model.AIJob{}, fmt.Errorf("decoding AI source snapshot: %w", err)
+		}
+		job.Source = &source
 	}
 	if row.StartedAt != nil {
 		job.StartedAt = time.Unix(*row.StartedAt, 0)
@@ -531,26 +557,26 @@ func (s *Store) aiJob(row aiJobRow, detail bool) (model.AIJob, error) {
 		if err := openJSON(s.vault, tableAIJobInput, row.ID, row.InputSealed, &input); err != nil {
 			return model.AIJob{}, err
 		}
-		job.Input = input
+		job.TranscriptionInput = &input
 		if len(row.ResultSealed) > 0 {
 			var result model.AITranscriptionResult
 			if err := openJSON(s.vault, tableAIJobResult, row.ID, row.ResultSealed, &result); err != nil {
 				return model.AIJob{}, err
 			}
-			job.Result = result
+			job.TranscriptionResult = &result
 		}
 	case model.AIJobSummary:
 		var input model.AISummaryInput
 		if err := openJSON(s.vault, tableAIJobInput, row.ID, row.InputSealed, &input); err != nil {
 			return model.AIJob{}, err
 		}
-		job.Input = input
+		job.SummaryInput = &input
 		if len(row.ResultSealed) > 0 {
 			var result model.AISummaryResult
 			if err := openJSON(s.vault, tableAIJobResult, row.ID, row.ResultSealed, &result); err != nil {
 				return model.AIJob{}, err
 			}
-			job.Result = result
+			job.SummaryResult = &result
 		}
 	}
 	return job, nil
@@ -605,7 +631,15 @@ func (s *Store) UpdateAIJobProgress(id, stage string, progress int) error {
 	return nil
 }
 
-func (s *Store) FinishAIJob(id string, result any) error {
+func (s *Store) FinishTranscription(id string, result model.AITranscriptionResult) error {
+	return s.finishAIJob(id, result, transcriptionNotificationText(result), result.Title)
+}
+
+func (s *Store) FinishSummary(id string, result model.AISummaryResult) error {
+	return s.finishAIJob(id, result, result.Markdown, "")
+}
+
+func (s *Store) finishAIJob(id string, result any, notificationBody, notificationTitle string) error {
 	sealed, err := sealJSON(s.vault, tableAIJobResult, id, result)
 	if err != nil {
 		return err
@@ -622,7 +656,7 @@ func (s *Store) FinishAIJob(id string, result any) error {
 		if res.Error != nil {
 			return res.Error
 		}
-		return s.enqueueAINotificationTx(tx, row, result, true, "", "")
+		return s.enqueueAINotificationTx(tx, row, notificationBody, notificationTitle, true, "", "")
 	})
 }
 
@@ -643,7 +677,7 @@ func (s *Store) FailAIJob(id, code, message string) error {
 		}).Error; err != nil {
 			return err
 		}
-		return s.enqueueAINotificationTx(tx, row, nil, false, code, message)
+		return s.enqueueAINotificationTx(tx, row, "", "", false, code, message)
 	})
 }
 
@@ -706,41 +740,29 @@ func (s *Store) DeleteAIJob(id string) error {
 	return nil
 }
 
-func (s *Store) enqueueAINotificationTx(tx *gorm.DB, row aiJobRow, result any, succeeded bool, code, message string) error {
-	if row.Origin != string(model.AIJobOriginDynamic) || row.SourceDynamicID == "" {
+func (s *Store) enqueueAINotificationTx(tx *gorm.DB, row aiJobRow, body, resultTitle string, succeeded bool, code, message string) error {
+	if row.Origin != string(model.AIJobOriginDynamic) || row.SourceContentID == "" {
 		return nil
 	}
 	var channels []string
 	if err := json.Unmarshal([]byte(row.TargetChannelIDs), &channels); err != nil {
 		return err
 	}
-	prefix := model.ContentID(model.PlatformBilibili, "")
-	if !strings.HasPrefix(row.SourceDynamicID, prefix) {
-		return fmt.Errorf("AI source %q is not a Bilibili content ID", row.SourceDynamicID)
+	var source model.AIContentSnapshot
+	if err := json.Unmarshal([]byte(row.SourceSnapshotJSON), &source); err != nil {
+		return fmt.Errorf("decoding AI source snapshot: %w", err)
 	}
-	externalID := strings.TrimPrefix(row.SourceDynamicID, prefix)
-	var dynamicRow dynamicRow
-	if err := tx.Where("id = ?", externalID).Take(&dynamicRow).Error; err != nil {
-		return err
+	if source.ContentID != row.SourceContentID || source.ContentID == "" || source.SourceID == "" {
+		return fmt.Errorf("AI job %s has an invalid source snapshot", row.ID)
 	}
-	var dynamic model.Dynamic
-	if err := json.Unmarshal([]byte(dynamicRow.PayloadJSON), &dynamic); err != nil {
-		return err
-	}
-	body, title := "", dynamic.Title
-	switch value := result.(type) {
-	case model.AITranscriptionResult:
-		body, title = transcriptionNotificationText(value), value.Title
-	case model.AISummaryResult:
-		body = value.Markdown
+	title := resultTitle
+	if title == "" {
+		title = source.Title
 	}
 	notification := &model.AINotification{
-		JobID: row.ID, DynamicID: row.SourceDynamicID, BVID: dynamic.BVID, UPName: dynamic.UPName, Title: title,
+		JobID: row.ID, SourceID: source.SourceID, DynamicID: row.SourceContentID, BVID: source.BVID, UPName: source.Author, Title: title,
 		Stage: model.AIJobKind(row.Kind), Succeeded: succeeded, Body: body, ErrorCode: code, ErrorMessage: message,
-		SourceURL: dynamic.TargetURL,
-	}
-	if notification.SourceURL == "" {
-		notification.SourceURL = dynamic.URL
+		SourceURL: source.URL,
 	}
 	now := time.Now()
 	for _, channelID := range channels {
@@ -773,7 +795,7 @@ func transcriptionNotificationText(result model.AITranscriptionResult) string {
 // AIJobsForContent returns the Bilibili automatic pipeline in execution order.
 func (s *Store) AIJobsForContent(contentID string, detail bool) ([]model.AIJob, error) {
 	var rows []aiJobRow
-	if err := s.db.Where("source_dynamic_id = ?", contentID).
+	if err := s.db.Where("source_content_id = ?", contentID).
 		Order("CASE kind WHEN 'transcription' THEN 0 ELSE 1 END, created_at, id").Find(&rows).Error; err != nil {
 		return nil, err
 	}

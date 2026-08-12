@@ -33,7 +33,6 @@ func TestDeliverClassifiesOutcomes(t *testing.T) {
 		name          string
 		status        int
 		enabled       bool
-		missing       bool
 		wantChanged   bool
 		wantRemaining bool
 		wantState     model.DeliveryState
@@ -45,7 +44,6 @@ func TestDeliverClassifiesOutcomes(t *testing.T) {
 		{name: "server failure schedules retry", status: http.StatusInternalServerError, enabled: true, wantChanged: true, wantRemaining: true, wantState: model.DeliveryPending, wantAttempts: 1, wantSendSpan: true, wantSpanError: true},
 		{name: "client failure blocks delivery", status: http.StatusBadRequest, enabled: true, wantChanged: true, wantRemaining: true, wantState: model.DeliveryBlocked, wantAttempts: 1, wantSendSpan: true, wantSpanError: true},
 		{name: "disabled channel leaves delivery alone", status: http.StatusOK, wantRemaining: true, wantState: model.DeliveryPending},
-		{name: "missing channel blocks delivery", missing: true, wantChanged: true, wantRemaining: true, wantState: model.DeliveryBlocked, wantAttempts: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,21 +59,22 @@ func TestDeliverClassifiesOutcomes(t *testing.T) {
 			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
-			channelID := "missing"
-			if !tt.missing {
-				channel, putErr := store.PutChannel(model.Channel{
-					Name: "robot", Type: model.ChannelWeCom, Enabled: tt.enabled,
-					Settings: map[string]string{"webhook": webhook.URL},
-				})
-				require.NoError(t, putErr)
-				channelID = channel.ID
-			}
+			channel, putErr := store.PutChannel(model.Channel{
+				Name: "robot", Type: model.ChannelWeCom, Enabled: true,
+				Settings: map[string]string{"webhook": webhook.URL},
+			})
+			require.NoError(t, putErr)
 			created, err := store.RecordDynamics("42", []model.Dynamic{{
 				ID: "dynamic", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_WORD",
 				PublishedAt: time.Now(), Summary: "hello", URL: "https://t.bilibili.com/1",
-			}}, []string{channelID}, state.DynamicBaselineNone)
+			}}, []string{channel.ID}, state.DynamicBaselineNone)
 			require.NoError(t, err)
 			require.Equal(t, 1, created)
+			if !tt.enabled {
+				channel.Enabled = false
+				_, err = store.PutChannel(channel)
+				require.NoError(t, err)
+			}
 			deliveries, err := store.ListDeliveries(0)
 			require.NoError(t, err)
 			require.Len(t, deliveries, 1)
@@ -135,7 +134,7 @@ func TestDeliverContinuesPersistedProducerTrace(t *testing.T) {
 	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	channel, err := store.PutChannel(model.Channel{
+	_, err = store.PutChannel(model.Channel{
 		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
 		Settings: map[string]string{"webhook": webhook.URL},
 	})
@@ -146,7 +145,7 @@ func TestDeliverContinuesPersistedProducerTrace(t *testing.T) {
 	created, err := store.WithContext(producerCtx).RecordDynamics("42", []model.Dynamic{{
 		ID: "dynamic", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_WORD",
 		PublishedAt: time.Now(), Summary: "hello", URL: "https://t.bilibili.com/1",
-	}}, []string{channel.ID}, state.DynamicBaselineNone)
+	}}, nil, state.DynamicBaselineNone)
 	require.NoError(t, err)
 	require.Equal(t, 1, created)
 	producer.End()
@@ -250,7 +249,7 @@ func TestDeliveryMessage(t *testing.T) {
 		wantID      string
 		wantErr     string
 	}{
-		{name: "dynamic", delivery: model.Delivery{Dynamic: model.Dynamic{ID: "dynamic", UPName: "UP", Type: "DYNAMIC_TYPE_WORD"}}, wantSubject: "UP", wantID: "dynamic"},
+		{name: "dynamic", delivery: model.Delivery{Kind: model.DeliveryKindDynamic, Dynamic: model.Dynamic{ID: "dynamic", UPName: "UP", Type: "DYNAMIC_TYPE_WORD"}}, wantSubject: "UP", wantID: "dynamic"},
 		{name: "comment", delivery: model.Delivery{Kind: model.DeliveryKindComment, Comment: &model.CommentNotification{RPID: "reply", UPName: "UP"}}, wantSubject: "UP", wantID: "reply"},
 		{name: "missing comment", delivery: model.Delivery{Kind: model.DeliveryKindComment}, wantErr: "missing payload"},
 	}
@@ -292,7 +291,7 @@ func TestPollCommentTargetBaselinesThenQueuesNewReply(t *testing.T) {
 	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	channel, err := store.PutChannel(model.Channel{
+	_, err = store.PutChannel(model.Channel{
 		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
 		Settings: map[string]string{"webhook": "https://example.com/hook"},
 	})
@@ -302,11 +301,11 @@ func TestPollCommentTargetBaselinesThenQueuesNewReply(t *testing.T) {
 		Title: "title", URL: "https://t.bilibili.com/1", CommentType: 11, CommentOID: "oid",
 		PublishedAt: time.Unix(1700000000, 0),
 	}
-	require.NoError(t, store.PutCommentTargets("42", []model.CommentTarget{target}))
+	target = seedServiceCommentTarget(t, store, target)
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
 
-	require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{channel.ID}))
+	require.NoError(t, engine.pollCommentTarget(t.Context(), target))
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	assert.Empty(t, deliveries)
@@ -315,7 +314,7 @@ func TestPollCommentTargetBaselinesThenQueuesNewReply(t *testing.T) {
 	require.Len(t, targets, 1)
 	assert.True(t, targets[0].BaselineReady)
 
-	require.NoError(t, engine.pollCommentTarget(t.Context(), targets[0], []string{channel.ID}))
+	require.NoError(t, engine.pollCommentTarget(t.Context(), targets[0]))
 	deliveries, err = store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
@@ -324,6 +323,32 @@ func TestPollCommentTargetBaselinesThenQueuesNewReply(t *testing.T) {
 	require.Len(t, deliveries[0].Comment.Thread, 3)
 	assert.Equal(t, "root", deliveries[0].Comment.Thread[0].RPID)
 	assert.True(t, deliveries[0].Comment.Thread[2].IsTrigger)
+}
+
+func TestPollCommentTargetArchivesWithoutChannels(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"page":{"num":1,"size":20,"count":1},"replies":[{"rpid_str":"reply","root_str":"0","parent_str":"0","ctime":1700000000,"member":{"mid":"42","uname":"UP"},"content":{"message":"reply"}}]}}`)
+	}))
+	t.Cleanup(server.Close)
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	target := seedServiceCommentTarget(t, store, model.CommentTarget{UID: "42", DynamicID: "dynamic", CommentType: 11, CommentOID: "oid", BaselineReady: true})
+	engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
+
+	require.NoError(t, engine.pollCommentTarget(t.Context(), target))
+	seen, err := store.CommentSeen(target.UID, "reply")
+	require.NoError(t, err)
+	assert.True(t, seen)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	assert.Empty(t, deliveries)
+	tree, incomplete, err := store.CommentTree(model.ContentID(model.PlatformBilibili, target.DynamicID))
+	require.NoError(t, err)
+	assert.False(t, incomplete)
+	require.Len(t, tree, 1)
+	assert.Equal(t, "reply", tree[0].RPID)
 }
 
 func TestPollCommentTargetClosesUnavailableTarget(t *testing.T) {
@@ -335,13 +360,12 @@ func TestPollCommentTargetClosesUnavailableTarget(t *testing.T) {
 	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	target := model.CommentTarget{UID: "42", CommentType: 11, CommentOID: "oid"}
-	require.NoError(t, store.PutCommentTargets("42", []model.CommentTarget{target}))
+	target := seedServiceCommentTarget(t, store, model.CommentTarget{UID: "42", CommentType: 11, CommentOID: "oid"})
 	engine := NewEngine(
 		store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil,
 	)
-	require.NoError(t, engine.pollCommentTarget(t.Context(), target, []string{"channel"}))
+	require.NoError(t, engine.pollCommentTarget(t.Context(), target))
 	targets, err := store.ListCommentTargets("42")
 	require.NoError(t, err)
 	require.Len(t, targets, 1)
@@ -549,8 +573,7 @@ func TestCommentOncePollsEligibleTargets(t *testing.T) {
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
 	_, err = store.PutChannel(model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com/hook"}})
 	require.NoError(t, err)
-	target := model.CommentTarget{UID: "42", CommentType: 11, CommentOID: "oid", PublishedAt: time.Now()}
-	require.NoError(t, store.PutCommentTargets("42", []model.CommentTarget{target}))
+	seedServiceCommentTarget(t, store, model.CommentTarget{UID: "42", CommentType: 11, CommentOID: "oid", PublishedAt: time.Now()})
 	engine := NewEngine(
 		store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 2), nil, nil,
@@ -718,13 +741,12 @@ func TestHandleCommentPollError(t *testing.T) {
 			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = store.Close() })
-			require.NoError(t, store.PutCommentTargets("42", []model.CommentTarget{{UID: "42", CommentType: 11, CommentOID: "oid"}}))
+			target := seedServiceCommentTarget(t, store, model.CommentTarget{UID: "42", CommentType: 11, CommentOID: "oid"})
 			engine := NewEngine(
 				store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)),
 				NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), NewEventBus(), nil,
 			)
 			engine.authValid.Store(true)
-			target := model.CommentTarget{UID: "42", CommentType: 11, CommentOID: "oid"}
 			require.NoError(t, engine.handleCommentPollError(t.Context(), target, tt.err))
 			assert.Equal(t, tt.authOff, !engine.authValid.Load())
 			assert.Equal(t, tt.risk, engine.riskUntil.Load() > time.Now().Unix())

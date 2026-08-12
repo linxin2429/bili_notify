@@ -43,10 +43,11 @@ func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	up := model.UP{UID: "42", Enabled: true}
 	require.NoError(t, store.PutUP(up))
+	putServiceTestChannel(t, store)
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 	events := NewEventBus()
 	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), events, nil)
-	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
+	require.NoError(t, engine.pollUP(t.Context(), up))
 	got, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	assert.Empty(t, got)
@@ -55,15 +56,43 @@ func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, up.BaselineReady)
 
-	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
+	require.NoError(t, engine.pollUP(t.Context(), up))
 	got, err = store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, "2", got[0].Dynamic.ID)
+	assert.Equal(t, model.ContentID(model.PlatformBilibili, "2"), got[0].Dynamic.ID)
 
 	beforeIdlePoll := events.Revision()
-	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
+	require.NoError(t, engine.pollUP(t.Context(), up))
 	assert.Equal(t, beforeIdlePoll, events.Revision(), "an idle successful poll should not publish unchanged status or UP data")
+}
+
+func TestPollUPArchivesAndAdvancesSeenWithoutChannels(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","items":[%s]}}`, dynamicFixture("channel-free", 1700000000))
+	}))
+	t.Cleanup(server.Close)
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	up := model.UP{UID: "42", Name: "UP", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}
+	require.NoError(t, store.PutUP(up))
+	engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
+
+	require.NoError(t, engine.pollUP(t.Context(), up))
+	assert.Equal(t, int32(1), requests.Load())
+	seen, err := store.Seen(up.UID, "channel-free")
+	require.NoError(t, err)
+	assert.True(t, seen)
+	contents, err := store.QueryContents(state.PlatformContentQuery{SourceID: model.SourceID(model.PlatformBilibili, up.UID)})
+	require.NoError(t, err)
+	require.Len(t, contents, 1)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	assert.Empty(t, deliveries)
 }
 
 func TestPollUPBaselinesExistingExclusiveDynamicsOnce(t *testing.T) {
@@ -83,24 +112,25 @@ func TestPollUPBaselinesExistingExclusiveDynamicsOnce(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	up := model.UP{UID: "42", Enabled: true, BaselineReady: true}
 	require.NoError(t, store.PutUP(up))
+	putServiceTestChannel(t, store)
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
 
-	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
+	require.NoError(t, engine.pollUP(t.Context(), up))
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, "normal-new", deliveries[0].Dynamic.ID)
+	assert.Equal(t, model.ContentID(model.PlatformBilibili, "normal-new"), deliveries[0].Dynamic.ID)
 	up, err = store.UP("42")
 	require.NoError(t, err)
 	assert.True(t, up.ExclusiveBaselineReady)
 
-	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
+	require.NoError(t, engine.pollUP(t.Context(), up))
 	deliveries, err = store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 2)
 	ids := []string{deliveries[0].Dynamic.ID, deliveries[1].Dynamic.ID}
-	assert.ElementsMatch(t, []string{"normal-new", "exclusive-new"}, ids)
+	assert.ElementsMatch(t, []string{model.ContentID(model.PlatformBilibili, "normal-new"), model.ContentID(model.PlatformBilibili, "exclusive-new")}, ids)
 }
 
 func TestPollFeedUsesUpdateGateAndFiltersMonitoredUPs(t *testing.T) {
@@ -145,12 +175,13 @@ func TestPollFeedUsesUpdateGateAndFiltersMonitoredUPs(t *testing.T) {
 			require.NoError(t, store.PutFollowRelations("100", map[string]model.FollowState{"42": model.Followed}, time.Now()))
 			require.NoError(t, store.MarkSpaceSynced("100", "42", time.Now()))
 			require.NoError(t, store.InitializeFeed("100", "old", time.Now()))
+			putServiceTestChannel(t, store)
 
 			client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 			client.SetSession(session)
 			engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 2), nil, nil)
 			engine.setAccount(model.BiliAccount{UID: "100", Name: "account"})
-			require.NoError(t, engine.pollFeed(t.Context(), model.BiliAccount{UID: "100", Name: "account"}, []model.UP{up}, []string{"channel"}))
+			require.NoError(t, engine.pollFeed(t.Context(), model.BiliAccount{UID: "100", Name: "account"}, []model.UP{up}))
 
 			assert.Equal(t, tt.wantFullFetch, fullFetches.Load())
 			deliveries, err := store.ListDeliveries(0)
@@ -197,12 +228,13 @@ func TestPollFeedIsolatesOneMonitoredUPParseFailure(t *testing.T) {
 		require.NoError(t, store.MarkSpaceSynced("100", up.UID, time.Now()))
 	}
 	require.NoError(t, store.InitializeFeed("100", "old", time.Now()))
+	putServiceTestChannel(t, store)
 
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 	client.SetSession(session)
 	engine := NewEngine(store, client, slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 2), nil, nil)
 	engine.setAccount(model.BiliAccount{UID: "100"})
-	require.NoError(t, engine.pollFeed(t.Context(), model.BiliAccount{UID: "100"}, ups, []string{"channel"}))
+	require.NoError(t, engine.pollFeed(t.Context(), model.BiliAccount{UID: "100"}, ups))
 
 	feed, err := store.FeedState("100")
 	require.NoError(t, err)
@@ -217,7 +249,7 @@ func TestPollFeedIsolatesOneMonitoredUPParseFailure(t *testing.T) {
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, "good", deliveries[0].Dynamic.ID)
+	assert.Equal(t, model.ContentID(model.PlatformBilibili, "good"), deliveries[0].Dynamic.ID)
 }
 
 func dynamicFixture(id string, timestamp int64) string {
@@ -281,7 +313,7 @@ func TestPollUPLogsSchemaFailure(t *testing.T) {
 	var logs bytes.Buffer
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
 	engine := NewEngine(store, client, slog.New(slog.NewJSONHandler(&logs, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
-	require.NoError(t, engine.pollUP(t.Context(), up, []string{"channel"}))
+	require.NoError(t, engine.pollUP(t.Context(), up))
 	updated, err := store.UP(up.UID)
 	require.NoError(t, err)
 	assert.Equal(t, 1, updated.ConsecutiveFail)
@@ -384,7 +416,7 @@ func TestClockDerivedStatusPublishesOnlyOnBoundaryChanges(t *testing.T) {
 	assert.Equal(t, beforeUnchanged+1, events.Revision(), "risk expiry must publish the newly derived status")
 }
 
-func TestPollUPPublishesCommittedOutboxBeforeLaterBookkeepingFailure(t *testing.T) {
+func TestPollUPCommitsArchiveAndOutboxWithoutLegacyBookkeeping(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","items":[%s]}}`, dynamicFixture("new", 1700000000))
@@ -395,6 +427,7 @@ func TestPollUPPublishesCommittedOutboxBeforeLaterBookkeepingFailure(t *testing.
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	events := NewEventBus()
+	putServiceTestChannel(t, store)
 	subscription := events.Subscribe()
 	t.Cleanup(subscription.Close)
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
@@ -403,8 +436,8 @@ func TestPollUPPublishesCommittedOutboxBeforeLaterBookkeepingFailure(t *testing.
 	err = engine.pollUP(t.Context(), model.UP{
 		UID: "42", Name: "tester", Enabled: true,
 		BaselineReady: true, ExclusiveBaselineReady: true,
-	}, []string{"channel"})
-	require.ErrorIs(t, err, state.ErrNotFound)
+	})
+	require.NoError(t, err)
 	deliveries, listErr := store.ListDeliveries(0)
 	require.NoError(t, listErr)
 	require.Len(t, deliveries, 1)
@@ -432,20 +465,24 @@ func TestDispatchOnceDoesNotPublishWhenQueueIsIdle(t *testing.T) {
 
 func TestDispatchOncePublishesMinimalTopicsAfterDeliveryChanges(t *testing.T) {
 	t.Parallel()
+	webhook := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadRequest) }))
+	t.Cleanup(webhook.Close)
 	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
+	channel, err := store.PutChannel(model.Channel{Name: "channel", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": webhook.URL}})
+	require.NoError(t, err)
 	created, err := store.RecordDynamics("42", []model.Dynamic{{
 		ID: "dynamic", UID: "42", UPName: "tester", Type: "DYNAMIC_TYPE_WORD",
 		PublishedAt: time.Now(), Summary: "hello", URL: "https://t.bilibili.com/1",
-	}}, []string{"missing-channel"}, state.DynamicBaselineNone)
+	}}, []string{channel.ID}, state.DynamicBaselineNone)
 	require.NoError(t, err)
 	require.Equal(t, 1, created)
 
 	events := NewEventBus()
 	subscription := events.Subscribe()
 	t.Cleanup(subscription.Close)
-	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 2, 4), events, nil)
+	engine := NewEngine(store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 2, 4), events, nil, WithNotificationHTTPClient(webhook.Client()))
 	require.NoError(t, engine.dispatchOnce(t.Context()))
 
 	topics, _, err := subscription.Next(t.Context())

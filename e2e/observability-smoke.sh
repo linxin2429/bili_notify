@@ -51,7 +51,7 @@ grafana_ready() {
 }
 
 wait_for "Collector" collector_ready
-request -k https://bili-notify:8443/api/v3/session >/dev/null
+request -k https://bili-notify:8443/api/v4/session >/dev/null
 wait_for "application metrics in Prometheus" application_metric_received
 wait_for "application logs in Loki" application_log_received
 wait_for "application traces in Tempo" application_trace_received

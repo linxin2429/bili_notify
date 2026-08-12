@@ -86,15 +86,19 @@ func TestRunWithDependenciesLifecycleAndPersistentSeed(t *testing.T) {
 			}
 			response.Body.Close()
 			return response.StatusCode == http.StatusOK
-		}, 5*time.Second, 10*time.Millisecond)
+		}, 15*time.Second, 10*time.Millisecond)
 		require.Eventually(t, func() bool {
-			response, err := httpClient.Get("https://" + admin.Addr().String() + "/api/v3/session")
+			response, err := httpClient.Get("https://" + admin.Addr().String() + "/api/v4/session")
 			if err != nil {
 				return false
 			}
 			response.Body.Close()
 			return response.StatusCode == http.StatusOK
-		}, 5*time.Second, 10*time.Millisecond)
+		}, 15*time.Second, 10*time.Millisecond)
+		response, err := httpClient.Get("https://" + admin.Addr().String() + "/api/v3/session")
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, response.Body.Close()) })
+		assert.Equal(t, http.StatusNotFound, response.StatusCode)
 
 		cancel()
 		select {

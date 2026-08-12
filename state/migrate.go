@@ -6,11 +6,20 @@ import (
 	"fmt"
 
 	"github.com/linxin2429/bili_notify/state/migrations"
+	"github.com/linxin2429/bili_notify/vault"
 	"github.com/pressly/goose/v3"
 )
 
-func runMigrations(ctx context.Context, db *sql.DB) error {
-	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS)
+func runMigrations(ctx context.Context, db *sql.DB, v *vault.Vault) error {
+	if v == nil {
+		return fmt.Errorf("database migration vault is required")
+	}
+	provider, err := goose.NewProvider(
+		goose.DialectSQLite3,
+		db,
+		migrations.FS,
+		goose.WithGoMigrations(goose.NewGoMigration(10, &goose.GoFunc{RunTx: migrateV10(v)}, nil)),
+	)
 	if err != nil {
 		return fmt.Errorf("creating migration provider: %w", err)
 	}

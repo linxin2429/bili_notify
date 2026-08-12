@@ -27,7 +27,7 @@ test('runs resource administration, audit, and session security workflows', asyn
     await navigateTo(page, '通知渠道')
     await page.getByRole('button', { name: '编辑' }).click()
     await page.getByLabel('渠道名称').fill('E2E 企业微信 已修改')
-    const updateResponse = page.waitForResponse(response => response.url().includes('/api/v3/channels/') && response.request().method() === 'PUT')
+    const updateResponse = page.waitForResponse(response => response.url().includes('/api/v4/channels/') && response.request().method() === 'PUT')
     await page.getByRole('button', { name: '保存' }).click()
     expect(JSON.stringify(await (await updateResponse).json())).not.toContain(harness.manifest.webhook_url)
     await expect(page.getByText('E2E 企业微信 已修改')).toBeVisible()
@@ -36,7 +36,7 @@ test('runs resource administration, audit, and session security workflows', asyn
     await page.getByRole('textbox', { name: '动态轮询（秒）', exact: true }).fill('45')
     await page.getByRole('combobox', { name: '日志级别', exact: true }).selectOption('debug')
     await expect(page.getByRole('button', { name: '保存运行设置' })).toBeEnabled()
-    const settingsResponse = page.waitForResponse(response => response.url().endsWith('/api/v3/settings') && response.request().method() === 'PUT')
+    const settingsResponse = page.waitForResponse(response => response.url().endsWith('/api/v4/settings') && response.request().method() === 'PUT')
     await page.getByRole('button', { name: '保存运行设置' }).click()
     expect((await (await settingsResponse).json()).bilibili_dynamic_interval_sec).toBe(45)
 
@@ -49,7 +49,7 @@ test('runs resource administration, audit, and session security workflows', asyn
 
   await test.step('expose safe audit evidence for real mutations', async () => {
     await navigateTo(page, '操作日志')
-    const auditResponse = page.waitForResponse(response => response.url().includes('/api/v3/audit-logs?action=settings.update'))
+    const auditResponse = page.waitForResponse(response => response.url().includes('/api/v4/audit-logs?action=settings.update'))
     await page.getByRole('combobox', { name: '操作', exact: true }).selectOption('settings.update')
     await auditResponse
     await expect(page.getByRole('button', { name: '查看详情' })).toHaveCount(1)
