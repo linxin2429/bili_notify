@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -43,7 +44,7 @@ type collectorStore interface {
 	PutPlatformAccount(model.PlatformAccount) error
 	PutSource(model.Source) error
 	QueryContents(state.PlatformContentQuery) ([]model.Content, error)
-	RecordDynamics(string, []model.Dynamic, []string, state.DynamicBaselineMode) (int, error)
+	EnqueueSystemAlert(model.SystemAlert) error
 	SyncCommentTree(model.Content, []model.CommentNode, bool, bool, string, *model.CommentTarget) ([]model.CommentDigest, error)
 }
 
@@ -364,8 +365,14 @@ func (collector *Collector) localize(ctx context.Context, source model.Source, c
 		return err
 	}
 	settings := collector.settings()
+	auth := media.AuthorizeMediaFunc(func(request *http.Request) {
+		if strings.EqualFold(request.URL.Hostname(), "api.zsxq.com") {
+			request.Header.Set("User-Agent", webUserAgent)
+			request.AddCookie(&http.Cookie{Name: "zsxq_access_token", Value: token})
+		}
+	})
 	result := collector.assets.EnsureAttachments(ctx, model.PlatformZSXQ, source.ID, content.ID, attachments,
-		int64(settings.ZSXQAssetMaxFileMiB)<<20, int64(settings.ZSXQAssetTotalBudgetGiB)<<30, token)
+		int64(settings.ZSXQAssetMaxFileMiB)<<20, int64(settings.ZSXQAssetTotalBudgetGiB)<<30, auth)
 	if result.BudgetFull {
 		collector.logger.WarnContext(ctx, "Knowledge Planet attachment budget exhausted", "event", "zsxq.asset.budget_exhausted")
 		collector.queueSystemAlert(ctx, "zsxq-asset-budget-exhausted", "知识星球附件总预算已耗尽；新附件将只归档元数据，现有档案不会自动删除。")
@@ -523,9 +530,8 @@ func (collector *Collector) recordSourceError(source model.Source, err error) {
 }
 
 func (collector *Collector) queueSystemAlert(ctx context.Context, id, message string) {
-	dynamic := model.Dynamic{ID: "system:" + id, UID: "system", UPName: "Bili Notify", Type: "SYSTEM",
-		PublishedAt: time.Now(), Summary: message}
-	if _, err := collector.store.RecordDynamics("system", []model.Dynamic{dynamic}, nil, state.DynamicBaselineNone); err != nil {
+	alert := model.SystemAlert{ID: "system:" + id, Title: "[Bili Notify] 系统状态变更", Body: message, CreatedAt: time.Now()}
+	if err := collector.store.EnqueueSystemAlert(alert); err != nil {
 		collector.logger.ErrorContext(ctx, "unable to queue Knowledge Planet system alert", "event", "zsxq.alert.queue_failed", "error", publicError(err))
 	}
 }

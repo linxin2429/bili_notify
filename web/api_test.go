@@ -237,7 +237,7 @@ func createWebTestDelivery(t *testing.T, store *state.Store) string {
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}))
 	channel, err := store.PutChannel(model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com/hook"}})
 	require.NoError(t, err)
-	_, err = store.RecordDynamics("42", []model.Dynamic{{ID: "dynamic", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now()}}, []string{channel.ID}, state.DynamicBaselineNone)
+	_, err = recordDynamicsForWebTest(store, "42", []model.Dynamic{{ID: "dynamic", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now()}}, []string{channel.ID}, state.DynamicBaselineNone)
 	require.NoError(t, err)
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -54,9 +55,7 @@ func (m *runtimeSettingsManager) UpdateSettings(settings model.RuntimeSettings) 
 	if m.engine.Settings() == settings {
 		return nil
 	}
-	if err := m.store.PutRuntimeSettings(settings); err != nil {
-		return fmt.Errorf("persisting runtime settings: %w", err)
-	}
+	previous := m.engine.Settings()
 	if m.loggers != nil {
 		if err := m.loggers.Apply(settings.LogLevel); err != nil {
 			return fmt.Errorf("applying logging settings: %w", err)
@@ -64,17 +63,38 @@ func (m *runtimeSettingsManager) UpdateSettings(settings model.RuntimeSettings) 
 	}
 	drainCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if m.bilibiliGate != nil {
-		if err := m.bilibiliGate.Update(drainCtx, settings.BilibiliRequestRate, settings.BilibiliRequestConcurrency, 10*time.Second); err != nil {
-			return fmt.Errorf("updating Bilibili request gate: %w", err)
-		}
+	if err := m.applyGates(drainCtx, settings); err != nil {
+		return errors.Join(err, m.restoreRuntime(previous))
 	}
-	if m.zsxqGate != nil {
-		if err := m.zsxqGate.Update(drainCtx, settings.ZSXQRequestRate, settings.ZSXQRequestConcurrency, 10*time.Second); err != nil {
-			return fmt.Errorf("updating ZSXQ request gate: %w", err)
-		}
+	if err := m.store.PutRuntimeSettings(settings); err != nil {
+		return errors.Join(fmt.Errorf("persisting runtime settings: %w", err), m.restoreRuntime(previous))
 	}
 	m.engine.ApplySettings(settings)
 	m.events.Publish(service.TopicSettings | service.TopicStatus)
 	return nil
+}
+
+func (m *runtimeSettingsManager) applyGates(ctx context.Context, settings model.RuntimeSettings) error {
+	if m.bilibiliGate != nil {
+		if err := m.bilibiliGate.Update(ctx, settings.BilibiliRequestRate, settings.BilibiliRequestConcurrency, 10*time.Second); err != nil {
+			return fmt.Errorf("updating Bilibili request gate: %w", err)
+		}
+	}
+	if m.zsxqGate != nil {
+		if err := m.zsxqGate.Update(ctx, settings.ZSXQRequestRate, settings.ZSXQRequestConcurrency, 10*time.Second); err != nil {
+			return fmt.Errorf("updating ZSXQ request gate: %w", err)
+		}
+	}
+	return nil
+}
+
+func (m *runtimeSettingsManager) restoreRuntime(settings model.RuntimeSettings) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var restoreErr error
+	if m.loggers != nil {
+		restoreErr = errors.Join(restoreErr, m.loggers.Apply(settings.LogLevel))
+	}
+	restoreErr = errors.Join(restoreErr, m.applyGates(ctx, settings))
+	return restoreErr
 }

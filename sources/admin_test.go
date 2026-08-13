@@ -81,7 +81,11 @@ func TestAdminOwnsSourceMutationSideEffects(t *testing.T) {
 			repository := &memoryRepository{sources: make(map[string]model.Source)}
 			bili, changed, deleted := 0, 0, 0
 			admin, err := NewAdmin(func(context.Context) Repository { return repository },
-				func() { bili++ }, func() { changed++ }, func() { deleted++ })
+				func(platform model.Platform) {
+					if platform == model.PlatformBilibili {
+						bili++
+					}
+				}, func() { changed++ }, func() { deleted++ })
 			require.NoError(t, err)
 			source := model.Source{ID: model.SourceID(model.PlatformBilibili, "42"), Platform: model.PlatformBilibili, Type: model.SourceBilibiliUP, ExternalID: "42", Name: "UP", BaselineState: model.BaselinePending}
 			require.NoError(t, tt.run(t.Context(), admin, source))

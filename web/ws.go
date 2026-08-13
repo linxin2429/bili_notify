@@ -55,9 +55,10 @@ func conflictFailure(err error) error {
 type deliveryView struct {
 	ID        string                  `json:"id"`
 	Kind      string                  `json:"kind"`
-	Dynamic   dynamicPreview          `json:"dynamic,omitzero"`
+	Content   *contentDeliveryPreview `json:"content,omitempty"`
 	Comment   *commentDeliveryPreview `json:"comment,omitempty"`
 	AI        *aiDeliveryPreview      `json:"ai,omitempty"`
+	System    *systemDeliveryPreview  `json:"system,omitempty"`
 	ChannelID string                  `json:"channel_id"`
 	State     model.DeliveryState     `json:"state"`
 	Attempts  int                     `json:"attempts"`
@@ -68,8 +69,8 @@ type deliveryView struct {
 
 type aiDeliveryPreview struct {
 	JobID        string          `json:"job_id"`
-	DynamicID    string          `json:"dynamic_id"`
-	UPName       string          `json:"up_name,omitempty"`
+	ContentID    string          `json:"content_id"`
+	AuthorName   string          `json:"author_name,omitempty"`
 	Title        string          `json:"title,omitempty"`
 	Stage        model.AIJobKind `json:"stage"`
 	Succeeded    bool            `json:"succeeded"`
@@ -77,10 +78,10 @@ type aiDeliveryPreview struct {
 	ErrorMessage string          `json:"error_message,omitempty"`
 }
 
-type dynamicPreview struct {
-	ID          string    `json:"id"`
-	UID         string    `json:"uid"`
-	UPName      string    `json:"up_name"`
+type contentDeliveryPreview struct {
+	ContentID   string    `json:"content_id"`
+	SourceID    string    `json:"source_id"`
+	AuthorName  string    `json:"author_name"`
 	Type        string    `json:"type"`
 	PublishedAt time.Time `json:"published_at"`
 	Summary     string    `json:"summary"`
@@ -88,14 +89,20 @@ type dynamicPreview struct {
 }
 
 type commentDeliveryPreview struct {
-	RPID         string    `json:"rpid"`
-	UPUID        string    `json:"up_uid"`
-	UPName       string    `json:"up_name"`
-	ContentType  string    `json:"content_type"`
-	ContentID    string    `json:"content_id"`
-	ContentTitle string    `json:"content_title,omitempty"`
-	ContentURL   string    `json:"content_url"`
-	PublishedAt  time.Time `json:"published_at"`
+	RPID         string           `json:"rpid"`
+	AuthorID     string           `json:"author_id"`
+	AuthorName   string           `json:"author_name"`
+	AuthorRole   model.AuthorRole `json:"author_role"`
+	ContentType  string           `json:"content_type"`
+	ContentID    string           `json:"content_id"`
+	ContentTitle string           `json:"content_title,omitempty"`
+	ContentURL   string           `json:"content_url"`
+	PublishedAt  time.Time        `json:"published_at"`
+}
+
+type systemDeliveryPreview struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
 }
 
 type biliLoginView struct {
@@ -293,24 +300,25 @@ func resourceTopics(topics service.Topic) []string {
 func deliveryViews(deliveries []model.Delivery) []deliveryView {
 	views := make([]deliveryView, 0, len(deliveries))
 	for _, delivery := range deliveries {
-		kind := "content"
-		if delivery.Kind == model.DeliveryKindComment {
-			kind = "comment_digest"
-		} else if delivery.Kind == model.DeliveryKindAI {
-			kind = "ai"
-		}
 		view := deliveryView{
-			ID: delivery.ID, Kind: kind,
+			ID: delivery.ID, Kind: string(delivery.Kind),
 			ChannelID: delivery.ChannelID, State: delivery.State, Attempts: delivery.Attempts,
 			NextAt: delivery.NextAt, LastError: delivery.LastError, CreatedAt: delivery.CreatedAt,
 		}
 		switch delivery.Kind {
+		case model.DeliveryKindContent:
+			if delivery.Content == nil {
+				break
+			}
+			view.Content = &contentDeliveryPreview{ContentID: delivery.Content.ContentID, SourceID: delivery.Content.SourceID,
+				AuthorName: delivery.Content.AuthorName, Type: delivery.Content.UpstreamType, PublishedAt: delivery.Content.PublishedAt,
+				Summary: previewText(delivery.Content.Text, 240), URL: delivery.Content.URL}
 		case model.DeliveryKindComment:
 			if delivery.Comment == nil {
 				break
 			}
 			view.Comment = &commentDeliveryPreview{
-				RPID: delivery.Comment.RPID, UPUID: delivery.Comment.UPUID, UPName: delivery.Comment.UPName,
+				RPID: delivery.Comment.RPID, AuthorID: delivery.Comment.AuthorID, AuthorName: delivery.Comment.AuthorName, AuthorRole: delivery.Comment.AuthorRole,
 				ContentType: delivery.Comment.ContentType, ContentID: delivery.Comment.ContentID,
 				ContentTitle: delivery.Comment.ContentTitle, ContentURL: delivery.Comment.ContentURL,
 				PublishedAt: delivery.Comment.PublishedAt,
@@ -324,15 +332,13 @@ func deliveryViews(deliveries []model.Delivery) []deliveryView {
 				body = delivery.AI.ErrorMessage
 			}
 			view.AI = &aiDeliveryPreview{
-				JobID: delivery.AI.JobID, DynamicID: delivery.AI.DynamicID, UPName: delivery.AI.UPName,
+				JobID: delivery.AI.JobID, ContentID: delivery.AI.ContentID, AuthorName: delivery.AI.AuthorName,
 				Title: delivery.AI.Title, Stage: delivery.AI.Stage, Succeeded: delivery.AI.Succeeded,
 				Summary: previewText(body, 240), ErrorMessage: delivery.AI.ErrorMessage,
 			}
-		default:
-			view.Dynamic = dynamicPreview{
-				ID: delivery.Dynamic.ID, UID: delivery.Dynamic.UID, UPName: delivery.Dynamic.UPName,
-				Type: delivery.Dynamic.Type, PublishedAt: delivery.Dynamic.PublishedAt,
-				Summary: previewText(delivery.Dynamic.Summary, 240), URL: delivery.Dynamic.URL,
+		case model.DeliveryKindSystem:
+			if delivery.System != nil {
+				view.System = &systemDeliveryPreview{Title: delivery.System.Title, Body: previewText(delivery.System.Body, 240)}
 			}
 		}
 		views = append(views, view)
@@ -429,9 +435,6 @@ func (s *Server) saveChannel(input channelInput, id string) (model.Channel, erro
 		return model.Channel{}, validationFailure(err)
 	}
 	updated, err := s.store.PutChannel(channel)
-	if err == nil && update {
-		_ = s.store.UnblockChannel(id)
-	}
 	return updated, err
 }
 

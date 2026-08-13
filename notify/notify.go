@@ -28,6 +28,7 @@ import (
 
 	"github.com/linxin2429/bili_notify/media"
 	"github.com/linxin2429/bili_notify/model"
+	platformcontract "github.com/linxin2429/bili_notify/platform"
 	mail "github.com/wneessen/go-mail"
 )
 
@@ -181,37 +182,38 @@ func defaultHTTPClient() *http.Client {
 	return &http.Client{Transport: transport}
 }
 
-func DynamicMessage(d model.Dynamic) Message {
-	if d.Type == "SYSTEM" {
-		return TextMessage("[Bili Notify] 系统状态变更", d.Summary)
-	}
-	typeName := dynamicTypeName(d.Type)
-	platformName, noun := "B站", "动态"
-	if d.Platform == model.PlatformZSXQ {
-		platformName, noun = "知识星球", "内容"
-	}
-	subject := fmt.Sprintf("[%s%s] %s 发布了%s", platformName, noun, d.UPName, typeName)
+func ContentMessage(content model.ContentSnapshot) Message {
+	typeName := dynamicTypeName(content.UpstreamType)
+	meta, _ := platformcontract.BuiltinMeta(content.Platform)
+	platformName, noun := meta.DisplayName, meta.ContentNoun
+	subject := fmt.Sprintf("[%s%s] %s 发布了%s", platformName, noun, content.AuthorName, typeName)
 	message := Message{
 		Subject:  subject,
-		Sections: []Section{dynamicSection(d, false)},
-		Action:   Link{Label: "查看原动态", URL: d.URL},
-		Files:    slices.Clone(d.Files),
+		Sections: []Section{contentSection(content, false)},
+		Action:   Link{Label: "查看原内容", URL: content.URL},
+		Files:    slices.Clone(content.Files),
 	}
-	for original := d.Original; original != nil; original = original.Original {
-		message.Sections = append(message.Sections, dynamicSection(*original, true))
+	for original := content.ForwardOf; original != nil; original = original.ForwardOf {
+		message.Sections = append(message.Sections, contentSection(*original, true))
 	}
-	if d.Type == "DYNAMIC_TYPE_FORWARD" && d.Original == nil {
+	if content.UpstreamType == "DYNAMIC_TYPE_FORWARD" && content.ForwardOf == nil {
 		message.Sections = append(message.Sections, Section{Heading: "转发原动态", Paragraphs: []string{"原动态已删除或不可用。"}})
 	}
 	return message
 }
 
+func SystemMessage(alert model.SystemAlert) Message {
+	return TextMessage(firstNonEmpty(alert.Title, "[Bili Notify] 系统状态变更"), alert.Body)
+}
+
 func CommentThreadMessage(n model.CommentNotification) Message {
-	platformName, authorLabel := "B站", "UP主"
-	if n.Platform == model.PlatformZSXQ || n.ContentType == "zsxq" {
-		platformName, authorLabel = "知识星球", "星球主"
+	meta, _ := platformcontract.BuiltinMeta(n.Platform)
+	platformName := meta.DisplayName
+	authorLabel := meta.TriggerLabel
+	if authorLabel == "" {
+		authorLabel = "作者"
 	}
-	subject := fmt.Sprintf("[%s评论] %s 回复了评论", platformName, n.UPName)
+	subject := fmt.Sprintf("[%s评论] %s 回复了评论", platformName, n.AuthorName)
 	contentLabel := dynamicTypeName(n.ContentType)
 	if contentLabel == n.ContentType {
 		contentLabel = "内容"
@@ -219,7 +221,7 @@ func CommentThreadMessage(n model.CommentNotification) Message {
 	section := Section{
 		Heading: firstNonEmpty(n.ContentTitle, contentLabel),
 		Facts: []Fact{
-			{Label: authorLabel, Value: n.UPName},
+			{Label: authorLabel, Value: n.AuthorName},
 			{Label: "来源", Value: n.SourceName},
 			{Label: "内容类型", Value: contentLabel},
 			{Label: "回复时间", Value: n.PublishedAt.In(time.Local).Format("2006-01-02 15:04:05 MST")},
@@ -310,75 +312,73 @@ func dynamicTypeName(dynamicType string) string {
 	return typeName
 }
 
-func dynamicSection(d model.Dynamic, forwarded bool) Section {
-	published := d.PublishedAt.In(time.Local).Format("2006-01-02 15:04:05 MST")
-	heading := d.Title
+func contentSection(content model.ContentSnapshot, forwarded bool) Section {
+	published := content.PublishedAt.In(time.Local).Format("2006-01-02 15:04:05 MST")
+	heading := content.Title
 	if forwarded {
-		heading = "转发自 " + d.UPName
-		if d.Title != "" {
-			heading += " · " + d.Title
+		heading = "转发自 " + content.AuthorName
+		if content.Title != "" {
+			heading += " · " + content.Title
 		}
 	}
-	authorLabel := "UP主"
-	if d.Platform == model.PlatformZSXQ {
-		authorLabel = "作者"
-	}
+	meta, _ := platformcontract.BuiltinMeta(content.Platform)
+	authorLabel := meta.AuthorLabel
 	section := Section{
 		Heading: heading,
 		Facts: []Fact{
-			{Label: authorLabel, Value: d.UPName},
-			{Label: "来源", Value: d.SourceName},
-			{Label: "类型", Value: dynamicTypeName(d.Type)},
+			{Label: authorLabel, Value: content.AuthorName},
+			{Label: "来源", Value: content.SourceName},
+			{Label: "类型", Value: dynamicTypeName(content.UpstreamType)},
 			{Label: "发布时间", Value: published},
 		},
 	}
-	if d.Badge != "" {
-		section.Facts = append(section.Facts, Fact{Label: "标记", Value: d.Badge})
+	if content.Badge != "" {
+		section.Facts = append(section.Facts, Fact{Label: "标记", Value: content.Badge})
 	}
-	if d.Summary != "" {
-		section.Paragraphs = append(section.Paragraphs, d.Summary)
+	if content.Text != "" {
+		section.Paragraphs = append(section.Paragraphs, content.Text)
 	}
-	if d.Description != "" {
-		section.Paragraphs = append(section.Paragraphs, d.Description)
+	if content.Description != "" && content.Description != content.Text {
+		section.Paragraphs = append(section.Paragraphs, content.Description)
 	}
-	if d.Video != nil {
-		if d.Video.Duration != "" {
-			section.Facts = append(section.Facts, Fact{Label: "时长", Value: d.Video.Duration})
+	if content.Video != nil {
+		if content.Video.Duration != "" {
+			section.Facts = append(section.Facts, Fact{Label: "时长", Value: content.Video.Duration})
 		}
-		if d.Video.Views != "" {
-			section.Facts = append(section.Facts, Fact{Label: "播放", Value: d.Video.Views})
+		if content.Video.Views != "" {
+			section.Facts = append(section.Facts, Fact{Label: "播放", Value: content.Video.Views})
 		}
-		if d.Video.Danmaku != "" {
-			section.Facts = append(section.Facts, Fact{Label: "弹幕", Value: d.Video.Danmaku})
+		if content.Video.Danmaku != "" {
+			section.Facts = append(section.Facts, Fact{Label: "弹幕", Value: content.Video.Danmaku})
 		}
 	}
-	if d.Stats != nil {
+	if content.Stats != nil {
 		section.Facts = append(section.Facts,
-			Fact{Label: "转发", Value: strconv.FormatInt(d.Stats.Forwards, 10)},
-			Fact{Label: "评论", Value: strconv.FormatInt(d.Stats.Comments, 10)},
-			Fact{Label: "点赞", Value: strconv.FormatInt(d.Stats.Likes, 10)},
+			Fact{Label: "转发", Value: strconv.FormatInt(content.Stats["forwards"], 10)},
+			Fact{Label: "评论", Value: strconv.FormatInt(content.Stats["comments"], 10)},
+			Fact{Label: "点赞", Value: strconv.FormatInt(content.Stats["likes"], 10)},
 		)
 	}
-	if d.TargetURL != "" {
-		section.Links = append(section.Links, Link{Label: "查看内容", URL: d.TargetURL})
+	if content.TargetURL != "" {
+		section.Links = append(section.Links, Link{Label: "查看内容", URL: content.TargetURL})
 	}
-	if forwarded && d.URL != "" {
-		section.Links = append(section.Links, Link{Label: "查看被转发动态", URL: d.URL})
+	if forwarded && content.URL != "" {
+		section.Links = append(section.Links, Link{Label: "查看被转发动态", URL: content.URL})
 	}
-	for _, link := range d.Links {
+	for _, link := range content.Links {
 		label := link.Text
 		if label == "" {
 			label = "正文链接"
 		}
 		section.Links = append(section.Links, Link{Label: label, URL: link.URL})
 	}
-	for i, media := range d.Media {
+	for i, media := range content.Media {
 		label := fmt.Sprintf("图片 %d", i+1)
-		if media.Kind == model.DynamicMediaCover {
+		if media.Kind == string(model.DynamicMediaCover) {
 			label = "封面"
 		}
 		section.Images = append(section.Images, Image{
-			Label: label, URL: media.URL, LocalPath: media.LocalPath, ContentType: media.ContentType,
+			Label: label, URL: media.URL, LocalPath: media.LocalPath, ContentType: media.MIME,
 		})
 	}
 	return section

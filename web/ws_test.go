@@ -297,13 +297,13 @@ func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
 	deliveries := make([]model.Delivery, 100)
 	for i := range deliveries {
 		deliveries[i] = model.Delivery{
-			ID: "delivery", Kind: model.DeliveryKindDynamic,
-			Dynamic: model.Dynamic{
-				ID: "dynamic", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_DRAW",
-				PublishedAt: time.Now(), Summary: strings.Repeat("正文", 5000), URL: "https://t.bilibili.com/1",
+			ID: "delivery", Kind: model.DeliveryKindContent,
+			Content: &model.ContentSnapshot{
+				ContentID: "dynamic", SourceID: "42", AuthorName: "up", UpstreamType: "DYNAMIC_TYPE_DRAW",
+				PublishedAt: time.Now(), Text: strings.Repeat("正文", 5000), URL: "https://t.bilibili.com/1",
 				Description: strings.Repeat("不应进入管理台", 5000),
-				Media:       []model.DynamicMedia{{Kind: model.DynamicMediaImage, URL: "https://i0.hdslb.com/image.jpg"}},
-				Original:    &model.Dynamic{ID: "original", Summary: strings.Repeat("原文", 5000)},
+				Media:       []model.SnapshotMedia{{Type: model.AttachmentImage, URL: "https://i0.hdslb.com/image.jpg"}},
+				ForwardOf:   &model.ContentSnapshot{ContentID: "original", Text: strings.Repeat("原文", 5000)},
 			},
 			State: model.DeliveryPending,
 		}
@@ -313,7 +313,8 @@ func TestDeliveryViewsExcludeRichPayloadAndStayBounded(t *testing.T) {
 	require.NoError(t, err)
 	assert.Less(t, len(raw), 1<<20)
 	assert.NotContains(t, string(raw), "不应进入管理台")
-	assert.LessOrEqual(t, len([]rune(views[0].Dynamic.Summary)), 241)
+	require.NotNil(t, views[0].Content)
+	assert.LessOrEqual(t, len([]rune(views[0].Content.Summary)), 241)
 }
 
 func TestAPIErrorClassification(t *testing.T) {

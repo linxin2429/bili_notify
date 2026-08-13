@@ -716,7 +716,11 @@ func newWebTestSourceAdmin(t *testing.T, server *Server, store *state.Store, eve
 	t.Helper()
 	admin, err := sources.NewAdmin(
 		func(ctx context.Context) sources.Repository { return store.WithContext(ctx) },
-		func() { server.engine.NotifyUPChanged() },
+		func(platform model.Platform) {
+			if platform == model.PlatformBilibili {
+				server.engine.NotifyUPChanged()
+			}
+		},
 		func() {
 			events.Publish(service.TopicStatus | service.TopicUPs | service.TopicSources | service.TopicBackfills)
 		},

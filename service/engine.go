@@ -35,7 +35,7 @@ const (
 type Engine struct {
 	store              *state.Store
 	client             *bilibili.Client
-	media              *media.Downloader
+	media              *media.AttachmentDownloader
 	notificationClient *http.Client
 	logger             *slog.Logger
 	metrics            *Metrics
@@ -92,7 +92,7 @@ func WithRequestPause(pause func(time.Time)) EngineOption {
 	}
 }
 
-func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, settings model.RuntimeSettings, events *EventBus, mediaDownloader *media.Downloader, options ...EngineOption) *Engine {
+func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger, metrics *Metrics, settings model.RuntimeSettings, events *EventBus, mediaDownloader *media.AttachmentDownloader, options ...EngineOption) *Engine {
 	if events == nil {
 		events = NewEventBus()
 	}
@@ -619,8 +619,12 @@ func (e *Engine) pollFeed(ctx context.Context, account model.BiliAccount, ups []
 		allDynamics = append(allDynamics, group...)
 	}
 	slices.SortFunc(allDynamics, func(a, b model.Dynamic) int { return a.PublishedAt.Compare(b.PublishedAt) })
-	e.enrichMedia(ctx, allDynamics)
-	created, err := store.RecordFeedDynamics(account.UID, newBaseline, allDynamics, nil, failedUIDs)
+	archiveItems := make([]state.ArchiveItem, 0, len(allDynamics))
+	for _, dynamic := range allDynamics {
+		archiveItems = append(archiveItems, e.archiveDynamic(ctx, dynamic, false, true))
+	}
+	created, err := store.ArchiveFeedBatch(state.FeedArchive{AccountUID: account.UID, UpdateBaseline: newBaseline,
+		Items: archiveItems, FailedExternalIDs: failedUIDs})
 	if err != nil {
 		return err
 	}
@@ -738,26 +742,31 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP) (err error) {
 		offset = page.Offset
 	}
 	slices.SortFunc(items, func(a, b model.Dynamic) int { return a.PublishedAt.Compare(b.PublishedAt) })
-	e.enrichMedia(ctx, items)
 	baselineMode := state.DynamicBaselineNone
 	if !up.BaselineReady {
 		baselineMode = state.DynamicBaselineAll
 	} else if !up.ExclusiveBaselineReady {
 		baselineMode = state.DynamicBaselineExclusive
 	}
-	created, err := store.RecordDynamics(up.UID, items, nil, baselineMode)
+	archiveItems := make([]state.ArchiveItem, 0, len(items))
+	for _, dynamic := range items {
+		baseline := baselineMode == state.DynamicBaselineAll || baselineMode == state.DynamicBaselineExclusive && dynamic.Exclusive
+		archiveItems = append(archiveItems, e.archiveDynamic(ctx, dynamic, baseline, !baseline))
+	}
+	created, err := store.ArchiveSourceBatch(state.SourceArchive{SourceID: model.SourceID(model.PlatformBilibili, up.UID), Items: archiveItems,
+		CompleteBaseline: baselineMode == state.DynamicBaselineAll, CompleteExclusiveBaseline: baselineMode != state.DynamicBaselineNone})
 	if err != nil {
 		return fmt.Errorf("recording dynamics: %w", err)
 	}
 	if created > 0 {
-		// RecordDynamics commits content, seen markers, and outbox rows atomically.
+		// ArchiveSourceBatch commits content, seen markers, and outbox rows atomically.
 		// Publish that committed state before later bookkeeping can fail.
 		e.publish(TopicStatus | TopicDeliveries | TopicDynamics)
 	} else if len(items) > 0 {
 		e.publish(TopicDynamics)
 	}
 	if !up.BaselineReady {
-		// BaselineReady is committed by RecordDynamics as well.
+		// BaselineReady is committed by ArchiveSourceBatch as well.
 		e.publish(TopicUPs)
 	} else if !up.ExclusiveBaselineReady {
 		e.logger.InfoContext(ctx, "Bilibili exclusive dynamic baseline established", "event", "bilibili.up.exclusive_baseline_established", "up_uid", up.UID, "up_name", name)
@@ -1070,10 +1079,13 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 		thread, incomplete := buildCommentThread(target, reply, roots, children)
 		notes = append(notes, model.CommentNotification{
 			RPID:         reply.RPID,
-			UPUID:        target.UID,
-			UPName:       target.UPName,
+			Platform:     model.PlatformBilibili,
+			SourceID:     model.SourceID(model.PlatformBilibili, target.UID),
+			AuthorID:     target.UID,
+			AuthorName:   target.UPName,
+			AuthorRole:   model.RoleUP,
 			ContentType:  target.ContentType,
-			ContentID:    target.DynamicID,
+			ContentID:    model.ContentID(model.PlatformBilibili, target.DynamicID),
 			ContentTitle: target.Title,
 			ContentURL:   target.URL,
 			PublishedAt:  reply.CTime,
@@ -1409,7 +1421,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (changed 
 		if err := store.FailDelivery(delivery.ID, true, time.Now(), deliveryErr, delivery.Progress); err != nil {
 			return false, err
 		}
-		e.logger.WarnContext(ctx, "notification delivery blocked", "event", "delivery.blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "error", deliveryErr)
+		e.logger.WarnContext(ctx, "notification delivery blocked", "event", "delivery.blocked", "delivery_id", delivery.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "error", deliveryErr)
 		return true, nil
 	}
 	if !channel.Enabled {
@@ -1424,7 +1436,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (changed 
 			if err := store.FailDelivery(delivery.ID, true, time.Now(), deliveryErr, delivery.Progress); err != nil {
 				return false, err
 			}
-			e.logger.WarnContext(ctx, "notification delivery blocked", "event", "delivery.blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "error", deliveryErr)
+			e.logger.WarnContext(ctx, "notification delivery blocked", "event", "delivery.blocked", "delivery_id", delivery.ID, "channel_id", delivery.ChannelID, "attempt", delivery.Attempts+1, "error", deliveryErr)
 			return true, nil
 		}
 	}
@@ -1433,7 +1445,7 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (changed 
 		if storeErr := store.FailDelivery(delivery.ID, true, time.Now(), err, delivery.Progress); storeErr != nil {
 			return false, storeErr
 		}
-		e.logger.WarnContext(ctx, "notification delivery blocked", "event", "delivery.blocked", "delivery_id", delivery.ID, "dynamic_id", delivery.Dynamic.ID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "error", err)
+		e.logger.WarnContext(ctx, "notification delivery blocked", "event", "delivery.blocked", "delivery_id", delivery.ID, "channel_id", channel.ID, "channel_type", channel.Type, "attempt", delivery.Attempts+1, "error", err)
 		return true, nil
 	}
 	message, contentID, err := deliveryMessage(delivery)
@@ -1486,18 +1498,28 @@ func (e *Engine) deliver(ctx context.Context, delivery model.Delivery) (changed 
 
 func deliveryMessage(delivery model.Delivery) (notify.Message, string, error) {
 	switch delivery.Kind {
+	case model.DeliveryKindContent:
+		if delivery.Content == nil {
+			return notify.Message{}, "", errors.New("content delivery is missing payload")
+		}
+		return notify.ContentMessage(*delivery.Content), delivery.Content.ContentID, nil
 	case model.DeliveryKindComment:
 		if delivery.Comment == nil {
 			return notify.Message{}, "", errors.New("comment delivery is missing payload")
 		}
-		return notify.CommentThreadMessage(*delivery.Comment), delivery.Comment.RPID, nil
+		return notify.CommentThreadMessage(*delivery.Comment), delivery.Comment.ContentID, nil
 	case model.DeliveryKindAI:
 		if delivery.AI == nil {
 			return notify.Message{}, "", errors.New("AI delivery is missing payload")
 		}
-		return notify.AINotificationMessage(*delivery.AI), delivery.AI.JobID, nil
+		return notify.AINotificationMessage(*delivery.AI), delivery.AI.ContentID, nil
+	case model.DeliveryKindSystem:
+		if delivery.System == nil {
+			return notify.Message{}, "", errors.New("system delivery is missing payload")
+		}
+		return notify.SystemMessage(*delivery.System), "", nil
 	default:
-		return notify.DynamicMessage(delivery.Dynamic), delivery.Dynamic.ID, nil
+		return notify.Message{}, "", fmt.Errorf("unsupported delivery kind %q", delivery.Kind)
 	}
 }
 
@@ -1592,11 +1614,8 @@ func (e *Engine) setAuth(valid bool) {
 
 func (e *Engine) enqueueSystem(summary string) {
 	now := time.Now()
-	dynamic := model.Dynamic{
-		ID: fmt.Sprintf("system:%d", now.UnixNano()), UID: "system", UPName: "Bili Notify", Type: "SYSTEM",
-		PublishedAt: now, Summary: summary, URL: "",
-	}
-	if _, err := e.store.RecordDynamics("system", []model.Dynamic{dynamic}, nil, state.DynamicBaselineNone); err != nil {
+	alert := model.SystemAlert{ID: fmt.Sprintf("system:%d", now.UnixNano()), Title: "[Bili Notify] 系统状态变更", Body: summary, CreatedAt: now}
+	if err := e.store.EnqueueSystemAlert(alert); err != nil {
 		e.logger.Error("unable to queue system alert", "event", "system_alert.queue_failed", "phase", "record_delivery", "error", err)
 		return
 	}
@@ -2072,18 +2091,31 @@ func enabledUPCount(ups []model.UP) int {
 	return count
 }
 
-func (e *Engine) enrichMedia(ctx context.Context, items []model.Dynamic) {
-	if e.media == nil || len(items) == 0 {
-		return
-	}
-	for i := range items {
-		ok, bad, downloadedBytes := e.media.Ensure(ctx, &items[i])
-		e.metrics.RecordMediaDownloads(ctx, ok, bad)
-		e.metrics.AddMediaBytes(ctx, downloadedBytes)
-		if bad > 0 {
-			e.logger.WarnContext(ctx, "media download incomplete", "event", "media.download.incomplete", "dynamic_id", items[i].ID, "up_uid", items[i].UID, "downloaded", ok, "failed", bad)
+func (e *Engine) archiveDynamic(ctx context.Context, dynamic model.Dynamic, baseline, notifyContent bool) state.ArchiveItem {
+	adapted := bilibili.AdaptDynamic(dynamic, baseline, time.Now())
+	if e.media != nil {
+		auth := media.AuthorizeMediaFunc(func(request *http.Request) {
+			request.Header.Set("Referer", "https://www.bilibili.com/")
+			request.Header.Set("Accept", "image/*,*/*;q=0.8")
+		})
+		result := e.media.EnsureAttachments(ctx, model.PlatformBilibili, adapted.Content.SourceID, adapted.Content.ID,
+			adapted.Attachments, media.MaxFileSize, int64(^uint64(0)>>1), auth)
+		e.metrics.RecordMediaDownloads(ctx, result.Downloaded, result.Failed)
+		e.metrics.AddMediaBytes(ctx, result.Bytes)
+		for index := range adapted.Attachments {
+			if index < len(adapted.Snapshot.Media) {
+				adapted.Snapshot.Media[index].LocalPath = adapted.Attachments[index].LocalPath
+				adapted.Snapshot.Media[index].MIME = adapted.Attachments[index].MIME
+				adapted.Snapshot.Media[index].Size = adapted.Attachments[index].Size
+			}
+		}
+		if result.Failed > 0 {
+			e.logger.WarnContext(ctx, "media download incomplete", "event", "media.download.incomplete", "content_id", adapted.Content.ID,
+				"source_id", adapted.Content.SourceID, "downloaded", result.Downloaded, "failed", result.Failed)
 		}
 	}
+	return state.ArchiveItem{Content: adapted.Content, Attachments: adapted.Attachments, Snapshot: adapted.Snapshot,
+		Notify: notifyContent, AutomaticAI: adapted.AutomaticAI}
 }
 
 func messageHasLocalMedia(message notify.Message) bool {

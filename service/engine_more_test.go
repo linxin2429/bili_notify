@@ -43,7 +43,7 @@ func TestDeliverClassifiesOutcomes(t *testing.T) {
 		{name: "success completes delivery", status: http.StatusOK, enabled: true, wantChanged: true, wantSendSpan: true},
 		{name: "server failure schedules retry", status: http.StatusInternalServerError, enabled: true, wantChanged: true, wantRemaining: true, wantState: model.DeliveryPending, wantAttempts: 1, wantSendSpan: true, wantSpanError: true},
 		{name: "client failure blocks delivery", status: http.StatusBadRequest, enabled: true, wantChanged: true, wantRemaining: true, wantState: model.DeliveryBlocked, wantAttempts: 1, wantSendSpan: true, wantSpanError: true},
-		{name: "disabled channel leaves delivery alone", status: http.StatusOK, wantRemaining: true, wantState: model.DeliveryPending},
+		{name: "disabled channel suspends delivery", status: http.StatusOK, wantRemaining: true, wantState: model.DeliverySuspended},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -64,7 +64,7 @@ func TestDeliverClassifiesOutcomes(t *testing.T) {
 				Settings: map[string]string{"webhook": webhook.URL},
 			})
 			require.NoError(t, putErr)
-			created, err := store.RecordDynamics("42", []model.Dynamic{{
+			created, err := recordDynamicsForTest(store, "42", []model.Dynamic{{
 				ID: "dynamic", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_WORD",
 				PublishedAt: time.Now(), Summary: "hello", URL: "https://t.bilibili.com/1",
 			}}, []string{channel.ID}, state.DynamicBaselineNone)
@@ -142,7 +142,7 @@ func TestDeliverContinuesPersistedProducerTrace(t *testing.T) {
 
 	producerCtx, producer := provider.Tracer("test").Start(t.Context(), "collection.poll_up")
 	producerContext := producer.SpanContext()
-	created, err := store.WithContext(producerCtx).RecordDynamics("42", []model.Dynamic{{
+	created, err := recordDynamicsForTest(store.WithContext(producerCtx), "42", []model.Dynamic{{
 		ID: "dynamic", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_WORD",
 		PublishedAt: time.Now(), Summary: "hello", URL: "https://t.bilibili.com/1",
 	}}, nil, state.DynamicBaselineNone)
@@ -249,8 +249,8 @@ func TestDeliveryMessage(t *testing.T) {
 		wantID      string
 		wantErr     string
 	}{
-		{name: "dynamic", delivery: model.Delivery{Kind: model.DeliveryKindDynamic, Dynamic: model.Dynamic{ID: "dynamic", UPName: "UP", Type: "DYNAMIC_TYPE_WORD"}}, wantSubject: "UP", wantID: "dynamic"},
-		{name: "comment", delivery: model.Delivery{Kind: model.DeliveryKindComment, Comment: &model.CommentNotification{RPID: "reply", UPName: "UP"}}, wantSubject: "UP", wantID: "reply"},
+		{name: "content", delivery: model.Delivery{Kind: model.DeliveryKindContent, Content: &model.ContentSnapshot{ContentID: "dynamic", AuthorName: "UP", UpstreamType: "DYNAMIC_TYPE_WORD"}}, wantSubject: "UP", wantID: "dynamic"},
+		{name: "comment", delivery: model.Delivery{Kind: model.DeliveryKindComment, Comment: &model.CommentNotification{RPID: "reply", ContentID: "content", AuthorName: "UP"}}, wantSubject: "UP", wantID: "content"},
 		{name: "missing comment", delivery: model.Delivery{Kind: model.DeliveryKindComment}, wantErr: "missing payload"},
 	}
 	for _, tt := range tests {
@@ -673,8 +673,10 @@ func TestSetAuthQueuesLifecycleAlerts(t *testing.T) {
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 2)
-	assert.Contains(t, deliveries[0].Dynamic.Summary+deliveries[1].Dynamic.Summary, "登录失效")
-	assert.Contains(t, deliveries[0].Dynamic.Summary+deliveries[1].Dynamic.Summary, "登录已恢复")
+	require.NotNil(t, deliveries[0].System)
+	require.NotNil(t, deliveries[1].System)
+	assert.Contains(t, deliveries[0].System.Body+deliveries[1].System.Body, "登录失效")
+	assert.Contains(t, deliveries[0].System.Body+deliveries[1].System.Body, "登录已恢复")
 }
 
 func TestEngineRunLifecycle(t *testing.T) {
@@ -772,7 +774,7 @@ func TestEngineErrorAndMediaHelpers(t *testing.T) {
 	engine := NewEngine(
 		store, bilibili.New(nil, "test"), slog.New(slog.NewTextHandler(io.Discard, nil)),
 		NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), NewEventBus(),
-		&media.Downloader{DataDir: t.TempDir(), Client: imageServer.Client(), UserAgent: "test", AllowPrivateNetwork: true},
+		&media.AttachmentDownloader{DataDir: t.TempDir(), Client: imageServer.Client(), UserAgent: "test", AllowPrivateNetwork: true},
 	)
 
 	engine.handleBiliAPIError(&bilibili.APIError{Kind: bilibili.ErrorRiskControl, Message: "blocked"})
@@ -785,13 +787,13 @@ func TestEngineErrorAndMediaHelpers(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, up.ConsecutiveFail)
 
-	items := []model.Dynamic{{
+	dynamic := model.Dynamic{
 		ID: "dynamic", UID: "42", Media: []model.DynamicMedia{
 			{Kind: model.DynamicMediaImage, URL: imageServer.URL + "/image.png"},
 			{Kind: model.DynamicMediaImage},
 		},
-	}}
-	engine.enrichMedia(t.Context(), items)
-	assert.NotEmpty(t, items[0].Media[0].LocalPath)
-	assert.Empty(t, items[0].Media[1].LocalPath)
+	}
+	archive := engine.archiveDynamic(t.Context(), dynamic, false, true)
+	assert.NotEmpty(t, archive.Attachments[0].LocalPath)
+	assert.Empty(t, archive.Attachments[1].LocalPath)
 }

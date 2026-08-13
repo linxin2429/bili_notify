@@ -44,7 +44,7 @@ func TestRetryDelivery(t *testing.T) {
 				require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}))
 				channel, putErr := store.PutChannel(model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com/hook"}})
 				require.NoError(t, putErr)
-				_, recordErr := store.RecordDynamics("42", []model.Dynamic{{ID: "dynamic", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now()}}, []string{channel.ID}, DynamicBaselineNone)
+				_, recordErr := recordDynamicsForTest(store, "42", []model.Dynamic{{ID: "dynamic", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now()}}, []string{channel.ID}, DynamicBaselineNone)
 				require.NoError(t, recordErr)
 				deliveries, listErr := store.ListDeliveries(0)
 				require.NoError(t, listErr)
@@ -86,7 +86,7 @@ func TestRetryDelivery(t *testing.T) {
 				assert.Equal(t, before.Attempts, got.Attempts)
 				assert.Equal(t, before.LastError, got.LastError)
 				assert.Equal(t, before.Progress, got.Progress)
-				assert.Equal(t, before.Dynamic, got.Dynamic)
+				assert.Equal(t, before.Content, got.Content)
 			} else {
 				assert.Equal(t, before.NextAt, got.NextAt)
 			}
@@ -108,7 +108,7 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	require.NoError(t, err)
 
 	first := model.Dynamic{ID: "1", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now(), URL: "https://t.bilibili.com/1"}
-	created, err := store.RecordDynamics("42", []model.Dynamic{first}, []string{channel.ID}, DynamicBaselineAll)
+	created, err := recordDynamicsForTest(store, "42", []model.Dynamic{first}, []string{channel.ID}, DynamicBaselineAll)
 	require.NoError(t, err)
 	assert.Equal(t, 0, created)
 	baselinedUP, err := store.UP("42")
@@ -129,7 +129,7 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	second.Media = []model.DynamicMedia{{Kind: model.DynamicMediaCover, URL: "https://i0.hdslb.com/cover.jpg"}}
 	second.Stats = &model.DynamicStats{Forwards: 1, Comments: 2, Likes: 3}
 	second.Original = &model.Dynamic{ID: "original", UPName: "author", Type: "DYNAMIC_TYPE_WORD", Summary: "original body"}
-	created, err = store.RecordDynamics("42", []model.Dynamic{first, second}, []string{channel.ID}, DynamicBaselineNone)
+	created, err = recordDynamicsForTest(store, "42", []model.Dynamic{first, second}, []string{channel.ID}, DynamicBaselineNone)
 	require.NoError(t, err)
 	assert.Equal(t, 1, created)
 	require.NoError(t, store.Close())
@@ -140,15 +140,16 @@ func TestBaselineAndDurableOutbox(t *testing.T) {
 	deliveries, err = store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, model.ContentID(model.PlatformBilibili, "2"), deliveries[0].Dynamic.ID)
+	assert.Equal(t, model.ContentID(model.PlatformBilibili, "2"), deliveries[0].Content.ContentID)
 
-	persisted := deliveries[0].Dynamic
+	persisted := deliveries[0].Content
+	require.NotNil(t, persisted)
 	assert.Equal(t, "video title", persisted.Title)
 	require.Len(t, persisted.Media, 1)
 	require.NotNil(t, persisted.Stats)
-	assert.Equal(t, int64(3), persisted.Stats.Likes)
-	require.NotNil(t, persisted.Original)
-	assert.Equal(t, "original body", persisted.Original.Summary)
+	assert.Equal(t, int64(3), persisted.Stats["likes"])
+	require.NotNil(t, persisted.ForwardOf)
+	assert.Equal(t, "original body", persisted.ForwardOf.Text)
 	require.NoError(t, store.CompleteDelivery(deliveries[0].ID))
 }
 
@@ -173,7 +174,7 @@ func TestExclusiveDynamicBaselineKeepsNormalDeliveries(t *testing.T) {
 		ID: "normal", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD",
 		PublishedAt: published.Add(time.Second),
 	}
-	created, err := store.RecordDynamics(
+	created, err := recordDynamicsForTest(store,
 		"42", []model.Dynamic{exclusive, normal}, []string{channel.ID}, DynamicBaselineExclusive,
 	)
 	require.NoError(t, err)
@@ -186,7 +187,7 @@ func TestExclusiveDynamicBaselineKeepsNormalDeliveries(t *testing.T) {
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, "bilibili:content:normal", deliveries[0].Dynamic.ID)
+	assert.Equal(t, "bilibili:content:normal", deliveries[0].Content.ContentID)
 
 	records, err := store.QueryContents(PlatformContentQuery{SourceID: "bilibili:up:42"})
 	require.NoError(t, err)
@@ -460,7 +461,7 @@ func TestCommentTargetsAndOutbox(t *testing.T) {
 		{UID: "42", DynamicID: "d0", ContentType: "DYNAMIC_TYPE_WORD", URL: "https://t.bilibili.com/d0", CommentType: 17, CommentOID: "50", PublishedAt: now.Add(-2 * time.Hour)},
 	}
 	for _, target := range discovered {
-		_, recordErr := store.RecordDynamics("42", []model.Dynamic{{
+		_, recordErr := recordDynamicsForTest(store, "42", []model.Dynamic{{
 			ID: target.DynamicID, UID: "42", UPName: "up", Type: target.ContentType,
 			PublishedAt: target.PublishedAt, URL: target.URL, Title: target.Title,
 		}}, nil, DynamicBaselineAll)
@@ -611,7 +612,7 @@ func TestRecordFeedDynamicsAdvancesCursorWithDurableOutbox(t *testing.T) {
 	putEnabledTestChannel(t, store)
 
 	dynamic := model.Dynamic{ID: "dynamic-1", UID: "42", UPName: "up", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now(), Summary: "new"}
-	created, err := store.RecordFeedDynamics("100", "new", []model.Dynamic{dynamic}, []string{"channel"}, nil)
+	created, err := recordFeedDynamicsForTest(store, "100", "new", []model.Dynamic{dynamic}, []string{"channel"}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, created)
 	feed, err := store.FeedState("100")
@@ -623,5 +624,41 @@ func TestRecordFeedDynamicsAdvancesCursorWithDurableOutbox(t *testing.T) {
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, model.ContentID(model.PlatformBilibili, "dynamic-1"), deliveries[0].Dynamic.ID)
+	assert.Equal(t, model.ContentID(model.PlatformBilibili, "dynamic-1"), deliveries[0].Content.ContentID)
+}
+
+func TestChannelEnablementSuspendsAndResumesOutbox(t *testing.T) {
+	t.Parallel()
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 17))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	channel := putEnabledTestChannel(t, store)
+	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}))
+	_, err = recordDynamicsForTest(store, "42", []model.Dynamic{{ID: "suspend", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now()}}, nil, DynamicBaselineNone)
+	require.NoError(t, err)
+
+	channel.Enabled = false
+	_, err = store.PutChannel(channel)
+	require.NoError(t, err)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, model.DeliverySuspended, deliveries[0].State)
+	assert.Empty(t, mustDueDeliveries(t, store))
+
+	channel.Enabled = true
+	_, err = store.PutChannel(channel)
+	require.NoError(t, err)
+	deliveries, err = store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, model.DeliveryPending, deliveries[0].State)
+	assert.Len(t, mustDueDeliveries(t, store), 1)
+}
+
+func mustDueDeliveries(t *testing.T, store *Store) []model.Delivery {
+	t.Helper()
+	deliveries, err := store.DueDeliveries(time.Now().Add(time.Second), 10)
+	require.NoError(t, err)
+	return deliveries
 }

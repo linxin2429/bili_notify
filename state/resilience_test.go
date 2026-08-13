@@ -51,7 +51,7 @@ func testDynamicOutboxRollback(t *testing.T) {
 	putEnabledTestChannel(t, store)
 	installFailureTrigger(t, store, "outbox", "INSERT", "forced delivery failure")
 	dynamic := resilienceDynamic("dynamic-outbox", "42")
-	created, err := store.RecordDynamics("42", []model.Dynamic{dynamic}, []string{"channel"}, DynamicBaselineNone)
+	created, err := recordDynamicsForTest(store, "42", []model.Dynamic{dynamic}, []string{"channel"}, DynamicBaselineNone)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forced delivery failure")
 	assert.Equal(t, 0, created)
@@ -63,7 +63,7 @@ func testDynamicBaselineRollback(t *testing.T) {
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
 	installFailureTrigger(t, store, "sources", "UPDATE", "forced baseline failure")
 	dynamic := resilienceDynamic("dynamic-baseline", "42")
-	created, err := store.RecordDynamics("42", []model.Dynamic{dynamic}, nil, DynamicBaselineAll)
+	created, err := recordDynamicsForTest(store, "42", []model.Dynamic{dynamic}, nil, DynamicBaselineAll)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forced baseline failure")
 	assert.Equal(t, 0, created)
@@ -80,7 +80,7 @@ func testFeedOutboxRollback(t *testing.T) {
 	putEnabledTestChannel(t, store)
 	installFailureTrigger(t, store, "outbox", "INSERT", "forced feed delivery failure")
 	dynamic := resilienceDynamic("feed-outbox", "42")
-	created, err := store.RecordFeedDynamics("account", "new", []model.Dynamic{dynamic}, []string{"channel"}, nil)
+	created, err := recordFeedDynamicsForTest(store, "account", "new", []model.Dynamic{dynamic}, []string{"channel"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forced feed delivery failure")
 	assert.Equal(t, 0, created)
@@ -93,7 +93,7 @@ func testFeedCursorRollback(t *testing.T) {
 	require.NoError(t, store.InitializeFeed("account", "old", time.Now()))
 	installFailureTrigger(t, store, "bili_feed_state", "UPDATE", "forced cursor failure")
 	dynamic := resilienceDynamic("feed-cursor", "42")
-	created, err := store.RecordFeedDynamics("account", "new", []model.Dynamic{dynamic}, []string{"channel"}, nil)
+	created, err := recordFeedDynamicsForTest(store, "account", "new", []model.Dynamic{dynamic}, []string{"channel"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forced cursor failure")
 	assert.Equal(t, 0, created)
@@ -129,7 +129,7 @@ func prepareCommentRollback(t *testing.T, fill byte, rpid string) (*Store, model
 	published := time.Now()
 	dynamic := resilienceDynamic("comment-content", "42")
 	dynamic.PublishedAt = published
-	_, err := store.RecordDynamics("42", []model.Dynamic{dynamic}, nil, DynamicBaselineAll)
+	_, err := recordDynamicsForTest(store, "42", []model.Dynamic{dynamic}, nil, DynamicBaselineAll)
 	require.NoError(t, err)
 	target := model.CommentTarget{UID: "42", DynamicID: dynamic.ID, ContentType: dynamic.Type, CommentType: 17, CommentOID: "oid", PublishedAt: published}
 	require.NoError(t, store.PutCommentTargets("42", []model.CommentTarget{target}))
@@ -200,7 +200,7 @@ func TestConcurrentRecordingCreatesOneLogicalResult(t *testing.T) {
 			name: "same dynamic",
 			run: func(t *testing.T, store *Store, channels []string) (int, error) {
 				t.Helper()
-				return store.RecordDynamics("42", []model.Dynamic{resilienceDynamic("concurrent-dynamic", "42")}, channels, DynamicBaselineNone)
+				return recordDynamicsForTest(store, "42", []model.Dynamic{resilienceDynamic("concurrent-dynamic", "42")}, channels, DynamicBaselineNone)
 			},
 			seen: func(t *testing.T, store *Store) bool {
 				t.Helper()
@@ -208,7 +208,7 @@ func TestConcurrentRecordingCreatesOneLogicalResult(t *testing.T) {
 				require.NoError(t, err)
 				return seen
 			},
-			kind: model.DeliveryKindDynamic,
+			kind: model.DeliveryKindContent,
 		},
 		{
 			name: "same reply",
@@ -337,7 +337,7 @@ func TestMigrationMatrixPreservesHistoricalDataAndConstraints(t *testing.T) {
 			deliveries, err := store.ListDeliveries(0)
 			require.NoError(t, err)
 			require.Len(t, deliveries, 1)
-			assert.Equal(t, "bilibili:content:historical", deliveries[0].Dynamic.ID)
+			assert.Equal(t, "bilibili:content:historical", deliveries[0].Content.ContentID)
 			if tt.version >= 3 {
 				assertFeedBaseline(t, store, "account", "cursor")
 				relations, relationErr := store.FollowRelations("account")
@@ -385,11 +385,11 @@ func seedHistoricalSchema(t *testing.T, db *sql.DB, v *vault.Vault, version int6
 	require.NoError(t, err)
 	_, err = db.Exec(`INSERT INTO seen_dynamics (uid, dynamic_id, seen_at) VALUES ('42', 'historical', ?)`, published.Unix())
 	require.NoError(t, err)
-	delivery := model.Delivery{ID: "historical:channel", Kind: model.DeliveryKindDynamic, Dynamic: dynamic, ChannelID: "channel", State: model.DeliveryPending, NextAt: published, CreatedAt: published}
+	delivery := legacyDeliveryPayload{Kind: "dynamic", Dynamic: dynamic}
 	deliveryPayload, err := json.Marshal(delivery)
 	require.NoError(t, err)
 	_, err = db.Exec(`INSERT INTO deliveries (id, kind, channel_id, state, next_at, created_at, payload_json)
-		VALUES (?, 'dynamic', 'channel', 'pending', ?, ?, ?)`, delivery.ID, published.Unix(), published.Unix(), deliveryPayload)
+			VALUES (?, 'dynamic', 'channel', 'pending', ?, ?, ?)`, "historical:channel", published.Unix(), published.Unix(), deliveryPayload)
 	require.NoError(t, err)
 	if version >= 3 {
 		_, err = db.Exec(`INSERT INTO bili_feed_state (account_uid, update_baseline, initialized, updated_at) VALUES ('account', 'cursor', 1, ?)`, published.Unix())
@@ -555,7 +555,7 @@ func TestClosedDatabaseBackupRestoresDatabaseAndKeyAsOneUnit(t *testing.T) {
 	require.NoError(t, err)
 	channel, err := store.PutChannel(model.Channel{Name: "backup", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com/hook"}})
 	require.NoError(t, err)
-	_, err = store.RecordDynamics("42", []model.Dynamic{resilienceDynamic("backup-dynamic", "42")}, []string{channel.ID}, DynamicBaselineNone)
+	_, err = recordDynamicsForTest(store, "42", []model.Dynamic{resilienceDynamic("backup-dynamic", "42")}, []string{channel.ID}, DynamicBaselineNone)
 	require.NoError(t, err)
 	require.NoError(t, store.Close())
 	require.NoError(t, copyTestFile(sourcePath, filepath.Join(backupDir, "data.db")))
@@ -575,7 +575,7 @@ func TestClosedDatabaseBackupRestoresDatabaseAndKeyAsOneUnit(t *testing.T) {
 	deliveries, err := restored.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, model.ContentID(model.PlatformBilibili, "backup-dynamic"), deliveries[0].Dynamic.ID)
+	assert.Equal(t, model.ContentID(model.PlatformBilibili, "backup-dynamic"), deliveries[0].Content.ContentID)
 }
 
 func copyTestFile(source, destination string) error {
@@ -632,7 +632,7 @@ func TestCommittedWALStateSurvivesAbruptProcessDeath(t *testing.T) {
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, "bilibili:content:wal-dynamic", deliveries[0].Dynamic.ID)
+	assert.Equal(t, "bilibili:content:wal-dynamic", deliveries[0].Content.ContentID)
 }
 
 func runCrashRecoveryChild(t *testing.T) {
@@ -643,7 +643,7 @@ func runCrashRecoveryChild(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.db.Exec(`PRAGMA wal_autocheckpoint = 0`).Error)
 	putEnabledTestChannel(t, store)
-	_, err = store.RecordDynamics("42", []model.Dynamic{resilienceDynamic("wal-dynamic", "42")}, []string{"channel"}, DynamicBaselineNone)
+	_, err = recordDynamicsForTest(store, "42", []model.Dynamic{resilienceDynamic("wal-dynamic", "42")}, []string{"channel"}, DynamicBaselineNone)
 	require.NoError(t, err)
 	_, err = fmt.Fprintln(os.Stdout, "committed")
 	require.NoError(t, err)
@@ -676,14 +676,14 @@ func testDeleteUPCleansOutbox(t *testing.T) {
 	require.NoError(t, err)
 	for _, uid := range []string{"42", "43"} {
 		require.NoError(t, store.PutUP(model.UP{UID: uid, Enabled: true}))
-		_, err := store.RecordDynamics(uid, []model.Dynamic{resilienceDynamic("dynamic-"+uid, uid)}, nil, DynamicBaselineNone)
+		_, err := recordDynamicsForTest(store, uid, []model.Dynamic{resilienceDynamic("dynamic-"+uid, uid)}, nil, DynamicBaselineNone)
 		require.NoError(t, err)
 	}
 	require.NoError(t, store.DeleteUP("42"))
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, "bilibili:up:43", deliveries[0].Dynamic.UID)
+	assert.Equal(t, "bilibili:up:43", deliveries[0].Content.SourceID)
 	_, _, err = store.Content("bilibili:content:dynamic-42")
 	assert.ErrorIs(t, err, ErrNotFound)
 	_, _, err = store.Content("bilibili:content:dynamic-43")
@@ -698,7 +698,7 @@ func testDeleteUPRejectsCorruptOutbox(t *testing.T) {
 	_, err := store.PutChannel(model.Channel{Name: "channel", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com"}})
 	require.NoError(t, err)
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
-	_, err = store.RecordDynamics("42", []model.Dynamic{resilienceDynamic("corrupt-delete", "42")}, nil, DynamicBaselineNone)
+	_, err = recordDynamicsForTest(store, "42", []model.Dynamic{resilienceDynamic("corrupt-delete", "42")}, nil, DynamicBaselineNone)
 	require.NoError(t, err)
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
@@ -715,7 +715,7 @@ func testDeleteChannelRequiresEmptyOutbox(t *testing.T) {
 	store := openTestStore(t, 87)
 	channel, err := store.PutChannel(model.Channel{Name: "channel", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com/hook"}})
 	require.NoError(t, err)
-	_, err = store.RecordDynamics("42", []model.Dynamic{resilienceDynamic("channel-dynamic", "42")}, []string{channel.ID}, DynamicBaselineNone)
+	_, err = recordDynamicsForTest(store, "42", []model.Dynamic{resilienceDynamic("channel-dynamic", "42")}, []string{channel.ID}, DynamicBaselineNone)
 	require.NoError(t, err)
 	err = store.DeleteChannel(channel.ID)
 	require.Error(t, err)
@@ -738,7 +738,7 @@ func testRetrySurvivesReopen(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.PutChannel(model.Channel{Name: "channel", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com"}})
 	require.NoError(t, err)
-	_, err = store.RecordDynamics("42", []model.Dynamic{resilienceDynamic("retry-dynamic", "42")}, nil, DynamicBaselineNone)
+	_, err = recordDynamicsForTest(store, "42", []model.Dynamic{resilienceDynamic("retry-dynamic", "42")}, nil, DynamicBaselineNone)
 	require.NoError(t, err)
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)

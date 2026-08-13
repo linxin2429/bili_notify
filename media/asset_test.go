@@ -40,7 +40,7 @@ func TestAttachmentDownloaderEnforcesStreamingLimits(t *testing.T) {
 			dir := t.TempDir()
 			downloader := &AttachmentDownloader{DataDir: dir, Client: server.Client(), AllowPrivateNetwork: true}
 			attachments := []model.Attachment{{ID: "content:attachment:file", ContentID: "content", ExternalID: "../file", Type: model.AttachmentFile, FileName: "../../bad.txt", RemoteURL: server.URL}}
-			result := downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "zsxq:planet:9", "zsxq:content:1", attachments, tt.maxFile, tt.budget, "")
+			result := downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "zsxq:planet:9", "zsxq:content:1", attachments, tt.maxFile, tt.budget, nil)
 			assert.Equal(t, tt.wantFailed, result.Failed)
 			assert.Equal(t, tt.wantBudget, result.BudgetFull)
 			if tt.wantFailed == 0 && !tt.wantBudget {
@@ -49,6 +49,37 @@ func TestAttachmentDownloaderEnforcesStreamingLimits(t *testing.T) {
 				info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(attachments[0].LocalPath)))
 				require.NoError(t, err)
 				assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+			}
+		})
+	}
+}
+
+func TestAttachmentDownloaderBilibiliImagePolicy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		body       []byte
+		wantFailed int
+	}{
+		{name: "recognized PNG", body: testPNG},
+		{name: "HTML rejected", body: []byte("<html>not an image</html>"), wantFailed: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				assert.Equal(t, "https://www.bilibili.com/", request.Header.Get("Referer"))
+				_, _ = w.Write(tt.body)
+			}))
+			t.Cleanup(server.Close)
+			attachments := []model.Attachment{{ID: "image", ContentID: "content", ExternalID: "image", Type: model.AttachmentImage, RemoteURL: server.URL}}
+			auth := AuthorizeMediaFunc(func(request *http.Request) { request.Header.Set("Referer", "https://www.bilibili.com/") })
+			result := (&AttachmentDownloader{DataDir: t.TempDir(), Client: server.Client(), AllowPrivateNetwork: true}).
+				EnsureAttachments(t.Context(), model.PlatformBilibili, "bilibili:up:42", "bilibili:content:1", attachments, 1<<20, 1<<20, auth)
+			assert.Equal(t, tt.wantFailed, result.Failed)
+			if tt.wantFailed == 0 {
+				assert.Equal(t, 1, result.Downloaded)
+				assert.NotEmpty(t, attachments[0].LocalPath)
 			}
 		})
 	}
@@ -80,10 +111,14 @@ func TestAttachmentRedirectNeverForwardsZSXQSession(t *testing.T) {
 	}
 	downloader := &AttachmentDownloader{DataDir: t.TempDir(), Client: &http.Client{Transport: transport}, AllowPrivateNetwork: true}
 	attachments := []model.Attachment{{ID: "a", ContentID: "c", ExternalID: "a", Type: model.AttachmentFile, RemoteURL: "http://api.zsxq.com/attachment"}}
-	result := downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "source", "content", attachments, 100, 100, "secret")
+	auth := AuthorizeMediaFunc(func(request *http.Request) {
+		request.Header.Set("User-Agent", "zsxq-browser")
+		request.AddCookie(&http.Cookie{Name: "zsxq_access_token", Value: "secret"})
+	})
+	result := downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "source", "content", attachments, 100, 100, auth)
 	require.Equal(t, 1, result.Downloaded)
 	assert.Equal(t, "zsxq_access_token=secret", originCookie)
-	assert.Equal(t, zsxqWebUserAgent, originUserAgent)
+	assert.Equal(t, "zsxq-browser", originUserAgent)
 	assert.Empty(t, redirectedCookie)
 }
 
@@ -97,7 +132,7 @@ func TestAttachmentDownloaderRejectsSymlinkMediaTree(t *testing.T) {
 	t.Cleanup(server.Close)
 	downloader := &AttachmentDownloader{DataDir: dir, Client: server.Client(), AllowPrivateNetwork: true}
 	attachments := []model.Attachment{{ID: "a", ContentID: "c", ExternalID: "a", Type: model.AttachmentFile, RemoteURL: server.URL}}
-	result := downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "source", "content", attachments, 100, 100, "")
+	result := downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "source", "content", attachments, 100, 100, nil)
 	assert.Equal(t, 1, result.Failed)
 	assert.True(t, strings.Contains(attachments[0].LocalizeError, "failed"))
 }
@@ -112,11 +147,11 @@ func TestAttachmentDownloaderPersistsConflictSafeFinalPath(t *testing.T) {
 	dir := t.TempDir()
 	downloader := &AttachmentDownloader{DataDir: dir, Client: server.Client(), AllowPrivateNetwork: true}
 	first := []model.Attachment{{ID: "a", ContentID: "content", ExternalID: "asset", Type: model.AttachmentFile, FileName: "report.txt", RemoteURL: server.URL}}
-	result := downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "source", "content", first, 100, 1000, "")
+	result := downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "source", "content", first, 100, 1000, nil)
 	require.Equal(t, 1, result.Downloaded)
 	body = "second"
 	second := []model.Attachment{{ID: "b", ContentID: "content", ExternalID: "asset", Type: model.AttachmentFile, FileName: "report.txt", RemoteURL: server.URL}}
-	result = downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "source", "content", second, 100, 1000, "")
+	result = downloader.EnsureAttachments(t.Context(), model.PlatformZSXQ, "source", "content", second, 100, 1000, nil)
 	require.Equal(t, 1, result.Downloaded)
 	assert.NotEqual(t, first[0].LocalPath, second[0].LocalPath)
 	assert.FileExists(t, filepath.Join(dir, filepath.FromSlash(first[0].LocalPath)))

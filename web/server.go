@@ -20,6 +20,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/linxin2429/bili_notify/model"
+	platformcontract "github.com/linxin2429/bili_notify/platform"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/state"
 	"github.com/linxin2429/bili_notify/zsxq"
@@ -46,30 +47,31 @@ type SourceAdmin interface {
 }
 
 type Server struct {
-	adminAddr      string
-	observeAddr    string
-	tlsConfig      *tls.Config
-	auth           *authenticator
-	engine         *service.Engine
-	ai             *service.AIEngine
-	zsxqAccounts   *zsxq.AccountManager
-	sourceAdmin    SourceAdmin
-	settings       SettingsService
-	store          *state.Store
-	events         *service.EventBus
-	logger         *slog.Logger
-	auditLogger    *slog.Logger
-	metrics        *service.Metrics
-	tracer         trace.Tracer
-	tracerProvider trace.TracerProvider
-	meterProvider  metric.MeterProvider
-	propagator     propagation.TextMapPropagator
-	dataDir        string
-	static         fs.FS
-	connectionsMu  sync.Mutex
-	connections    map[string]map[*websocket.Conn]struct{}
-	wsHeartbeat    time.Duration
-	wsPingTimeout  time.Duration
+	adminAddr       string
+	observeAddr     string
+	tlsConfig       *tls.Config
+	auth            *authenticator
+	engine          *service.Engine
+	ai              *service.AIEngine
+	zsxqAccounts    *zsxq.AccountManager
+	sourceAdmin     SourceAdmin
+	settings        SettingsService
+	store           *state.Store
+	events          *service.EventBus
+	logger          *slog.Logger
+	auditLogger     *slog.Logger
+	metrics         *service.Metrics
+	tracer          trace.Tracer
+	tracerProvider  trace.TracerProvider
+	meterProvider   metric.MeterProvider
+	propagator      propagation.TextMapPropagator
+	dataDir         string
+	platformModules []platformcontract.Module
+	static          fs.FS
+	connectionsMu   sync.Mutex
+	connections     map[string]map[*websocket.Conn]struct{}
+	wsHeartbeat     time.Duration
+	wsPingTimeout   time.Duration
 }
 
 type ServerOption func(*Server)
@@ -84,6 +86,10 @@ func WithZSXQAccounts(manager *zsxq.AccountManager) ServerOption {
 
 func WithSourceAdmin(admin SourceAdmin) ServerOption {
 	return func(server *Server) { server.sourceAdmin = admin }
+}
+
+func WithPlatformModules(modules []platformcontract.Module) ServerOption {
+	return func(server *Server) { server.platformModules = modules }
 }
 
 func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, settings SettingsService, store *state.Store, events *service.EventBus, logger, auditLogger *slog.Logger, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, propagator propagation.TextMapPropagator, dataDir string, options ...ServerOption) (*Server, error) {
@@ -120,6 +126,9 @@ func NewServer(adminAddr, observeAddr, tlsPath string, engine *service.Engine, s
 	}
 	if server.sourceAdmin == nil {
 		return nil, errors.New("source admin is required")
+	}
+	if len(server.platformModules) == 0 {
+		return nil, errors.New("platform modules are required")
 	}
 	return server, nil
 }

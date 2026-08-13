@@ -88,6 +88,28 @@ func TestGateUpdateDrainsBeforeReplacingLimit(t *testing.T) {
 	require.NoError(t, <-thirdDone)
 }
 
+func TestGateHoldsConcurrencyUntilResponseBodyCloses(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{}, 2)
+	gate := New(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		started <- struct{}{}
+		return testResponse(), nil
+	}), 1000, 1, time.Second)
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com", nil)
+	require.NoError(t, err)
+	first, err := gate.RoundTrip(request)
+	require.NoError(t, err)
+	assert.Equal(t, 1, gate.InFlight())
+
+	secondDone := runRequest(t, gate)
+	assert.Never(t, func() bool { return len(started) == 2 }, 30*time.Millisecond, time.Millisecond)
+	require.NoError(t, first.Body.Close())
+	requireReceive(t, started)
+	require.NoError(t, <-secondDone)
+	assert.Zero(t, gate.InFlight())
+}
+
 func TestGateAdmissionCancellationDoesNotReachTransport(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{}, 1)

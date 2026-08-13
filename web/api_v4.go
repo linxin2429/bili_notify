@@ -22,9 +22,8 @@ func (s *Server) registerPlatformAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v4/accounts/bilibili/qr", s.requireSession(false, s.biliLoginAPI))
 	mux.HandleFunc("POST /api/v4/accounts/bilibili/qr", s.audit("bilibili.login.start", "platform_account", "", s.requireSession(true, s.startBiliLoginAPI)))
 	mux.HandleFunc("DELETE /api/v4/accounts/bilibili/qr/{id}", s.audit("bilibili.login.cancel", "platform_account", "id", s.requireSession(true, s.cancelBiliLoginAPI)))
-	mux.HandleFunc("DELETE /api/v4/accounts/bilibili/session", s.audit("bilibili.logout", "platform_account", "", s.requireSession(true, s.deleteBilibiliSessionV4)))
+	mux.HandleFunc("DELETE /api/v4/accounts/{platform}/session", s.audit("platform.logout", "platform_account", "platform", s.requireSession(true, s.deletePlatformSessionV4)))
 	mux.HandleFunc("POST /api/v4/accounts/zsxq/token", s.audit("zsxq.token.import", "platform_account", "", s.requireSession(true, s.zsxqTokenV4)))
-	mux.HandleFunc("DELETE /api/v4/accounts/zsxq/session", s.audit("zsxq.logout", "platform_account", "", s.requireSession(true, s.deleteZSXQSessionV4)))
 	mux.HandleFunc("GET /api/v4/accounts/zsxq/groups", s.requireSession(false, s.zsxqGroupsV4))
 
 	mux.HandleFunc("GET /api/v4/sources", s.requireSession(false, s.sourcesV4))
@@ -48,12 +47,21 @@ func (s *Server) accountsV4(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, accounts)
 }
 
-func (s *Server) deleteBilibiliSessionV4(w http.ResponseWriter, _ *http.Request) {
-	if err := s.engine.ClearBilibiliSession(); err != nil {
-		s.writeAPIResult(w, http.StatusNoContent, nil, err)
+func (s *Server) deletePlatformSessionV4(w http.ResponseWriter, r *http.Request) {
+	requested := model.Platform(r.PathValue("platform"))
+	for _, module := range s.platformModules {
+		if module.Meta.Platform != requested {
+			continue
+		}
+		if err := module.Accounts.Disconnect(r.Context()); err != nil && !errors.Is(err, state.ErrNotFound) {
+			s.writeAPIResult(w, http.StatusNoContent, nil, err)
+			return
+		}
+		s.events.Publish(service.TopicAccounts)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeAPIError(w, http.StatusNotFound, "not_found", "platform account route is not registered")
 }
 
 func (s *Server) zsxqTokenV4(w http.ResponseWriter, r *http.Request) {
@@ -80,19 +88,6 @@ func (s *Server) zsxqTokenV4(w http.ResponseWriter, r *http.Request) {
 	}
 	s.events.Publish(service.TopicAccounts)
 	writeJSON(w, http.StatusCreated, account)
-}
-
-func (s *Server) deleteZSXQSessionV4(w http.ResponseWriter, r *http.Request) {
-	err := s.store.WithContext(r.Context()).DeletePlatformAccount(model.PlatformZSXQ)
-	if errors.Is(err, state.ErrNotFound) {
-		err = nil
-	}
-	if err != nil {
-		s.writeAPIResult(w, http.StatusNoContent, nil, err)
-		return
-	}
-	s.events.Publish(service.TopicAccounts)
-	w.WriteHeader(http.StatusNoContent)
 }
 
 type zsxqGroupView struct {

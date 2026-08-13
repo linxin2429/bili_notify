@@ -417,8 +417,8 @@ func (s *Store) defaultAIConfigTx(tx *gorm.DB) (model.AIProfile, model.AIProfile
 	return transcription, summary, prompt, err
 }
 
-func (s *Store) createAutomaticAIJobsTx(tx *gorm.DB, dynamic model.Dynamic, sourceID string, channelIDs []string) (int, error) {
-	if dynamic.Type != "DYNAMIC_TYPE_AV" || strings.TrimSpace(dynamic.BVID) == "" {
+func (s *Store) createAutomaticAIJobsTx(tx *gorm.DB, source model.AIContentSnapshot, channelIDs []string) (int, error) {
+	if strings.TrimSpace(source.BVID) == "" || strings.TrimSpace(source.ContentID) == "" {
 		return 0, nil
 	}
 	transcriptionProfile, summaryProfile, prompt, err := s.defaultAIConfigTx(tx)
@@ -426,13 +426,13 @@ func (s *Store) createAutomaticAIJobsTx(tx *gorm.DB, dynamic model.Dynamic, sour
 		return 0, err
 	}
 	traceparent, tracestate := originTraceparent(tx.Statement.Context), originTracestate(tx.Statement.Context)
-	contentID := model.ContentID(model.PlatformBilibili, dynamic.ID)
+	contentID := source.ContentID
 	transcription, created, err := s.createAIJobTx(tx, model.AIJob{
 		ClientRequestID: "content:" + contentID + ":transcription", Kind: model.AIJobTranscription,
 		ProfileID: transcriptionProfile.ID, Origin: model.AIJobOriginDynamic, SourceContentID: contentID,
-		Source:            &model.AIContentSnapshot{ContentID: contentID, SourceID: sourceID, BVID: dynamic.BVID, Author: dynamic.UPName, Title: dynamic.Title, URL: firstNonEmpty(dynamic.TargetURL, dynamic.URL)},
+		Source:            &source,
 		OriginTraceparent: traceparent, OriginTracestate: tracestate, TargetChannelIDs: channelIDs,
-		TranscriptionInput: &model.AITranscriptionInput{BVID: dynamic.BVID},
+		TranscriptionInput: &model.AITranscriptionInput{BVID: source.BVID},
 	}, &transcriptionProfile, nil)
 	if err != nil {
 		return 0, err
@@ -441,7 +441,7 @@ func (s *Store) createAutomaticAIJobsTx(tx *gorm.DB, dynamic model.Dynamic, sour
 		ClientRequestID: "content:" + contentID + ":summary", Kind: model.AIJobSummary,
 		ProfileID: summaryProfile.ID, PromptID: prompt.ID, Origin: model.AIJobOriginDynamic,
 		SourceContentID: contentID, DependsOnJobID: transcription.ID, OriginTraceparent: traceparent,
-		Source:           &model.AIContentSnapshot{ContentID: contentID, SourceID: sourceID, BVID: dynamic.BVID, Author: dynamic.UPName, Title: dynamic.Title, URL: firstNonEmpty(dynamic.TargetURL, dynamic.URL)},
+		Source:           &source,
 		OriginTracestate: tracestate, TargetChannelIDs: channelIDs,
 		SummaryInput: &model.AISummaryInput{TranscriptionID: transcription.ID},
 	}, &summaryProfile, &prompt)
@@ -760,7 +760,7 @@ func (s *Store) enqueueAINotificationTx(tx *gorm.DB, row aiJobRow, body, resultT
 		title = source.Title
 	}
 	notification := &model.AINotification{
-		JobID: row.ID, SourceID: source.SourceID, DynamicID: row.SourceContentID, BVID: source.BVID, UPName: source.Author, Title: title,
+		JobID: row.ID, SourceID: source.SourceID, ContentID: row.SourceContentID, BVID: source.BVID, AuthorName: source.Author, Title: title,
 		Stage: model.AIJobKind(row.Kind), Succeeded: succeeded, Body: body, ErrorCode: code, ErrorMessage: message,
 		SourceURL: source.URL,
 	}

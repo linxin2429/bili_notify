@@ -52,7 +52,7 @@ func TestUnblockChannelRequeuesBlockedDeliveries(t *testing.T) {
 		Settings: map[string]string{"webhook": "https://example.com/hook"},
 	})
 	require.NoError(t, err)
-	_, err = store.RecordDynamics("42", []model.Dynamic{
+	_, err = recordDynamicsForTest(store, "42", []model.Dynamic{
 		{ID: "blocked", UID: "42", PublishedAt: time.Now()},
 		{ID: "pending", UID: "42", PublishedAt: time.Now()},
 	}, []string{channel.ID}, DynamicBaselineNone)
@@ -62,7 +62,7 @@ func TestUnblockChannelRequeuesBlockedDeliveries(t *testing.T) {
 	require.Len(t, deliveries, 2)
 	var blockedID string
 	for _, delivery := range deliveries {
-		if delivery.Dynamic.ID == model.ContentID(model.PlatformBilibili, "blocked") {
+		if delivery.Content.ContentID == model.ContentID(model.PlatformBilibili, "blocked") {
 			blockedID = delivery.ID
 		}
 	}
@@ -75,7 +75,7 @@ func TestUnblockChannelRequeuesBlockedDeliveries(t *testing.T) {
 	require.Len(t, deliveries, 2)
 	states := make(map[string]model.DeliveryState, len(deliveries))
 	for _, delivery := range deliveries {
-		states[delivery.Dynamic.ID] = delivery.State
+		states[delivery.Content.ContentID] = delivery.State
 	}
 	assert.Equal(t, model.DeliveryPending, states[model.ContentID(model.PlatformBilibili, "blocked")])
 	assert.Equal(t, model.DeliveryPending, states[model.ContentID(model.PlatformBilibili, "pending")])
