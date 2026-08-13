@@ -20,16 +20,16 @@ type RepositoryFactory func(context.Context) Repository
 
 type Admin struct {
 	repository          RepositoryFactory
-	onBilibiliChanged   func()
+	onPlatformChanged   func(model.Platform)
 	onSourcesChanged    func()
 	onSourceDataDeleted func()
 }
 
-func NewAdmin(repository RepositoryFactory, onBilibiliChanged, onSourcesChanged, onSourceDataDeleted func()) (*Admin, error) {
-	if repository == nil || onBilibiliChanged == nil || onSourcesChanged == nil || onSourceDataDeleted == nil {
+func NewAdmin(repository RepositoryFactory, onPlatformChanged func(model.Platform), onSourcesChanged, onSourceDataDeleted func()) (*Admin, error) {
+	if repository == nil || onPlatformChanged == nil || onSourcesChanged == nil || onSourceDataDeleted == nil {
 		return nil, errors.New("source admin dependencies are required")
 	}
-	return &Admin{repository: repository, onBilibiliChanged: onBilibiliChanged,
+	return &Admin{repository: repository, onPlatformChanged: onPlatformChanged,
 		onSourcesChanged: onSourcesChanged, onSourceDataDeleted: onSourceDataDeleted}, nil
 }
 
@@ -44,9 +44,7 @@ func (a *Admin) Create(ctx context.Context, source model.Source) error {
 	if err := a.repository(ctx).CreateSource(source); err != nil {
 		return err
 	}
-	if source.Platform == model.PlatformBilibili {
-		a.onBilibiliChanged()
-	}
+	a.onPlatformChanged(source.Platform)
 	a.onSourcesChanged()
 	return nil
 }
@@ -75,9 +73,7 @@ func (a *Admin) Update(ctx context.Context, id, name, note string, enabled bool,
 	if err := repository.PutSource(source); err != nil {
 		return model.Source{}, err
 	}
-	if source.Platform == model.PlatformBilibili {
-		a.onBilibiliChanged()
-	}
+	a.onPlatformChanged(source.Platform)
 	a.onSourcesChanged()
 	return source, nil
 }
@@ -91,9 +87,7 @@ func (a *Admin) Delete(ctx context.Context, id string) error {
 	if err := repository.DeleteSource(id); err != nil {
 		return err
 	}
-	if source.Platform == model.PlatformBilibili {
-		a.onBilibiliChanged()
-	}
+	a.onPlatformChanged(source.Platform)
 	a.onSourceDataDeleted()
 	return nil
 }

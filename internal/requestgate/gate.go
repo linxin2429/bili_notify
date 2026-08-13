@@ -44,7 +44,6 @@ func (g *Gate) RoundTrip(request *http.Request) (*http.Response, error) {
 	if err := g.acquire(ctx); err != nil {
 		return nil, err
 	}
-	defer g.release()
 
 	g.mu.Lock()
 	limiter, timeout, pausedTo := g.limiter, g.timeout, g.pausedTo
@@ -54,20 +53,31 @@ func (g *Gate) RoundTrip(request *http.Request) (*http.Response, error) {
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+			g.release()
 			return nil, ctx.Err()
 		case <-timer.C:
 		}
 	}
 	if err := limiter.Wait(ctx); err != nil {
+		g.release()
 		return nil, err
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	response, err := g.base.RoundTrip(request.Clone(requestCtx))
 	if err != nil {
 		cancel()
+		g.release()
 		return nil, err
 	}
-	response.Body = &cancelBody{ReadCloser: response.Body, cancel: cancel}
+	if response == nil || response.Body == nil {
+		cancel()
+		g.release()
+		return nil, errors.New("request transport returned a response without a body")
+	}
+	response.Body = &cancelBody{ReadCloser: response.Body, close: func() {
+		cancel()
+		g.release()
+	}}
 	return response, nil
 }
 
@@ -147,12 +157,12 @@ func (g *Gate) signalLocked() {
 
 type cancelBody struct {
 	io.ReadCloser
-	cancel context.CancelFunc
-	once   sync.Once
+	close func()
+	once  sync.Once
 }
 
 func (b *cancelBody) Close() error {
 	err := b.ReadCloser.Close()
-	b.once.Do(b.cancel)
+	b.once.Do(b.close)
 	return err
 }

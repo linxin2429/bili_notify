@@ -29,17 +29,18 @@ func TestKnowledgePlanetOutboxSnapshotsNonImageAttachments(t *testing.T) {
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	require.Len(t, deliveries[0].Dynamic.Files, 3)
-	assert.Equal(t, "original.pdf", deliveries[0].Dynamic.Files[0].Name)
-	assert.Equal(t, "附件-2.mp3", deliveries[0].Dynamic.Files[1].Name)
-	assert.Equal(t, "attachment localization failed", deliveries[0].Dynamic.Files[2].LocalizeError)
+	require.NotNil(t, deliveries[0].Content)
+	require.Len(t, deliveries[0].Content.Files, 3)
+	assert.Equal(t, "original.pdf", deliveries[0].Content.Files[0].Name)
+	assert.Equal(t, "附件-2.mp3", deliveries[0].Content.Files[1].Name)
+	assert.Equal(t, "attachment localization failed", deliveries[0].Content.Files[2].LocalizeError)
 
 	attachments[0].FileName = "edited.pdf"
 	require.NoError(t, store.ArchiveContent(content, attachments))
 	after, err := store.ListDeliveries(0)
 	require.NoError(t, err)
-	assert.Equal(t, "original.pdf", after[0].Dynamic.Files[0].Name)
-	assert.Equal(t, filepath.ToSlash("media/zsxq/file-local.pdf"), after[0].Dynamic.Files[0].LocalPath)
+	assert.Equal(t, "original.pdf", after[0].Content.Files[0].Name)
+	assert.Equal(t, filepath.ToSlash("media/zsxq/file-local.pdf"), after[0].Content.Files[0].LocalPath)
 }
 
 func TestSourcePersistsZSXQTopicFilters(t *testing.T) {

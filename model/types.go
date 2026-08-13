@@ -251,78 +251,6 @@ type DynamicVideo struct {
 	Danmaku  string `json:"danmaku,omitempty"`
 }
 
-type DeliveryState string
-
-const (
-	DeliveryPending DeliveryState = "pending"
-	DeliveryBlocked DeliveryState = "blocked"
-)
-
-type DeliveryKind string
-
-const (
-	DeliveryKindDynamic DeliveryKind = "dynamic"
-	DeliveryKindComment DeliveryKind = "comment"
-	DeliveryKindAI      DeliveryKind = "ai"
-)
-
-// AINotification is the immutable payload queued when an AI stage reaches a
-// terminal state. Body may be large; channel renderers split it safely.
-type AINotification struct {
-	JobID        string    `json:"job_id"`
-	SourceID     string    `json:"source_id"`
-	DynamicID    string    `json:"dynamic_id"`
-	BVID         string    `json:"bvid"`
-	UPName       string    `json:"up_name,omitempty"`
-	Title        string    `json:"title,omitempty"`
-	Stage        AIJobKind `json:"stage"`
-	Succeeded    bool      `json:"succeeded"`
-	Body         string    `json:"body,omitempty"`
-	ErrorCode    string    `json:"error_code,omitempty"`
-	ErrorMessage string    `json:"error_message,omitempty"`
-	SourceURL    string    `json:"source_url,omitempty"`
-}
-
-type Delivery struct {
-	ID        string               `json:"id"`
-	Kind      DeliveryKind         `json:"kind"`
-	Dynamic   Dynamic              `json:"dynamic,omitzero"`
-	Comment   *CommentNotification `json:"comment,omitempty"`
-	AI        *AINotification      `json:"ai,omitempty"`
-	ChannelID string               `json:"channel_id"`
-	State     DeliveryState        `json:"state"`
-	Attempts  int                  `json:"attempts"`
-	NextAt    time.Time            `json:"next_at"`
-	LastError string               `json:"last_error,omitempty"`
-	CreatedAt time.Time            `json:"created_at"`
-	// Progress tracks confirmed text, image, file, and draft operations.
-	Progress *DeliveryProgress `json:"progress,omitempty"`
-	// OriginTraceparent is the W3C traceparent captured when the outbox row was
-	// created (collection/comment/feed). Delivery restores it as its parent so
-	// Tempo shows collect → enqueue → send in one trace.
-	OriginTraceparent string `json:"origin_traceparent,omitempty"`
-}
-
-// DeliveryProgress records which parts of a multi-message delivery already succeeded.
-type DeliveryProgress struct {
-	TextSent         bool   `json:"text_sent,omitempty"`
-	TextPartsSent    int    `json:"text_parts_sent,omitempty"`
-	ImagesSent       int    `json:"images_sent,omitempty"`
-	FilesSent        int    `json:"files_sent,omitempty"`
-	MicrosoftDraftID string `json:"microsoft_draft_id,omitempty"`
-}
-
-// DeliveryFile is the immutable metadata needed to deliver one archived file.
-// LocalPath is relative to data_dir and is revalidated whenever it is opened.
-type DeliveryFile struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	MIME          string `json:"mime,omitempty"`
-	Size          int64  `json:"size,omitempty"`
-	LocalPath     string `json:"local_path,omitempty"`
-	LocalizeError string `json:"localize_error,omitempty"`
-}
-
 // CommentTarget is one UP-owned content area tracked for UP-reply discovery.
 type CommentTarget struct {
 	UID           string    `json:"uid"`
@@ -345,13 +273,15 @@ func (t CommentTarget) Key() string {
 	return strconv.Itoa(t.CommentType) + ":" + t.CommentOID
 }
 
-// CommentNotification is the outbox payload for one UP reply under own content.
+// CommentNotification is the platform-neutral outbox payload for one target-author reply.
 type CommentNotification struct {
 	RPID         string        `json:"rpid"`
 	Platform     Platform      `json:"platform,omitempty"`
+	SourceID     string        `json:"source_id"`
 	SourceName   string        `json:"source_name,omitempty"`
-	UPUID        string        `json:"up_uid"`
-	UPName       string        `json:"up_name"`
+	AuthorID     string        `json:"author_id"`
+	AuthorName   string        `json:"author_name"`
+	AuthorRole   AuthorRole    `json:"author_role"`
 	ContentType  string        `json:"content_type"`
 	ContentID    string        `json:"content_id"`
 	ContentTitle string        `json:"content_title,omitempty"`

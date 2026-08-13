@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/linxin2429/bili_notify/model"
+	platformcontract "github.com/linxin2429/bili_notify/platform"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -102,8 +104,9 @@ func (s *Store) PlatformAccount(platform model.Platform) (model.PlatformAccount,
 }
 
 func (s *Store) ListPlatformAccounts() ([]model.PlatformAccount, error) {
-	accounts := make([]model.PlatformAccount, 0, 2)
-	for _, platform := range []model.Platform{model.PlatformBilibili, model.PlatformZSXQ} {
+	platforms := platformcontract.BuiltinPlatforms()
+	accounts := make([]model.PlatformAccount, 0, len(platforms))
+	for _, platform := range platforms {
 		account, err := s.PlatformAccount(platform)
 		if errors.Is(err, ErrNotFound) {
 			accounts = append(accounts, model.PlatformAccount{Platform: platform, Status: model.AccountDisconnected})
@@ -521,13 +524,13 @@ func (s *Store) ArchiveContentAndEnqueue(content model.Content, attachments []mo
 			return err
 		}
 		now := time.Now()
-		dynamic, err := contentDeliverySnapshotTx(tx, content, attachments)
+		snapshot, err := contentDeliverySnapshotTx(tx, content, attachments)
 		if err != nil {
 			return err
 		}
 		for _, channelID := range channelIDs {
 			key := "content:" + content.ID
-			delivery := model.Delivery{ID: stableHash(key, channelID), Kind: model.DeliveryKindDynamic, Dynamic: dynamic,
+			delivery := model.Delivery{ID: stableHash(key, channelID), Kind: model.DeliveryKindContent, Content: &snapshot,
 				ChannelID: channelID, State: model.DeliveryPending, NextAt: now, CreatedAt: now,
 				OriginTraceparent: originTraceparent(tx.Statement.Context)}
 			if err := putDeliveryTx(tx, delivery); err != nil {
@@ -547,8 +550,12 @@ func (s *Store) PutCommentSyncState(platform model.Platform, contentID string, b
 		row["last_synced_at"] = syncedAt.Unix()
 	}
 	return s.db.Table("sync_targets").Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "platform"}, {Name: "content_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"baseline_ready", "last_synced_at", "last_error"}),
+		Columns: []clause.Column{{Name: "platform"}, {Name: "content_id"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"baseline_ready": gorm.Expr("MAX(sync_targets.baseline_ready, excluded.baseline_ready)"),
+			"last_synced_at": gorm.Expr("excluded.last_synced_at"),
+			"last_error":     gorm.Expr("excluded.last_error"),
+		}),
 	}).Create(row).Error
 }
 
@@ -747,6 +754,17 @@ func (row attachmentRow) toModel(includeRemote bool) model.Attachment {
 // only from never-before-seen IDs, and creates one digest per channel. A complete
 // snapshot is required before missing rows are marked deleted.
 func (s *Store) SyncCommentTree(content model.Content, nodes []model.CommentNode, complete, baseline bool, batchID string, target *model.CommentTarget) ([]model.CommentDigest, error) {
+	meta, ok := platformcontract.BuiltinMeta(content.Platform)
+	if !ok {
+		return nil, fmt.Errorf("platform metadata is not registered for %q", content.Platform)
+	}
+	return s.SyncCommentTreeWithMeta(meta, content, nodes, complete, baseline, batchID, target)
+}
+
+func (s *Store) SyncCommentTreeWithMeta(meta platformcontract.PlatformMeta, content model.Content, nodes []model.CommentNode, complete, baseline bool, batchID string, target *model.CommentTarget) ([]model.CommentDigest, error) {
+	if err := meta.Validate(); err != nil || meta.Platform != content.Platform {
+		return nil, errors.New("comment platform metadata does not match content")
+	}
 	var digests []model.CommentDigest
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := archiveContentTx(tx, content, nil); err != nil {
@@ -818,7 +836,7 @@ func (s *Store) SyncCommentTree(content model.Content, nodes []model.CommentNode
 				EntityType: "comment", EntityID: node.ID, FirstSeenAt: firstSeen.Unix()}).Error; err != nil {
 				return err
 			}
-			isTarget := (content.Platform == model.PlatformBilibili && node.Role == model.RoleUP) || (content.Platform == model.PlatformZSXQ && node.Role == model.RoleOwner)
+			isTarget := meta.Triggers(node.Role)
 			if isNew && !baseline && isTarget {
 				newTriggerIDs = append(newTriggerIDs, node.ID)
 			}
@@ -912,7 +930,7 @@ func updateCommentSyncTargetTx(tx *gorm.DB, content model.Content, complete bool
 			return errors.New("Bilibili comment target does not match content")
 		}
 		updated := *target
-		updated.BaselineReady = true
+		updated.BaselineReady = updated.BaselineReady || complete
 		updated.LastPollAt = syncedAt
 		updated.LastError = ""
 		row = syncTargetFromModel(updated)
@@ -954,19 +972,20 @@ func enabledChannelIDsTx(tx *gorm.DB) ([]string, error) {
 	return ids, tx.Model(&channelRow{}).Where("enabled = ?", 1).Order("id").Pluck("id", &ids).Error
 }
 
-func contentDeliverySnapshotTx(tx *gorm.DB, content model.Content, attachments []model.Attachment) (model.Dynamic, error) {
+func contentDeliverySnapshotTx(tx *gorm.DB, content model.Content, attachments []model.Attachment) (model.ContentSnapshot, error) {
 	var source sourceRow
 	if err := tx.Select("name").Where("id = ?", content.SourceID).Take(&source).Error; err != nil {
-		return model.Dynamic{}, err
+		return model.ContentSnapshot{}, err
 	}
-	dynamic := model.Dynamic{ID: content.ID, Platform: content.Platform, SourceName: source.Name, UID: content.SourceID,
-		UPName: content.AuthorName, Type: string(content.Type), PublishedAt: content.PublishedAt, Summary: content.Text,
-		Description: content.Text, URL: content.URL, Title: content.Title}
+	snapshot := model.ContentSnapshot{Platform: content.Platform, SourceID: content.SourceID, SourceName: source.Name,
+		ContentID: content.ID, ExternalID: content.ExternalID, AuthorID: content.AuthorID, AuthorName: content.AuthorName,
+		Type: content.Type, UpstreamType: content.UpstreamType, PublishedAt: content.PublishedAt, Text: content.Text,
+		Description: content.Text, URL: content.URL, Title: content.Title, Stats: maps.Clone(content.Stats)}
 	fileIndex := 0
 	for _, attachment := range attachments {
-		if attachment.Type == model.AttachmentImage && attachment.LocalPath != "" {
-			dynamic.Media = append(dynamic.Media, model.DynamicMedia{Kind: model.DynamicMediaImage, Width: attachment.Width,
-				Height: attachment.Height, LocalPath: attachment.LocalPath, ContentType: attachment.MIME, Size: attachment.Size})
+		if attachment.Type == model.AttachmentImage {
+			snapshot.Media = append(snapshot.Media, model.SnapshotMedia{ID: attachment.ID, Type: attachment.Type, Name: attachment.FileName,
+				URL: attachment.RemoteURL, Width: attachment.Width, Height: attachment.Height, LocalPath: attachment.LocalPath, MIME: attachment.MIME, Size: attachment.Size})
 			continue
 		}
 		label := attachment.FileName
@@ -976,15 +995,15 @@ func contentDeliverySnapshotTx(tx *gorm.DB, content model.Content, attachments [
 		if attachment.Size > 0 {
 			label += fmt.Sprintf(" (%s)", humanBytes(attachment.Size))
 		}
-		dynamic.Links = append(dynamic.Links, model.DynamicLink{Text: label, URL: content.URL})
+		snapshot.Links = append(snapshot.Links, model.SnapshotLink{Text: label, URL: content.URL})
 		if content.Platform == model.PlatformZSXQ && attachment.Type != model.AttachmentImage && attachment.Type != model.AttachmentLink {
 			fileIndex++
 			name := deliveryFileName(attachment, fileIndex)
-			dynamic.Files = append(dynamic.Files, model.DeliveryFile{ID: attachment.ID, Name: name, MIME: attachment.MIME,
+			snapshot.Files = append(snapshot.Files, model.DeliveryFile{ID: attachment.ID, Name: name, MIME: attachment.MIME,
 				Size: attachment.Size, LocalPath: attachment.LocalPath, LocalizeError: attachment.LocalizeError})
 		}
 	}
-	return dynamic, nil
+	return snapshot, nil
 }
 
 func deliveryFileName(attachment model.Attachment, index int) string {
@@ -1025,12 +1044,18 @@ func commentDigestNotificationTx(tx *gorm.DB, digest model.CommentDigest, key st
 	if err := tx.Select("name").Where("id = ?", digest.SourceID).Take(&source).Error; err != nil {
 		return model.CommentNotification{}, fmt.Errorf("loading comment digest source %s: %w", digest.SourceID, err)
 	}
-	label, contentType := "UP主", "bilibili"
-	if digest.Platform == model.PlatformZSXQ {
-		label, contentType = "星球主", "zsxq"
+	var content contentRow
+	if err := tx.Select("upstream_type").Where("id = ?", digest.ContentID).Take(&content).Error; err != nil {
+		return model.CommentNotification{}, fmt.Errorf("loading comment digest content %s: %w", digest.ContentID, err)
 	}
-	note := model.CommentNotification{RPID: key, Platform: digest.Platform, SourceName: source.Name,
-		UPUID: digest.SourceID, UPName: label, ContentType: contentType, ContentID: digest.ContentID,
+	authorID, authorName, authorRole := digest.SourceID, source.Name, model.RoleMember
+	if len(digest.Triggers) != 0 {
+		authorID = firstNonEmpty(digest.Triggers[0].AuthorID, digest.Triggers[0].Mid)
+		authorName = digest.Triggers[0].Name
+		authorRole = digest.Triggers[0].Role
+	}
+	note := model.CommentNotification{RPID: key, Platform: digest.Platform, SourceID: digest.SourceID, SourceName: source.Name,
+		AuthorID: authorID, AuthorName: authorName, AuthorRole: authorRole, ContentType: content.UpstreamType, ContentID: digest.ContentID,
 		ContentTitle: digest.Title, ContentURL: digest.ContentURL, PublishedAt: published, Incomplete: digest.Incomplete, Thread: thread}
 	if len(digest.Triggers) == 1 {
 		note.RPID = digest.Triggers[0].RPID

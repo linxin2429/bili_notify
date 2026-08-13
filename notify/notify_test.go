@@ -43,26 +43,26 @@ func TestWeComSender(t *testing.T) {
 	assert.Equal(t, "markdown", got["msgtype"])
 }
 
-func TestDynamicMessageRendersRichContent(t *testing.T) {
+func TestContentMessageRendersRichContent(t *testing.T) {
 	t.Parallel()
-	dynamic := model.Dynamic{
-		ID: "10", UID: "42", UPName: "tester", Type: "DYNAMIC_TYPE_AV",
+	content := model.ContentSnapshot{
+		ContentID: "bilibili:content:10", SourceID: "bilibili:up:42", AuthorName: "tester", UpstreamType: "DYNAMIC_TYPE_AV",
 		PublishedAt: time.Date(2026, 8, 4, 1, 2, 3, 0, time.UTC),
-		Summary:     "正文 <script>alert(1)</script>",
+		Text:        "正文 <script>alert(1)</script>",
 		URL:         "https://t.bilibili.com/10",
 		Title:       "视频标题",
 		Description: "视频简介",
 		TargetURL:   "https://www.bilibili.com/video/BV1",
-		Links:       []model.DynamicLink{{Text: "话题", URL: "https://www.bilibili.com/v/topic/detail"}},
-		Media:       []model.DynamicMedia{{Kind: model.DynamicMediaCover, URL: "https://i0.hdslb.com/cover.jpg"}},
-		Stats:       &model.DynamicStats{Forwards: 1, Comments: 2, Likes: 3},
-		Video:       &model.DynamicVideo{Duration: "03:21", Views: "1.2万", Danmaku: "88"},
-		Original: &model.Dynamic{
-			ID: "9", UID: "7", UPName: "author", Type: "DYNAMIC_TYPE_WORD",
-			PublishedAt: time.Date(2026, 8, 3, 1, 2, 3, 0, time.UTC), Summary: "原动态正文", URL: "https://t.bilibili.com/9",
+		Links:       []model.SnapshotLink{{Text: "话题", URL: "https://www.bilibili.com/v/topic/detail"}},
+		Media:       []model.SnapshotMedia{{Type: model.AttachmentImage, Kind: string(model.DynamicMediaCover), URL: "https://i0.hdslb.com/cover.jpg"}},
+		Stats:       map[string]int64{"forwards": 1, "comments": 2, "likes": 3},
+		Video:       &model.SnapshotVideoMeta{Duration: "03:21", Views: "1.2万", Danmaku: "88"},
+		ForwardOf: &model.ContentSnapshot{
+			ContentID: "bilibili:content:9", SourceID: "bilibili:up:7", AuthorName: "author", UpstreamType: "DYNAMIC_TYPE_WORD",
+			PublishedAt: time.Date(2026, 8, 3, 1, 2, 3, 0, time.UTC), Text: "原动态正文", URL: "https://t.bilibili.com/9",
 		},
 	}
-	message := DynamicMessage(dynamic)
+	message := ContentMessage(content)
 	plain := renderPlainText(message)
 	for _, expected := range []string{"视频标题", "视频简介", "播放：1.2万", "原动态正文", "https://t.bilibili.com/10"} {
 		assert.Contains(t, plain, expected)
@@ -268,7 +268,7 @@ func TestStartMicrosoftDeviceAuth(t *testing.T) {
 func TestCommentThreadMessage(t *testing.T) {
 	t.Parallel()
 	note := model.CommentNotification{
-		RPID: "r2", UPUID: "42", UPName: "tester", ContentType: "DYNAMIC_TYPE_AV",
+		RPID: "r2", Platform: model.PlatformBilibili, AuthorID: "42", AuthorName: "tester", AuthorRole: model.RoleUP, ContentType: "DYNAMIC_TYPE_AV",
 		ContentID: "10", ContentTitle: "视频标题", ContentURL: "https://www.bilibili.com/video/BV1",
 		PublishedAt: time.Date(2026, 8, 4, 1, 2, 3, 0, time.UTC),
 		Thread: []model.CommentNode{

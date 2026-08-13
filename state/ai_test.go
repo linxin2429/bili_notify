@@ -38,7 +38,7 @@ func TestAutomaticAIPipelineContinuesCollectionTraceAndEnqueuesTerminalNotificat
 	collectionContext := collection.SpanContext()
 	t.Cleanup(func() { collection.End() })
 
-	created, err := store.WithContext(ctx).RecordDynamics("42", []model.Dynamic{{
+	created, err := recordDynamicsForTest(store.WithContext(ctx), "42", []model.Dynamic{{
 		ID: "video", BVID: "BV1xx411c7mD", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_AV",
 		PublishedAt: time.Now(), Title: "video", TargetURL: "https://www.bilibili.com/video/BV1xx411c7mD",
 	}}, []string{"channel"}, DynamicBaselineNone)
@@ -73,7 +73,7 @@ func TestAutomaticAIPipelineContinuesCollectionTraceAndEnqueuesTerminalNotificat
 	require.NoError(t, err)
 	require.Len(t, deliveries, 3)
 	kinds := []model.DeliveryKind{deliveries[0].Kind, deliveries[1].Kind, deliveries[2].Kind}
-	assert.ElementsMatch(t, []model.DeliveryKind{model.DeliveryKindDynamic, model.DeliveryKindAI, model.DeliveryKindAI}, kinds)
+	assert.ElementsMatch(t, []model.DeliveryKind{model.DeliveryKindContent, model.DeliveryKindAI, model.DeliveryKindAI}, kinds)
 	for _, delivery := range deliveries {
 		if delivery.Kind == model.DeliveryKindAI {
 			require.NotNil(t, delivery.AI)
@@ -114,7 +114,7 @@ func TestAutomaticAIPipelineEligibility(t *testing.T) {
 			if tt.baseline == DynamicBaselineAll {
 				require.NoError(t, store.PutUP(model.UP{UID: "42"}))
 			}
-			_, err := store.RecordDynamics("42", []model.Dynamic{tt.dynamic}, nil, tt.baseline)
+			_, err := recordDynamicsForTest(store, "42", []model.Dynamic{tt.dynamic}, nil, tt.baseline)
 			require.NoError(t, err)
 			jobs, err := store.AIJobsForContent(model.ContentID(model.PlatformBilibili, tt.dynamic.ID), false)
 			require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestAutomaticAITranscriptionFailureSkipsSummaryAndNotifiesOnce(t *testing.T
 	store := openTestStore(t, 117)
 	configureAutomaticAI(t, store, true)
 	putEnabledTestChannel(t, store)
-	_, err := store.RecordDynamics("42", []model.Dynamic{{ID: "failed-video", BVID: "BV1xx411c7mD", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_AV", PublishedAt: time.Now()}}, []string{"channel"}, DynamicBaselineNone)
+	_, err := recordDynamicsForTest(store, "42", []model.Dynamic{{ID: "failed-video", BVID: "BV1xx411c7mD", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_AV", PublishedAt: time.Now()}}, []string{"channel"}, DynamicBaselineNone)
 	require.NoError(t, err)
 	transcription, err := store.ClaimAIJob(model.AIJobTranscription)
 	require.NoError(t, err)

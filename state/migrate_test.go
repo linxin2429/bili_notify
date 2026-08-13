@@ -45,7 +45,8 @@ func TestV12MigrationDefaultsExistingZSXQSourcesToAllTopics(t *testing.T) {
 	v := mustVault(t, 31)
 	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS,
 		goose.WithGoMigrations(goose.NewGoMigration(10, &goose.GoFunc{RunTx: migrateV10(v)}, nil)),
-		goose.WithGoMigrations(goose.NewGoMigration(11, &goose.GoFunc{RunTx: migrateV11(v)}, nil)))
+		goose.WithGoMigrations(goose.NewGoMigration(11, &goose.GoFunc{RunTx: migrateV11(v)}, nil)),
+		goose.WithGoMigrations(goose.NewGoMigration(13, &goose.GoFunc{RunTx: migrateV13}, nil)))
 	require.NoError(t, err)
 	_, err = provider.UpTo(t.Context(), 11)
 	require.NoError(t, err)
@@ -156,7 +157,7 @@ func TestV10MigrationPreservesV9StateAndRemovesTransitionalTables(t *testing.T) 
 	t.Parallel()
 	db, path, v := preparePopulatedV9(t)
 	require.NoError(t, runMigrations(t.Context(), db, v))
-	assertMigrationVersion(t, db, 12)
+	assertMigrationVersion(t, db, 13)
 	for _, table := range []string{"auth_session", "deliveries", "comments", "dynamics", "seen_comments", "seen_dynamics", "comment_targets", "ups"} {
 		var count int
 		require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count))
@@ -188,10 +189,11 @@ func TestV10MigrationPreservesV9StateAndRemovesTransitionalTables(t *testing.T) 
 	require.NotNil(t, byID["content-delivery"].Progress)
 	assert.True(t, byID["content-delivery"].Progress.TextSent)
 	assert.Equal(t, model.DeliveryKindComment, byID["comment-delivery"].Kind)
-	assert.Equal(t, "bilibili:up:42", byID["comment-delivery"].Comment.UPUID)
+	assert.Equal(t, "bilibili:up:42", byID["comment-delivery"].Comment.AuthorID)
 	assert.Equal(t, model.DeliveryKindAI, byID["ai-delivery"].Kind)
 	assert.Equal(t, "bilibili:up:42", byID["ai-delivery"].AI.SourceID)
-	assert.Equal(t, "system", byID["system-delivery"].Dynamic.UID)
+	assert.Equal(t, model.DeliveryKindSystem, byID["system-delivery"].Kind)
+	assert.Equal(t, "alert", byID["system-delivery"].System.Body)
 
 	job, err := store.AIJob("ai-job")
 	require.NoError(t, err)
@@ -344,7 +346,7 @@ func preparePopulatedV9(t *testing.T) (*sql.DB, string, *vault.Vault) {
 		URL: "https://example.com/video", PublishedAt: now, FirstSeenAt: now, LastSyncedAt: now}
 	digest := model.CommentDigest{Platform: model.PlatformBilibili, SourceID: content.SourceID, ContentID: content.ID, Title: content.Title,
 		Triggers: []model.CommentNode{{ID: "bilibili:comment:1", RPID: "1"}}, Paths: []model.CommentPath{{TriggerID: "bilibili:comment:1", Nodes: []model.CommentNode{{ID: "bilibili:comment:1", RPID: "1", Name: "UP", Message: "reply", Time: now}}}}}
-	aiNotification := model.AINotification{JobID: "ai-job", DynamicID: content.ID, Title: content.Title, Stage: model.AIJobTranscription, Succeeded: true, Body: "transcript"}
+	aiNotification := legacyAINotification{JobID: "ai-job", DynamicID: content.ID, Title: content.Title, Stage: model.AIJobTranscription, Succeeded: true, Body: "transcript"}
 	rows := []struct {
 		id, kind, sourceID, contentID, state, payload, progress, trace string
 		attempts                                                       int
@@ -358,9 +360,7 @@ func preparePopulatedV9(t *testing.T) (*sql.DB, string, *vault.Vault) {
 			row.id, row.kind, "bilibili", row.sourceID, row.contentID, row.id, row.state, row.attempts, now.Add(time.Minute).Unix(), "last error", now.Unix(), row.payload, row.progress, row.trace)
 		require.NoError(t, err)
 	}
-	system := model.Delivery{ID: "system-delivery", Kind: model.DeliveryKindDynamic,
-		Dynamic:   model.Dynamic{ID: "system:1", UID: "system", UPName: "Bili Notify", Type: "SYSTEM", Summary: "alert", PublishedAt: now},
-		ChannelID: "channel", State: model.DeliveryPending, NextAt: now.Add(time.Minute), CreatedAt: now}
+	system := legacyDeliveryPayload{Kind: "dynamic", Dynamic: model.Dynamic{ID: "system:1", UID: "system", UPName: "Bili Notify", Type: "SYSTEM", Summary: "alert", PublishedAt: now}}
 	_, err = db.Exec(`INSERT INTO deliveries(id,kind,channel_id,state,attempts,next_at,last_error,created_at,payload_json) VALUES('system-delivery','dynamic','channel','pending',0,?,'',?,?)`, now.Add(time.Minute).Unix(), now.Unix(), mustMigrationJSON(t, system))
 	require.NoError(t, err)
 	return db, path, v

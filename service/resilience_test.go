@@ -91,7 +91,7 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 			up := model.UP{UID: "42", Name: "UP", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}
 			require.NoError(t, store.PutUP(up))
 			if tt.seedSeen {
-				_, err := store.RecordDynamics(up.UID, []model.Dynamic{{ID: "seen", UID: up.UID, Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Unix(1700000002, 0)}}, []string{"channel"}, state.DynamicBaselineNone)
+				_, err := recordDynamicsForTest(store, up.UID, []model.Dynamic{{ID: "seen", UID: up.UID, Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Unix(1700000002, 0)}}, []string{"channel"}, state.DynamicBaselineNone)
 				require.NoError(t, err)
 				deliveries, err := store.ListDeliveries(0)
 				require.NoError(t, err)
@@ -341,7 +341,7 @@ func TestDispatchConcurrencyUsesHotReloadedSetting(t *testing.T) {
 			channel, err := store.PutChannel(model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": server.URL}})
 			require.NoError(t, err)
 			for index := 0; index < 6; index++ {
-				_, err := store.RecordDynamics("42", []model.Dynamic{{ID: fmt.Sprintf("concurrency-%d", index), UID: "42", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now()}}, []string{channel.ID}, state.DynamicBaselineNone)
+				_, err := recordDynamicsForTest(store, "42", []model.Dynamic{{ID: fmt.Sprintf("concurrency-%d", index), UID: "42", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now()}}, []string{channel.ID}, state.DynamicBaselineNone)
 				require.NoError(t, err)
 			}
 			settings := testSettings(30, 1000, 2)
@@ -383,7 +383,7 @@ func TestDispatchOnceCapsOneCycleAtFiftyDeliveries(t *testing.T) {
 	channel, err := store.PutChannel(model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": server.URL}})
 	require.NoError(t, err)
 	for index := 0; index < 60; index++ {
-		_, err = store.RecordDynamics("42", []model.Dynamic{{
+		_, err = recordDynamicsForTest(store, "42", []model.Dynamic{{
 			ID: fmt.Sprintf("batch-%d", index), UID: "42", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now(),
 		}}, []string{channel.ID}, state.DynamicBaselineNone)
 		require.NoError(t, err)
@@ -422,7 +422,7 @@ func TestBacklogAlertEntersAndRecovers(t *testing.T) {
 	channel, err := store.PutChannel(model.Channel{Name: "robot", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": server.URL}})
 	require.NoError(t, err)
 	for index := 0; index < 2; index++ {
-		_, err := store.RecordDynamics("42", []model.Dynamic{{
+		_, err := recordDynamicsForTest(store, "42", []model.Dynamic{{
 			ID: fmt.Sprintf("backlog-%d", index), UID: "42", Type: "DYNAMIC_TYPE_WORD", PublishedAt: time.Now(), Summary: "content",
 		}}, []string{channel.ID}, state.DynamicBaselineNone)
 		require.NoError(t, err)
@@ -519,10 +519,10 @@ func TestRetryDelayUsesFiveStagesAndSaturates(t *testing.T) {
 }
 
 func BenchmarkDeliveryMessage(b *testing.B) {
-	delivery := model.Delivery{Kind: model.DeliveryKindDynamic, Dynamic: model.Dynamic{
-		ID: "dynamic", UID: "42", UPName: "benchmark", Type: "DYNAMIC_TYPE_WORD",
-		Summary: "representative notification body", URL: "https://t.bilibili.com/1",
-		Media: []model.DynamicMedia{{URL: "https://i0.hdslb.com/image.jpg"}},
+	delivery := model.Delivery{Kind: model.DeliveryKindContent, Content: &model.ContentSnapshot{
+		ContentID: "dynamic", SourceID: "42", AuthorName: "benchmark", UpstreamType: "DYNAMIC_TYPE_WORD",
+		Text: "representative notification body", URL: "https://t.bilibili.com/1",
+		Media: []model.SnapshotMedia{{Type: model.AttachmentImage, URL: "https://i0.hdslb.com/image.jpg"}},
 	}}
 	b.ReportAllocs()
 	for b.Loop() {

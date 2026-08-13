@@ -2,7 +2,6 @@ package state
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/linxin2429/bili_notify/model"
@@ -151,84 +150,6 @@ func (s *Store) SetUPResults(uids []string, at time.Time, pollErr error) error {
 		}
 		return nil
 	})
-}
-
-func (s *Store) RecordFeedDynamics(accountUID, baseline string, dynamics []model.Dynamic, _ []string, failedUIDs []string) (int, error) {
-	if accountUID == "" || baseline == "" {
-		return 0, errors.New("account uid and update baseline are required")
-	}
-	created := 0
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		autoAI, err := automaticAIEnabledTx(tx)
-		if err != nil {
-			return err
-		}
-		existing := make(map[string]bool, len(dynamics))
-		for _, dynamic := range dynamics {
-			var count int64
-			contentID := model.ContentID(model.PlatformBilibili, dynamic.ID)
-			if err := tx.Model(&contentRow{}).Where("id = ?", contentID).Count(&count).Error; err != nil {
-				return err
-			}
-			existing[contentID] = count != 0
-		}
-		if err := archiveDynamicsTx(tx, dynamics, DynamicBaselineNone); err != nil {
-			return err
-		}
-		channelIDs, err := enabledChannelIDsTx(tx)
-		if err != nil {
-			return err
-		}
-		now := time.Now()
-		for _, dynamic := range dynamics {
-			if dynamic.ID == "" || dynamic.UID == "" {
-				continue
-			}
-			contentID := model.ContentID(model.PlatformBilibili, dynamic.ID)
-			if existing[contentID] {
-				continue
-			}
-			origin := originTraceparent(tx.Statement.Context)
-			snapshot := dynamic
-			snapshot.ID, snapshot.Platform = contentID, model.PlatformBilibili
-			snapshot.UID = model.SourceID(model.PlatformBilibili, dynamic.UID)
-			for _, channelID := range channelIDs {
-				delivery := model.Delivery{
-					ID: stableHash("content", contentID, channelID), Kind: model.DeliveryKindDynamic, Dynamic: snapshot,
-					ChannelID: channelID, State: model.DeliveryPending, NextAt: now, CreatedAt: now,
-					OriginTraceparent: origin,
-				}
-				if err := putDeliveryTx(tx, delivery); err != nil {
-					return err
-				}
-			}
-			if autoAI {
-				if _, err := s.createAutomaticAIJobsTx(tx, dynamic, model.SourceID(model.PlatformBilibili, dynamic.UID), channelIDs); err != nil {
-					return fmt.Errorf("creating automatic AI pipeline for dynamic %s: %w", dynamic.ID, err)
-				}
-			}
-			created++
-		}
-		feed := biliFeedStateRow{AccountUID: accountUID, UpdateBaseline: baseline, Initialized: 1, UpdatedAt: now.Unix()}
-		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "account_uid"}},
-			DoUpdates: clause.AssignmentColumns([]string{"update_baseline", "initialized", "updated_at"}),
-		}).Create(&feed).Error; err != nil {
-			return err
-		}
-		if len(failedUIDs) > 0 {
-			if err := tx.Model(&upFollowRelationRow{}).
-				Where("account_uid = ? AND up_uid IN ?", accountUID, failedUIDs).
-				Update("space_synced", 0).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, fmt.Errorf("recording feed dynamics: %w", err)
-	}
-	return created, nil
 }
 
 func (s *Store) enrichUPRouting(ups []model.UP) error {

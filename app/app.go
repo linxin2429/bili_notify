@@ -16,6 +16,7 @@ import (
 	"github.com/linxin2429/bili_notify/logging"
 	"github.com/linxin2429/bili_notify/media"
 	"github.com/linxin2429/bili_notify/model"
+	platformcontract "github.com/linxin2429/bili_notify/platform"
 	"github.com/linxin2429/bili_notify/service"
 	"github.com/linxin2429/bili_notify/sources"
 	"github.com/linxin2429/bili_notify/state"
@@ -149,8 +150,12 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 		"observe_addr", cfg.ObserveAddr,
 	)
 	httpClient := dependencies.BilibiliHTTPClient
+	bilibiliPrivateNetwork := httpClient != nil
 	if httpClient == nil {
 		httpClient = newHTTPClient()
+		if transport, ok := httpClient.Transport.(*http.Transport); ok {
+			httpClient = cloneHTTPClientWithTransport(httpClient, media.PublicTransport(transport))
+		}
 	}
 	bilibiliGate := requestgate.New(httpClient.Transport, settings.BilibiliRequestRate, settings.BilibiliRequestConcurrency, 10*time.Second)
 	httpClient = cloneHTTPClientWithTransport(httpClient, bilibiliGate)
@@ -163,11 +168,11 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if err := os.MkdirAll(config.MediaDir(cfg.DataDir), 0o700); err != nil {
 		return fmt.Errorf("creating media directory: %w", err)
 	}
-	downloader := &media.Downloader{
-		DataDir:   cfg.DataDir,
-		Client:    httpClient,
-		UserAgent: "bili-notify/" + version,
-		Tracer:    telemetryRuntime.TracerProvider.Tracer("github.com/linxin2429/bili_notify/media"),
+	downloader := &media.AttachmentDownloader{
+		DataDir:             cfg.DataDir,
+		Client:              httpClient,
+		UserAgent:           "bili-notify/" + version,
+		AllowPrivateNetwork: bilibiliPrivateNetwork,
 	}
 	metrics := service.NewMetrics(telemetryRuntime.MeterProvider)
 	events := service.NewEventBus()
@@ -180,8 +185,12 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	aiEngine := service.NewAIEngine(store, cfg.EffectiveAIWorkerSocket(), logger.With("component", "ai"), events,
 		service.WithAITelemetry(telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator))
 	zsxqHTTPClient := dependencies.ZSXQHTTPClient
+	zsxqPrivateNetwork := zsxqHTTPClient != nil
 	if zsxqHTTPClient == nil {
 		zsxqHTTPClient = newHTTPClient()
+		if transport, ok := zsxqHTTPClient.Transport.(*http.Transport); ok {
+			zsxqHTTPClient = cloneHTTPClientWithTransport(zsxqHTTPClient, media.PublicTransport(transport))
+		}
 	}
 	zsxqGate := requestgate.New(zsxqHTTPClient.Transport, settings.ZSXQRequestRate, settings.ZSXQRequestConcurrency, 10*time.Second)
 	zsxqHTTPClient = cloneHTTPClientWithTransport(zsxqHTTPClient, zsxqGate)
@@ -202,16 +211,21 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if err != nil {
 		return err
 	}
-	zsxqCollector.SetAttachmentDownloader(&media.AttachmentDownloader{DataDir: cfg.DataDir, Client: zsxqHTTPClient, UserAgent: "bili-notify/" + version})
+	zsxqCollector.SetAttachmentDownloader(&media.AttachmentDownloader{DataDir: cfg.DataDir, Client: zsxqHTTPClient, UserAgent: "bili-notify/" + version, AllowPrivateNetwork: zsxqPrivateNetwork})
 	zsxqCollector.SetMetrics(metrics)
 	zsxqCollector.SetRequestPause(zsxqGate.PauseUntil)
 	mediaCleaner, err := media.NewCleaner(cfg.DataDir, store, logger.With("component", "media-cleaner"))
 	if err != nil {
 		return err
 	}
+	sourceChangeHandlers := map[model.Platform]func(){model.PlatformBilibili: engine.NotifyUPChanged}
 	sourceAdmin, err := sources.NewAdmin(
 		func(ctx context.Context) sources.Repository { return store.WithContext(ctx) },
-		engine.NotifyUPChanged,
+		func(changed model.Platform) {
+			if notifyChanged := sourceChangeHandlers[changed]; notifyChanged != nil {
+				notifyChanged()
+			}
+		},
 		func() {
 			events.Publish(service.TopicStatus | service.TopicUPs | service.TopicSources | service.TopicBackfills)
 		},
@@ -220,15 +234,25 @@ func RunWithDependencies(ctx context.Context, cfg config.Config, version string,
 	if err != nil {
 		return err
 	}
-	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator, cfg.DataDir, web.WithAIEngine(aiEngine), web.WithZSXQAccounts(zsxqAccounts), web.WithSourceAdmin(sourceAdmin))
+	modules := []platformcontract.Module{
+		bilibili.NewModule(engine, func(context.Context) error { return engine.ClearBilibiliSession() }),
+		zsxq.NewModule(zsxqCollector, func(ctx context.Context) error {
+			return store.WithContext(ctx).DeletePlatformAccount(model.PlatformZSXQ)
+		}),
+	}
+	server, err := web.NewServer(cfg.AdminAddr, cfg.ObserveAddr, tlsPath, engine, settingsManager, store, events, logger.With("component", "web"), auditLogger.With("component", "web"), telemetryRuntime.TracerProvider, telemetryRuntime.MeterProvider, telemetryRuntime.Propagator, cfg.DataDir, web.WithAIEngine(aiEngine), web.WithZSXQAccounts(zsxqAccounts), web.WithSourceAdmin(sourceAdmin), web.WithPlatformModules(modules))
 	if err != nil {
 		return err
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return engine.Run(gctx) })
+	for _, module := range modules {
+		if err := module.Validate(); err != nil {
+			return fmt.Errorf("validating %s platform module: %w", module.Meta.Platform, err)
+		}
+		g.Go(func() error { return module.Runner.Run(gctx) })
+	}
 	g.Go(func() error { return aiEngine.Run(gctx) })
-	g.Go(func() error { return zsxqCollector.Run(gctx) })
 	g.Go(func() error { return mediaCleaner.Run(gctx) })
 	g.Go(func() error {
 		return runAuditRetention(gctx, store, settingsManager.Settings, appLogger, telemetryRuntime.Tracer(), metrics)

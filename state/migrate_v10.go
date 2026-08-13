@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/linxin2429/bili_notify/bilibili"
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/linxin2429/bili_notify/vault"
 	"github.com/pressly/goose/v3"
@@ -338,14 +339,14 @@ CREATE TABLE outbox_v10 (
 		return err
 	}
 	for _, row := range deliveries {
-		var delivery model.Delivery
-		if err := json.Unmarshal([]byte(row.PayloadJSON), &delivery); err != nil {
+		var payload legacyDeliveryPayload
+		if err := json.Unmarshal([]byte(row.PayloadJSON), &payload); err != nil {
 			return fmt.Errorf("decoding delivery %s: %w", row.ID, err)
 		}
-		delivery.ID, delivery.Kind, delivery.ChannelID = row.ID, model.DeliveryKind(row.Kind), row.ChannelID
+		delivery := normalizeLegacyDelivery(payload)
+		delivery.ID, delivery.ChannelID = row.ID, row.ChannelID
 		delivery.State, delivery.Attempts = model.DeliveryState(row.State), row.Attempts
 		delivery.NextAt, delivery.LastError, delivery.CreatedAt = time.Unix(row.NextAt, 0), row.LastError, time.Unix(row.CreatedAt, 0)
-		normalizeLegacyDelivery(&delivery)
 		platform, sourceID, contentID, err := validateDeliverySnapshot(delivery)
 		if err != nil {
 			return fmt.Errorf("validating delivery %s: %w", row.ID, err)
@@ -372,34 +373,37 @@ CREATE INDEX idx_outbox_channel ON outbox(channel_id, state, id);
 	return err
 }
 
-func normalizeLegacyDelivery(delivery *model.Delivery) {
-	switch delivery.Kind {
-	case model.DeliveryKindDynamic:
-		if delivery.Dynamic.UID != "system" {
-			if !strings.HasPrefix(delivery.Dynamic.UID, "bilibili:up:") {
-				delivery.Dynamic.UID = model.SourceID(model.PlatformBilibili, delivery.Dynamic.UID)
-			}
-			if !strings.HasPrefix(delivery.Dynamic.ID, "bilibili:content:") {
-				delivery.Dynamic.ID = model.ContentID(model.PlatformBilibili, delivery.Dynamic.ID)
-			}
-			delivery.Dynamic.Platform = model.PlatformBilibili
+func normalizeLegacyDelivery(payload legacyDeliveryPayload) model.Delivery {
+	delivery := model.Delivery{Progress: payload.Progress, OriginTraceparent: payload.OriginTraceparent}
+	switch payload.Kind {
+	case "", "dynamic":
+		if payload.Dynamic.UID == "system" || payload.Dynamic.Type == "SYSTEM" {
+			delivery.Kind = model.DeliveryKindSystem
+			delivery.System = &model.SystemAlert{ID: payload.Dynamic.ID, Title: "[Bili Notify] 系统状态变更", Body: payload.Dynamic.Summary, CreatedAt: payload.Dynamic.PublishedAt}
+			return delivery
 		}
-	case model.DeliveryKindComment:
-		if delivery.Comment == nil {
-			return
+		snapshot := bilibili.AdaptDynamic(payload.Dynamic, false, payload.Dynamic.PublishedAt).Snapshot
+		delivery.Kind, delivery.Content = model.DeliveryKindContent, &snapshot
+	case "comment":
+		if payload.Comment == nil {
+			return delivery
 		}
-		if !strings.HasPrefix(delivery.Comment.UPUID, "bilibili:up:") {
-			delivery.Comment.UPUID = model.SourceID(model.PlatformBilibili, delivery.Comment.UPUID)
+		note := payload.Comment.neutral()
+		delivery.Kind, delivery.Comment = model.DeliveryKindComment, &note
+	case "ai":
+		if payload.AI == nil {
+			return delivery
 		}
-		if !strings.HasPrefix(delivery.Comment.ContentID, "bilibili:content:") {
-			delivery.Comment.ContentID = model.ContentID(model.PlatformBilibili, delivery.Comment.ContentID)
+		note := model.AINotification{JobID: payload.AI.JobID, SourceID: payload.AI.SourceID, ContentID: payload.AI.DynamicID,
+			BVID: payload.AI.BVID, AuthorName: payload.AI.UPName, Title: payload.AI.Title, Stage: payload.AI.Stage,
+			Succeeded: payload.AI.Succeeded, Body: payload.AI.Body, ErrorCode: payload.AI.ErrorCode,
+			ErrorMessage: payload.AI.ErrorMessage, SourceURL: payload.AI.SourceURL}
+		if !strings.HasPrefix(note.ContentID, "bilibili:content:") {
+			note.ContentID = model.ContentID(model.PlatformBilibili, note.ContentID)
 		}
-		delivery.Comment.Platform = model.PlatformBilibili
-	case model.DeliveryKindAI:
-		if delivery.AI != nil && !strings.HasPrefix(delivery.AI.DynamicID, "bilibili:content:") {
-			delivery.AI.DynamicID = model.ContentID(model.PlatformBilibili, delivery.AI.DynamicID)
-		}
+		delivery.Kind, delivery.AI = model.DeliveryKindAI, &note
 	}
+	return delivery
 }
 
 type v9Outbox struct {
@@ -413,6 +417,69 @@ type legacyDeliveryRow struct {
 	ID, Kind, ChannelID, State, LastError, PayloadJSON string
 	Attempts                                           int
 	NextAt, CreatedAt                                  int64
+}
+
+type legacyDeliveryPayload struct {
+	Kind              string                     `json:"kind"`
+	Dynamic           model.Dynamic              `json:"dynamic"`
+	Comment           *legacyCommentNotification `json:"comment"`
+	AI                *legacyAINotification      `json:"ai"`
+	Progress          *model.DeliveryProgress    `json:"progress"`
+	OriginTraceparent string                     `json:"origin_traceparent"`
+}
+
+type legacyCommentNotification struct {
+	RPID         string              `json:"rpid"`
+	Platform     model.Platform      `json:"platform"`
+	SourceName   string              `json:"source_name"`
+	UPUID        string              `json:"up_uid"`
+	UPName       string              `json:"up_name"`
+	ContentType  string              `json:"content_type"`
+	ContentID    string              `json:"content_id"`
+	ContentTitle string              `json:"content_title"`
+	ContentURL   string              `json:"content_url"`
+	PublishedAt  time.Time           `json:"published_at"`
+	Incomplete   bool                `json:"incomplete"`
+	Thread       []model.CommentNode `json:"thread"`
+}
+
+func (legacy legacyCommentNotification) neutral() model.CommentNotification {
+	authorID, authorName, role := legacy.UPUID, legacy.UPName, model.RoleUP
+	for _, node := range legacy.Thread {
+		if node.IsTrigger {
+			authorID, authorName, role = firstNonEmpty(node.AuthorID, node.Mid), node.Name, node.Role
+			break
+		}
+	}
+	if !strings.HasPrefix(legacy.ContentID, "bilibili:content:") && legacy.Platform != model.PlatformZSXQ {
+		legacy.ContentID = model.ContentID(model.PlatformBilibili, legacy.ContentID)
+	}
+	if legacy.Platform == "" {
+		legacy.Platform = model.PlatformBilibili
+	}
+	sourceID := legacy.UPUID
+	if legacy.Platform == model.PlatformBilibili && !strings.HasPrefix(sourceID, "bilibili:up:") {
+		sourceID = model.SourceID(model.PlatformBilibili, sourceID)
+	}
+	return model.CommentNotification{RPID: legacy.RPID, Platform: legacy.Platform, SourceID: sourceID, SourceName: legacy.SourceName,
+		AuthorID: authorID, AuthorName: authorName, AuthorRole: role, ContentType: legacy.ContentType,
+		ContentID: legacy.ContentID, ContentTitle: legacy.ContentTitle, ContentURL: legacy.ContentURL,
+		PublishedAt: legacy.PublishedAt, Incomplete: legacy.Incomplete, Thread: legacy.Thread}
+}
+
+type legacyAINotification struct {
+	JobID        string          `json:"job_id"`
+	SourceID     string          `json:"source_id"`
+	DynamicID    string          `json:"dynamic_id"`
+	BVID         string          `json:"bvid"`
+	UPName       string          `json:"up_name"`
+	Title        string          `json:"title"`
+	Stage        model.AIJobKind `json:"stage"`
+	Succeeded    bool            `json:"succeeded"`
+	Body         string          `json:"body"`
+	ErrorCode    string          `json:"error_code"`
+	ErrorMessage string          `json:"error_message"`
+	SourceURL    string          `json:"source_url"`
 }
 
 func v9PlatformDelivery(ctx context.Context, tx *sql.Tx, row v9Outbox) (model.Delivery, error) {
@@ -438,10 +505,11 @@ func v9PlatformDelivery(ctx context.Context, tx *sql.Tx, row v9Outbox) (model.De
 		if err := tx.QueryRowContext(ctx, `SELECT name FROM sources WHERE id=?`, row.SourceID).Scan(&sourceName); err != nil {
 			return model.Delivery{}, err
 		}
-		delivery.Kind = model.DeliveryKindDynamic
-		delivery.Dynamic = model.Dynamic{ID: content.ID, Platform: content.Platform, SourceName: sourceName, UID: content.SourceID,
-			UPName: content.AuthorName, Type: string(content.Type), PublishedAt: content.PublishedAt, Summary: content.Text,
-			Description: content.Text, URL: content.URL, Title: content.Title}
+		snapshot := model.ContentSnapshot{ContentID: content.ID, ExternalID: content.ExternalID, Platform: content.Platform,
+			SourceID: content.SourceID, SourceName: sourceName, AuthorID: content.AuthorID, AuthorName: content.AuthorName,
+			Type: content.Type, UpstreamType: content.UpstreamType, PublishedAt: content.PublishedAt, Text: content.Text,
+			Description: content.Text, URL: content.URL, Title: content.Title, Stats: content.Stats}
+		delivery.Kind, delivery.Content = model.DeliveryKindContent, &snapshot
 		attachments, err := tx.QueryContext(ctx, `SELECT type,file_name,mime,size,width,height,local_path FROM attachments WHERE content_id=? ORDER BY id`, content.ID)
 		if err != nil {
 			return model.Delivery{}, err
@@ -455,9 +523,9 @@ func v9PlatformDelivery(ctx context.Context, tx *sql.Tx, row v9Outbox) (model.De
 				return model.Delivery{}, err
 			}
 			if kind == string(model.AttachmentImage) && localPath != "" {
-				delivery.Dynamic.Media = append(delivery.Dynamic.Media, model.DynamicMedia{Kind: model.DynamicMediaImage, Width: width, Height: height, LocalPath: localPath, ContentType: mime, Size: size})
+				delivery.Content.Media = append(delivery.Content.Media, model.SnapshotMedia{Type: model.AttachmentImage, Width: width, Height: height, LocalPath: localPath, MIME: mime, Size: size})
 			} else {
-				delivery.Dynamic.Links = append(delivery.Dynamic.Links, model.DynamicLink{Text: name, URL: content.URL})
+				delivery.Content.Links = append(delivery.Content.Links, model.SnapshotLink{Text: name, URL: content.URL})
 			}
 		}
 		if err := attachments.Err(); err != nil {
@@ -488,23 +556,26 @@ func v9PlatformDelivery(ctx context.Context, tx *sql.Tx, row v9Outbox) (model.De
 				}
 			}
 		}
-		label, contentType := "UP主", "bilibili"
-		if digest.Platform == model.PlatformZSXQ {
-			label, contentType = "星球主", "zsxq"
+		authorID, authorName, role := digest.SourceID, sourceName, model.RoleMember
+		if len(digest.Triggers) != 0 {
+			authorID = firstNonEmpty(digest.Triggers[0].AuthorID, digest.Triggers[0].Mid, digest.SourceID)
+			authorName, role = firstNonEmpty(digest.Triggers[0].Name, sourceName), digest.Triggers[0].Role
 		}
-		note := model.CommentNotification{RPID: row.IdempotencyKey, Platform: digest.Platform, SourceName: sourceName,
-			UPUID: digest.SourceID, UPName: label, ContentType: contentType, ContentID: digest.ContentID,
+		note := model.CommentNotification{RPID: row.IdempotencyKey, Platform: digest.Platform, SourceID: digest.SourceID, SourceName: sourceName,
+			AuthorID: authorID, AuthorName: authorName, AuthorRole: role, ContentType: string(digest.Platform), ContentID: digest.ContentID,
 			ContentTitle: digest.Title, ContentURL: digest.ContentURL, PublishedAt: published, Incomplete: digest.Incomplete, Thread: thread}
 		if len(digest.Triggers) == 1 {
 			note.RPID = digest.Triggers[0].RPID
 		}
 		delivery.Kind, delivery.Comment = model.DeliveryKindComment, &note
 	case "ai":
-		var notification model.AINotification
-		if err := json.Unmarshal([]byte(row.PayloadJSON), &notification); err != nil {
+		var legacy legacyAINotification
+		if err := json.Unmarshal([]byte(row.PayloadJSON), &legacy); err != nil {
 			return model.Delivery{}, err
 		}
-		notification.SourceID = row.SourceID
+		notification := model.AINotification{JobID: legacy.JobID, SourceID: row.SourceID, ContentID: legacy.DynamicID, BVID: legacy.BVID,
+			AuthorName: legacy.UPName, Title: legacy.Title, Stage: legacy.Stage, Succeeded: legacy.Succeeded, Body: legacy.Body,
+			ErrorCode: legacy.ErrorCode, ErrorMessage: legacy.ErrorMessage, SourceURL: legacy.SourceURL}
 		delivery.Kind, delivery.AI = model.DeliveryKindAI, &notification
 	default:
 		return model.Delivery{}, fmt.Errorf("unsupported outbox kind %q", row.Kind)
@@ -524,19 +595,19 @@ func insertV10Delivery(ctx context.Context, tx *sql.Tx, delivery model.Delivery,
 	if err != nil {
 		return err
 	}
-	kind, title, summary := "content", delivery.Dynamic.Title, delivery.Dynamic.Summary
+	kind, title, summary := string(delivery.Kind), "", ""
 	switch delivery.Kind {
+	case model.DeliveryKindContent:
+		title, summary = delivery.Content.Title, delivery.Content.Text
 	case model.DeliveryKindComment:
-		kind, title = "comment", delivery.Comment.ContentTitle
+		title = delivery.Comment.ContentTitle
 		if len(delivery.Comment.Thread) != 0 {
 			summary = delivery.Comment.Thread[len(delivery.Comment.Thread)-1].Message
 		}
 	case model.DeliveryKindAI:
-		kind, title, summary = "ai", delivery.AI.Title, delivery.AI.Body
-	default:
-		if delivery.Dynamic.UID == "system" {
-			kind = "system"
-		}
+		title, summary = delivery.AI.Title, delivery.AI.Body
+	case model.DeliveryKindSystem:
+		title, summary = delivery.System.Title, delivery.System.Body
 	}
 	if strings.TrimSpace(idempotencyKey) == "" {
 		idempotencyKey = delivery.ID
@@ -564,31 +635,29 @@ func insertV10Delivery(ctx context.Context, tx *sql.Tx, delivery model.Delivery,
 }
 
 func validateDeliverySnapshot(delivery model.Delivery) (platform, sourceID, contentID string, err error) {
-	if delivery.ID == "" || delivery.ChannelID == "" || (delivery.State != model.DeliveryPending && delivery.State != model.DeliveryBlocked) || delivery.NextAt.IsZero() || delivery.CreatedAt.IsZero() {
+	if delivery.ID == "" || delivery.ChannelID == "" || (delivery.State != model.DeliveryPending && delivery.State != model.DeliveryBlocked && delivery.State != model.DeliverySuspended) || delivery.NextAt.IsZero() || delivery.CreatedAt.IsZero() {
 		return "", "", "", errors.New("missing required scheduling fields")
 	}
 	switch delivery.Kind {
-	case "", model.DeliveryKindDynamic:
-		if delivery.Dynamic.ID == "" {
+	case model.DeliveryKindContent:
+		if delivery.Content == nil || delivery.Content.ContentID == "" {
 			return "", "", "", errors.New("content snapshot is missing id")
 		}
-		platform, sourceID, contentID = string(delivery.Dynamic.Platform), delivery.Dynamic.UID, delivery.Dynamic.ID
-		if delivery.Dynamic.Platform == "" && delivery.Dynamic.UID != "system" {
-			platform = string(model.PlatformBilibili)
-		}
+		platform, sourceID, contentID = string(delivery.Content.Platform), delivery.Content.SourceID, delivery.Content.ContentID
 	case model.DeliveryKindComment:
-		if delivery.Comment == nil || delivery.Comment.RPID == "" {
+		if delivery.Comment == nil || delivery.Comment.RPID == "" || delivery.Comment.SourceID == "" {
 			return "", "", "", errors.New("comment snapshot is missing payload")
 		}
-		platform, sourceID, contentID = string(delivery.Comment.Platform), delivery.Comment.UPUID, delivery.Comment.ContentID
-		if platform == "" {
-			platform = string(model.PlatformBilibili)
-		}
+		platform, sourceID, contentID = string(delivery.Comment.Platform), delivery.Comment.SourceID, delivery.Comment.ContentID
 	case model.DeliveryKindAI:
 		if delivery.AI == nil || delivery.AI.JobID == "" {
 			return "", "", "", errors.New("AI snapshot is missing payload")
 		}
-		platform, sourceID, contentID = string(model.PlatformBilibili), delivery.AI.SourceID, delivery.AI.DynamicID
+		platform, sourceID, contentID = string(model.PlatformBilibili), delivery.AI.SourceID, delivery.AI.ContentID
+	case model.DeliveryKindSystem:
+		if delivery.System == nil || delivery.System.ID == "" {
+			return "", "", "", errors.New("system snapshot is missing payload")
+		}
 	default:
 		return "", "", "", fmt.Errorf("unsupported delivery kind %q", delivery.Kind)
 	}

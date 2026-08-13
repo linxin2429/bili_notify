@@ -60,7 +60,8 @@ func TestPollUPBuildsBaselineThenOutbox(t *testing.T) {
 	got, err = store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, model.ContentID(model.PlatformBilibili, "2"), got[0].Dynamic.ID)
+	require.NotNil(t, got[0].Content)
+	assert.Equal(t, model.ContentID(model.PlatformBilibili, "2"), got[0].Content.ContentID)
 
 	beforeIdlePoll := events.Revision()
 	require.NoError(t, engine.pollUP(t.Context(), up))
@@ -120,7 +121,8 @@ func TestPollUPBaselinesExistingExclusiveDynamicsOnce(t *testing.T) {
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, model.ContentID(model.PlatformBilibili, "normal-new"), deliveries[0].Dynamic.ID)
+	require.NotNil(t, deliveries[0].Content)
+	assert.Equal(t, model.ContentID(model.PlatformBilibili, "normal-new"), deliveries[0].Content.ContentID)
 	up, err = store.UP("42")
 	require.NoError(t, err)
 	assert.True(t, up.ExclusiveBaselineReady)
@@ -129,7 +131,9 @@ func TestPollUPBaselinesExistingExclusiveDynamicsOnce(t *testing.T) {
 	deliveries, err = store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 2)
-	ids := []string{deliveries[0].Dynamic.ID, deliveries[1].Dynamic.ID}
+	require.NotNil(t, deliveries[0].Content)
+	require.NotNil(t, deliveries[1].Content)
+	ids := []string{deliveries[0].Content.ContentID, deliveries[1].Content.ContentID}
 	assert.ElementsMatch(t, []string{model.ContentID(model.PlatformBilibili, "normal-new"), model.ContentID(model.PlatformBilibili, "exclusive-new")}, ids)
 }
 
@@ -249,7 +253,8 @@ func TestPollFeedIsolatesOneMonitoredUPParseFailure(t *testing.T) {
 	deliveries, err := store.ListDeliveries(0)
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, model.ContentID(model.PlatformBilibili, "good"), deliveries[0].Dynamic.ID)
+	require.NotNil(t, deliveries[0].Content)
+	assert.Equal(t, model.ContentID(model.PlatformBilibili, "good"), deliveries[0].Content.ContentID)
 }
 
 func dynamicFixture(id string, timestamp int64) string {
@@ -428,6 +433,7 @@ func TestPollUPCommitsArchiveAndOutboxWithoutLegacyBookkeeping(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	events := NewEventBus()
 	putServiceTestChannel(t, store)
+	require.NoError(t, store.PutUP(model.UP{UID: "42", Name: "tester", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}))
 	subscription := events.Subscribe()
 	t.Cleanup(subscription.Close)
 	client := bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL))
@@ -472,7 +478,7 @@ func TestDispatchOncePublishesMinimalTopicsAfterDeliveryChanges(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	channel, err := store.PutChannel(model.Channel{Name: "channel", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": webhook.URL}})
 	require.NoError(t, err)
-	created, err := store.RecordDynamics("42", []model.Dynamic{{
+	created, err := recordDynamicsForTest(store, "42", []model.Dynamic{{
 		ID: "dynamic", UID: "42", UPName: "tester", Type: "DYNAMIC_TYPE_WORD",
 		PublishedAt: time.Now(), Summary: "hello", URL: "https://t.bilibili.com/1",
 	}}, []string{channel.ID}, state.DynamicBaselineNone)

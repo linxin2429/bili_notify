@@ -258,7 +258,7 @@ func TestAIEngineContinuesDynamicCollectionTraceThroughAutomaticPipeline(t *test
 
 	originCtx, origin := provider.Tracer("test").Start(t.Context(), "collection.poll_up")
 	originContext := origin.SpanContext()
-	created, err := store.WithContext(originCtx).RecordDynamics("42", []model.Dynamic{{
+	created, err := recordDynamicsForTest(store.WithContext(originCtx), "42", []model.Dynamic{{
 		ID: "dynamic-video", BVID: "BV1xx411c7mD", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_AV",
 		Title: "video", TargetURL: "https://www.bilibili.com/video/BV1xx411c7mD", PublishedAt: time.Now(),
 	}}, []string{"channel"}, state.DynamicBaselineNone)

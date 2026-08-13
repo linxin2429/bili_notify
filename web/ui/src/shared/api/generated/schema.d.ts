@@ -1003,7 +1003,7 @@ export interface components {
             content_id?: string;
             channel_id: string;
             /** @enum {string} */
-            state: "pending" | "blocked";
+            state: "pending" | "blocked" | "suspended";
             attempts: number;
             /** Format: date-time */
             next_at: string;

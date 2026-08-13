@@ -17,10 +17,6 @@ import (
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/spf13/fileflow"
 	"github.com/spf13/pathologize"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
-	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const (
@@ -84,197 +80,18 @@ func OpenFile(dataDir, relative string) (*os.File, int64, string, error) {
 	return file, info.Size(), contentType, nil
 }
 
-// Downloader fetches Bilibili CDN media into the platform/source/content tree.
-type Downloader struct {
-	DataDir   string
-	Client    *http.Client
-	UserAgent string
-	Tracer    trace.Tracer
-	// AllowPrivateNetwork is intended for explicitly trusted test/private
-	// deployments. Production downloads reject loopback and private targets.
-	AllowPrivateNetwork bool
-}
-
-// Ensure downloads missing media for d and its Original chain. Failures leave
-// LocalPath empty and never return a fatal error to the caller — collection must proceed.
-func (d *Downloader) Ensure(ctx context.Context, dynamic *model.Dynamic) (downloaded int, failed int, downloadedBytes int64) {
-	if d == nil || dynamic == nil {
-		return 0, 0, 0
-	}
-	for current := dynamic; current != nil; current = current.Original {
-		ok, bad, size := d.ensureOne(ctx, current)
-		downloaded += ok
-		failed += bad
-		downloadedBytes += size
-	}
-	return downloaded, failed, downloadedBytes
-}
-
-func (d *Downloader) ensureOne(ctx context.Context, dynamic *model.Dynamic) (downloaded int, failed int, downloadedBytes int64) {
-	if dynamic.ID == "" || dynamic.UID == "" || dynamic.UID == "system" {
-		return 0, 0, 0
-	}
-	for i := range dynamic.Media {
-		item := &dynamic.Media[i]
-		if item.LocalPath != "" {
-			if abs, err := Resolve(d.DataDir, item.LocalPath); err == nil {
-				if st, err := os.Stat(abs); err == nil && st.Size() > 0 && rejectSymlinkPath(d.DataDir, abs, false) == nil {
-					continue
-				}
-			}
-			item.LocalPath = ""
-			item.ContentType = ""
-			item.Size = 0
-		}
-		if strings.TrimSpace(item.URL) == "" {
-			failed++
-			continue
-		}
-		if err := d.download(ctx, dynamic.UID, dynamic.ID, i, item); err != nil {
-			failed++
-			continue
-		}
-		downloaded++
-		downloadedBytes += item.Size
-	}
-	return downloaded, failed, downloadedBytes
-}
-
-func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index int, item *model.DynamicMedia) (err error) {
-	ctx, span := d.tracer().Start(ctx, "media.download", trace.WithSpanKind(trace.SpanKindClient))
-	defer func() {
-		if err != nil {
-			span.SetStatus(codes.Error, "media download failed")
-		} else {
-			span.SetAttributes(attribute.String("result", "success"))
-		}
-		span.End()
-	}()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, item.URL, nil)
-	if err != nil {
-		return err
-	}
-	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-		return errors.New("media URL must use HTTP or HTTPS")
-	}
-	if err := validateRemoteURL(ctx, req.URL, d.AllowPrivateNetwork); err != nil {
-		return err
-	}
-	ua := d.UserAgent
-	if ua == "" {
-		ua = "bili-notify"
-	}
-	req.Header.Set("User-Agent", ua)
-	req.Header.Set("Referer", "https://www.bilibili.com/")
-	req.Header.Set("Accept", "image/*,*/*;q=0.8")
-
-	client := d.redirectSafeClient(ctx)
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	if resp.ContentLength > MaxFileSize {
-		return ErrTooLarge
-	}
-
-	limited := io.LimitReader(resp.Body, MaxFileSize+1)
-	data, err := io.ReadAll(limited)
-	if err != nil {
-		return err
-	}
-	if int64(len(data)) > MaxFileSize {
-		return ErrTooLarge
-	}
-	if len(data) == 0 {
-		return errors.New("empty media body")
-	}
-
-	detectedType := http.DetectContentType(data)
-	if !strings.HasPrefix(strings.ToLower(detectedType), "image/") {
-		return errors.New("media response is not an image")
-	}
-	contentType := detectedType
-	ext := extensionFor(contentType, data)
-
-	rel := relativePath(uid, dynamicID, index, ext)
-	abs, err := Resolve(d.DataDir, rel)
-	if err != nil {
-		return err
-	}
-	if err := rejectSymlinkPath(d.DataDir, filepath.Dir(abs), true); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(d.DataDir, ".media-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	ok := false
-	defer func() {
-		if !ok {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	finalRelative, err := moveIntoMedia(d.DataDir, tmpName, abs)
-	if err != nil {
-		return err
-	}
-	ok = true
-	item.LocalPath = finalRelative
-	item.ContentType = contentType
-	item.Size = int64(len(data))
-	return nil
-}
-
-func (d *Downloader) redirectSafeClient(ctx context.Context) *http.Client {
-	base := d.Client
+// PublicTransport applies the media SSRF policy at the innermost transport.
+// A platform RequestGate can then wrap this transport so API and media traffic
+// share one complete-lifecycle request budget.
+func PublicTransport(base *http.Transport) *http.Transport {
 	if base == nil {
-		base = http.DefaultClient
+		base = http.DefaultTransport.(*http.Transport)
 	}
-	client := *base
-	if !d.AllowPrivateNetwork {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		if configured, ok := base.Transport.(*http.Transport); ok {
-			transport = configured.Clone()
-		}
-		// Resolve and dial the exact validated address. A separate preflight
-		// lookup is insufficient because DNS can change between validation and
-		// connection establishment. Media downloads also bypass environment
-		// proxies so the destination policy cannot be bypassed by proxy routing.
-		transport.Proxy = nil
-		transport.DialTLSContext = nil
-		transport.DialContext = securePublicDial
-		client.Transport = transport
-	}
-	previous := base.CheckRedirect
-	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-		if previous != nil {
-			if err := previous(request, via); err != nil {
-				return err
-			}
-		} else if len(via) >= 10 {
-			return errors.New("stopped after 10 redirects")
-		}
-		return validateRemoteURL(ctx, request.URL, d.AllowPrivateNetwork)
-	}
-	return &client
+	transport := base.Clone()
+	transport.Proxy = nil
+	transport.DialTLSContext = nil
+	transport.DialContext = securePublicDial
+	return transport
 }
 
 func securePublicDial(ctx context.Context, network, address string) (net.Conn, error) {
@@ -323,13 +140,6 @@ func publicAddresses(ctx context.Context, host string) ([]net.IP, error) {
 		}
 	}
 	return addresses, nil
-}
-
-func (d *Downloader) tracer() trace.Tracer {
-	if d.Tracer != nil {
-		return d.Tracer
-	}
-	return noop.NewTracerProvider().Tracer("github.com/linxin2429/bili_notify/media")
 }
 
 func relativePath(uid, dynamicID string, index int, ext string) string {
@@ -471,32 +281,4 @@ func ReadFile(dataDir, rel string) (data []byte, contentType string, err error) 
 	}
 	contentType = http.DetectContentType(data)
 	return data, contentType, nil
-}
-
-func extensionFor(contentType string, data []byte) string {
-	switch strings.ToLower(contentType) {
-	case "image/jpeg", "image/jpg":
-		return ".jpg"
-	case "image/png":
-		return ".png"
-	case "image/gif":
-		return ".gif"
-	case "image/webp":
-		return ".webp"
-	case "image/bmp":
-		return ".bmp"
-	}
-	detected := http.DetectContentType(data)
-	switch detected {
-	case "image/jpeg":
-		return ".jpg"
-	case "image/png":
-		return ".png"
-	case "image/gif":
-		return ".gif"
-	case "image/webp":
-		return ".webp"
-	default:
-		return ".bin"
-	}
 }

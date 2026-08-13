@@ -428,7 +428,25 @@ func (s *Store) PutChannel(ch model.Channel) (model.Channel, error) {
 	}
 	row := channelRow{ID: ch.ID, Name: ch.Name, Type: string(ch.Type), Enabled: boolToInt(ch.Enabled),
 		PublicSettingsJSON: string(publicJSON), SecretSealed: sealed, CreatedAt: ch.CreatedAt.Unix(), UpdatedAt: ch.UpdatedAt.Unix()}
-	if err := s.db.Save(&row).Error; err != nil {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		var previous channelRow
+		lookupErr := tx.Select("enabled").Where("id = ?", ch.ID).Take(&previous).Error
+		if lookupErr != nil && !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+			return lookupErr
+		}
+		if err := tx.Save(&row).Error; err != nil {
+			return err
+		}
+		if errors.Is(lookupErr, gorm.ErrRecordNotFound) || previous.Enabled == row.Enabled {
+			return nil
+		}
+		if row.Enabled == 0 {
+			return tx.Model(&outboxRow{}).Where("channel_id = ? AND state = ?", ch.ID, model.DeliveryPending).
+				Update("state", model.DeliverySuspended).Error
+		}
+		return tx.Model(&outboxRow{}).Where("channel_id = ? AND state = ?", ch.ID, model.DeliverySuspended).
+			Updates(map[string]any{"state": model.DeliveryPending, "next_at": now.Unix()}).Error
+	}); err != nil {
 		return model.Channel{}, err
 	}
 	return ch, nil
@@ -595,99 +613,6 @@ const (
 
 func (m DynamicBaselineMode) includes(dynamic model.Dynamic) bool {
 	return m == DynamicBaselineAll || (m == DynamicBaselineExclusive && dynamic.Exclusive)
-}
-
-// RecordDynamics archives full content and atomically marks unseen dynamics and creates deliveries.
-func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, _ []string, baselineMode DynamicBaselineMode) (int, error) {
-	created := 0
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		autoAI, err := automaticAIEnabledTx(tx)
-		if err != nil {
-			return err
-		}
-		existing := make(map[string]bool, len(dynamics))
-		for _, dynamic := range dynamics {
-			if dynamic.ID == "" {
-				continue
-			}
-			var count int64
-			contentID := model.ContentID(model.PlatformBilibili, dynamic.ID)
-			if err := tx.Model(&contentRow{}).Where("id = ?", contentID).Count(&count).Error; err != nil {
-				return err
-			}
-			existing[contentID] = count != 0
-		}
-		if err := archiveDynamicsTx(tx, dynamics, baselineMode); err != nil {
-			return err
-		}
-		channelIDs, err := enabledChannelIDsTx(tx)
-		if err != nil {
-			return err
-		}
-		now := time.Now()
-		for _, dynamic := range dynamics {
-			if dynamic.ID == "" {
-				continue
-			}
-			contentID := model.ContentID(model.PlatformBilibili, dynamic.ID)
-			if existing[contentID] {
-				continue
-			}
-			if baselineMode.includes(dynamic) {
-				continue
-			}
-			origin := originTraceparent(tx.Statement.Context)
-			snapshot := dynamic
-			snapshot.ID = contentID
-			snapshot.Platform = model.PlatformBilibili
-			snapshot.UID = model.SourceID(model.PlatformBilibili, uid)
-			for _, channelID := range channelIDs {
-				d := model.Delivery{
-					ID:                stableHash("content", contentID, channelID),
-					Kind:              model.DeliveryKindDynamic,
-					Dynamic:           snapshot,
-					ChannelID:         channelID,
-					State:             model.DeliveryPending,
-					NextAt:            now,
-					CreatedAt:         now,
-					OriginTraceparent: origin,
-				}
-				if err := putDeliveryTx(tx, d); err != nil {
-					return err
-				}
-			}
-			if autoAI {
-				if _, err := s.createAutomaticAIJobsTx(tx, dynamic, model.SourceID(model.PlatformBilibili, uid), channelIDs); err != nil {
-					return fmt.Errorf("creating automatic AI pipeline for dynamic %s: %w", dynamic.ID, err)
-				}
-			}
-			created++
-		}
-		if baselineMode != DynamicBaselineNone {
-			var row sourceRow
-			if err := tx.Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).Take(&row).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return ErrNotFound
-				}
-				return err
-			}
-			up := upFromSourceRow(row)
-			if baselineMode == DynamicBaselineAll {
-				up.BaselineReady = true
-			}
-			up.ExclusiveBaselineReady = true
-			updates := map[string]any{"exclusive_baseline_ready": boolToInt(up.ExclusiveBaselineReady)}
-			if baselineMode == DynamicBaselineAll {
-				updates["baseline_state"] = model.BaselineComplete
-			}
-			return tx.Model(&sourceRow{}).Where("id = ?", model.SourceID(model.PlatformBilibili, uid)).Updates(updates).Error
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, err
-	}
-	return created, nil
 }
 
 // UpsertCommentTargets merges discovered commentable contents for one UP and keeps the newest n.
@@ -930,7 +855,8 @@ func (s *Store) DeliveryStats() (OutboxStats, error) {
 	}
 	err := s.db.Model(&outboxRow{}).Select(
 		"COALESCE(SUM(CASE WHEN state = 'pending' THEN 1 ELSE 0 END), 0) AS pending, " +
-			"COALESCE(SUM(CASE WHEN state = 'blocked' THEN 1 ELSE 0 END), 0) AS blocked, MIN(created_at) AS oldest_created").Scan(&row).Error
+			"COALESCE(SUM(CASE WHEN state = 'blocked' THEN 1 ELSE 0 END), 0) AS blocked, " +
+			"MIN(CASE WHEN state = 'pending' THEN created_at END) AS oldest_created").Scan(&row).Error
 	if err != nil {
 		return OutboxStats{}, err
 	}
@@ -992,6 +918,30 @@ func (s *Store) UnblockChannel(channelID string) error {
 		Updates(map[string]any{"state": model.DeliveryPending, "next_at": time.Now().Unix()}).Error
 }
 
+func (s *Store) EnqueueSystemAlert(alert model.SystemAlert) error {
+	if strings.TrimSpace(alert.ID) == "" || strings.TrimSpace(alert.Body) == "" {
+		return errors.New("system alert id and body are required")
+	}
+	if alert.CreatedAt.IsZero() {
+		alert.CreatedAt = time.Now()
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		channelIDs, err := enabledChannelIDsTx(tx)
+		if err != nil {
+			return err
+		}
+		for _, channelID := range channelIDs {
+			delivery := model.Delivery{ID: stableHash("system", alert.ID, channelID), Kind: model.DeliveryKindSystem, System: &alert,
+				ChannelID: channelID, State: model.DeliveryPending, NextAt: alert.CreatedAt, CreatedAt: alert.CreatedAt,
+				OriginTraceparent: originTraceparent(tx.Statement.Context)}
+			if err := putDeliveryTx(tx, delivery); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func putDeliveryTx(tx *gorm.DB, d model.Delivery) error {
 	platform, sourceID, contentID, err := validateDeliverySnapshot(d)
 	if err != nil {
@@ -1001,20 +951,7 @@ func putDeliveryTx(tx *gorm.DB, d model.Delivery) error {
 	if err != nil {
 		return fmt.Errorf("encoding delivery: %w", err)
 	}
-	kind, title, summary := "content", d.Dynamic.Title, d.Dynamic.Summary
-	switch d.Kind {
-	case model.DeliveryKindComment:
-		kind, title = "comment", d.Comment.ContentTitle
-		if len(d.Comment.Thread) != 0 {
-			summary = d.Comment.Thread[len(d.Comment.Thread)-1].Message
-		}
-	case model.DeliveryKindAI:
-		kind, title, summary = "ai", d.AI.Title, d.AI.Body
-	default:
-		if d.Dynamic.UID == "system" {
-			kind = "system"
-		}
-	}
+	kind, title, summary := deliveryMetadata(d)
 	progress, err := json.Marshal(d.Progress)
 	if err != nil {
 		return fmt.Errorf("encoding delivery progress: %w", err)
@@ -1029,6 +966,24 @@ func putDeliveryTx(tx *gorm.DB, d model.Delivery) error {
 		Columns:   []clause.Column{{Name: "id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"state", "attempts", "next_at", "last_error", "progress_json"}),
 	}).Create(&row).Error
+}
+
+func deliveryMetadata(d model.Delivery) (kind, title, summary string) {
+	kind = string(d.Kind)
+	switch d.Kind {
+	case model.DeliveryKindContent:
+		title, summary = d.Content.Title, d.Content.Text
+	case model.DeliveryKindComment:
+		title = d.Comment.ContentTitle
+		if len(d.Comment.Thread) != 0 {
+			summary = d.Comment.Thread[len(d.Comment.Thread)-1].Message
+		}
+	case model.DeliveryKindAI:
+		title, summary = d.AI.Title, d.AI.Body
+	case model.DeliveryKindSystem:
+		title, summary = d.System.Title, d.System.Body
+	}
+	return kind, title, summary
 }
 
 func decodeDeliveries(rows []outboxRow) ([]model.Delivery, error) {
@@ -1057,12 +1012,14 @@ func decodeDelivery(row outboxRow) (model.Delivery, error) {
 	d.LastError = row.LastError
 	d.CreatedAt = time.Unix(row.CreatedAt, 0)
 	switch row.Kind {
-	case "content", "system":
-		d.Kind = model.DeliveryKindDynamic
+	case "content":
+		d.Kind = model.DeliveryKindContent
 	case "comment":
 		d.Kind = model.DeliveryKindComment
 	case "ai":
 		d.Kind = model.DeliveryKindAI
+	case "system":
+		d.Kind = model.DeliveryKindSystem
 	default:
 		return model.Delivery{}, fmt.Errorf("decoding delivery %s: unsupported kind %q", row.ID, row.Kind)
 	}

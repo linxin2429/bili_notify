@@ -58,7 +58,7 @@ func TestDeliveryOriginTraceparentPersistsProducerContext(t *testing.T) {
 			name:       "space dynamic",
 			withParent: true,
 			enqueue: func(store *Store) (int, error) {
-				return store.RecordDynamics("42", []model.Dynamic{{
+				return recordDynamicsForTest(store, "42", []model.Dynamic{{
 					ID: "space-dynamic", UID: "42", PublishedAt: time.Now(),
 				}}, []string{"channel"}, DynamicBaselineNone)
 			},
@@ -67,7 +67,7 @@ func TestDeliveryOriginTraceparentPersistsProducerContext(t *testing.T) {
 			name:       "aggregate feed dynamic",
 			withParent: true,
 			enqueue: func(store *Store) (int, error) {
-				return store.RecordFeedDynamics("account", "baseline", []model.Dynamic{{
+				return recordFeedDynamicsForTest(store, "account", "baseline", []model.Dynamic{{
 					ID: "feed-dynamic", UID: "42", PublishedAt: time.Now(),
 				}}, []string{"channel"}, nil)
 			},
@@ -93,7 +93,7 @@ func TestDeliveryOriginTraceparentPersistsProducerContext(t *testing.T) {
 		{
 			name: "producer without span",
 			enqueue: func(store *Store) (int, error) {
-				return store.RecordDynamics("42", []model.Dynamic{{
+				return recordDynamicsForTest(store, "42", []model.Dynamic{{
 					ID: "untraced-dynamic", UID: "42", PublishedAt: time.Now(),
 				}}, []string{"channel"}, DynamicBaselineNone)
 			},

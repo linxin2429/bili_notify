@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/spf13/pathologize"
@@ -18,12 +20,19 @@ import (
 
 var ErrBudgetExhausted = errors.New("media storage budget exhausted")
 
-const zsxqWebUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+type MediaAuth interface {
+	AuthorizeMedia(*http.Request)
+}
+
+type AuthorizeMediaFunc func(*http.Request)
+
+func (authorize AuthorizeMediaFunc) AuthorizeMedia(request *http.Request) { authorize(request) }
 
 type AttachmentDownloader struct {
 	DataDir             string
 	Client              *http.Client
 	UserAgent           string
+	Timeout             time.Duration
 	AllowPrivateNetwork bool
 	mu                  sync.Mutex
 }
@@ -38,7 +47,7 @@ type AttachmentResult struct {
 
 // EnsureAttachments localizes arbitrary attachment types with streaming size
 // enforcement. Signed remote URLs remain only in the caller's in-memory model.
-func (downloader *AttachmentDownloader) EnsureAttachments(ctx context.Context, platform model.Platform, sourceID, contentID string, attachments []model.Attachment, maxFileBytes, totalBudgetBytes int64, apiToken string) AttachmentResult {
+func (downloader *AttachmentDownloader) EnsureAttachments(ctx context.Context, platform model.Platform, sourceID, contentID string, attachments []model.Attachment, maxFileBytes, totalBudgetBytes int64, auth MediaAuth) AttachmentResult {
 	var result AttachmentResult
 	if downloader == nil || maxFileBytes <= 0 || totalBudgetBytes <= 0 {
 		return result
@@ -67,7 +76,7 @@ func (downloader *AttachmentDownloader) EnsureAttachments(ctx context.Context, p
 			continue
 		}
 		limit := min(maxFileBytes, remaining)
-		size, err := downloader.downloadAttachment(ctx, platform, sourceID, contentID, item, limit, apiToken)
+		size, err := downloader.downloadAttachment(ctx, platform, sourceID, contentID, item, limit, auth)
 		if err != nil {
 			if errors.Is(err, ErrTooLarge) && remaining < maxFileBytes {
 				err = ErrBudgetExhausted
@@ -89,7 +98,13 @@ func (downloader *AttachmentDownloader) EnsureAttachments(ctx context.Context, p
 	return result
 }
 
-func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, platform model.Platform, sourceID, contentID string, item *model.Attachment, limit int64, apiToken string) (int64, error) {
+func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, platform model.Platform, sourceID, contentID string, item *model.Attachment, limit int64, auth MediaAuth) (int64, error) {
+	timeout := downloader.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, item.RemoteURL, nil)
 	if err != nil {
 		return 0, err
@@ -99,9 +114,8 @@ func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, 
 	}
 	request.Header.Set("User-Agent", firstNonEmpty(downloader.UserAgent, "bili-notify"))
 	request.Header.Set("Accept", "*/*")
-	if platform == model.PlatformZSXQ && strings.EqualFold(request.URL.Hostname(), "api.zsxq.com") && apiToken != "" {
-		request.Header.Set("User-Agent", zsxqWebUserAgent)
-		request.AddCookie(&http.Cookie{Name: "zsxq_access_token", Value: apiToken})
+	if auth != nil {
+		auth.AuthorizeMedia(request)
 	}
 	client := downloader.safeClient(ctx)
 	response, err := client.Do(request)
@@ -114,6 +128,21 @@ func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, 
 	}
 	if response.ContentLength > limit {
 		return 0, ErrTooLarge
+	}
+	body := io.Reader(response.Body)
+	if platform == model.PlatformBilibili {
+		if item.Type != model.AttachmentImage {
+			return 0, errors.New("Bilibili media must be an image")
+		}
+		buffered := bufio.NewReader(response.Body)
+		prefix, peekErr := buffered.Peek(512)
+		if peekErr != nil && !errors.Is(peekErr, io.EOF) && !errors.Is(peekErr, bufio.ErrBufferFull) {
+			return 0, peekErr
+		}
+		if !strings.HasPrefix(strings.ToLower(http.DetectContentType(prefix)), "image/") {
+			return 0, errors.New("Bilibili media response is not an image")
+		}
+		body = buffered
 	}
 	fileName := pathologize.Clean(filepath.Base(strings.ReplaceAll(firstNonEmpty(item.FileName, item.ExternalID, "attachment"), `\`, "/")))
 	externalID := pathologize.Clean(filepath.Base(strings.ReplaceAll(firstNonEmpty(item.ExternalID, "attachment"), `\`, "/")))
@@ -140,7 +169,7 @@ func (downloader *AttachmentDownloader) downloadAttachment(ctx context.Context, 
 	if err := temporary.Chmod(0o600); err != nil {
 		return 0, err
 	}
-	written, err := io.Copy(temporary, io.LimitReader(response.Body, limit+1))
+	written, err := io.Copy(temporary, io.LimitReader(body, limit+1))
 	if err != nil {
 		return 0, err
 	}
@@ -191,16 +220,6 @@ func (downloader *AttachmentDownloader) safeClient(ctx context.Context) *http.Cl
 		request.Header.Del("Cookie")
 		request.Header.Del("Authorization")
 		return validateRemoteURL(ctx, request.URL, downloader.AllowPrivateNetwork)
-	}
-	if !downloader.AllowPrivateNetwork {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		if configured, ok := base.Transport.(*http.Transport); ok {
-			transport = configured.Clone()
-		}
-		transport.Proxy = nil
-		transport.DialTLSContext = nil
-		transport.DialContext = securePublicDial
-		copy.Transport = transport
 	}
 	return &copy
 }

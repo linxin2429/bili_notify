@@ -31,7 +31,7 @@ func TestRecordDynamicsUsesUnifiedArchiveAndTransactionalChannels(t *testing.T) 
 				require.NoError(t, err)
 			}
 			now := time.Now()
-			created, err := store.RecordDynamics("42", []model.Dynamic{{
+			created, err := recordDynamicsForTest(store, "42", []model.Dynamic{{
 				ID: "dynamic", UID: "42", UPName: "UP", Type: "DYNAMIC_TYPE_WORD", Summary: "body", PublishedAt: now,
 			}}, []string{"ignored-by-transaction"}, tt.baseline)
 			require.NoError(t, err)
