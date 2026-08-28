@@ -91,7 +91,7 @@ main.go → cmd/ (Cobra CLI + Viper/BILI_NOTIFY_* env)
 | `app/` | Composition root: validate config, open store, build engine + dual HTTP servers. |
 | `config/` | Startup settings: paths, listen addrs, log level are process-immutable. Poll interval / request rate / concurrency / comment knobs are **first-run defaults** only; after seed they live in SQLite and hot-reload via admin UI. |
 | `model/` | Shared domain facts and validation (Source, Content, CommentNode, Channel, Delivery, accounts, AI jobs). |
-| `bilibili/` | Web API client: QR login, session validate, space dynamics feed, strict dynamic parsing. |
+| `bilibili/` | Web API client: QR login, session validate, space/feed dynamics, column opus detail, strict parsing. |
 | `zsxq/` | Knowledge Planet client, SMS login, dynamic/backfill worker, and comment-tree worker. |
 | `sources/` | Source administration use cases and post-commit invalidation callbacks. |
 | `state/` | Single SQLite adapter (`data.db`): sources, contents, comment nodes, seen items, the only Outbox, encrypted settings/accounts, AI jobs, cleanup tasks; goose migrations on open. |
@@ -103,7 +103,7 @@ main.go → cmd/ (Cobra CLI + Viper/BILI_NOTIFY_* env)
 
 ### Core runtime flow
 
-1. **Collect** (`service.Engine.collectLoop`): every ~runtime `poll_interval` (seed default 30s), rate-limited (seed default 2 rps, 4 concurrency) fetch each enabled UP's dynamics. These collector knobs are stored in SQLite and hot-reloaded from the admin UI. Paginate up to 10 pages until a known dynamic ID; more than 10 pages is a state gap — stop that UP without committing (no silent loss). Discovered commentable contents refresh each UP's recent-N comment targets.
+1. **Collect** (`service.Engine.collectLoop`): every ~runtime `poll_interval` (seed default 30s), rate-limited (seed default 2 rps, 4 concurrency) fetch each enabled UP's dynamics. These collector knobs are stored in SQLite and hot-reloaded from the admin UI. Paginate up to 10 pages until a known dynamic ID; more than 10 pages is a state gap — stop that UP without committing (no silent loss). Column cards (`DYNAMIC_TYPE_ARTICLE`) then fetch opus detail for full text and inline images before archive. Discovered commentable contents refresh each UP's recent-N comment targets.
 2. **Baseline vs notify**: first successful poll for a new UP only records seen IDs (`BaselineReady`); no historical notifications. Later polls create Outbox tasks.
 3. **Atomic Outbox** (`state.Store.RecordDynamics` / `SyncCommentTree` / `ArchiveContentAndEnqueue`): in one SQLite transaction, archive the unified content or comment tree, mark `seen_items`, update sync state, and enqueue an immutable snapshot for every channel enabled at commit time. Zero channels never suppresses collection.
 4. **Comment replies** (`service.Engine.commentLoop`): slower batch (seed default 120s) scans tracked content via `/x/v2/reply` + `/x/v2/reply/reply`, keeps only UP-authored replies, expands root→trigger thread, baselines on first success per target.
