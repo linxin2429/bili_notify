@@ -1,3 +1,4 @@
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -5,11 +6,15 @@ import pytest
 
 from bili_ai_worker import server
 from bili_ai_worker.media import (
+    CHUNK_DURATION_MS,
     DOWNLOAD_RETRIES,
     DOWNLOAD_SOCKET_TIMEOUT_SEC,
+    MIN_CHUNK_DURATION_SEC,
     _download_options,
+    _merge_short_trailing_chunk,
     _retry_delay,
     _split_audio_command,
+    audio_duration_seconds,
     cleanup_cache,
     write_cookie_file,
 )
@@ -72,12 +77,58 @@ def test_download_network_budget_is_resilient(tmp_path: Path) -> None:
     assert set(retry_sleep) == {"http", "fragment", "extractor"}
 
 
-def test_split_audio_forces_16_bit_flac() -> None:
-    command = _split_audio_command(Path("input.flac"), Path("chunk-%04d.flac"))
+def test_split_audio_forces_16_bit_pcm_wav() -> None:
+    command = _split_audio_command(Path("input.flac"), Path("chunk-%04d.wav"))
 
     assert command[command.index("-sample_fmt") + 1] == "s16"
+    assert command[command.index("-c:a") + 1] == "pcm_s16le"
     assert command[command.index("-ar") + 1] == "16000"
     assert command[command.index("-ac") + 1] == "1"
+    assert command[command.index("-segment_time") + 1] == str(CHUNK_DURATION_MS // 1000)
+    assert command[-1].endswith(".wav")
+
+
+def _write_silence(path: Path, duration_sec: float, sample_rate: int = 16_000) -> None:
+    frames = max(round(sample_rate * duration_sec), 0)
+    with wave.open(str(path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(sample_rate)
+        audio.writeframes(b"\x00\x00" * frames)
+
+
+def test_merge_short_trailing_wav_chunk(tmp_path: Path) -> None:
+    first = tmp_path / "chunk-0000.wav"
+    last = tmp_path / "chunk-0001.wav"
+    _write_silence(first, 2.0)
+    _write_silence(last, 0.25)
+
+    merged = _merge_short_trailing_chunk([first, last])
+
+    assert merged == [first]
+    assert first.exists()
+    assert not last.exists()
+    assert audio_duration_seconds(first) == pytest.approx(2.25, abs=0.01)
+
+
+def test_keeps_trailing_chunk_when_long_enough(tmp_path: Path) -> None:
+    first = tmp_path / "chunk-0000.wav"
+    last = tmp_path / "chunk-0001.wav"
+    _write_silence(first, 2.0)
+    _write_silence(last, MIN_CHUNK_DURATION_SEC)
+
+    kept = _merge_short_trailing_chunk([first, last])
+
+    assert kept == [first, last]
+    assert first.exists()
+    assert last.exists()
+
+
+def test_single_short_chunk_is_not_merged(tmp_path: Path) -> None:
+    only = tmp_path / "chunk-0000.wav"
+    _write_silence(only, 0.2)
+
+    assert _merge_short_trailing_chunk([only]) == [only]
 
 
 @pytest.mark.asyncio

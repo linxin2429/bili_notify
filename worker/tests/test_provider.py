@@ -10,6 +10,43 @@ import pytest
 from bili_ai_worker import provider
 
 
+class SequenceClient:
+    def __init__(self, responses: list[httpx.Response | BaseException]) -> None:
+        self.responses = list(responses)
+        self.requests: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def post(self, *args: object, **kwargs: object) -> httpx.Response:
+        self.requests.append((args, kwargs))
+        if not self.responses:
+            raise AssertionError("unexpected extra transcription request")
+        item = self.responses.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+def install_sequence(
+    monkeypatch: pytest.MonkeyPatch, responses: list[httpx.Response | BaseException]
+) -> SequenceClient:
+    client = SequenceClient(responses)
+
+    def factory(**_kwargs: object) -> SequenceClient:
+        return client
+
+    monkeypatch.setattr(provider.httpx, "AsyncClient", factory)
+    return client
+
+
+async def instant_sleep(_seconds: float) -> None:
+    return None
+
+
 class FakeClient:
     response: httpx.Response
     requests: ClassVar[list[tuple[tuple[object, ...], dict[str, object]]]] = []
@@ -43,7 +80,7 @@ def config() -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_transcribe_normalizes_segments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    audio = tmp_path / "audio.flac"
+    audio = tmp_path / "audio.wav"
     audio.write_bytes(b"audio")
     FakeClient.response = httpx.Response(200, json={"segments": [{"start": 1.25, "end": 2, "text": " hello "}], "usage": {"seconds": 1}})
     monkeypatch.setattr(provider.httpx, "AsyncClient", FakeClient)
@@ -79,7 +116,7 @@ async def test_complete_classifies_provider_errors(status: int, code: str, monke
 
 @pytest.mark.asyncio
 async def test_transcribe_reports_payload_size_for_http_413(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    audio = tmp_path / "audio.flac"
+    audio = tmp_path / "audio.wav"
     audio.write_bytes(b"audio")
     FakeClient.response = httpx.Response(
         413,
@@ -100,7 +137,7 @@ async def test_transcribe_reports_payload_size_for_http_413(tmp_path: Path, monk
 async def test_provider_log_redacts_api_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    audio = tmp_path / "audio.flac"
+    audio = tmp_path / "audio.wav"
     audio.write_bytes(b"audio")
     FakeClient.response = httpx.Response(
         413,
@@ -187,11 +224,147 @@ async def test_transcription_multipart_body_is_async_compatible(
 
     monkeypatch.setattr(provider.httpx, "AsyncClient", client_factory)
     if operation == "transcribe":
-        audio = tmp_path / "audio.flac"
+        audio = tmp_path / "audio.wav"
         audio.write_bytes(b"audio")
         await provider.transcribe(audio, config())
     else:
         await provider.test_provider("transcription", config())
 
     assert len(bodies) == 1
+    assert b"audio/wav" in bodies[0]
     assert b'name="timestamp_granularities[]"' in bodies[0]
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {
+                "error": {
+                    "message": "Provider returned 400",
+                    "metadata": {"provider_name": "DeepInfra", "raw": "unsupported file format: flac"},
+                }
+            },
+            "Provider returned 400 DeepInfra unsupported file format: flac",
+        ),
+        ({"error": {"message": "invalid request"}}, "invalid request"),
+        ({"detail": "nope"}, "nope"),
+    ],
+)
+def test_error_message_includes_openrouter_metadata(payload: dict[str, object], expected: str) -> None:
+    response = httpx.Response(400, json=payload)
+    assert provider._error_message(response) == expected
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "requests"),
+    [
+        (401, "provider_authentication", 1),
+        (404, "provider_model_not_found", 1),
+        (413, "provider_payload_too_large", 1),
+    ],
+)
+@pytest.mark.asyncio
+async def test_transcribe_does_not_retry_permanent_errors(
+    status: int, code: str, requests: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    client = install_sequence(
+        monkeypatch,
+        [httpx.Response(status, json={"error": {"message": "permanent"}})],
+    )
+    monkeypatch.setattr(provider, "_sleep", instant_sleep)
+
+    with pytest.raises(provider.ProviderError) as caught:
+        await provider.transcribe(audio, config(), job_id="job-1")
+
+    assert caught.value.code == code
+    assert len(client.requests) == requests
+
+
+@pytest.mark.asyncio
+async def test_transcribe_retries_http_400_then_succeeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    client = install_sequence(
+        monkeypatch,
+        [
+            httpx.Response(400, json={"error": {"message": "Provider returned 400"}}),
+            httpx.Response(200, json={"segments": [{"start": 0, "end": 1, "text": "hello"}]}),
+        ],
+    )
+    monkeypatch.setattr(provider, "_sleep", instant_sleep)
+
+    segments, _usage = await provider.transcribe(audio, config(), job_id="job-1")
+
+    assert segments == [{"start": 0.0, "end": 1.0, "text": "hello"}]
+    assert len(client.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_transcribe_retries_unreachable_then_succeeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    client = install_sequence(
+        monkeypatch,
+        [
+            httpx.ConnectError("connection reset"),
+            httpx.Response(200, json={"segments": [{"start": 0, "end": 1, "text": "hello"}]}),
+        ],
+    )
+    monkeypatch.setattr(provider, "_sleep", instant_sleep)
+
+    segments, _usage = await provider.transcribe(audio, config(), job_id="job-1")
+
+    assert segments[0]["text"] == "hello"
+    assert len(client.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_transcribe_falls_back_to_json_without_timestamps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    failures = [
+        httpx.Response(
+            400,
+            json={"error": {"message": "Provider returned 400", "metadata": {"provider_name": "DeepInfra"}}},
+        )
+        for _ in range(provider.TRANSCRIBE_ATTEMPTS)
+    ]
+    client = install_sequence(
+        monkeypatch,
+        [*failures, httpx.Response(200, json={"text": "spoken words", "duration": 12.5})],
+    )
+    monkeypatch.setattr(provider, "_sleep", instant_sleep)
+
+    segments, _usage = await provider.transcribe(audio, config(), job_id="job-1")
+
+    assert segments == [{"start": 0.0, "end": 12.5, "text": "spoken words"}]
+    assert len(client.requests) == provider.TRANSCRIBE_ATTEMPTS + 1
+    fallback_fields = client.requests[-1][1]["data"]
+    assert isinstance(fallback_fields, dict)
+    assert fallback_fields["response_format"] == "json"
+    assert "timestamp_granularities[]" not in fallback_fields
+
+
+@pytest.mark.asyncio
+async def test_transcribe_falls_back_when_verbose_json_omits_segments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    missing = [httpx.Response(200, json={"text": "ignored"}) for _ in range(provider.TRANSCRIBE_ATTEMPTS)]
+    client = install_sequence(
+        monkeypatch,
+        [*missing, httpx.Response(200, json={"text": "fallback", "usage": {"seconds": 3}})],
+    )
+    monkeypatch.setattr(provider, "_sleep", instant_sleep)
+
+    segments, usage = await provider.transcribe(audio, config(), job_id="job-1")
+
+    assert segments == [{"start": 0.0, "end": 3.0, "text": "fallback"}]
+    assert usage == {"seconds": 3}
+    assert len(client.requests) == provider.TRANSCRIBE_ATTEMPTS + 1
