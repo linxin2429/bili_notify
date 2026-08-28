@@ -4,6 +4,7 @@ import asyncio
 import os
 import shutil
 import time
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ import yt_dlp
 
 DOWNLOAD_SOCKET_TIMEOUT_SEC = 60
 DOWNLOAD_RETRIES = 10
+CHUNK_DURATION_MS = 600_000
+MIN_CHUNK_DURATION_SEC = 1.0
 
 
 class DownloadError(RuntimeError):
@@ -113,10 +116,11 @@ def _retry_delay(attempt: int) -> int:
 async def split_audio(page: DownloadedPage) -> list[tuple[Path, int]]:
     chunk_dir = page.audio_path.parent / f"chunks-{page.page}"
     chunk_dir.mkdir(mode=0o700, exist_ok=True)
-    pattern = chunk_dir / "chunk-%04d.flac"
+    pattern = chunk_dir / "chunk-%04d.wav"
     process = await asyncio.create_subprocess_exec(
         *_split_audio_command(page.audio_path, pattern),
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
     )
     try:
         _, stderr = await process.communicate()
@@ -126,10 +130,57 @@ async def split_audio(page: DownloadedPage) -> list[tuple[Path, int]]:
         raise
     if process.returncode != 0:
         raise DownloadError(f"ffmpeg failed: {stderr.decode('utf-8', errors='replace')[:300]}")
-    chunks = sorted(chunk_dir.glob("chunk-*.flac"))
+    chunks = _merge_short_trailing_chunk(sorted(chunk_dir.glob("chunk-*.wav")))
     if not chunks:
         raise DownloadError("ffmpeg produced no audio chunks")
-    return [(chunk, index * 600_000) for index, chunk in enumerate(chunks)]
+    return [(chunk, index * CHUNK_DURATION_MS) for index, chunk in enumerate(chunks)]
+
+
+def audio_duration_seconds(path: Path) -> float:
+    if path.suffix.lower() != ".wav":
+        return 0.0
+    try:
+        with wave.open(str(path), "rb") as audio:
+            rate = audio.getframerate()
+            if rate <= 0:
+                return 0.0
+            return audio.getnframes() / float(rate)
+    except wave.Error:
+        return 0.0
+
+
+def _concat_wav(first: Path, second: Path, output: Path) -> None:
+    with wave.open(str(first), "rb") as left, wave.open(str(second), "rb") as right:
+        if (left.getnchannels(), left.getsampwidth(), left.getframerate()) != (
+            right.getnchannels(),
+            right.getsampwidth(),
+            right.getframerate(),
+        ):
+            raise DownloadError("cannot merge audio chunks with different encodings")
+        params = left.getparams()
+        frames = left.readframes(left.getnframes()) + right.readframes(right.getnframes())
+    with wave.open(str(output), "wb") as merged:
+        merged.setparams(params)
+        merged.writeframes(frames)
+
+
+def _merge_short_trailing_chunk(chunks: list[Path]) -> list[Path]:
+    if len(chunks) < 2:
+        return chunks
+    last = chunks[-1]
+    if audio_duration_seconds(last) >= MIN_CHUNK_DURATION_SEC:
+        return chunks
+    previous = chunks[-2]
+    merged = previous.with_name(f"{previous.stem}-merged{previous.suffix}")
+    try:
+        _concat_wav(previous, last, merged)
+        previous.unlink()
+        last.unlink()
+        merged.replace(previous)
+    except (OSError, wave.Error) as exc:
+        merged.unlink(missing_ok=True)
+        raise DownloadError("failed to merge a short trailing audio chunk") from exc
+    return chunks[:-1]
 
 
 def _split_audio_command(audio_path: Path, pattern: Path) -> tuple[str, ...]:
@@ -148,10 +199,12 @@ def _split_audio_command(audio_path: Path, pattern: Path) -> tuple[str, ...]:
         "16000",
         "-sample_fmt",
         "s16",
+        "-c:a",
+        "pcm_s16le",
         "-f",
         "segment",
         "-segment_time",
-        "600",
+        str(CHUNK_DURATION_MS // 1000),
         "-reset_timestamps",
         "1",
         str(pattern),

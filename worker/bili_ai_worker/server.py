@@ -19,7 +19,14 @@ from opentelemetry.instrumentation.grpc import aio_server_interceptor, filters
 from ai.v1 import worker_pb2, worker_pb2_grpc
 from bili_ai_worker import __version__
 from bili_ai_worker.log import configure_logging
-from bili_ai_worker.media import DownloadError, cleanup_cache, download_pages, split_audio
+from bili_ai_worker.media import (
+    MIN_CHUNK_DURATION_SEC,
+    DownloadError,
+    audio_duration_seconds,
+    cleanup_cache,
+    download_pages,
+    split_audio,
+)
 from bili_ai_worker.provider import ProviderError, complete, test_provider, transcribe
 from bili_ai_worker.telemetry import audio_bytes as audio_bytes_metric
 from bili_ai_worker.telemetry import cache_bytes as cache_bytes_metric
@@ -193,7 +200,23 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
                 for chunk_index, (chunk, offset_ms) in enumerate(chunks):
                     base = 25 + int(65 * (page_index + chunk_index / max(len(chunks), 1)) / max(len(pages), 1))
                     yield _progress("transcribing", min(base, 90), f"正在转写 P{page.page} 第 {chunk_index + 1}/{len(chunks)} 段")
-                    segments, chunk_usage = await transcribe(chunk, request.provider, job_id=request.job_id)
+                    try:
+                        segments, chunk_usage = await transcribe(chunk, request.provider, job_id=request.job_id)
+                    except ProviderError as exc:
+                        if audio_duration_seconds(chunk) >= MIN_CHUNK_DURATION_SEC:
+                            raise
+                        logger.warning(
+                            "skipping short audio chunk the transcription provider rejected",
+                            extra={
+                                "event": "worker.transcription.short_chunk_skipped",
+                                "job_id": request.job_id,
+                                "bvid": request.bvid,
+                                "page": page.page,
+                                "error_code": exc.code,
+                                "http_status": exc.status_code,
+                            },
+                        )
+                        continue
                     _sum_usage(usage, chunk_usage)
                     for segment in segments:
                         page_segments.append(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -13,9 +14,16 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from bili_ai_worker.media import audio_duration_seconds
 from bili_ai_worker.telemetry import provider_duration, provider_requests
 
 logger = logging.getLogger("bili_ai_worker.provider")
+
+TRANSCRIBE_ATTEMPTS = 4
+_RETRYABLE_CODES = frozenset(
+    {"provider_timeout", "provider_unreachable", "provider_rate_limited", "provider_failure", "timestamps_unsupported"}
+)
+_NON_RETRYABLE_STATUS = frozenset({401, 403, 404, 413})
 
 
 class ProviderError(RuntimeError):
@@ -35,13 +43,23 @@ def _error_message(response: httpx.Response) -> str:
         return ""
     if not isinstance(payload, dict):
         return ""
+    parts: list[str] = []
     error = payload.get("error")
-    if isinstance(error, dict) and isinstance(error.get("message"), str):
-        return error["message"]
-    for key in ("message", "detail"):
-        if isinstance(payload.get(key), str):
-            return payload[key]
-    return ""
+    if isinstance(error, dict):
+        if isinstance(error.get("message"), str) and error["message"].strip():
+            parts.append(error["message"].strip())
+        metadata = error.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ("provider_name", "raw"):
+                value = metadata.get(key)
+                if isinstance(value, str) and value.strip() and value.strip() not in parts:
+                    parts.append(value.strip())
+    if not parts:
+        for key in ("message", "detail"):
+            if isinstance(payload.get(key), str) and payload[key].strip():
+                parts.append(payload[key].strip())
+                break
+    return " ".join(parts)
 
 
 def _raise_for_status(response: httpx.Response, label: str) -> None:
@@ -69,15 +87,54 @@ def _timeout(config: Any, *, probe: bool = False) -> httpx.Timeout:
 async def transcribe(
     path: Path, config: Any, *, job_id: str = ""
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    fields = {
-        "model": config.model,
-        "response_format": "verbose_json",
-        "timestamp_granularities[]": "segment",
-    }
-    if config.language:
-        fields["language"] = config.language
-    if config.prompt:
-        fields["prompt"] = config.prompt
+    try:
+        return await _transcribe_with_retries(path, config, job_id=job_id, verbose=True)
+    except ProviderError as exc:
+        if not _should_fallback_to_json(exc):
+            raise
+        logger.warning(
+            "verbose transcription failed; retrying without segment timestamps",
+            extra={
+                "event": "provider.transcription.fallback_json",
+                "job_id": job_id,
+                "error_code": exc.code,
+                "http_status": exc.status_code,
+            },
+        )
+        return await _transcribe_with_retries(path, config, job_id=job_id, verbose=False)
+
+
+async def _transcribe_with_retries(
+    path: Path, config: Any, *, job_id: str, verbose: bool
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    last_error: ProviderError | None = None
+    for attempt in range(1, TRANSCRIBE_ATTEMPTS + 1):
+        try:
+            return await _transcribe_once(path, config, job_id=job_id, verbose=verbose, attempt=attempt)
+        except ProviderError as exc:
+            last_error = exc
+            if not _retryable(exc) or attempt >= TRANSCRIBE_ATTEMPTS:
+                raise
+            logger.warning(
+                "retrying transcription request",
+                extra={
+                    "event": "provider.transcription.retry",
+                    "job_id": job_id,
+                    "attempt": attempt,
+                    "error_code": exc.code,
+                    "http_status": exc.status_code,
+                    "response_format": "verbose_json" if verbose else "json",
+                },
+            )
+            await _sleep(_transcribe_retry_delay(attempt))
+    assert last_error is not None
+    raise last_error
+
+
+async def _transcribe_once(
+    path: Path, config: Any, *, job_id: str, verbose: bool, attempt: int
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    fields = _transcription_fields(config, verbose=verbose)
     headers = {"Authorization": f"Bearer {config.api_key}"}
     timeout = _timeout(config)
     endpoint = f"{config.base_url.rstrip('/')}/audio/transcriptions"
@@ -89,8 +146,10 @@ async def transcribe(
         "provider_origin": _origin(endpoint),
         "model": config.model,
         "audio_bytes": audio_bytes,
-        "audio_format": path.suffix.removeprefix(".").lower(),
+        "audio_format": path.suffix.removeprefix(".").lower() or "wav",
         "timeout_sec": config.timeout_sec,
+        "attempt": attempt,
+        "response_format": fields["response_format"],
     }
     logger.info("sending transcription request", extra=request_fields)
     try:
@@ -100,7 +159,7 @@ async def transcribe(
                     endpoint,
                     headers=headers,
                     data=fields,
-                    files={"file": (path.name, audio, "audio/flac")},
+                    files={"file": (path.name, audio, _audio_content_type(path))},
                 )
     except httpx.TimeoutException as exc:
         _log_transport_failure("transcription", "timeout", request_fields, started, exc)
@@ -123,9 +182,66 @@ async def transcribe(
         payload = response.json()
     except json.JSONDecodeError as exc:
         raise ProviderError("provider_invalid_response", "transcription provider returned invalid JSON") from exc
-    segments = payload.get("segments")
-    if not isinstance(segments, list) or not segments:
-        raise ProviderError("timestamps_unsupported", "transcription provider did not return segment timestamps")
+    return _transcription_result(path, payload, verbose=verbose)
+
+
+def _transcription_fields(config: Any, *, verbose: bool) -> dict[str, str]:
+    fields = {
+        "model": config.model,
+        "response_format": "verbose_json" if verbose else "json",
+    }
+    if verbose:
+        fields["timestamp_granularities[]"] = "segment"
+    if config.language:
+        fields["language"] = config.language
+    if config.prompt:
+        fields["prompt"] = config.prompt
+    return fields
+
+
+def _audio_content_type(path: Path) -> str:
+    suffix = path.suffix.removeprefix(".").lower()
+    if suffix == "wav":
+        return "audio/wav"
+    if suffix == "mp3":
+        return "audio/mpeg"
+    if suffix == "flac":
+        return "audio/flac"
+    return f"audio/{suffix}" if suffix else "audio/wav"
+
+
+def _retryable(error: ProviderError) -> bool:
+    if error.status_code in _NON_RETRYABLE_STATUS:
+        return False
+    if error.code in {"provider_authentication", "provider_model_not_found", "provider_payload_too_large"}:
+        return False
+    if error.status_code in {400, 408, 429} or error.status_code >= 500:
+        return True
+    return error.code in _RETRYABLE_CODES
+
+
+def _should_fallback_to_json(error: ProviderError) -> bool:
+    if error.status_code in _NON_RETRYABLE_STATUS:
+        return False
+    if error.code in {"timestamps_unsupported", "provider_invalid_response"}:
+        return True
+    return error.status_code == 400
+
+
+def _transcribe_retry_delay(attempt: int) -> float:
+    return float(min(2 ** max(attempt - 1, 0), 8))
+
+
+async def _sleep(seconds: float) -> None:
+    await asyncio.sleep(seconds)
+
+
+def _usage(payload: dict[str, Any]) -> dict[str, Any]:
+    usage = payload.get("usage")
+    return usage if isinstance(usage, dict) else {}
+
+
+def _normalize_segments(segments: list[Any]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for segment in segments:
         try:
@@ -138,8 +254,34 @@ async def transcribe(
             normalized.append({"start": start, "end": end, "text": text})
     if not normalized:
         raise ProviderError("provider_invalid_response", "transcription response has no usable segments")
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    return normalized, usage
+    return normalized
+
+
+def _payload_duration_seconds(payload: dict[str, Any], path: Path) -> float:
+    duration = payload.get("duration")
+    if isinstance(duration, (int, float)) and duration > 0:
+        return float(duration)
+    usage = _usage(payload)
+    seconds = usage.get("seconds")
+    if isinstance(seconds, (int, float)) and seconds > 0:
+        return float(seconds)
+    return audio_duration_seconds(path)
+
+
+def _transcription_result(path: Path, payload: Any, *, verbose: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not isinstance(payload, dict):
+        raise ProviderError("provider_invalid_response", "transcription provider returned an invalid response")
+    usage = _usage(payload)
+    segments = payload.get("segments")
+    if isinstance(segments, list) and segments:
+        return _normalize_segments(segments), usage
+    if verbose:
+        raise ProviderError("timestamps_unsupported", "transcription provider did not return segment timestamps")
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise ProviderError("provider_invalid_response", "transcription provider returned an empty transcript")
+    duration = max(_payload_duration_seconds(payload, path), 0.001)
+    return [{"start": 0.0, "end": duration, "text": text}], usage
 
 
 async def complete(
