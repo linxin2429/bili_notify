@@ -8,7 +8,7 @@ COPY web/ui/ ./
 COPY web/testdata/ /src/web/testdata/
 RUN npm run build
 
-FROM golang:1.26.5-alpine AS build
+FROM golang:1.26.7-alpine AS build
 
 WORKDIR /src
 ARG GOPROXY=https://mirrors.aliyun.com/goproxy,direct
