@@ -23,9 +23,11 @@ import (
 )
 
 const (
-	defaultAPI      = "https://api.bilibili.com"
-	defaultPassport = "https://passport.bilibili.com"
-	dynamicFeatures = "itemOpusStyle,listOnlyfans,onlyfansAssetsV2"
+	defaultAPI         = "https://api.bilibili.com"
+	defaultPassport    = "https://passport.bilibili.com"
+	dynamicFeatures    = "itemOpusStyle,listOnlyfans,onlyfansAssetsV2"
+	opusDetailFeatures = "onlyfansVote,onlyfansAssetsV2,decorationCard,htmlNewStyle,ugcDelete,editable,opusPrivateVisible,tribeeEdit,avatarAutoTheme,avatarTypeOpus"
+	articleDynamicType = "DYNAMIC_TYPE_ARTICLE"
 )
 
 var errDynamicBlocked = errors.New("exclusive dynamic is not accessible")

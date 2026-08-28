@@ -615,6 +615,13 @@ func (e *Engine) pollFeed(ctx context.Context, account model.BiliAccount, ups []
 			}
 			continue
 		}
+		if err := e.enrichArticles(ctx, group); err != nil {
+			failedUIDs = append(failedUIDs, uid)
+			if failErr := e.failPoll(ctx, targets[uid], targets[uid].Name, started, err); failErr != nil {
+				return failErr
+			}
+			continue
+		}
 		dynamicsByUID[uid] = group
 		allDynamics = append(allDynamics, group...)
 	}
@@ -738,6 +745,9 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP) (err error) {
 		offset = page.Offset
 	}
 	slices.SortFunc(items, func(a, b model.Dynamic) int { return a.PublishedAt.Compare(b.PublishedAt) })
+	if err := e.enrichArticles(ctx, items); err != nil {
+		return e.failPoll(ctx, up, name, started, err)
+	}
 	e.enrichMedia(ctx, items)
 	baselineMode := state.DynamicBaselineNone
 	if !up.BaselineReady {
@@ -2070,6 +2080,22 @@ func enabledUPCount(ups []model.UP) int {
 		}
 	}
 	return count
+}
+
+func (e *Engine) enrichArticles(ctx context.Context, items []model.Dynamic) error {
+	for i := range items {
+		if !bilibili.NeedsArticleEnrichment(items[i]) {
+			continue
+		}
+		requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
+		err := e.client.EnrichArticle(requestCtx, &items[i])
+		cancel()
+		if err != nil {
+			e.handleBiliAPIError(err)
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *Engine) enrichMedia(ctx context.Context, items []model.Dynamic) {
