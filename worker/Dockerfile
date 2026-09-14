@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 COPY worker/requirements.lock /app/worker/requirements.lock
 RUN pip install --no-cache-dir -r /app/worker/requirements.lock
-COPY worker /app/worker
+COPY worker/bili_ai_worker /app/worker/bili_ai_worker
+COPY worker/ai /app/worker/ai
 RUN mkdir -p /cache /run/bili-notify && chown -R 65532:65532 /cache /run/bili-notify /app
 USER 65532:65532
 VOLUME ["/cache", "/run/bili-notify"]

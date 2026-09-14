@@ -28,7 +28,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/cmd.commit=$(COMMIT) \
 	-X $(MODULE)/cmd.date=$(BUILD_DATE)
 
-.PHONY: help setup frontend-install frontend-contract-check frontend-typecheck frontend-build frontend-bundle-check frontend-lint frontend-test frontend-coverage frontend-audit frontend-quality playwright-install frontend-e2e worker-install worker-lint worker-test worker-check worker-docker-build worker-docker-smoke-image go-check-ready check-diff check-fmt check-mod workflow-lint check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck ci-check check run docker-build docker-smoke-image docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
+.PHONY: help setup frontend-install frontend-contract-check frontend-typecheck frontend-build frontend-bundle-check frontend-lint frontend-test frontend-coverage frontend-audit frontend-quality playwright-install frontend-e2e worker-install worker-lint worker-test worker-check worker-docker-build worker-docker-smoke-image go-check-ready check-diff check-fmt check-mod workflow-lint release-test check-coverage-race check-vet check-vulncheck build clean fmt test test-race test-stability test-protocol benchmark coverage coverage-race vet vulncheck ci-check check run docker-build docker-smoke-image docker-smoke observability-validate observability-smoke compose-pull compose-up compose-stop compose-down compose-logs compose-run compose-exec compose-healthcheck
 
 help:
 	@printf '%s\n' \
@@ -47,6 +47,7 @@ help:
 		'  coverage-race          run the race detector and core Go coverage gate together' \
 		'  vet                    run go vet' \
 		'  vulncheck              run govulncheck' \
+		'  release-test           test component release planning and recovery' \
 		'  ci-check               run CI checks; the image job performs the production build' \
 		'  check                  run the complete local CI check suite' \
 		'' \
@@ -186,6 +187,9 @@ check-mod:
 	fi
 	go mod verify
 
+release-test:
+	python3 -m unittest discover -s .github/release -p 'test_*.py' -v
+
 workflow-lint:
 	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
 
@@ -262,7 +266,7 @@ vet: frontend-build
 vulncheck: frontend-build
 	GOTOOLCHAIN=$(REQUIRED_GO_TOOLCHAIN) go tool govulncheck $(GO_PACKAGES)
 
-ci-check: check-diff check-fmt check-mod workflow-lint worker-check go-check-ready check-coverage-race check-vet check-vulncheck
+ci-check: check-diff check-fmt check-mod workflow-lint release-test worker-check go-check-ready check-coverage-race check-vet check-vulncheck
 
 check: build ci-check
 

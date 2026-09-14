@@ -1,7 +1,7 @@
 # Bili Notify — pull from Docker Hub
 #
 # 镜像：dengxinlin/bili-notify 与 dengxinlin/bili-notify-ai-worker
-# 同一个 git tag vX.Y.Z 发布 X.Y.Z / X.Y / X / latest。
+# app/vX.Y.Z 与 worker/vX.Y.Z 分别发布各自的 X.Y.Z / X.Y / X / latest。
 #
 # 数据卷首次启动自动创建：
 #   /data/data.db     SQLite（配置、Outbox、内容档案；启动 goose 迁移）
@@ -57,7 +57,7 @@ services:
       retries: 3
 
   ai-worker:
-    image: dengxinlin/bili-notify-ai-worker:${IMAGE_TAG:-latest}
+    image: dengxinlin/bili-notify-ai-worker:${AI_WORKER_IMAGE_TAG:-latest}
     container_name: bili-notify-ai-worker
     restart: unless-stopped
     environment:
