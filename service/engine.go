@@ -46,6 +46,10 @@ type Engine struct {
 	relationNotify     chan struct{}
 	httpTimeout        time.Duration
 	sessionMu          sync.RWMutex
+	sessionClient      *bilibili.SessionClient
+	sessionWake        chan struct{}
+	sessionWarning     bool
+	sessionRetryAt     time.Time
 	accountMu          sync.RWMutex
 	account            model.BiliAccount
 	authValid          atomic.Bool
@@ -97,7 +101,7 @@ func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger,
 		events = NewEventBus()
 	}
 	engine := &Engine{
-		store: store, client: client, media: mediaDownloader, logger: logger, metrics: metrics,
+		store: store, client: client, sessionClient: bilibili.NewSessionClient(client), sessionWake: make(chan struct{}, 1), media: mediaDownloader, logger: logger, metrics: metrics,
 		settings: settings, settingsChanged: make(chan struct{}),
 		relationNotify: make(chan struct{}, 1), httpTimeout: 10 * time.Second,
 		microsoftLogins: make(map[string]*MicrosoftLoginSession), events: events,
@@ -116,14 +120,22 @@ func (e *Engine) Metrics() *Metrics { return e.metrics }
 
 // ClearBilibiliSession disconnects only the Bilibili platform. Notification,
 // AI and Knowledge Planet workflows retain their independent state.
-func (e *Engine) ClearBilibiliSession() error {
+func (e *Engine) ClearBilibiliSession(ctx context.Context) error {
 	e.sessionMu.Lock()
 	defer e.sessionMu.Unlock()
-	if err := e.store.ClearSession(); err != nil {
+	if err := e.store.WithContext(ctx).ClearSession(); err != nil {
 		return err
 	}
 	e.client.ClearSession()
-	e.setAuth(false)
+	e.sessionWarning = false
+	e.sessionRetryAt = time.Time{}
+	e.loginMu.Lock()
+	if e.loginCancel != nil {
+		e.loginCancel()
+	}
+	e.login = nil
+	e.loginMu.Unlock()
+	e.setAuth(ctx, false)
 	e.accountMu.Lock()
 	e.account = model.BiliAccount{}
 	e.accountMu.Unlock()
@@ -202,7 +214,6 @@ type clockStatus struct {
 }
 
 func (e *Engine) Run(ctx context.Context) error {
-	store := e.store.WithContext(ctx)
 	e.loginMu.Lock()
 	e.runCtx = ctx
 	e.loginMu.Unlock()
@@ -227,34 +238,8 @@ func (e *Engine) Run(ctx context.Context) error {
 		e.microsoftLoginMu.Unlock()
 		e.microsoftLoginWG.Wait()
 	}()
-	if session, err := store.Session(); err == nil {
-		e.client.SetSession(session)
-		validateCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
-		account, validateErr := e.client.ValidateSession(validateCtx)
-		cancel()
-		if validateErr == nil {
-			session.AccountUID = account.UID
-			session.AccountName = account.Name
-			if err := store.SaveSession(session); err != nil {
-				return fmt.Errorf("updating restored Bilibili session identity: %w", err)
-			}
-			e.setAccount(account)
-			e.authEverValid.Store(true)
-			e.authValid.Store(true)
-			e.metrics.SetAuth(true)
-			e.logger.Info("stored Bilibili session restored", "event", "bilibili.session.restored", "result", "success")
-		} else {
-			e.authEverValid.Store(true)
-			if statusErr := store.SetPlatformAccountStatus(model.PlatformBilibili, model.AccountInvalid, "session validation failed"); statusErr != nil {
-				return fmt.Errorf("marking invalid Bilibili session: %w", statusErr)
-			}
-			e.logger.Warn("stored Bilibili session is invalid", "event", "bilibili.session.invalid", "result", "failure", "error", validateErr)
-			e.enqueueSystem("B站登录失效，请在管理控制台重新扫码登录。")
-		}
-	} else if errors.Is(err, context.Canceled) {
-		return nil
-	} else if !errors.Is(err, state.ErrNotFound) {
-		return fmt.Errorf("loading Bilibili session: %w", err)
+	if err := e.restoreBiliSession(ctx); err != nil {
+		return err
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -367,7 +352,7 @@ func (e *Engine) refreshRelations(ctx context.Context) (err error) {
 		batch, fetchErr := e.client.FetchRelations(requestCtx, uids[start:end])
 		cancel()
 		if fetchErr != nil {
-			e.handleBiliAPIError(fetchErr)
+			e.handleBiliAPIError(ctx, fetchErr)
 			if err := store.PutFollowRelations(account.UID, states, time.Now()); err != nil {
 				return fmt.Errorf("recording unknown follow relations: %w", err)
 			}
@@ -386,9 +371,9 @@ func (e *Engine) refreshRelations(ctx context.Context) (err error) {
 	return nil
 }
 
-func (e *Engine) handleBiliAPIError(err error) {
+func (e *Engine) handleBiliAPIError(ctx context.Context, err error) {
 	if bilibili.IsAuthentication(err) {
-		e.setAuth(false)
+		e.setAuth(ctx, false)
 	}
 	if !bilibili.IsRiskControl(err) {
 		return
@@ -399,9 +384,9 @@ func (e *Engine) handleBiliAPIError(err error) {
 	e.pauseRequests(until)
 	previousUntil := e.riskUntil.Swap(until.Unix())
 	if previousUntil <= now.Unix() {
-		e.logger.Warn("Bilibili risk-control pause started", "event", "bilibili.risk_control.started", "resume_at", until, "error", err)
+		e.logger.WarnContext(ctx, "Bilibili risk-control pause started", "event", "bilibili.risk_control.started", "resume_at", until, "error", err)
 		e.publish(TopicStatus)
-		e.enqueueSystem(fmt.Sprintf("B站接口触发风控，采集已暂停 %s；服务不会尝试绕过风控。", pause.Round(time.Second)))
+		e.enqueueSystem(ctx, fmt.Sprintf("B站接口触发风控，采集已暂停 %s；服务不会尝试绕过风控。", pause.Round(time.Second)))
 	}
 }
 
@@ -502,7 +487,7 @@ func (e *Engine) initializeFeed(ctx context.Context, accountUID string) error {
 	defer cancel()
 	page, err := e.client.FetchAllPage(requestCtx, "", "")
 	if err != nil {
-		e.handleBiliAPIError(err)
+		e.handleBiliAPIError(ctx, err)
 		return err
 	}
 	if page.UpdateBaseline == "" {
@@ -681,7 +666,7 @@ func (e *Engine) completeFeedPoll(ctx context.Context, ups []model.UP, dynamics 
 
 func (e *Engine) failFeed(ctx context.Context, ups []model.UP, started time.Time, pollErr error) error {
 	store := e.store.WithContext(ctx)
-	e.handleBiliAPIError(pollErr)
+	e.handleBiliAPIError(ctx, pollErr)
 	uids := make([]string, 0, len(ups))
 	for _, up := range ups {
 		uids = append(uids, up.UID)
@@ -713,7 +698,7 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP) (err error) {
 	for pageNumber := range maxPages {
 		page, err := e.client.FetchPage(requestCtx, up.UID, offset)
 		if err != nil {
-			e.handleBiliAPIError(err)
+			e.handleBiliAPIError(ctx, err)
 			return e.failPoll(ctx, up, name, started, err)
 		}
 		name = page.UPName
@@ -793,7 +778,7 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP) (err error) {
 		}
 	}
 	if up.ConsecutiveFail >= 3 {
-		e.enqueueSystem(fmt.Sprintf("UP %s 的动态采集已恢复。", up.UID))
+		e.enqueueSystem(ctx, fmt.Sprintf("UP %s 的动态采集已恢复。", up.UID))
 	}
 	if up.ConsecutiveFail > 0 {
 		e.logger.InfoContext(ctx, "Bilibili UP poll recovered", "event", "bilibili.up.poll_recovered", "up_uid", up.UID, "up_name", name, "previous_failures", up.ConsecutiveFail)
@@ -1276,7 +1261,7 @@ func buildCommentThread(target model.CommentTarget, trigger bilibili.Reply, root
 func (e *Engine) handleCommentPollError(ctx context.Context, target model.CommentTarget, pollErr error) error {
 	store := e.store.WithContext(ctx)
 	if bilibili.IsAuthentication(pollErr) {
-		e.setAuth(false)
+		e.setAuth(ctx, false)
 	}
 	if bilibili.IsRiskControl(pollErr) {
 		now := time.Now()
@@ -1286,7 +1271,7 @@ func (e *Engine) handleCommentPollError(ctx context.Context, target model.Commen
 		previousUntil := e.riskUntil.Swap(until.Unix())
 		if previousUntil <= now.Unix() {
 			e.publish(TopicStatus)
-			e.enqueueSystem(fmt.Sprintf("B站接口触发风控，采集已暂停 %s；服务不会尝试绕过风控。", pause.Round(time.Second)))
+			e.enqueueSystem(ctx, fmt.Sprintf("B站接口触发风控，采集已暂停 %s；服务不会尝试绕过风控。", pause.Round(time.Second)))
 		}
 	}
 	if bilibili.IsCommentClosed(pollErr) {
@@ -1321,7 +1306,7 @@ func (e *Engine) failPoll(ctx context.Context, up model.UP, name string, started
 	}
 	e.logger.WarnContext(ctx, "Bilibili UP poll failed", "event", "bilibili.up.poll_completed", "result", "failure", "up_uid", up.UID, "up_name", name, "error_kind", kind, "consecutive_failures", up.ConsecutiveFail+1, "duration_ms", elapsedMS(started), "error", pollErr)
 	if up.ConsecutiveFail+1 == 3 {
-		e.enqueueSystem(fmt.Sprintf("UP %s 已连续三次采集失败：%v", up.UID, pollErr))
+		e.enqueueSystem(ctx, fmt.Sprintf("UP %s 已连续三次采集失败：%v", up.UID, pollErr))
 	}
 	return nil
 }
@@ -1362,10 +1347,10 @@ func (e *Engine) dispatchOnce(ctx context.Context) (err error) {
 		depth := stats.Pending + stats.Blocked
 		backlogged := depth > int64(settings.BacklogAlertCount) || age > settings.BacklogAlertAge()
 		if backlogged && e.backlogAlerted.CompareAndSwap(false, true) {
-			e.enqueueSystem(fmt.Sprintf("通知队列发生积压：任务数 %d，最老任务等待 %s。", depth, age.Round(time.Second)))
+			e.enqueueSystem(ctx, fmt.Sprintf("通知队列发生积压：任务数 %d，最老任务等待 %s。", depth, age.Round(time.Second)))
 		}
 		if !backlogged && e.backlogAlerted.CompareAndSwap(true, false) {
-			e.enqueueSystem("通知队列积压已恢复。")
+			e.enqueueSystem(ctx, "通知队列积压已恢复。")
 		}
 	}
 	if len(deliveries) == 0 {
@@ -1528,30 +1513,6 @@ func elapsedMS(started time.Time) int64 {
 	return time.Since(started).Milliseconds()
 }
 
-func (e *Engine) authLoop(ctx context.Context) error {
-	ticker := time.NewTicker(sessionValidationInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if !e.authValid.Load() {
-				continue
-			}
-			checkCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
-			e.sessionMu.RLock()
-			_, err := e.client.ValidateSession(checkCtx)
-			e.sessionMu.RUnlock()
-			cancel()
-			if err != nil {
-				e.setAuth(false)
-				e.logger.Warn("Bilibili session validation failed", "event", "bilibili.session.validation_failed", "error", err)
-			}
-		}
-	}
-}
-
 func (e *Engine) setAccount(account model.BiliAccount) {
 	e.accountMu.Lock()
 	e.account = account
@@ -1571,27 +1532,27 @@ func (e *Engine) NotifyUPChanged() {
 	}
 }
 
-func (e *Engine) setAuth(valid bool) {
+func (e *Engine) setAuth(ctx context.Context, valid bool) {
 	previous := e.authValid.Swap(valid)
 	e.metrics.SetAuth(valid)
 	if valid {
 		if !previous {
-			e.logger.Info("Bilibili authentication state changed", "event", "bilibili.authentication.changed", "authenticated", true)
+			e.logger.InfoContext(ctx, "Bilibili authentication state changed", "event", "bilibili.authentication.changed", "authenticated", true)
 		}
 		wasEverValid := e.authEverValid.Swap(true)
 		if !previous && wasEverValid {
-			e.enqueueSystem("B站登录已恢复，动态采集重新开始。")
+			e.enqueueSystem(ctx, "B站登录已恢复，动态采集重新开始。")
 		}
 	} else {
 		if previous {
-			e.logger.Warn("Bilibili authentication state changed", "event", "bilibili.authentication.changed", "authenticated", false)
+			e.logger.WarnContext(ctx, "Bilibili authentication state changed", "event", "bilibili.authentication.changed", "authenticated", false)
 		}
 		if previous && e.authEverValid.Load() {
-			e.enqueueSystem("B站登录失效，请在管理控制台重新扫码登录。")
+			e.enqueueSystem(ctx, "B站登录失效，请在管理控制台重新扫码登录。")
 		}
 		if previous {
-			if err := e.store.SetPlatformAccountStatus(model.PlatformBilibili, model.AccountInvalid, "session validation failed"); err != nil {
-				e.logger.Error("unable to persist Bilibili authentication state", "event", "bilibili.authentication.persist_failed", "error", err)
+			if err := e.store.WithContext(ctx).SetPlatformAccountStatus(model.PlatformBilibili, model.AccountInvalid, "session validation failed"); err != nil {
+				e.logger.ErrorContext(ctx, "unable to persist Bilibili authentication state", "event", "bilibili.authentication.persist_failed", "error", err)
 			}
 		}
 	}
@@ -1600,14 +1561,14 @@ func (e *Engine) setAuth(valid bool) {
 	}
 }
 
-func (e *Engine) enqueueSystem(summary string) {
+func (e *Engine) enqueueSystem(ctx context.Context, summary string) {
 	now := time.Now()
 	dynamic := model.Dynamic{
 		ID: fmt.Sprintf("system:%d", now.UnixNano()), UID: "system", UPName: "Bili Notify", Type: "SYSTEM",
 		PublishedAt: now, Summary: summary, URL: "",
 	}
-	if _, err := e.store.RecordDynamics("system", []model.Dynamic{dynamic}, nil, state.DynamicBaselineNone); err != nil {
-		e.logger.Error("unable to queue system alert", "event", "system_alert.queue_failed", "phase", "record_delivery", "error", err)
+	if _, err := e.store.WithContext(ctx).RecordDynamics("system", []model.Dynamic{dynamic}, nil, state.DynamicBaselineNone); err != nil {
+		e.logger.ErrorContext(ctx, "unable to queue system alert", "event", "system_alert.queue_failed", "phase", "record_delivery", "error", err)
 		return
 	}
 	e.publish(TopicStatus | TopicDeliveries)
@@ -1694,6 +1655,9 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 	}
 	current := *e.login
 	e.loginMu.Unlock()
+	if current.Status == bilibili.QRSuccess || current.Status == bilibili.QRExpired {
+		return current, nil
+	}
 	if time.Now().After(current.ExpiresAt) {
 		current.Status = bilibili.QRExpired
 		e.loginMu.Lock()
@@ -1715,6 +1679,17 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 	if status == bilibili.QRSuccess {
 		e.sessionMu.Lock()
 		defer e.sessionMu.Unlock()
+		e.loginMu.Lock()
+		if e.login != nil && e.login.Key == id && e.login.Status == bilibili.QRSuccess {
+			completed := *e.login
+			e.loginMu.Unlock()
+			return completed, nil
+		}
+		active := e.login != nil && e.login.Key == id && ctx.Err() == nil
+		e.loginMu.Unlock()
+		if !active {
+			return LoginSession{}, errors.New("login session no longer active")
+		}
 		previous, previousErr := e.store.Session()
 		if previousErr != nil && !errors.Is(previousErr, state.ErrNotFound) {
 			return LoginSession{}, previousErr
@@ -1734,17 +1709,28 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 		}
 		session.AccountUID = account.UID
 		session.AccountName = account.Name
+		e.loginMu.Lock()
+		if e.login == nil || e.login.Key != id || ctx.Err() != nil {
+			e.loginMu.Unlock()
+			restorePrevious()
+			return LoginSession{}, errors.New("login session no longer active")
+		}
 		if err := e.store.SaveSession(session); err != nil {
+			e.loginMu.Unlock()
 			restorePrevious()
 			return LoginSession{}, err
 		}
+		e.loginMu.Unlock()
+		e.sessionWarning = false
+		e.sessionRetryAt = time.Time{}
+		e.wakeSessionMaintenance()
 		accountChanged := previous.AccountUID != account.UID
 		identityChanged := accountChanged || previous.AccountName != account.Name
 		if accountChanged {
 			e.lastSuccess.Store(0)
 		}
 		e.setAccount(account)
-		e.setAuth(true)
+		e.setAuth(ctx, true)
 		if identityChanged {
 			e.publish(TopicStatus | TopicUPs)
 		}
@@ -2091,7 +2077,7 @@ func (e *Engine) enrichArticles(ctx context.Context, items []model.Dynamic) erro
 		err := e.client.EnrichArticle(requestCtx, &items[i])
 		cancel()
 		if err != nil {
-			e.handleBiliAPIError(err)
+			e.handleBiliAPIError(ctx, err)
 			return err
 		}
 	}

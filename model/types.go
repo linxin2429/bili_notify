@@ -385,10 +385,12 @@ type CommentNode struct {
 }
 
 type BiliSession struct {
-	Cookies     map[string]string `json:"cookies"`
-	AccountUID  string            `json:"account_uid"`
-	AccountName string            `json:"account_name"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	RefreshToken        string            `json:"-"`
+	PendingRefreshToken string            `json:"-"`
+	Cookies             map[string]string `json:"cookies"`
+	AccountUID          string            `json:"account_uid"`
+	AccountName         string            `json:"account_name"`
+	UpdatedAt           time.Time         `json:"updated_at"`
 }
 
 type BiliAccount struct {

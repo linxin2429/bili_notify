@@ -46,6 +46,7 @@ const (
 type APIError struct {
 	Kind       ErrorKind
 	HTTPStatus int
+	RetryAfter time.Duration
 	Code       int
 	Message    string
 }
@@ -68,6 +69,7 @@ type Client struct {
 	httpClient  *http.Client
 	apiURL      string
 	passportURL string
+	webURL      string
 	userAgent   string
 	mu          sync.RWMutex
 	cookies     map[string]string
@@ -106,6 +108,7 @@ func New(httpClient *http.Client, userAgent string, opts ...Option) *Client {
 		httpClient:  httpClient,
 		apiURL:      defaultAPI,
 		passportURL: defaultPassport,
+		webURL:      "https://www.bilibili.com",
 		userAgent:   userAgent,
 		cookies:     make(map[string]string),
 		tracer:      tracenoop.NewTracerProvider().Tracer("github.com/linxin2429/bili_notify/bilibili"),
@@ -284,7 +287,8 @@ func (c *Client) PollQR(ctx context.Context, key string) (QRStatus, model.BiliSe
 		return "", model.BiliSession{}, &APIError{Kind: ErrorTemporary, Code: env.Code, Message: env.Message}
 	}
 	var data struct {
-		Code int `json:"code"`
+		Code         int    `json:"code"`
+		RefreshToken string `json:"refresh_token"`
 	}
 	if err := json.Unmarshal(env.Data, &data); err != nil {
 		return "", model.BiliSession{}, &APIError{Kind: ErrorSchema, Message: "invalid QR poll data"}
@@ -306,7 +310,7 @@ func (c *Client) PollQR(ctx context.Context, key string) (QRStatus, model.BiliSe
 		if cookies["SESSDATA"] == "" {
 			return "", model.BiliSession{}, &APIError{Kind: ErrorSchema, Message: "successful login did not return SESSDATA"}
 		}
-		return QRSuccess, model.BiliSession{Cookies: cookies, UpdatedAt: time.Now()}, nil
+		return QRSuccess, model.BiliSession{Cookies: cookies, RefreshToken: data.RefreshToken, UpdatedAt: time.Now()}, nil
 	default:
 		return "", model.BiliSession{}, &APIError{Kind: ErrorSchema, Code: data.Code, Message: "unknown QR login state"}
 	}
