@@ -24,15 +24,21 @@ import (
 func TestCollectionItemRecoverySurvivesRestartAndSeenFrontier(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		card     func(bool) string
-		baseline bool
-		feed     bool
-		paywall  bool
+		name         string
+		card         func(bool) string
+		baseline     bool
+		feed         bool
+		paywall      bool
+		deviceStatus int
+		deviceCode   int
 	}{
 		{name: "feed article", feed: true, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
 		{name: "article", card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
 		{name: "paid preview recovers without losing login", paywall: true, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
+		{name: "device 401 preserves login", deviceStatus: 401, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
+		{name: "device 403 preserves login", deviceStatus: 403, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
+		{name: "device -101 preserves login", deviceCode: -101, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
+		{name: "device -111 preserves login", deviceCode: -111, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
 		{name: "forwarded article", card: func(bool) string { return forwardedArticleFixture("bad", "original", 1700000002) }},
 		{name: "schema changes upstream", card: func(recovered bool) string {
 			if recovered {
@@ -49,6 +55,14 @@ func TestCollectionItemRecoverySurvivesRestartAndSeenFrontier(t *testing.T) {
 			var opusCalls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/x/frontend/finger/spi" {
+					if !recovered.Load() && tt.deviceStatus != 0 {
+						w.WriteHeader(tt.deviceStatus)
+						return
+					}
+					if !recovered.Load() && tt.deviceCode != 0 {
+						_, _ = fmt.Fprintf(w, `{"code":%d}`, tt.deviceCode)
+						return
+					}
 					_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"test-device"}}`)
 					return
 				}
@@ -103,8 +117,8 @@ func TestCollectionItemRecoverySurvivesRestartAndSeenFrontier(t *testing.T) {
 			seen, err = store.Seen("42", "bad")
 			require.NoError(t, err)
 			assert.False(t, seen)
-			if tt.paywall {
-				assert.True(t, engine.authValid.Load(), "a paid preview must not invalidate account authentication")
+			if tt.paywall || tt.deviceStatus != 0 || tt.deviceCode != 0 {
+				assert.True(t, engine.authValid.Load(), "item-local errors must not invalidate account authentication")
 				_, _, err := store.Content(model.ContentID(model.PlatformBilibili, "bad"))
 				require.ErrorIs(t, err, state.ErrNotFound)
 			}

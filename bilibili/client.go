@@ -133,6 +133,9 @@ func (c *Client) SetSession(session model.BiliSession) {
 	for k, v := range session.Cookies {
 		c.cookies[k] = v
 	}
+	if device := session.Cookies["buvid3"]; validDeviceCookie(device) {
+		c.deviceBuvid = device
+	}
 }
 
 func (c *Client) ClearSession() {
@@ -152,12 +155,12 @@ func (c *Client) addHeaders(req *http.Request, withAuth bool) {
 	defer c.mu.RUnlock()
 	parts := make([]string, 0, len(c.cookies))
 	for name, value := range c.cookies {
-		if name == "buvid3" && strings.TrimSpace(value) == "" {
+		if name == "buvid3" {
 			continue
 		}
 		parts = append(parts, name+"="+value)
 	}
-	if strings.TrimSpace(c.cookies["buvid3"]) == "" && c.deviceBuvid != "" {
+	if c.deviceBuvid != "" {
 		parts = append(parts, "buvid3="+c.deviceBuvid)
 	}
 	if len(parts) > 0 {
@@ -208,7 +211,15 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, wit
 		return nil, nil, fmt.Errorf("creating request: %w", err)
 	}
 	c.addHeaders(req, withAuth)
-	resp, err = c.httpClient.Do(req)
+	httpClient := c.httpClient
+	if !withAuth && httpClient.Jar != nil {
+		// Anonymous operations must not inherit account cookies from an injected
+		// jar. Preserve the caller's transport, timeout and redirect policy.
+		anonymous := *httpClient
+		anonymous.Jar = nil
+		httpClient = &anonymous
+	}
+	resp, err = httpClient.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("requesting bilibili: %w", err)
 	}

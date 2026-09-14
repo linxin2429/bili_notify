@@ -11,7 +11,7 @@ import (
 func (c *Client) hasDeviceCookie() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return strings.TrimSpace(c.cookies["buvid3"]) != "" || c.deviceBuvid != ""
+	return c.deviceBuvid != ""
 }
 
 // ensureDeviceCookie supplies the normal web device cookie required by opus
@@ -34,7 +34,7 @@ func (c *Client) ensureDeviceCookie(ctx context.Context) error {
 	}
 	response, body, err := c.get(ctx, c.apiURL+"/x/frontend/finger/spi", nil, false)
 	if err != nil {
-		return fmt.Errorf("initializing Bilibili device cookie: %w", err)
+		return fmt.Errorf("initializing Bilibili device cookie: %w", deviceInitializationError(err))
 	}
 	var data struct {
 		Buvid3 string `json:"b_3"`
@@ -43,16 +43,33 @@ func (c *Client) ensureDeviceCookie(ctx context.Context) error {
 		if apiErr, ok := errors.AsType[*APIError](err); ok {
 			apiErr.HTTPStatus = response.StatusCode
 		}
-		return fmt.Errorf("decoding Bilibili device initialization: %w", err)
+		return fmt.Errorf("decoding Bilibili device initialization: %w", deviceInitializationError(err))
 	}
 	// Do not allow an upstream value to introduce additional Cookie fields, and
 	// do not include the device identifier in errors or telemetry.
-	cookie := http.Cookie{Name: "buvid3", Value: data.Buvid3}
-	if strings.TrimSpace(data.Buvid3) == "" || len(data.Buvid3) > 256 || cookie.Valid() != nil {
+	if !validDeviceCookie(data.Buvid3) {
 		return &APIError{Kind: ErrorSchema, Message: "device initialization returned an invalid buvid3"}
 	}
 	c.mu.Lock()
-	c.deviceBuvid = data.Buvid3
+	if c.deviceBuvid == "" {
+		c.deviceBuvid = data.Buvid3
+	}
 	c.mu.Unlock()
 	return nil
+}
+
+func validDeviceCookie(value string) bool {
+	cookie := http.Cookie{Name: "buvid3", Value: value}
+	return strings.TrimSpace(value) != "" && len(value) <= 256 && cookie.Valid() == nil
+}
+
+// The anonymous device endpoint cannot determine whether the account login is
+// valid. Keep auth-shaped failures local to the item; preserve risk responses.
+func deviceInitializationError(err error) error {
+	if apiErr, ok := errors.AsType[*APIError](err); ok && apiErr.Kind == ErrorAuthentication {
+		local := *apiErr
+		local.Kind = ErrorTemporary
+		return &local
+	}
+	return err
 }

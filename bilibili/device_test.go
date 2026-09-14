@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -76,7 +78,7 @@ func TestOpusDeviceCookieLifecycle(t *testing.T) {
 			// Renewal and logout must not restore old credentials or discard a
 			// separately initialized device identifier.
 			client.ClearSession()
-			client.SetSession(model.BiliSession{Cookies: map[string]string{"SESSDATA": "renewed", "buvid3": tt.device}})
+			client.SetSession(model.BiliSession{Cookies: map[string]string{"SESSDATA": "renewed"}})
 			got, err := client.fetchOpusDetail(t.Context(), "renewed")
 			require.NoError(t, err)
 			assert.Equal(t, "full paid body", got.Body)
@@ -93,6 +95,10 @@ func TestDeviceInitializationFailureCanRecover(t *testing.T) {
 		kind       ErrorKind
 	}{
 		{name: "HTTP failure", status: 503, kind: ErrorTemporary},
+		{name: "anonymous unauthorized", status: 401, kind: ErrorTemporary},
+		{name: "anonymous forbidden", status: 403, kind: ErrorTemporary},
+		{name: "anonymous login code", body: `{"code":-101}`, kind: ErrorTemporary},
+		{name: "anonymous CSRF code", body: `{"code":-111}`, kind: ErrorTemporary},
 		{name: "risk control", body: `{"code":-352}`, kind: ErrorRiskControl},
 		{name: "invalid JSON", body: `{`, kind: ErrorSchema},
 		{name: "missing device", body: `{"code":0,"data":{}}`, kind: ErrorSchema},
@@ -161,6 +167,63 @@ func TestDeviceInitializationCancellation(t *testing.T) {
 			assert.False(t, client.hasDeviceCookie())
 		})
 	}
+}
+
+func TestDeviceInitializationDoesNotUseCookieJar(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Empty(t, r.Header.Get("Cookie"))
+		_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"device"}}`)
+	}))
+	t.Cleanup(server.Close)
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	origin, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	jar.SetCookies(origin, []*http.Cookie{{Name: "SESSDATA", Value: "private-account"}})
+	httpClient := server.Client()
+	httpClient.Jar = jar
+	client := New(httpClient, "test", WithBaseURLs(server.URL, server.URL))
+	require.NoError(t, client.ensureDeviceCookie(t.Context()))
+	assert.Same(t, jar, httpClient.Jar, "anonymous requests must not mutate the injected client")
+	require.Len(t, jar.Cookies(origin), 1)
+	assert.Equal(t, "private-account", jar.Cookies(origin)[0].Value)
+}
+
+func TestDeviceInitializationPreservesConcurrentSessionDevice(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"generated-device"}}`)
+	}))
+	// Release the handler before server cleanup even if a precondition fails.
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); server.Close() })
+	client := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL))
+	done := make(chan error, 1)
+	go func() { done <- client.ensureDeviceCookie(t.Context()) }()
+	select {
+	case <-started:
+	case <-t.Context().Done():
+		t.Fatal("initialization did not start")
+	}
+	client.SetSession(model.BiliSession{Cookies: map[string]string{"buvid3": "session-device"}})
+	releaseOnce.Do(func() { close(release) })
+	require.NoError(t, <-done)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+	client.addHeaders(request, true)
+	device, err := request.Cookie("buvid3")
+	require.NoError(t, err)
+	assert.Equal(t, "session-device", device.Value)
 }
 
 func TestOpusPaidPreviewIsNotFullContent(t *testing.T) {
