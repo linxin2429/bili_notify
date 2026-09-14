@@ -1,5 +1,6 @@
 """Offline tests; external publishing boundaries are always mocked."""
 
+import io
 import json
 import subprocess
 import tempfile
@@ -127,18 +128,29 @@ class ReleaseTests(unittest.TestCase):
                 release.decide(tag, sha, inputs, record(), True)
 
     def test_tree_changes(self):
-        # Exercise real Git trees in isolated repositories; run cases concurrently.
-        cases = [
-            ("add", True),
-            ("delete", True),
-            ("rename", True),
-            ("mode", True),
-            ("revert", False),
-            ("docs", False),
+        # Run the production fingerprint subprocess against real nested Git trees.
+        # Removing its recursive flag must fail these tests, not hide behind a mock.
+        paths = [
+            ("main.go", True, False),
+            ("service/engine.go", True, False),
+            ("state/migrations/001.sql", True, False),
+            ("web/ui/src/App.tsx", True, False),
+            ("worker/bili_ai_worker/server.py", False, True),
+            ("worker/ai/v1/worker_pb2.py", False, True),
+            ("api/ai/v1/worker.proto", True, True),
+            ("worker/tests/test_server.py", False, False),
+            ("README.md", False, False),
         ]
+        operations = ["add", "delete", "rename", "mode", "change", "revert"]
+        cases = [
+            (path, app, worker, operation)
+            for path, app, worker in paths
+            for operation in operations
+        ]
+        policy = json.loads(release.POLICY.read_text())
 
         def check(case):
-            operation, expected = case
+            path, app, worker, operation = case
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
 
@@ -153,39 +165,46 @@ class ReleaseTests(unittest.TestCase):
                 git("init", "-q")
                 git("config", "user.email", "test@example.invalid")
                 git("config", "user.name", "Release Test")
-                (root / "main.go").write_text("package main\n")
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("original input\n")
                 git("add", ".")
                 git("commit", "-qm", "initial")
-                before = git("ls-tree", "-rz", "HEAD")
+                before = {
+                    component: release.fingerprint("HEAD", component, policy, root)
+                    for component in release.IMAGES
+                }
                 if operation == "add":
-                    (root / "new.go").write_text("package main\n")
+                    target.with_name("added-" + target.name).write_text("added input\n")
                 elif operation == "delete":
-                    (root / "main.go").unlink()
+                    target.unlink()
                 elif operation == "rename":
-                    (root / "main.go").rename(root / "renamed.go")
+                    target.rename(target.with_name("renamed-" + target.name))
                 elif operation == "mode":
-                    (root / "main.go").chmod(0o755)
-                elif operation == "revert":
-                    (root / "main.go").write_text("changed\n")
-                    git("add", ".")
-                    git("commit", "-qm", "change")
-                    (root / "main.go").write_text("package main\n")
+                    target.chmod(0o755)
                 else:
-                    (root / "README.md").write_text("documentation\n")
+                    target.write_text("changed input\n")
+                    if operation == "revert":
+                        git("add", ".")
+                        git("commit", "-qm", "change")
+                        target.write_text("original input\n")
                 git("add", "-A")
                 tree = git("write-tree")
-                return operation, before, git("ls-tree", "-rz", tree), expected
+                got = {
+                    component: before[component]
+                    != release.fingerprint(tree, component, policy, root)
+                    for component in release.IMAGES
+                }
+                want = {
+                    "app": app and operation != "revert",
+                    "worker": worker and operation != "revert",
+                }
+                return path, operation, got, want
 
-        with ThreadPoolExecutor() as executor:
-            for operation, before, after, expected in executor.map(check, cases):
-                with self.subTest(operation=operation):
-                    policy = json.loads(release.POLICY.read_text())
-                    with patch("release.subprocess.run") as command:
-                        command.return_value.stdout = before.encode()
-                        old = release.fingerprint(SHA, "app", policy)
-                        command.return_value.stdout = after.encode()
-                        new = release.fingerprint(SHA, "app", policy)
-                    self.assertEqual(old != new, expected)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            for path, operation, got, want in executor.map(check, cases):
+                with self.subTest(path=path, operation=operation):
+                    self.assertEqual(got, want)
 
     def test_baseline_selection(self):
         items = [
@@ -311,9 +330,59 @@ class ReleaseTests(unittest.TestCase):
             release.complete(data, "owner/repo", DIGEST)
 
 
+class HubPolicyTests(unittest.TestCase):
+    def test_required_server_policy(self):
+        cases = [
+            (
+                "correct",
+                {"enabled": True, "rules": [registry.IMMUTABLE_VERSION_RULE]},
+                True,
+            ),
+            (
+                "disabled",
+                {"enabled": False, "rules": [registry.IMMUTABLE_VERSION_RULE]},
+                False,
+            ),
+            ("locks aliases", {"enabled": True, "rules": [".*"]}, False),
+            (
+                "extra rule locks signatures",
+                {
+                    "enabled": True,
+                    "rules": [registry.IMMUTABLE_VERSION_RULE, "sha256-.*"],
+                },
+                False,
+            ),
+            ("no rules", {"enabled": True, "rules": []}, False),
+            ("missing settings", {}, False),
+        ]
+        for name, settings, valid in cases:
+            response = io.BytesIO(
+                json.dumps({"immutable_tags_settings": settings}).encode()
+            )
+            with (
+                self.subTest(name=name),
+                patch("registry.urllib.request.urlopen", return_value=response),
+            ):
+                if valid:
+                    registry.require_immutable_versions(record())
+                else:
+                    with self.assertRaises(ValueError):
+                        registry.require_immutable_versions(record())
+        for error in [TimeoutError("lookup timeout"), OSError("connection failed")]:
+            with (
+                self.subTest(error=error),
+                patch("registry.urllib.request.urlopen", side_effect=error),
+                self.assertRaises(type(error)),
+            ):
+                registry.require_immutable_versions(record())
+
+
 class RegistryTests(unittest.TestCase):
     def setUp(self):
         self.data = dict(record(), repo="owner/repo")
+        policy = patch("registry.require_immutable_versions")
+        self.policy = policy.start()
+        self.addCleanup(policy.stop)
 
     def test_recovery_boundary(self):
         for error, missing in [
@@ -375,6 +444,47 @@ class RegistryTests(unittest.TestCase):
             self.assertRaises(ValueError),
         ):
             registry.immutable(self.data, "local:test")
+
+    def test_concurrent_immutable_publication(self):
+        conflict = subprocess.CalledProcessError(
+            1, "docker push", stderr="tag is immutable"
+        )
+        for winner in ["same", "different", "absent"]:
+            actual = image(self.data)
+            competing = (
+                dict(actual, Id="different") if winner == "different" else actual
+            )
+            with (
+                self.subTest(winner=winner),
+                patch("registry.verify_image", side_effect=[actual, competing]),
+                patch("registry.recover", side_effect=[False, winner != "absent"]),
+                patch("registry.push_tag", side_effect=conflict) as push,
+            ):
+                if winner == "same":
+                    self.assertEqual(
+                        registry.immutable(self.data, "local:test"), DIGEST
+                    )
+                else:
+                    error = (
+                        ValueError
+                        if winner == "different"
+                        else subprocess.CalledProcessError
+                    )
+                    with self.assertRaises(error):
+                        registry.immutable(self.data, "local:test")
+                # Never retry an unconditional push after another publisher wins.
+                self.assertEqual(push.call_count, 1)
+
+    def test_missing_registry_policy_blocks_publication(self):
+        self.policy.side_effect = ValueError("immutable policy required")
+        with (
+            patch("registry.push_tag") as push,
+            patch("registry.recover") as recover,
+            self.assertRaises(ValueError),
+        ):
+            registry.immutable(self.data, "local:test")
+        push.assert_not_called()
+        recover.assert_not_called()
 
     def test_alias_retry_and_digest_validation(self):
         guard = patch("registry.guard")

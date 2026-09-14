@@ -4,8 +4,29 @@ import argparse
 import json
 import re
 import subprocess
+import urllib.request
 
 from release import run, version_key, write_outputs
+
+IMMUTABLE_VERSION_RULE = "^[0-9]+[.][0-9]+[.][0-9]+$"
+
+
+def require_immutable_versions(data):
+    # These release repositories are public. Read their actual Hub policy without
+    # granting the release token repository-admin privileges or changing settings.
+    namespace, repository = data["image"].split("/")
+    url = f"https://hub.docker.com/v2/namespaces/{namespace}/repositories/{repository}"
+    with urllib.request.urlopen(url, timeout=20) as response:
+        settings = json.load(response).get("immutable_tags_settings", {})
+    # Require the documented canonical RE2 rule, not Python's interpretation of
+    # arbitrary Hub regexes. Aliases and Cosign's sha256-* tags must stay mutable.
+    if settings.get("enabled") is not True or settings.get("rules") != [
+        IMMUTABLE_VERSION_RULE
+    ]:
+        raise ValueError(
+            f"{data['image']} must enable Specific tags are immutable with the sole rule "
+            f"{IMMUTABLE_VERSION_RULE}; publication is disabled until Hub enforces this policy"
+        )
 
 
 def labels(data):
@@ -48,6 +69,7 @@ def recover(data, smoke_tag):
 
 
 def guard(data):
+    require_immutable_versions(data)
     # Include aliases from partially completed and legacy releases, which have no
     # success record yet. Otherwise a failed newer release could be rolled back.
     image = f"{data['image']}:latest"
@@ -86,14 +108,10 @@ def push_tag(image_id, tag):
     return matches[-1]
 
 
-def immutable(data, smoke_tag):
-    actual = verify_image(data, smoke_tag)
-    image = f"{data['image']}:{data['version']}"
-    # Recheck immediately before pushing. Only a genuine missing manifest permits
-    # a write; another actor publishing this version cannot silently be replaced.
+def existing_version_digest(data, smoke_tag, expected_id):
     if recover(data, smoke_tag + "-existing"):
         existing = verify_image(data, smoke_tag + "-existing")
-        if actual["Id"] != existing["Id"]:
+        if expected_id != existing["Id"]:
             raise ValueError(
                 "immutable version already exists with different image bytes"
             )
@@ -105,7 +123,24 @@ def immutable(data, smoke_tag):
         if len(digests) != 1:
             raise ValueError("cannot resolve the existing immutable image digest")
         return digests[0]
-    return push_tag(actual["Id"], image)
+    return None
+
+
+def immutable(data, smoke_tag):
+    require_immutable_versions(data)
+    actual = verify_image(data, smoke_tag)
+    existing = existing_version_digest(data, smoke_tag, actual["Id"])
+    if existing:
+        return existing
+    # The Hub policy, not this existence check, makes tag creation atomic against
+    # other credentialed publishers. A losing push never overwrites the winner.
+    try:
+        return push_tag(actual["Id"], f"{data['image']}:{data['version']}")
+    except subprocess.CalledProcessError:
+        existing = existing_version_digest(data, smoke_tag, actual["Id"])
+        if existing:
+            return existing
+        raise
 
 
 def aliases(data, smoke_tag, digest):

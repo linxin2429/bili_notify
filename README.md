@@ -43,6 +43,8 @@ docker run -d --name bili-notify \
 
 首次采用组件 tag 时会发布一次，版本必须高于该镜像已有的正式版本，以免覆盖旧镜像或倒退 `latest`。例如旧镜像为 `0.4.16`，可分别从 `app/v0.4.17` 和 `worker/v0.4.17` 开始，之后各自递增。若 Environment 配置了 tag 白名单，需要允许 `app/v*` 和 `worker/v*`；共用发布流程需要 `contents: write` 保存成功记录，签名验证策略也应允许 `.github/workflows/release-component.yml` 的工作流身份。
 
+两个 Docker Hub 仓库都必须在 Settings → General → Tag mutability settings 中选择 **Specific tags are immutable**，且只配置规则 `^[0-9]+[.][0-9]+[.][0-9]+$`。发布会读取实际仓库设置，不符合该规则或查询失败时，在构建和推送前终止；发布凭据不需要仓库管理权限，工作流不会修改这些设置。该规则由仓库端原子地阻止完整版本被其他发布者覆盖，同时保留 `MAJOR.MINOR`、`MAJOR`、`latest` 和 Cosign 签名标签的可更新性。受保护的完整版本也不能删除，操作语义见 [Docker Hub 不可变标签文档](https://docs.docker.com/docker-hub/repos/manage/hub-images/immutable-tags/)。如果另一个发布者在检查与推送之间抢先创建版本，当前推送由 Hub 拒绝；脚本重新读取胜出的镜像，仅在与已冒烟镜像身份一致时继续，否则失败且不重试覆盖。不要在发布过程中关闭仓库端保护。
+
 源码没有变化但需要更新基础镜像或系统包时，先打一个新的组件 tag，再手动运行 Release，**工作流 ref 与 tag 输入必须是同一个组件 tag**，保证来源证明与实际源码一致：
 
 ```sh

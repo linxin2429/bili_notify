@@ -165,7 +165,7 @@ Makefile 是本地与 CI 的统一任务入口：`make check` 执行生产二进
 
 变更基线来自各组件最高成功版本的 GitHub Release `release-record.json` 附件，记录源码 SHA、完整版本、镜像 digest、输入指纹和清单版本；不使用上一 Git tag 或有保留期限的 Actions artifact。基线读取或校验失败时关闭发布；没有历史记录时首次发布，无变化时成功跳过，既不构建、不申请审批，也不创建版本标签或更新别名。手动入口可对已有新组件 tag 设置 `force` 更新基础镜像/系统包，调用 workflow 的 ref 必须等于输入 tag，完整门禁和审批仍适用。
 
-有变化时重新执行全部源码及观测配置门禁，经 `dockerhub-production` Environment 批准后，只构建并冒烟验证所选组件的最终 `linux/amd64` 镜像。完整版本不可覆盖，推送已测试的同一镜像后生成 SPDX SBOM、keyless Cosign 签名与 GitHub build provenance，再更新 SemVer 别名和 `latest`，最后写成功记录。重跑先验证已有完整版本的组件、仓库、版本、源码 SHA 和输入指纹，再复用已有 digest、重新冒烟并补齐后续步骤；已完成版本跳过。registry 查询错误不得当作不存在。组件并发组覆盖判断到记录成功的整个流程，审批后重查基线；成功记录和现有 `latest` 的版本共同阻止旧版本倒退别名。迁移后的首次版本应高于已有镜像版本；Environment tag 白名单及签名工作流身份需适配新入口。Compose 分别使用 `IMAGE_TAG` 和 `AI_WORKER_IMAGE_TAG`，各自默认 `latest`，Worker 不再继承主服务版本。摘要列出最近成功版本，不保证该组合的协议兼容性；不兼容协议升级需单独发布两边并注明配套版本。
+有变化时重新执行全部源码及观测配置门禁，经 `dockerhub-production` Environment 批准后，只构建并冒烟验证所选组件的最终 `linux/amd64` 镜像。完整版本的不可覆盖由 Docker Hub 仓库端强制执行：两个公开仓库必须启用 Specific tags are immutable，唯一规则为 `^[0-9]+[.][0-9]+[.][0-9]+$`。发布前读取实际策略，不符合要求或读取失败时拒绝构建和推送，工作流不修改策略且不要求管理凭据。完整版本受保护后也不可删除，SemVer 别名与 Cosign 标签仍可更新；并发发布被仓库拒绝后，重新读取并验证胜出的镜像，只有与已冒烟镜像身份相同才可继续，禁止重试覆盖。推送已测试的同一镜像后生成 SPDX SBOM、keyless Cosign 签名与 GitHub build provenance，再更新 SemVer 别名和 `latest`，最后写成功记录。重跑先验证已有完整版本的组件、仓库、版本、源码 SHA 和输入指纹，再复用已有 digest、重新冒烟并补齐后续步骤；已完成版本跳过。registry 查询错误不得当作不存在。组件并发组覆盖判断到记录成功的整个流程，审批后重查基线；成功记录和现有 `latest` 的版本共同阻止旧版本倒退别名。迁移后的首次版本应高于已有镜像版本；Environment tag 白名单及签名工作流身份需适配新入口。Compose 分别使用 `IMAGE_TAG` 和 `AI_WORKER_IMAGE_TAG`，各自默认 `latest`，Worker 不再继承主服务版本。摘要列出最近成功版本，不保证该组合的协议兼容性；不兼容协议升级需单独发布两边并注明配套版本。
 
 PR CI 的 BuildKit GHA layer cache 使用独立 scope 和 `mode=min` 加速重复构建；Release 不读取或写入 GitHub cache，而是从源码和锁定依赖完整构建发布镜像，避免共享缓存成为发布输入。
 

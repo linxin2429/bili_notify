@@ -46,11 +46,13 @@ def includes(path, component, policy):
     )
 
 
-def fingerprint(sha, component, policy):
+def fingerprint(sha, component, policy, repository="."):
     # Git tree entries include names, blob IDs and modes: deletions, renames and
     # executable-bit changes count, while an edit subsequently reverted does not.
     tree = subprocess.run(
-        ["git", "ls-tree", "-rz", "--full-tree", sha], check=True, capture_output=True
+        ["git", "-C", str(repository), "ls-tree", "-r", "-z", "--full-tree", sha],
+        check=True,
+        capture_output=True,
     ).stdout
     digest = hashlib.sha256()
     digest.update(json.dumps(policy, sort_keys=True).encode())
