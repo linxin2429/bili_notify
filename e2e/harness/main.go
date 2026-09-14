@@ -148,6 +148,7 @@ func (s *upstreamState) handler() http.Handler {
 	mux.HandleFunc("GET /x/passport-login/web/qrcode/generate", s.generateQR)
 	mux.HandleFunc("GET /x/passport-login/web/qrcode/poll", s.pollQR)
 	mux.HandleFunc("GET /x/web-interface/nav", s.navigation)
+	mux.HandleFunc("GET /x/passport-login/web/cookie/info", s.sessionInfo)
 	mux.HandleFunc("GET /x/relation/relations", s.relations)
 	mux.HandleFunc("GET /x/polymer/web-dynamic/v1/feed/space", s.spaceFeed)
 	mux.HandleFunc("GET /x/polymer/web-dynamic/v1/feed/all/update", s.feedUpdate)
@@ -186,11 +187,22 @@ func (s *upstreamState) pollQR(w http.ResponseWriter, r *http.Request) {
 	}
 	polls := s.increment("qr_poll")
 	code := 86090
+	refreshToken := ""
 	if polls >= 2 {
 		code = 0
 		http.SetCookie(w, &http.Cookie{Name: "SESSDATA", Value: "e2e-session", Path: "/", Secure: true})
+		http.SetCookie(w, &http.Cookie{Name: "bili_jct", Value: "e2e-csrf", Path: "/", Secure: true})
+		refreshToken = "e2e-refresh"
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "message": "0", "data": map[string]any{"code": code}})
+	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "message": "0", "data": map[string]any{"code": code, "refresh_token": refreshToken}})
+}
+
+func (s *upstreamState) sessionInfo(w http.ResponseWriter, r *http.Request) {
+	if !s.authenticated(w, r) {
+		return
+	}
+	s.increment("session_info")
+	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"refresh": false, "timestamp": time.Now().UnixMilli()}})
 }
 
 func (s *upstreamState) navigation(w http.ResponseWriter, r *http.Request) {
