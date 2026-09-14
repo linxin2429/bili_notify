@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,13 +24,21 @@ import (
 func TestCollectionItemRecoverySurvivesRestartAndSeenFrontier(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		card     func(bool) string
-		baseline bool
-		feed     bool
+		name         string
+		card         func(bool) string
+		baseline     bool
+		feed         bool
+		paywall      bool
+		deviceStatus int
+		deviceCode   int
 	}{
 		{name: "feed article", feed: true, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
 		{name: "article", card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
+		{name: "paid preview recovers without losing login", paywall: true, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
+		{name: "device 401 preserves login", deviceStatus: 401, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
+		{name: "device 403 preserves login", deviceStatus: 403, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
+		{name: "device -101 preserves login", deviceCode: -101, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
+		{name: "device -111 preserves login", deviceCode: -111, card: func(bool) string { return articleDynamicFixture("bad", 1700000002) }},
 		{name: "forwarded article", card: func(bool) string { return forwardedArticleFixture("bad", "original", 1700000002) }},
 		{name: "schema changes upstream", card: func(recovered bool) string {
 			if recovered {
@@ -45,6 +54,18 @@ func TestCollectionItemRecoverySurvivesRestartAndSeenFrontier(t *testing.T) {
 			var recovered atomic.Bool
 			var opusCalls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/x/frontend/finger/spi" {
+					if !recovered.Load() && tt.deviceStatus != 0 {
+						w.WriteHeader(tt.deviceStatus)
+						return
+					}
+					if !recovered.Load() && tt.deviceCode != 0 {
+						_, _ = fmt.Fprintf(w, `{"code":%d}`, tt.deviceCode)
+						return
+					}
+					_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"test-device"}}`)
+					return
+				}
 				switch r.URL.Path {
 				case "/x/polymer/web-dynamic/v1/feed/space":
 					_, _ = fmt.Fprintf(w, `{"code":0,"data":{"items":[%s,%s],"has_more":false}}`, dynamicFixture("good", 1700000003), tt.card(recovered.Load()))
@@ -55,6 +76,11 @@ func TestCollectionItemRecoverySurvivesRestartAndSeenFrontier(t *testing.T) {
 				case "/x/polymer/web-dynamic/v1/opus/detail":
 					opusCalls.Add(1)
 					if !recovered.Load() {
+						if tt.paywall {
+							preview := articleOpusDetail(r.URL.Query().Get("id"), "preview only", "https://i0.hdslb.com/body.jpg")
+							_, _ = io.WriteString(w, strings.Replace(preview, `"modules":[`, `"modules":[{"module_type":"MODULE_TYPE_PAYWALL","module_paywall":{"preview_ratio":55}},`, 1))
+							return
+						}
 						_, _ = io.WriteString(w, `{"code":4101131,"message":"unavailable"}`)
 						return
 					}
@@ -76,6 +102,7 @@ func TestCollectionItemRecoverySurvivesRestartAndSeenFrontier(t *testing.T) {
 				return NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 1000, 2), nil, nil)
 			}
 			engine := newEngine()
+			engine.authValid.Store(true)
 			require.NoError(t, store.InitializeFeed("100", "old", time.Now()))
 			poll := func() error {
 				if tt.feed {
@@ -90,6 +117,11 @@ func TestCollectionItemRecoverySurvivesRestartAndSeenFrontier(t *testing.T) {
 			seen, err = store.Seen("42", "bad")
 			require.NoError(t, err)
 			assert.False(t, seen)
+			if tt.paywall || tt.deviceStatus != 0 || tt.deviceCode != 0 {
+				assert.True(t, engine.authValid.Load(), "item-local errors must not invalidate account authentication")
+				_, _, err := store.Content(model.ContentID(model.PlatformBilibili, "bad"))
+				require.ErrorIs(t, err, state.ErrNotFound)
+			}
 			queued, err := store.DueCollectionItems("42", "dynamic", time.Now().Add(2*time.Hour), 100)
 			require.NoError(t, err)
 			require.Len(t, queued, 1)
@@ -141,6 +173,10 @@ func TestSpaceScanResumesAcrossBudgetAndRestart(t *testing.T) {
 			t.Parallel()
 			var recovered atomic.Bool
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/x/frontend/finger/spi" {
+					_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"test-device"}}`)
+					return
+				}
 				id, next := "new", "second"
 				switch r.URL.Query().Get("offset") {
 				case "second":
@@ -201,6 +237,10 @@ func TestSpaceScanResumesAcrossBudgetAndRestart(t *testing.T) {
 func TestFeedUnassignableCardRetainsHealthyContentsAndResynchronizes(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/x/frontend/finger/spi" {
+			_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"test-device"}}`)
+			return
+		}
 		switch r.URL.Path {
 		case "/x/polymer/web-dynamic/v1/feed/all/update":
 			_, _ = io.WriteString(w, `{"code":0,"data":{"update_num":2}}`)
@@ -266,6 +306,10 @@ func TestDiscoveryInvalidIdentityHasDurableKey(t *testing.T) {
 func TestExclusiveBaselineIsPreservedAcrossScanPages(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/x/frontend/finger/spi" {
+			_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"test-device"}}`)
+			return
+		}
 		id, next := "exclusive-newer", "next"
 		if r.URL.Query().Get("offset") != "" {
 			id, next = "exclusive-older", ""
@@ -309,6 +353,10 @@ func TestFeedCycleCountsEachUPFailureOnce(t *testing.T) {
 			t.Parallel()
 			var opusCalls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/x/frontend/finger/spi" {
+					_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"test-device"}}`)
+					return
+				}
 				if r.URL.Path == "/x/polymer/web-dynamic/v1/feed/all/update" {
 					if tt.feedFailure {
 						http.Error(w, "unavailable", http.StatusServiceUnavailable)

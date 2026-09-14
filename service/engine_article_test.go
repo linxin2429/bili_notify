@@ -22,6 +22,10 @@ func TestPollUPEnrichesArticleBodyAndImages(t *testing.T) {
 	t.Parallel()
 	var spaceFetches, opusFetches atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/x/frontend/finger/spi" {
+			_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"test-device"}}`)
+			return
+		}
 		switch r.URL.Path {
 		case "/x/polymer/web-dynamic/v1/feed/space":
 			spaceFetches.Add(1)
@@ -89,6 +93,10 @@ func TestPollUPDoesNotRecordArticleWhenDetailFails(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/x/frontend/finger/spi" {
+					_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"test-device"}}`)
+					return
+				}
 				switch r.URL.Path {
 				case "/x/polymer/web-dynamic/v1/feed/space":
 					_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","items":[%s]}}`, articleDynamicFixture("article-1", 1700000000))
@@ -129,6 +137,10 @@ func TestPollUPDoesNotRecordArticleWhenDetailFails(t *testing.T) {
 func TestPollUPDoesNotFetchOpusDetailForWordDynamics(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/x/frontend/finger/spi" {
+			_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"test-device"}}`)
+			return
+		}
 		if r.URL.Path == "/x/polymer/web-dynamic/v1/opus/detail" {
 			t.Errorf("word dynamics must not fetch opus detail")
 			http.NotFound(w, r)
@@ -153,6 +165,10 @@ func TestPollUPDoesNotFetchOpusDetailForWordDynamics(t *testing.T) {
 func TestPollFeedEnrichesArticleAndIsolatesDetailFailure(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/x/frontend/finger/spi" {
+			_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"test-device"}}`)
+			return
+		}
 		switch r.URL.Path {
 		case "/x/polymer/web-dynamic/v1/feed/all/update":
 			_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"update_num":2}}`)
@@ -223,6 +239,10 @@ func TestPollFeedEnrichesArticleAndIsolatesDetailFailure(t *testing.T) {
 func TestPollUPEnrichesForwardedArticleOriginal(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/x/frontend/finger/spi" {
+			_, _ = io.WriteString(w, `{"code":0,"data":{"b_3":"test-device"}}`)
+			return
+		}
 		switch r.URL.Path {
 		case "/x/polymer/web-dynamic/v1/feed/space":
 			_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"has_more":false,"offset":"","items":[%s]}}`, forwardedArticleFixture("fwd-1", "orig-1", 1700000001))

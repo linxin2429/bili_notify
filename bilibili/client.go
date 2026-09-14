@@ -41,6 +41,7 @@ const (
 	ErrorRiskControl    ErrorKind = "risk_control"
 	ErrorSchema         ErrorKind = "schema"
 	ErrorTemporary      ErrorKind = "temporary"
+	ErrorContentAccess  ErrorKind = "content_access"
 )
 
 type APIError struct {
@@ -73,6 +74,8 @@ type Client struct {
 	userAgent   string
 	mu          sync.RWMutex
 	cookies     map[string]string
+	deviceBuvid string
+	deviceInit  chan struct{}
 	tracer      trace.Tracer
 	requests    metric.Int64Counter
 	duration    metric.Float64Histogram
@@ -111,6 +114,7 @@ func New(httpClient *http.Client, userAgent string, opts ...Option) *Client {
 		webURL:      "https://www.bilibili.com",
 		userAgent:   userAgent,
 		cookies:     make(map[string]string),
+		deviceInit:  make(chan struct{}, 1),
 		tracer:      tracenoop.NewTracerProvider().Tracer("github.com/linxin2429/bili_notify/bilibili"),
 	}
 	meter := metricnoop.NewMeterProvider().Meter("github.com/linxin2429/bili_notify/bilibili")
@@ -128,6 +132,9 @@ func (c *Client) SetSession(session model.BiliSession) {
 	c.cookies = make(map[string]string, len(session.Cookies))
 	for k, v := range session.Cookies {
 		c.cookies[k] = v
+	}
+	if device := session.Cookies["buvid3"]; validDeviceCookie(device) {
+		c.deviceBuvid = device
 	}
 }
 
@@ -148,7 +155,13 @@ func (c *Client) addHeaders(req *http.Request, withAuth bool) {
 	defer c.mu.RUnlock()
 	parts := make([]string, 0, len(c.cookies))
 	for name, value := range c.cookies {
+		if name == "buvid3" {
+			continue
+		}
 		parts = append(parts, name+"="+value)
+	}
+	if c.deviceBuvid != "" {
+		parts = append(parts, "buvid3="+c.deviceBuvid)
 	}
 	if len(parts) > 0 {
 		req.Header.Set("Cookie", strings.Join(parts, "; "))
@@ -198,7 +211,15 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, wit
 		return nil, nil, fmt.Errorf("creating request: %w", err)
 	}
 	c.addHeaders(req, withAuth)
-	resp, err = c.httpClient.Do(req)
+	httpClient := c.httpClient
+	if !withAuth && httpClient.Jar != nil {
+		// Anonymous operations must not inherit account cookies from an injected
+		// jar. Preserve the caller's transport, timeout and redirect policy.
+		anonymous := *httpClient
+		anonymous.Jar = nil
+		httpClient = &anonymous
+	}
+	resp, err = httpClient.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("requesting bilibili: %w", err)
 	}

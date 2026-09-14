@@ -32,6 +32,7 @@ func TestOpusBusinessFailureIsVisibleInTelemetry(t *testing.T) {
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { require.NoError(t, mp.Shutdown(context.Background())) })
 	client := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL), WithTelemetry(tp, mp))
+	client.SetSession(model.BiliSession{Cookies: map[string]string{"buvid3": "test-device"}})
 	_, err := client.fetchOpusDetail(t.Context(), "131580584")
 	apiErr, ok := errors.AsType[*APIError](err)
 	require.True(t, ok)
