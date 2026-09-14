@@ -121,3 +121,29 @@ func readContractJSON(t *testing.T, path string) any {
 	require.NoError(t, json.Unmarshal(raw, &value))
 	return value
 }
+
+// The same fixture is parsed by the browser transport tests. Keep automatic
+// source snapshots in the contract so a valid task cannot break the whole page.
+func TestAIJobResponseContract(t *testing.T) {
+	t.Parallel()
+	fixed := contractTime()
+	transcription := model.AIJob{
+		ID: "transcription", Kind: model.AIJobTranscription, State: model.AIJobQueued, Stage: "queued",
+		ProfileID: "transcription-profile", Origin: model.AIJobOriginDynamic, SourceContentID: "bilibili:content:video",
+		Source: &model.AIContentSnapshot{ContentID: "bilibili:content:video", SourceID: "bilibili:up:42", BVID: "BV1xx411c7mD",
+			Author: "Contract UP", Title: "Contract video", URL: "https://www.bilibili.com/video/BV1xx411c7mD"},
+		TranscriptionInput: &model.AITranscriptionInput{BVID: "BV1xx411c7mD"}, CreatedAt: fixed, UpdatedAt: fixed,
+	}
+	summary := transcription
+	summary.ID, summary.Kind, summary.ProfileID, summary.PromptID = "summary", model.AIJobSummary, "text-profile", "prompt"
+	summary.DependsOnJobID = transcription.ID
+	summary.TranscriptionInput = nil
+	summary.SummaryInput = &model.AISummaryInput{TranscriptionID: transcription.ID}
+	manual := transcription
+	manual.ID, manual.Origin, manual.SourceContentID, manual.Source = "manual", model.AIJobOriginWorkbench, "", nil
+	raw, err := json.Marshal(model.AIJobPage{Items: []model.AIJob{transcription, summary, manual}, Total: 3, Limit: 50})
+	require.NoError(t, err)
+	var got any
+	require.NoError(t, json.Unmarshal(raw, &got))
+	assert.Equal(t, readContractJSON(t, "testdata/contracts/ai-jobs.json"), got)
+}

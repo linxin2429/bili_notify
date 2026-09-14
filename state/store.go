@@ -659,7 +659,7 @@ func (s *Store) RecordDynamics(uid string, dynamics []model.Dynamic, _ []string,
 				}
 			}
 			if autoAI {
-				if _, err := s.createAutomaticAIJobsTx(tx, dynamic, model.SourceID(model.PlatformBilibili, uid), channelIDs); err != nil {
+				if err := s.createAutomaticAIOrDeferTx(tx, dynamic, model.SourceID(model.PlatformBilibili, uid), channelIDs); err != nil {
 					return fmt.Errorf("creating automatic AI pipeline for dynamic %s: %w", dynamic.ID, err)
 				}
 			}

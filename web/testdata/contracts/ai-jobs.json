@@ -1,0 +1,72 @@
+{
+  "items": [
+    {
+      "id": "transcription",
+      "kind": "transcription",
+      "state": "queued",
+      "stage": "queued",
+      "progress": 0,
+      "profile_id": "transcription-profile",
+      "origin": "dynamic",
+      "source_content_id": "bilibili:content:video",
+      "attempts": 0,
+      "source": {
+        "content_id": "bilibili:content:video",
+        "source_id": "bilibili:up:42",
+        "bvid": "BV1xx411c7mD",
+        "author": "Contract UP",
+        "title": "Contract video",
+        "url": "https://www.bilibili.com/video/BV1xx411c7mD"
+      },
+      "transcription_input": {
+        "bvid": "BV1xx411c7mD"
+      },
+      "created_at": "2026-08-06T01:02:03Z",
+      "updated_at": "2026-08-06T01:02:03Z"
+    },
+    {
+      "id": "summary",
+      "kind": "summary",
+      "state": "queued",
+      "stage": "queued",
+      "progress": 0,
+      "profile_id": "text-profile",
+      "origin": "dynamic",
+      "source_content_id": "bilibili:content:video",
+      "attempts": 0,
+      "source": {
+        "content_id": "bilibili:content:video",
+        "source_id": "bilibili:up:42",
+        "bvid": "BV1xx411c7mD",
+        "author": "Contract UP",
+        "title": "Contract video",
+        "url": "https://www.bilibili.com/video/BV1xx411c7mD"
+      },
+      "created_at": "2026-08-06T01:02:03Z",
+      "updated_at": "2026-08-06T01:02:03Z",
+      "prompt_id": "prompt",
+      "depends_on_job_id": "transcription",
+      "summary_input": {
+        "transcription_job_id": "transcription"
+      }
+    },
+    {
+      "id": "manual",
+      "kind": "transcription",
+      "state": "queued",
+      "stage": "queued",
+      "progress": 0,
+      "profile_id": "transcription-profile",
+      "origin": "workbench",
+      "attempts": 0,
+      "transcription_input": {
+        "bvid": "BV1xx411c7mD"
+      },
+      "created_at": "2026-08-06T01:02:03Z",
+      "updated_at": "2026-08-06T01:02:03Z"
+    }
+  ],
+  "total": 3,
+  "limit": 50,
+  "offset": 0
+}

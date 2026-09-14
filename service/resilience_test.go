@@ -33,7 +33,6 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 		page         func(offset string) (items, next string, hasMore bool)
 		wantRequests int32
 		wantIDs      []string
-		wantUnseen   []string
 		wantFailure  bool
 	}{
 		{
@@ -52,13 +51,13 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 			},
 		},
 		{
-			name: "empty offset rejects partial page", maxPages: 2, wantRequests: 1, wantUnseen: []string{"partial"}, wantFailure: true,
+			name: "empty offset preserves discovered page", maxPages: 2, wantRequests: 1, wantIDs: []string{"partial"}, wantFailure: true,
 			page: func(string) (string, string, bool) {
 				return dynamicFixture("partial", 1700000001), "", true
 			},
 		},
 		{
-			name: "repeated offset rejects partial pages", maxPages: 3, wantRequests: 2, wantUnseen: []string{"partial-1", "partial-2"}, wantFailure: true,
+			name: "repeated offset preserves discovered pages", maxPages: 3, wantRequests: 2, wantIDs: []string{"partial-1", "partial-2"}, wantFailure: true,
 			page: func(offset string) (string, string, bool) {
 				if offset == "" {
 					return dynamicFixture("partial-1", 1700000002), "same", true
@@ -67,7 +66,7 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 			},
 		},
 		{
-			name: "page limit rejects partial history", maxPages: 2, wantRequests: 2, wantUnseen: []string{"partial-1", "partial-2"}, wantFailure: true,
+			name: "page budget checkpoints partial history", maxPages: 2, wantRequests: 2, wantIDs: []string{"partial-1", "partial-2"},
 			page: func(offset string) (string, string, bool) {
 				if offset == "" {
 					return dynamicFixture("partial-1", 1700000002), "second", true
@@ -116,15 +115,6 @@ func TestPollUPPaginationInvariants(t *testing.T) {
 			require.NoError(t, err)
 			if tt.wantFailure {
 				assert.Equal(t, 1, updated.ConsecutiveFail)
-				assert.Empty(t, records)
-				deliveries, listErr := store.ListDeliveries(0)
-				require.NoError(t, listErr)
-				assert.Empty(t, deliveries)
-				for _, id := range tt.wantUnseen {
-					seen, seenErr := store.Seen(up.UID, id)
-					require.NoError(t, seenErr)
-					assert.False(t, seen, "partial dynamic %s must not be committed", id)
-				}
 			} else {
 				assert.Zero(t, updated.ConsecutiveFail)
 			}
@@ -153,13 +143,13 @@ func TestPollFeedPaginationInvariants(t *testing.T) {
 			},
 		},
 		{
-			name: "short feed does not advance baseline", maxPages: 2, updateNum: 2, wantBaseline: "old", wantSpaceSync: true,
+			name: "short feed retains content and requests resync", maxPages: 2, updateNum: 2, wantDynamics: 1,
 			page: func(string) (string, string, bool) {
 				return dynamicWithAuthorFixture("partial", "42", 1700000001), "", false
 			},
 		},
 		{
-			name: "repeated offset does not advance baseline", maxPages: 3, updateNum: 3, wantBaseline: "old", wantSpaceSync: true,
+			name: "repeated offset retains content and requests resync", maxPages: 3, updateNum: 3, wantDynamics: 2,
 			page: func(offset string) (string, string, bool) {
 				id := "partial-1"
 				if offset != "" {
@@ -169,7 +159,7 @@ func TestPollFeedPaginationInvariants(t *testing.T) {
 			},
 		},
 		{
-			name: "page overflow resets feed for resynchronization", maxPages: 2, updateNum: 3, wantBaseline: "",
+			name: "page overflow resets feed for resynchronization", maxPages: 2, updateNum: 3, wantBaseline: "", wantDynamics: 2,
 			page: func(offset string) (string, string, bool) {
 				if offset == "" {
 					return dynamicWithAuthorFixture("partial-1", "42", 1700000002), "second", true

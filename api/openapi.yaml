@@ -1499,9 +1499,10 @@ components:
     AIContentSnapshot:
       type: object
       additionalProperties: false
-      required: [content_id]
+      required: [content_id, source_id]
       properties:
         content_id: {type: string}
+        source_id: {type: string}
         bvid: {type: string}
         author: {type: string}
         title: {type: string}

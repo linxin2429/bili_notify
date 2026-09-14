@@ -3,6 +3,7 @@ package bilibili
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/url"
@@ -150,13 +151,16 @@ func (c *Client) fetchOpusDetail(ctx context.Context, id string) (opusContent, e
 		"features":        {opusDetailFeatures},
 		"timezone_offset": {"-480"},
 	}
-	_, body, err := c.get(ctx, c.apiURL+"/x/polymer/web-dynamic/v1/opus/detail", query, true)
+	response, body, err := c.get(ctx, c.apiURL+"/x/polymer/web-dynamic/v1/opus/detail", query, true)
 	if err != nil {
 		return opusContent{}, fmt.Errorf("fetching opus detail: %w", err)
 	}
 	content, err := parseOpusDetail(id, body)
 	if err != nil {
-		return opusContent{}, err
+		if apiErr, ok := errors.AsType[*APIError](err); ok {
+			apiErr.HTTPStatus = response.StatusCode
+		}
+		return opusContent{}, fmt.Errorf("opus %s detail: %w", id, err)
 	}
 	return content, nil
 }

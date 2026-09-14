@@ -153,12 +153,16 @@ export const aiTranscriptionResultSchema = z.object({
   bvid: z.string(), title: z.string(), pages: z.array(z.object({ page: z.number().int(), cid: z.string().optional(), title: z.string(), duration_ms: z.number().int(), segments: z.array(aiSegmentSchema) }).strict()), usage: z.record(z.string(), z.unknown()).optional(),
 }).strict()
 export const aiSummaryResultSchema = z.object({ markdown: z.string(), usage: z.record(z.string(), z.unknown()).optional() }).strict()
+export const aiContentSnapshotSchema = z.object({
+  content_id: z.string(), source_id: z.string(), bvid: z.string().optional(), author: z.string().optional(),
+  title: z.string().optional(), url: z.string().optional(),
+}).strict() satisfies z.ZodType<Schemas['AIContentSnapshot']>
 export const aiJobSchema = z.object({
   id: z.string(), client_request_id: z.string().optional(), kind: z.enum(['transcription', 'summary']),
   state: z.enum(['queued', 'running', 'succeeded', 'failed', 'canceled', 'skipped']), stage: z.string(), progress: z.number().int(),
   profile_id: z.string(), prompt_id: z.string().optional(), origin: z.enum(['workbench', 'dynamic']), source_content_id: z.string().optional(),
   depends_on_job_id: z.string().optional(), attempts: z.number().int(), error_code: z.string().optional(), last_error: z.string().optional(),
-  source: z.object({ content_id: z.string(), bvid: z.string().optional(), author: z.string().optional(), title: z.string().optional(), url: z.string().optional() }).strict().optional(),
+  source: aiContentSnapshotSchema.optional(),
   transcription_input: z.object({ bvid: z.string(), page: z.number().int().optional() }).strict().optional(),
   summary_input: z.object({ text: z.string().optional(), transcription_job_id: z.string().optional() }).strict().optional(),
   transcription_result: aiTranscriptionResultSchema.optional(), summary_result: aiSummaryResultSchema.optional(),

@@ -385,3 +385,32 @@ func responseStatus(response *http.Response) any {
 	}
 	return response.StatusCode
 }
+
+func TestAIDeliveryPreviewsKeepFailureVisibleAndBodyBounded(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		payload *model.AINotification
+		want    string
+	}{
+		{name: "missing payload"},
+		{name: "success", payload: &model.AINotification{JobID: "job", Succeeded: true, Body: strings.Repeat("文", 300)}, want: strings.Repeat("文", 240) + "…"},
+		{name: "failure", payload: &model.AINotification{JobID: "job", Body: "partial result", ErrorMessage: "provider unavailable"}, want: "provider unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			views := deliveryViews([]model.Delivery{{ID: "delivery", Kind: model.DeliveryKindAI, AI: tt.payload}})
+			require.Len(t, views, 1)
+			assert.Equal(t, "ai", views[0].Kind)
+			if tt.payload == nil {
+				assert.Nil(t, views[0].AI)
+				return
+			}
+			require.NotNil(t, views[0].AI)
+			assert.Equal(t, tt.want, views[0].AI.Summary)
+			assert.Equal(t, tt.payload.Succeeded, views[0].AI.Succeeded)
+			assert.Equal(t, tt.payload.ErrorMessage, views[0].AI.ErrorMessage)
+		})
+	}
+}

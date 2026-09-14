@@ -72,6 +72,20 @@ func (s *Store) ResetFeed(accountUID string, upUIDs []string, at time.Time) erro
 		if len(upUIDs) == 0 {
 			return nil
 		}
+		var seenThrough int64
+		if err := tx.Model(&seenItemRow{}).Select("COALESCE(MAX(rowid), 0)").Scan(&seenThrough).Error; err != nil {
+			return err
+		}
+		for _, uid := range upUIDs {
+			scan := CollectionScan{SourceID: model.SourceID(model.PlatformBilibili, uid), Active: true, SeenThrough: seenThrough}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "source_id"}},
+				DoUpdates: clause.Assignments(map[string]any{"active": true, "seen_through": seenThrough, "pending_through": 0, "offset": ""}),
+				Where:     clause.Where{Exprs: []clause.Expression{clause.Eq{Column: "active", Value: false}}},
+			}).Create(&scan).Error; err != nil {
+				return err
+			}
+		}
 		return tx.Model(&upFollowRelationRow{}).
 			Where("account_uid = ? AND up_uid IN ?", accountUID, upUIDs).
 			Update("space_synced", 0).Error
@@ -203,7 +217,7 @@ func (s *Store) RecordFeedDynamics(accountUID, baseline string, dynamics []model
 				}
 			}
 			if autoAI {
-				if _, err := s.createAutomaticAIJobsTx(tx, dynamic, model.SourceID(model.PlatformBilibili, dynamic.UID), channelIDs); err != nil {
+				if err := s.createAutomaticAIOrDeferTx(tx, dynamic, model.SourceID(model.PlatformBilibili, dynamic.UID), channelIDs); err != nil {
 					return fmt.Errorf("creating automatic AI pipeline for dynamic %s: %w", dynamic.ID, err)
 				}
 			}

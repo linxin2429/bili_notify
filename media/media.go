@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/linxin2429/bili_notify/model"
 	"github.com/spf13/fileflow"
@@ -90,6 +91,9 @@ type Downloader struct {
 	Client    *http.Client
 	UserAgent string
 	Tracer    trace.Tracer
+	// Timeout bounds each download, including DNS, headers and response body.
+	// Zero uses 10 seconds; callers may set a shorter bound for tests.
+	Timeout time.Duration
 	// AllowPrivateNetwork is intended for explicitly trusted test/private
 	// deployments. Production downloads reject loopback and private targets.
 	AllowPrivateNetwork bool
@@ -141,6 +145,12 @@ func (d *Downloader) ensureOne(ctx context.Context, dynamic *model.Dynamic) (dow
 }
 
 func (d *Downloader) download(ctx context.Context, uid, dynamicID string, index int, item *model.DynamicMedia) (err error) {
+	timeout := d.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	ctx, span := d.tracer().Start(ctx, "media.download", trace.WithSpanKind(trace.SpanKindClient))
 	defer func() {
 		if err != nil {
