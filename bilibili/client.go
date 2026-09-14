@@ -41,6 +41,7 @@ const (
 	ErrorRiskControl    ErrorKind = "risk_control"
 	ErrorSchema         ErrorKind = "schema"
 	ErrorTemporary      ErrorKind = "temporary"
+	ErrorContentAccess  ErrorKind = "content_access"
 )
 
 type APIError struct {
@@ -73,6 +74,8 @@ type Client struct {
 	userAgent   string
 	mu          sync.RWMutex
 	cookies     map[string]string
+	deviceBuvid string
+	deviceInit  chan struct{}
 	tracer      trace.Tracer
 	requests    metric.Int64Counter
 	duration    metric.Float64Histogram
@@ -111,6 +114,7 @@ func New(httpClient *http.Client, userAgent string, opts ...Option) *Client {
 		webURL:      "https://www.bilibili.com",
 		userAgent:   userAgent,
 		cookies:     make(map[string]string),
+		deviceInit:  make(chan struct{}, 1),
 		tracer:      tracenoop.NewTracerProvider().Tracer("github.com/linxin2429/bili_notify/bilibili"),
 	}
 	meter := metricnoop.NewMeterProvider().Meter("github.com/linxin2429/bili_notify/bilibili")
@@ -148,7 +152,13 @@ func (c *Client) addHeaders(req *http.Request, withAuth bool) {
 	defer c.mu.RUnlock()
 	parts := make([]string, 0, len(c.cookies))
 	for name, value := range c.cookies {
+		if name == "buvid3" && strings.TrimSpace(value) == "" {
+			continue
+		}
 		parts = append(parts, name+"="+value)
+	}
+	if strings.TrimSpace(c.cookies["buvid3"]) == "" && c.deviceBuvid != "" {
+		parts = append(parts, "buvid3="+c.deviceBuvid)
 	}
 	if len(parts) > 0 {
 		req.Header.Set("Cookie", strings.Join(parts, "; "))

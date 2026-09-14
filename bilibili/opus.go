@@ -146,6 +146,9 @@ func (c *Client) fetchOpusDetail(ctx context.Context, id string) (opusContent, e
 	if id == "" {
 		return opusContent{}, &APIError{Kind: ErrorSchema, Message: "opus id is required"}
 	}
+	if err := c.ensureDeviceCookie(ctx); err != nil {
+		return opusContent{}, fmt.Errorf("preparing opus detail request: %w", err)
+	}
 	query := url.Values{
 		"id":              {id},
 		"features":        {opusDetailFeatures},
@@ -181,6 +184,13 @@ func parseOpusDetail(id string, body []byte) (opusContent, error) {
 	}
 	if len(data.Item.Fallback) > 0 && string(data.Item.Fallback) != "null" && len(data.Item.Modules) == 0 {
 		return opusContent{}, &APIError{Kind: ErrorSchema, Message: "opus detail returned a fallback instead of htmlNewStyle content"}
+	}
+	for _, module := range data.Item.Modules {
+		if module.Type == "MODULE_TYPE_PAYWALL" {
+			// A successful API envelope can still contain only a paid preview.
+			// Keep this item pending without invalidating the whole login session.
+			return opusContent{}, &APIError{Kind: ErrorContentAccess, Message: "opus detail contains a paywall; full article access was not granted"}
+		}
 	}
 	content, err := parseOpusModules(data.Item)
 	if err != nil {

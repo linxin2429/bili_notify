@@ -60,7 +60,7 @@ func TestFetchOpusDetailSendsAuthenticatedFeatures(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL))
-	client.SetSession(model.BiliSession{Cookies: map[string]string{"SESSDATA": "session-value"}})
+	client.SetSession(model.BiliSession{Cookies: map[string]string{"SESSDATA": "session-value", "buvid3": "test-device"}})
 	got, err := client.fetchOpusDetail(t.Context(), "9")
 	require.NoError(t, err)
 	assert.Equal(t, "标题", got.Title)
@@ -96,6 +96,7 @@ func TestEnrichArticleReplacesTruncatedCard(t *testing.T) {
 		Links: []model.DynamicLink{{Text: "专栏", URL: "https://www.bilibili.com/read/cv1"}},
 	}
 	client := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL))
+	client.SetSession(model.BiliSession{Cookies: map[string]string{"buvid3": "test-device"}})
 	require.NoError(t, client.EnrichArticle(t.Context(), &dynamic))
 	assert.Equal(t, "完整标题", dynamic.Title)
 	assert.Empty(t, dynamic.Summary)
@@ -120,6 +121,7 @@ func TestEnrichArticleWalksForwardedOriginal(t *testing.T) {
 		Original: &model.Dynamic{ID: "9", Type: "DYNAMIC_TYPE_ARTICLE", Description: "截断"},
 	}
 	client := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL))
+	client.SetSession(model.BiliSession{Cookies: map[string]string{"buvid3": "test-device"}})
 	require.NoError(t, client.EnrichArticle(t.Context(), &dynamic))
 	assert.Equal(t, "推荐", dynamic.Summary)
 	require.NotNil(t, dynamic.Original)
@@ -358,7 +360,9 @@ func TestFetchOpusDetailClassifiesHTTPErrors(t *testing.T) {
 				}
 			}))
 			t.Cleanup(server.Close)
-			_, err := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL)).fetchOpusDetail(t.Context(), "1")
+			client := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL))
+			client.SetSession(model.BiliSession{Cookies: map[string]string{"buvid3": "test-device"}})
+			_, err := client.fetchOpusDetail(t.Context(), "1")
 			require.Error(t, err)
 			var apiErr *APIError
 			require.ErrorAs(t, err, &apiErr)
