@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "shared": [
+    ".dockerignore",
+    ".github/release/inputs.json",
+    ".github/release/release.py",
+    ".github/release/registry.py",
+    ".github/workflows/release.yml",
+    ".github/workflows/release-component.yml",
+    "api/ai/**"
+  ],
+  "app": {
+    "include": ["*.go", "**/*.go", "go.mod", "go.sum", "Dockerfile", "state/migrations/*.sql", "web/ui/**", "api/openapi.yaml"],
+    "exclude": ["*_test.go", "**/*_test.go", "**/testdata/**", "e2e/**", "web/ui/e2e/**", "web/ui/src/test/**", "web/ui/src/test-setup.ts", "web/ui/**/*.test.*", "web/ui/**/*.spec.*", "web/ui/scripts/**", "web/ui/eslint.config.js", "web/ui/playwright.config.ts", "web/ui/**/*.md"]
+  },
+  "worker": {
+    "include": ["worker/Dockerfile", "worker/requirements.lock", "worker/bili_ai_worker/**", "worker/ai/**"],
+    "exclude": []
+  }
+}

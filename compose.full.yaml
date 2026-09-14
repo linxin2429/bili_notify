@@ -44,7 +44,7 @@ services:
       retries: 3
 
   ai-worker:
-    image: dengxinlin/bili-notify-ai-worker:${IMAGE_TAG:-latest}
+    image: dengxinlin/bili-notify-ai-worker:${AI_WORKER_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       TZ: ${TZ:-Asia/Shanghai}

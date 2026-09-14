@@ -35,7 +35,32 @@ docker run -d --name bili-notify \
 
 镜像内嵌 IANA 时区数据（`time/tzdata`）。通过环境变量 `TZ` 选择服务器本地时区（Compose 默认 `Asia/Shanghai`）；未设置时回退为 UTC。通知文案、管理台时间展示与结构化日志中的时间字段均使用该时区。
 
-主服务和 AI Worker 的镜像标签由 main 历史上的正式 git tag `vMAJOR.MINOR.PATCH` 同步发布：`MAJOR.MINOR.PATCH`、`MAJOR.MINOR`、`MAJOR` 与 `latest`。完整版本标签不可覆盖；发布工作流不使用构建缓存，重新执行全部门禁并分别冒烟测试两个本地镜像，经 `dockerhub-production` Environment 批准后才登录 Docker Hub。两个最终 digest 分别附带 SPDX SBOM、keyless Cosign 签名和 GitHub build provenance。合并到 `main` 不重复执行已由 PR 门禁完成的常规 CI，也不推送镜像。
+主服务和 AI Worker 独立发布：main 历史上的 `app/vMAJOR.MINOR.PATCH` 只检查主服务，`worker/vMAJOR.MINOR.PATCH` 只检查 Worker，各自发布 `MAJOR.MINOR.PATCH`、`MAJOR.MINOR`、`MAJOR` 与 `latest`。旧格式 `vMAJOR.MINOR.PATCH` 不再触发发布，已有镜像继续可用。合并到 `main` 不推送镜像。
+
+发布会比较该组件与其最高成功版本的构建输入；输入清单维护在 `.github/release/inputs.json`。生产源码、依赖锁、Dockerfile 影响所属组件，共享 gRPC 协议和发布构建逻辑影响两边；文档、普通测试和 Compose 修改不触发发布。即使两边都有变化，也必须分别打 tag。没有变化时工作流成功跳过，不构建、不申请发布审批、不创建 Docker 版本标签，也不更新 `latest`；摘要给出跳过原因和两组件的最近成功版本。
+
+需要发布时仍重新执行全部源码与观测配置门禁，经 `dockerhub-production` Environment 批准后，只构建和冒烟验证所选组件的 `linux/amd64` 镜像。Release 不使用构建缓存。完整版本标签不可覆盖，经过冒烟的同一镜像 digest 附带 SPDX SBOM、keyless Cosign 签名和 GitHub build provenance；签名和证明完成后才更新版本别名及 `latest`。最后在对应 GitHub Release 附件中保存 `release-record.json`（源码 SHA、版本、digest、输入指纹与清单版本）作为持久基线；新 Release 先建草稿、上传附件后再公开，未公开的草稿不会成为基线。不要删除、替换此附件或移动已发布的 Git tag。
+
+首次采用组件 tag 时会发布一次，版本必须高于该镜像已有的正式版本，以免覆盖旧镜像或倒退 `latest`。例如旧镜像为 `0.4.16`，可分别从 `app/v0.4.17` 和 `worker/v0.4.17` 开始，之后各自递增。若 Environment 配置了 tag 白名单，需要允许 `app/v*` 和 `worker/v*`；共用发布流程需要 `contents: write` 保存成功记录，签名验证策略也应允许 `.github/workflows/release-component.yml` 的工作流身份。
+
+两个 Docker Hub 仓库都必须在 Settings → General → Tag mutability settings 中选择 **Specific tags are immutable**，且只配置规则 `^[0-9]+[.][0-9]+[.][0-9]+$`。发布会读取实际仓库设置，不符合该规则或查询失败时，在构建和推送前终止；发布凭据不需要仓库管理权限，工作流不会修改这些设置。该规则由仓库端原子地阻止完整版本被其他发布者覆盖，同时保留 `MAJOR.MINOR`、`MAJOR`、`latest` 和 Cosign 签名标签的可更新性。受保护的完整版本也不能删除，操作语义见 [Docker Hub 不可变标签文档](https://docs.docker.com/docker-hub/repos/manage/hub-images/immutable-tags/)。如果另一个发布者在检查与推送之间抢先创建版本，当前推送由 Hub 拒绝；脚本重新读取胜出的镜像，仅在与已冒烟镜像身份一致时继续，否则失败且不重试覆盖。不要在发布过程中关闭仓库端保护。
+
+源码没有变化但需要更新基础镜像或系统包时，先打一个新的组件 tag，再手动运行 Release，**工作流 ref 与 tag 输入必须是同一个组件 tag**，保证来源证明与实际源码一致：
+
+```sh
+# 示例：tag 必须已推送且包含在 main 历史中。
+gh workflow run release.yml --ref worker/v0.4.18 -f tag=worker/v0.4.18 -F force=true
+```
+
+发布中断后可重跑失败的工作流，或使用同一 tag 手动调用。若完整版本已推送，会验证镜像的组件、版本、源码 SHA、仓库及输入指纹，再拉取并重新冒烟测试已有镜像，补齐签名、证明、别名和成功记录；不会重新构建或覆盖该版本。查询失败会报错，不当作“镜像不存在”。已完整成功的版本重跑会跳过。每个组件独立串行；GitHub concurrency 只保留一个等待中的运行，被后续 tag 替换的等待运行可手动重试，低于已成功版本或现有 `latest` 的版本会拒绝发布。
+
+Compose 的主服务版本使用 `IMAGE_TAG`，Worker 使用 `AI_WORKER_IMAGE_TAG`，两者独立默认 `latest`。**升级后 Worker 不再继承 `IMAGE_TAG`**，需要固定版本的部署应同时设置：
+
+```sh
+IMAGE_TAG=0.4.18 AI_WORKER_IMAGE_TAG=0.4.17 docker compose up -d
+```
+
+发布摘要列出的最近成功版本不代表已验证的协议兼容组合。共享协议应优先保持向后兼容；不兼容改动需要分别发布两个组件，并在发版说明中列出必须配套部署的版本。
 
 日志会输出一次性 `setup_code`。浏览器访问 `https://localhost:8443`，接受首次自签名证书警告，然后输入初始化码并设置至少 12 字节的管理员密码。初始化完成后代码立即失效。
 
@@ -205,6 +230,6 @@ make docker-smoke DOCKER_IMAGE=bili-notify:e2e
 
 端到端测试使用本地 TLS 伪 B站和企业微信端点，不读取真实账号或通知凭据。采集投递、管理安全和响应式场景各自启动独立数据目录、随机端口和 Go harness，并在 Chromium 的桌面浅色与 Pixel 7 触控深色项目中并行运行；测试执行 axe 可访问性扫描并校验已提交的移动历史视觉基线。失败时 Playwright 会在 `web/ui/test-results/` 保存截图、视频、trace 和对应 harness 日志。
 
-CI 只在目标为 main 的 PR 和手动调用时运行；main 的 strict required check 确保合并候选已基于最新 main 通过门禁，合并后不再对等价代码重复执行常规 CI。CI 通过 Make 依赖图并行执行互不写入同一产物的检查，并按 runner 类型限制 Make 与测试工具的嵌套 worker 数；现有 self-hosted 优先和 GitHub-hosted fallback 选择策略保持不变。`CI Gate` 聚合格式、module tidy、workflow、npm audit、前后端测试、race、覆盖率、漏洞、观测配置以及主服务和 AI Worker 镜像冒烟结果，并作为 main 的唯一 required check。Release 不使用 GitHub cache，从源码和锁定依赖完整构建两个镜像，为它们发布相同的 SemVer 与 `latest` 标签，并分别生成 SBOM、签名和来源证明。Vitest 对单元、状态和组件测试执行并行文件级覆盖，statements、branches、functions、lines 四项全局覆盖率均不得低于 80%，设置页、控制台和操作日志页还有额外文件级阈值。Go race detector、随机顺序与上述五个核心包的跨包原子覆盖率在一次测试中完成，低于 80% 时失败；独立的 Stability workflow 每日以及手动触发时为每轮启动新测试进程，默认以 10 个随机顺序运行全部 Go race 测试，用来发现数据竞争和顺序依赖。覆盖率 artifact 由不执行仓库代码的独立 job 通过 GitHub OIDC 上传 Codecov，不使用仓库 Token。PR CI 的 BuildKit GHA cache 使用 `mode=min`，只导出最终结果需要的最小缓存集合，缓存上传失败不影响正确性。REST 与 WebSocket 契约样例位于 `web/testdata/contracts/`：Go 测试用真实处理器和生产 WebSocket 序列化类型校验样例，Vitest 读取同一批文件并通过集中定义的 Zod schema 解析。任何 API 字段变更必须在同一提交中更新生产代码、共享样例及两端契约测试。
+CI 只在目标为 main 的 PR 和手动调用时运行；main 的 strict required check 确保合并候选已基于最新 main 通过门禁，合并后不再对等价代码重复执行常规 CI。CI 通过 Make 依赖图并行执行互不写入同一产物的检查，并按 runner 类型限制 Make 与测试工具的嵌套 worker 数；现有 self-hosted 优先和 GitHub-hosted fallback 选择策略保持不变。`CI Gate` 聚合格式、module tidy、workflow、npm audit、前后端测试、race、覆盖率、漏洞、观测配置以及主服务和 AI Worker 镜像冒烟结果，并作为 main 的唯一 required check。Release 按组件 tag 和构建输入变化独立发布；需要发布时不使用 GitHub cache，只构建并冒烟所选组件，分别维护 SemVer、`latest`、SBOM、签名、来源证明及持久成功记录。`make release-test` 离线验证输入边界、成功基线、无变更跳过及失败恢复，并纳入 `make ci-check`。Vitest 对单元、状态和组件测试执行并行文件级覆盖，statements、branches、functions、lines 四项全局覆盖率均不得低于 80%，设置页、控制台和操作日志页还有额外文件级阈值。Go race detector、随机顺序与上述五个核心包的跨包原子覆盖率在一次测试中完成，低于 80% 时失败；独立的 Stability workflow 每日以及手动触发时为每轮启动新测试进程，默认以 10 个随机顺序运行全部 Go race 测试，用来发现数据竞争和顺序依赖。覆盖率 artifact 由不执行仓库代码的独立 job 通过 GitHub OIDC 上传 Codecov，不使用仓库 Token。PR CI 的 BuildKit GHA cache 使用 `mode=min`，只导出最终结果需要的最小缓存集合，缓存上传失败不影响正确性。REST 与 WebSocket 契约样例位于 `web/testdata/contracts/`：Go 测试用真实处理器和生产 WebSocket 序列化类型校验样例，Vitest 读取同一批文件并通过集中定义的 Zod schema 解析。任何 API 字段变更必须在同一提交中更新生产代码、共享样例及两端契约测试。
 
 正式镜像使用 Node 24 和与 `go.mod` 同步的 Go 工具链进行多阶段构建，仅将前端产物、静态 Go 二进制与系统 CA 放入 nonroot scratch 镜像。Renovate 联动升级 Go 指令与生产构建镜像，并维护固定 SHA 的 GitHub Actions、npm lockfile 及观测组件；开发依赖、Actions 和观测栈分别分组，任何更新都不自动合并。
