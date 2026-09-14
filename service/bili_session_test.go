@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -110,6 +112,7 @@ func TestStartupValidationDefersTransientFailures(t *testing.T) {
 
 func TestRenewalResumesConfirmation(t *testing.T) {
 	t.Parallel()
+	parseForm := checkedSessionFormParser(t)
 	var checks, refreshes, confirms atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -126,7 +129,9 @@ func TestRenewalResumesConfirmation(t *testing.T) {
 			http.SetCookie(w, &http.Cookie{Name: "bili_jct", Value: "new-csrf"})
 			_, _ = io.WriteString(w, `{"code":0,"data":{"refresh_token":"new-token"}}`)
 		case strings.HasSuffix(r.URL.Path, "/confirm/refresh"):
-			assert.NoError(t, r.ParseForm())
+			if !parseForm(w, r) {
+				return
+			}
 			assert.Equal(t, "old-token", r.Form.Get("refresh_token"))
 			if confirms.Add(1) == 1 {
 				w.WriteHeader(503)
@@ -220,7 +225,7 @@ func TestRenewalSerializesAccountChanges(t *testing.T) {
 			changed := make(chan error, 1)
 			go func() {
 				if tt.logout {
-					changed <- engine.ClearBilibiliSession()
+					changed <- engine.ClearBilibiliSession(t.Context())
 				} else {
 					_, err := engine.PollLogin(t.Context(), "qr")
 					changed <- err
@@ -310,4 +315,80 @@ func TestCompletedQRDoesNotOverwriteRenewal(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "renewed-token", got.RefreshToken)
 	assert.Equal(t, "renewed-after-qr", got.Cookies["SESSDATA"])
+}
+
+// HTTP handlers run outside the test goroutine: stop processing immediately,
+// then report prerequisites with require from the test's cleanup goroutine.
+func checkedSessionFormParser(t *testing.T) func(http.ResponseWriter, *http.Request) bool {
+	t.Helper()
+	var mu sync.Mutex
+	var parseErrors []error
+	t.Cleanup(func() {
+		mu.Lock()
+		err := errors.Join(parseErrors...)
+		mu.Unlock()
+		require.NoError(t, err, "parsing mock request form")
+	})
+	return func(w http.ResponseWriter, r *http.Request) bool {
+		if err := r.ParseForm(); err != nil {
+			mu.Lock()
+			parseErrors = append(parseErrors, err)
+			mu.Unlock()
+			http.Error(w, "invalid request form", http.StatusBadRequest)
+			return false
+		}
+		return true
+	}
+}
+
+func TestSessionStateWritesRespectCancellation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, action   string
+		canceled       bool
+		wantStatus     model.AccountStatus
+		wantDeliveries int
+	}{
+		{name: "invalidation", action: "invalidate", wantStatus: model.AccountInvalid, wantDeliveries: 1},
+		{name: "canceled invalidation", action: "invalidate", canceled: true, wantStatus: model.AccountConnected},
+		{name: "recovery", action: "recover", wantStatus: model.AccountConnected, wantDeliveries: 1},
+		{name: "canceled recovery", action: "recover", canceled: true, wantStatus: model.AccountConnected},
+		{name: "canceled warning", action: "warning", canceled: true, wantStatus: model.AccountConnected},
+		{name: "canceled logout", action: "logout", canceled: true, wantStatus: model.AccountConnected},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.NotFoundHandler())
+			t.Cleanup(server.Close)
+			engine := renewalEngine(t, server)
+			_, err := engine.store.PutChannel(model.Channel{Name: "alerts", Type: model.ChannelWeCom, Enabled: true, Settings: map[string]string{"webhook": "https://example.com/hook"}})
+			require.NoError(t, err)
+			engine.authEverValid.Store(true)
+			if tt.action == "recover" {
+				engine.authValid.Store(false)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			if tt.canceled {
+				cancel()
+			}
+			switch tt.action {
+			case "invalidate":
+				engine.setAuth(ctx, false)
+			case "recover":
+				engine.setAuth(ctx, true)
+			case "warning":
+				engine.handleSessionMaintenanceError(ctx, bilibili.ErrRefreshRejected)
+			case "logout":
+				require.ErrorIs(t, engine.ClearBilibiliSession(ctx), context.Canceled)
+			}
+			account, err := engine.store.PlatformAccount(model.PlatformBilibili)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantStatus, account.Status)
+			deliveries, err := engine.store.ListDeliveries(0)
+			require.NoError(t, err)
+			assert.Len(t, deliveries, tt.wantDeliveries)
+		})
+	}
 }

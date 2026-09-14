@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ func TestSessionRefreshProtocol(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var refreshed, confirmed atomic.Bool
+			parseForm := checkedSessionFormParser(t)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				cookie, err := r.Cookie("SESSDATA")
 				if !assert.NoError(t, err) {
@@ -44,7 +46,9 @@ func TestSessionRefreshProtocol(t *testing.T) {
 				case strings.HasSuffix(r.URL.Path, "/cookie/refresh"):
 					assert.Equal(t, http.MethodPost, r.Method)
 					assert.Equal(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
-					assert.NoError(t, r.ParseForm())
+					if !parseForm(w, r) {
+						return
+					}
 					assert.Equal(t, "old-csrf", r.Form.Get("csrf"))
 					assert.Equal(t, "refresh-csrf", r.Form.Get("refresh_csrf"))
 					assert.Equal(t, "old-token", r.Form.Get("refresh_token"))
@@ -59,7 +63,9 @@ func TestSessionRefreshProtocol(t *testing.T) {
 					_, _ = io.WriteString(w, `{"code":0,"data":{"isLogin":true,"mid":42,"uname":"user"}}`)
 				case strings.HasSuffix(r.URL.Path, "/confirm/refresh"):
 					assert.Equal(t, "new", cookie.Value)
-					assert.NoError(t, r.ParseForm())
+					if !parseForm(w, r) {
+						return
+					}
 					assert.Equal(t, "new-csrf", r.Form.Get("csrf"))
 					assert.Equal(t, "old-token", r.Form.Get("refresh_token"))
 					_, _ = io.WriteString(w, `{"code":0}`)
@@ -199,5 +205,29 @@ func TestSessionProtocolTransportFailures(t *testing.T) {
 				assert.Equal(t, ErrorTemporary, apiErr.Kind)
 			}
 		})
+	}
+}
+
+// HTTP handlers run outside the test goroutine: stop processing immediately,
+// then report prerequisites with require from the test's cleanup goroutine.
+func checkedSessionFormParser(t *testing.T) func(http.ResponseWriter, *http.Request) bool {
+	t.Helper()
+	var mu sync.Mutex
+	var parseErrors []error
+	t.Cleanup(func() {
+		mu.Lock()
+		err := errors.Join(parseErrors...)
+		mu.Unlock()
+		require.NoError(t, err, "parsing mock request form")
+	})
+	return func(w http.ResponseWriter, r *http.Request) bool {
+		if err := r.ParseForm(); err != nil {
+			mu.Lock()
+			parseErrors = append(parseErrors, err)
+			mu.Unlock()
+			http.Error(w, "invalid request form", http.StatusBadRequest)
+			return false
+		}
+		return true
 	}
 }

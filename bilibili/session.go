@@ -53,8 +53,11 @@ func NewSessionClient(client *Client) *SessionClient {
 	return &SessionClient{client: client, http: &transport}
 }
 
+// RefreshInfo is Bilibili's decision about whether a session needs renewal.
 type RefreshInfo struct {
-	Required  bool
+	Required bool
+	// Timestamp is the server's Unix time in milliseconds from cookie/info.
+	// Pass it unchanged to Refresh to generate the CorrespondPath exchange.
 	Timestamp int64
 }
 

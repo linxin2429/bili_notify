@@ -48,8 +48,8 @@ func (s *Server) accountsV4(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, accounts)
 }
 
-func (s *Server) deleteBilibiliSessionV4(w http.ResponseWriter, _ *http.Request) {
-	if err := s.engine.ClearBilibiliSession(); err != nil {
+func (s *Server) deleteBilibiliSessionV4(w http.ResponseWriter, r *http.Request) {
+	if err := s.engine.ClearBilibiliSession(r.Context()); err != nil {
 		s.writeAPIResult(w, http.StatusNoContent, nil, err)
 		return
 	}

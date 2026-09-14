@@ -82,7 +82,7 @@ func (e *Engine) maintainBiliSessionOnce(ctx context.Context) (string, error) {
 	account, err := e.sessionClient.Validate(ctx, session)
 	if err != nil {
 		if bilibili.IsAuthentication(err) {
-			e.setAuth(false)
+			e.setAuth(ctx, false)
 		}
 		return "error", &bilisession.OperationError{Phase: "validate_current", Err: err}
 	}
@@ -96,7 +96,7 @@ func (e *Engine) maintainBiliSessionOnce(ctx context.Context) (string, error) {
 		}
 	}
 	e.setAccount(account)
-	e.setAuth(true)
+	e.setAuth(ctx, true)
 	result := "not_due"
 	if session.PendingRefreshToken != "" {
 		result = "confirmed"
@@ -130,12 +130,12 @@ func (e *Engine) handleSessionMaintenanceError(ctx context.Context, err error) {
 		if !e.sessionWarning {
 			e.sessionWarning = true
 			e.logger.WarnContext(ctx, "Bilibili automatic renewal requires QR login", "event", "bilibili.session.renewal_requires_login", "result", "requires_login")
-			e.enqueueSystem("B站登录暂无法自动续期，请在管理控制台重新扫码登录以启用自动续期；当前有效会话仍可继续采集。")
+			e.enqueueSystem(ctx, "B站登录暂无法自动续期，请在管理控制台重新扫码登录以启用自动续期；当前有效会话仍可继续采集。")
 		}
 		return
 	}
 	if bilibili.IsRiskControl(err) {
-		e.handleBiliAPIError(err)
+		e.handleBiliAPIError(ctx, err)
 	}
 	if apiErr, ok := errors.AsType[*bilibili.APIError](err); ok && apiErr.RetryAfter > 0 {
 		e.sessionRetryAt = time.Now().Add(apiErr.RetryAfter)
@@ -185,7 +185,7 @@ func (e *Engine) restoreBiliSession(ctx context.Context) (err error) {
 				return fmt.Errorf("marking invalid Bilibili session: %w", statusErr)
 			}
 			e.logger.WarnContext(ctx, "stored Bilibili session is invalid", "event", "bilibili.session.invalid", "result", "failure", "error", validateErr)
-			e.enqueueSystem("B站登录失效，请在管理控制台重新扫码登录。")
+			e.enqueueSystem(ctx, "B站登录失效，请在管理控制台重新扫码登录。")
 		} else {
 			span.SetStatus(codes.Error, "Bilibili startup validation unavailable")
 			e.logger.WarnContext(ctx, "Bilibili startup validation unavailable; will retry", "event", "bilibili.session.validation_deferred")
