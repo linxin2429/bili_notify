@@ -76,6 +76,7 @@ export async function completeBilibiliLoginAndBaseline(page: Page, harness: Harn
     return [state.counts.relations || 0, state.counts.feed_initialize || 0, state.counts.space_feed || 0]
   }, { timeout: 25_000 }).toEqual([1, 1, 1])
 
+  await expect.poll(async () => (await harness.state()).counts.session_info || 0).toBeGreaterThan(0)
   await navigateTo(page, '采集源')
   await expect(page.getByText('基线完成')).toBeVisible()
   await navigateTo(page, '历史')

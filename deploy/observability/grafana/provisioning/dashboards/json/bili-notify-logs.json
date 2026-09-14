@@ -152,6 +152,101 @@
       ],
       "title": "AI Worker logs",
       "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "bili-notify-tempo"
+      },
+      "description": "Startup restoration and automatic renewal with Bilibili request children and correlated system logs.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 54
+      },
+      "id": 6,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Start time"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "bili-notify-tempo"
+          },
+          "limit": 20,
+          "query": "{ resource.service.name = \"bili-notify\" && name =~ \"bilibili[.]session[.](maintain|restore)\" }",
+          "queryType": "traceql",
+          "refId": "A",
+          "spss": 10,
+          "tableType": "traces"
+        }
+      ],
+      "title": "Bilibili session maintenance traces",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "bili-notify-loki"
+      },
+      "description": "Renewal, confirmation and failures; trace IDs link to Tempo. not_due/skipped cycle summaries require debug log level.",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 64
+      },
+      "id": 7,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "bili-notify-loki"
+          },
+          "expr": "{service_name=\"bili-notify\"} | category=\"system\" | event=~\"bilibili[.]session[.].*\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Bilibili session maintenance logs",
+      "type": "logs"
     }
   ],
   "refresh": "10s",
@@ -163,5 +258,5 @@
   "timezone": "browser",
   "title": "Bili Notify Logs and Traces",
   "uid": "bili-notify-logs-traces",
-  "version": 2
+  "version": 4
 }

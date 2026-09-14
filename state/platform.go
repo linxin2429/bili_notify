@@ -90,7 +90,13 @@ func (s *Store) PlatformAccount(platform model.Platform) (model.PlatformAccount,
 		if row.SealedAAD != tablePlatformAccounts {
 			return model.PlatformAccount{}, fmt.Errorf("account %s has invalid sealed AAD %q", platform, row.SealedAAD)
 		}
-		if err := openJSON(s.vault, tablePlatformAccounts, string(platform), row.SealedSession, &account.Session); err != nil {
+		if platform == model.PlatformBilibili {
+			session, err := s.openBiliSession(row.SealedSession)
+			if err != nil {
+				return model.PlatformAccount{}, err
+			}
+			account.Session = session.Cookies
+		} else if err := openJSON(s.vault, tablePlatformAccounts, string(platform), row.SealedSession, &account.Session); err != nil {
 			return model.PlatformAccount{}, err
 		}
 	}

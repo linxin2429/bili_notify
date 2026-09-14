@@ -511,7 +511,7 @@ func (s *Store) DeleteChannel(id string) error {
 }
 
 func (s *Store) SaveSession(session model.BiliSession) error {
-	sealedCookies, err := sealJSON(s.vault, tablePlatformAccounts, string(model.PlatformBilibili), session.Cookies)
+	sealedCookies, err := sealJSON(s.vault, tablePlatformAccounts, string(model.PlatformBilibili), encodeBiliSession(session))
 	if err != nil {
 		return err
 	}
@@ -566,11 +566,13 @@ func (s *Store) Session() (model.BiliSession, error) {
 	if err != nil {
 		return model.BiliSession{}, err
 	}
-	var cookies map[string]string
-	if err := openJSON(s.vault, tablePlatformAccounts, string(model.PlatformBilibili), row.SealedSession, &cookies); err != nil {
+	session, err := s.openBiliSession(row.SealedSession)
+	if err != nil {
 		return model.BiliSession{}, err
 	}
-	return model.BiliSession{Cookies: cookies, AccountUID: row.ExternalID, AccountName: row.DisplayName, UpdatedAt: time.Unix(row.UpdatedAt, 0)}, nil
+	session.AccountUID, session.AccountName = row.ExternalID, row.DisplayName
+	session.UpdatedAt = time.Unix(row.UpdatedAt, 0)
+	return session, nil
 }
 
 func (s *Store) ClearSession() error {

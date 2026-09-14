@@ -85,6 +85,69 @@
       "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, job_kind) (rate(bili_notify_ai_worker_job_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "p95 {{job_kind}}", "refId": "A" }],
       "title": "AI Worker job p95 duration",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bili-notify-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "id": 11,
+      "title": "Bilibili session maintenance outcomes",
+      "type": "stat",
+      "description": "Cumulative maintenance outcomes for the current processes; counters reset on restart. renewed includes durable confirmation, confirmed resumes a previous renewal. not_due, requires_login, error, skipped and canceled are separate outcomes.",
+      "targets": [
+        {
+          "expr": "sum by (result) (bili_notify_workflow_runs_total{platform=\"bilibili\",workflow=\"session_maintenance\"})",
+          "legendFormat": "{{result}}",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bili-notify-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "id": 12,
+      "title": "Bilibili session maintenance p95 duration",
+      "type": "timeseries",
+      "description": "A one-hour window includes multiple ten-minute maintenance cycles. Skipped and canceled cycles are excluded.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(bili_notify_workflow_duration_seconds_bucket{platform=\"bilibili\",workflow=\"session_maintenance\",result!~\"skipped|canceled\"}[1h])))",
+          "legendFormat": "p95 maintenance",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "15s",
@@ -94,5 +157,5 @@
   "time": { "from": "now-6h", "to": "now" },
   "title": "Bili Notify Operational Overview",
   "uid": "bili-notify-overview",
-  "version": 1
+  "version": 2
 }
