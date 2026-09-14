@@ -156,7 +156,7 @@ func TestV10MigrationPreservesV9StateAndRemovesTransitionalTables(t *testing.T) 
 	t.Parallel()
 	db, path, v := preparePopulatedV9(t)
 	require.NoError(t, runMigrations(t.Context(), db, v))
-	assertMigrationVersion(t, db, 12)
+	assertMigrationVersion(t, db, 13)
 	for _, table := range []string{"auth_session", "deliveries", "comments", "dynamics", "seen_comments", "seen_dynamics", "comment_targets", "ups"} {
 		var count int
 		require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count))
@@ -378,4 +378,134 @@ func assertMigrationVersion(t *testing.T, db *sql.DB, expected int64) {
 	var version int64
 	require.NoError(t, db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1`).Scan(&version))
 	assert.Equal(t, expected, version)
+}
+
+func TestV13MigrationPreservesExistingData(t *testing.T) {
+	t.Parallel()
+	db, _, v := preparePopulatedV9(t)
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS,
+		goose.WithGoMigrations(goose.NewGoMigration(10, &goose.GoFunc{RunTx: migrateV10(v)}, nil)),
+		goose.WithGoMigrations(goose.NewGoMigration(11, &goose.GoFunc{RunTx: migrateV11(v)}, nil)))
+	require.NoError(t, err)
+	_, err = provider.UpTo(t.Context(), 12)
+	require.NoError(t, err)
+	before := snapshotCollectionMigrationData(t, db)
+	require.NoError(t, runMigrations(t.Context(), db, v))
+	assertMigrationVersion(t, db, 13)
+	assert.Equal(t, before, snapshotCollectionMigrationData(t, db))
+	tests := []struct{ name string }{{"collection_items"}, {"collection_scans"}, {"collection_feed_gaps"}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var count int
+			require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, tt.name).Scan(&count))
+			assert.Equal(t, 1, count)
+		})
+	}
+	require.NoError(t, runMigrations(t.Context(), db, v))
+	assert.Equal(t, before, snapshotCollectionMigrationData(t, db), "repeated startup does not change history or secrets")
+}
+
+func snapshotCollectionMigrationData(t *testing.T, db *sql.DB) map[string][][]any {
+	t.Helper()
+	snapshot := make(map[string][][]any)
+	// Fixed identifiers only: no external input is interpolated into SQL.
+	for _, table := range []string{"sources", "contents", "channels", "outbox", "ai_jobs", "platform_accounts", "meta", "seen_items"} {
+		rows, err := db.Query(`SELECT * FROM ` + table + ` ORDER BY rowid`)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, rows.Close()) })
+		columns, err := rows.Columns()
+		require.NoError(t, err)
+		for rows.Next() {
+			values := make([]any, len(columns))
+			targets := make([]any, len(columns))
+			for i := range targets {
+				targets[i] = &values[i]
+			}
+			require.NoError(t, rows.Scan(targets...))
+			snapshot[table] = append(snapshot[table], values)
+		}
+		require.NoError(t, rows.Err())
+	}
+	return snapshot
+}
+
+func TestV10AccountAndOutboxCorruptionRollsBack(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, mutation, want string }{
+		{"legacy session ciphertext", `UPDATE platform_accounts SET sealed_session=x'01'`, "opening legacy Bilibili session"},
+		{"unknown account AAD", `UPDATE platform_accounts SET sealed_aad='unexpected'`, "unrecognized account AAD"},
+		{"current session ciphertext", `UPDATE platform_accounts SET sealed_aad='platform_accounts',sealed_session=x'01'`, "opening bilibili session"},
+		{"outbox progress", `UPDATE outbox SET progress_json='{' WHERE id='content-delivery'`, "decoding progress"},
+		{"legacy delivery JSON", `UPDATE deliveries SET payload_json='{'`, "unexpected end of JSON input"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			db, _, v := preparePopulatedV9(t)
+			_, err := db.Exec(tt.mutation)
+			require.NoError(t, err)
+			require.ErrorContains(t, runMigrations(t.Context(), db, v), tt.want)
+			assertMigrationVersion(t, db, 9)
+			var count int
+			require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM platform_accounts`).Scan(&count))
+			assert.Equal(t, 1, count)
+			require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM deliveries`).Scan(&count))
+			assert.Equal(t, 1, count)
+		})
+	}
+}
+
+func TestV11ChannelFailuresRetainOriginalCredentials(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, mutation, want string }{
+		{"damaged ciphertext", `UPDATE channels SET secret_sealed=x'01'`, "opening channel channel secrets"},
+		{"failed update", `CREATE TRIGGER reject_channel BEFORE UPDATE ON channels BEGIN SELECT RAISE(ABORT,'test update failure'); END`, "test update failure"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store := openTestStore(t, 39)
+			sealed, err := sealJSON(store.vault, tableChannelSecrets, "channel", map[string]string{"access_token": "old-token"})
+			require.NoError(t, err)
+			require.NoError(t, store.db.Exec(`INSERT INTO channels(id,name,type,enabled,public_settings_json,secret_sealed,created_at,updated_at) VALUES('channel','channel','microsoft',1,'{}',?,0,0)`, sealed).Error)
+			require.NoError(t, store.db.Exec(tt.mutation).Error)
+			db, err := store.db.DB()
+			require.NoError(t, err)
+			tx, err := db.BeginTx(t.Context(), nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = tx.Rollback() })
+			require.ErrorContains(t, migrateV11(store.vault)(t.Context(), tx), tt.want)
+			require.NoError(t, tx.Rollback())
+			var enabled int
+			require.NoError(t, db.QueryRow(`SELECT enabled FROM channels WHERE id='channel'`).Scan(&enabled))
+			assert.Equal(t, 1, enabled)
+		})
+	}
+}
+
+func TestV13RollbackRemovesAccountCleanupTriggers(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 43)
+	require.NoError(t, store.SaveSession(model.BiliSession{AccountUID: "100"}))
+	db, err := store.db.DB()
+	require.NoError(t, err)
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS,
+		goose.WithGoMigrations(goose.NewGoMigration(10, &goose.GoFunc{RunTx: migrateV10(store.vault)}, nil)),
+		goose.WithGoMigrations(goose.NewGoMigration(11, &goose.GoFunc{RunTx: migrateV11(store.vault)}, nil)))
+	require.NoError(t, err)
+	_, err = provider.Down(t.Context())
+	require.NoError(t, err)
+	assertMigrationVersion(t, db, 12)
+	// Account writes must remain usable after the recovery tables are removed.
+	require.NoError(t, store.SaveSession(model.BiliSession{AccountUID: "200"}))
+	require.NoError(t, store.ClearSession())
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'collection_feed_gaps_%'`).Scan(&count))
+	assert.Zero(t, count)
+	_, err = provider.Up(t.Context())
+	require.NoError(t, err)
+	assertMigrationVersion(t, db, 13)
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'collection_feed_gaps_%'`).Scan(&count))
+	assert.Equal(t, 3, count)
 }

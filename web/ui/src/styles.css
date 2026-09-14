@@ -201,6 +201,8 @@
 }
 
 @media (max-width: 600px) {
+  .ai-job-card { padding: 0; }
+  .ai-job-card__main { grid-template-columns: minmax(0, 1fr); padding: 1rem; }
   .page-container { padding-inline: 1rem; }.page-header { align-items: stretch; flex-direction: column; }.card-grid, .filter-grid, .settings-grid { grid-template-columns: 1fr; }.card { padding: 1rem; }.health-statement { gap: 1rem; padding-block: 1.5rem; }.health-statement h2 { font-size: 2.65rem; }.metric { min-height: 112px; padding-inline: .75rem; }.metric strong { font-size: 1.85rem; }.delivery, .audit-row { grid-template-columns: 1fr; }.audit-row > div:last-child { text-align: left; }.history-search-row { align-items: stretch; flex-wrap: wrap; }.history-search { flex-basis: 100%; }.filter-toggle { flex: 1; }.history-body { margin-left: 0; padding: 1rem; }.history-card__header { grid-template-columns: auto minmax(0, 1fr); padding: 1rem 1rem 0; }.history-card__header > .badge-row { grid-column: 2; }.history-card__header p { font-size: .82rem; }.history-footer { align-items: flex-start; flex-direction: column; gap: .5rem; padding: .65rem 1rem; }.history-stats { gap: .8rem; }.content-preview { grid-template-columns: 1fr; }.media-grid { grid-template-columns: repeat(3, 1fr); }.topbar { padding-inline: .75rem; }.topbar__brand strong { display: none; }
 }
 

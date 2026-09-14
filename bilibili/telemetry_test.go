@@ -2,6 +2,7 @@ package bilibili
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,55 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
+
+func TestOpusBusinessFailureIsVisibleInTelemetry(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":4101131,"message":"unavailable"}`))
+	}))
+	t.Cleanup(server.Close)
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { require.NoError(t, tp.Shutdown(context.Background())) })
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { require.NoError(t, mp.Shutdown(context.Background())) })
+	client := New(server.Client(), "test", WithBaseURLs(server.URL, server.URL), WithTelemetry(tp, mp))
+	_, err := client.fetchOpusDetail(t.Context(), "131580584")
+	apiErr, ok := errors.AsType[*APIError](err)
+	require.True(t, ok)
+	assert.Equal(t, 4101131, apiErr.Code)
+	assert.Equal(t, http.StatusOK, apiErr.HTTPStatus)
+	spans := recorder.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, codes.Error, spans[0].Status().Code)
+	attrs := make(map[string]string)
+	for _, attr := range spans[0].Attributes() {
+		attrs[string(attr.Key)] = attr.Value.Emit()
+	}
+	assert.Equal(t, "4101131", attrs["bilibili.code"])
+	assert.Equal(t, "200", attrs["http.response.status_code"])
+	assert.Equal(t, "131580584", attrs["bilibili.opus.id"])
+	assert.NotContains(t, attrs, "url.full")
+	var data metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &data))
+	var found bool
+	for _, scope := range data.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			if measurement.Name != "bili_notify.bilibili.requests" {
+				continue
+			}
+			sum, ok := measurement.Data.(metricdata.Sum[int64])
+			require.True(t, ok)
+			require.Len(t, sum.DataPoints, 1)
+			value, ok := sum.DataPoints[0].Attributes.Value("result")
+			require.True(t, ok)
+			assert.Equal(t, "error", value.AsString())
+			found = true
+		}
+	}
+	assert.True(t, found)
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

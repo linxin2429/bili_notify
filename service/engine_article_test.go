@@ -205,7 +205,7 @@ func TestPollFeedEnrichesArticleAndIsolatesDetailFailure(t *testing.T) {
 	relations, err := store.FollowRelations("100")
 	require.NoError(t, err)
 	assert.True(t, relations["42"].SpaceSynced)
-	assert.False(t, relations["43"].SpaceSynced)
+	assert.True(t, relations["43"].SpaceSynced, "durable item retries no longer disable the shared feed route")
 	badUP, err := store.UP("43")
 	require.NoError(t, err)
 	assert.Equal(t, 1, badUP.ConsecutiveFail)

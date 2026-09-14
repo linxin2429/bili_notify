@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { auditLogPageSchema, contentPageSchema, runtimeSchema, runtimeSettingsSchema, websocketEnvelopeSchema } from './contracts'
+import { aiContentSnapshotSchema, auditLogPageSchema, contentPageSchema, runtimeSchema, runtimeSettingsSchema, websocketEnvelopeSchema } from './contracts'
 import { makeAudit, settings } from '../../test/fixtures'
 
 describe('v3 transport contracts', () => {
@@ -28,4 +28,14 @@ describe('v3 transport contracts', () => {
     expect(runtimeSettingsSchema.parse(settings)).toEqual(settings)
     expect(runtimeSettingsSchema.safeParse({ ...settings, delivery_retry_delays_sec: [30, 20, 120, 600, 3600] }).success).toBe(false)
   })
+})
+
+describe('AI source snapshot contract', () => {
+  it.each([
+    { name: 'full source', value: { content_id: 'content', source_id: 'source', bvid: 'BV1xx411c7mD' }, valid: true },
+    { name: 'minimal source', value: { content_id: 'content', source_id: 'source' }, valid: true },
+    { name: 'missing source id', value: { content_id: 'content' }, valid: false },
+    { name: 'wrong source id type', value: { content_id: 'content', source_id: 42 }, valid: false },
+    { name: 'undeclared field', value: { content_id: 'content', source_id: 'source', secret: 'invalid' }, valid: false },
+  ])('validates $name', ({ value, valid }) => expect(aiContentSnapshotSchema.safeParse(value).success).toBe(valid))
 })

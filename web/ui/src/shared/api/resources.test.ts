@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resources } from './resources'
+import aiJobPage from '../../../../testdata/contracts/ai-jobs.json'
 import { settings, makeAudit, makeDelivery } from '../../test/fixtures'
 
 const runtime = { status: { auth_valid: true, up_count: 1, channel_count: 1, outbox_depth: 0, ready: true }, timezone: 'Asia/Shanghai', updated_at: '2026-08-09T10:00:00Z' }
@@ -86,6 +87,14 @@ describe('resource transport', () => {
       method: 'PUT',
       body: JSON.stringify(draft),
     })
+  })
+
+  it.each(aiJobPage.items)('loads the $id task and its source from Go response fixtures', async (job) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => json(
+      requestPath(input).includes('?') ? aiJobPage : job,
+    )))
+    await expect(resources.aiJobs({ limit: 50, offset: 0 })).resolves.toEqual(aiJobPage)
+    await expect(resources.aiJob(job.id)).resolves.toEqual(job)
   })
 
   it('whitelists writable fields in AI profile requests', async () => {

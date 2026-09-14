@@ -222,6 +222,9 @@ func (e *AIEngine) monitor(ctx context.Context, client aiworkerpb.AIWorkerClient
 }
 
 func (e *AIEngine) refreshStatus(parent context.Context, client aiworkerpb.AIWorkerClient) {
+	if err := e.store.WithContext(parent).RetryAutomaticAI(time.Now()); err != nil {
+		e.logger.ErrorContext(parent, "automatic AI scheduling retry failed", "event", "ai.scheduling.failed", "error", err)
+	}
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 	capabilities, err := client.GetCapabilities(ctx, &aiworkerpb.CapabilitiesRequest{})

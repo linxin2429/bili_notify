@@ -165,12 +165,23 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, wit
 	started := time.Now()
 	defer func() {
 		result := "success"
-		if err != nil {
+		var business struct {
+			Code int `json:"code"`
+		}
+		_ = json.Unmarshal(body, &business)
+		if err != nil || business.Code != 0 {
 			result = "error"
 			span.SetStatus(codes.Error, "Bilibili operation failed")
 		}
+		if business.Code != 0 {
+			span.SetAttributes(attribute.Int("bilibili.code", business.Code))
+		}
+		if operation == "/x/polymer/web-dynamic/v1/opus/detail" {
+			span.SetAttributes(attribute.String("bilibili.opus.id", query.Get("id")))
+		}
 		attrs := []attribute.KeyValue{attribute.String("bilibili.operation", operation), attribute.String("result", result)}
 		if resp != nil {
+			span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
 			attrs = append(attrs, attribute.Int("http.response.status_code", resp.StatusCode))
 		}
 		options := metric.WithAttributes(attrs...)
@@ -471,7 +482,17 @@ type Page struct {
 	UPName  string
 }
 
-func (c *Client) FetchPage(ctx context.Context, uid, offset string) (Page, error) {
+// RawPage permits durable discovery before parsing individual content cards.
+type RawPage struct {
+	HasMore bool              `json:"has_more"`
+	Offset  string            `json:"offset"`
+	Items   []json.RawMessage `json:"items"`
+}
+
+// FetchRawPage fetches unparsed space cards for durable per-item staging. Unlike
+// FetchPage, one malformed card does not reject the page; callers persist the
+// cards before advancing the cursor, then parse each with ParseSpaceDynamic.
+func (c *Client) FetchRawPage(ctx context.Context, uid, offset string) (RawPage, error) {
 	query := url.Values{
 		"features": {dynamicFeatures},
 		"host_mid": {uid},
@@ -482,14 +503,18 @@ func (c *Client) FetchPage(ctx context.Context, uid, offset string) (Page, error
 	}
 	_, body, err := c.get(ctx, c.apiURL+"/x/polymer/web-dynamic/v1/feed/space", query, true)
 	if err != nil {
-		return Page{}, err
+		return RawPage{}, err
 	}
-	var data struct {
-		HasMore bool              `json:"has_more"`
-		Offset  string            `json:"offset"`
-		Items   []json.RawMessage `json:"items"`
-	}
+	var data RawPage
 	if err := decodeEnvelope(body, &data); err != nil {
+		return RawPage{}, err
+	}
+	return data, nil
+}
+
+func (c *Client) FetchPage(ctx context.Context, uid, offset string) (Page, error) {
+	data, err := c.FetchRawPage(ctx, uid, offset)
+	if err != nil {
 		return Page{}, err
 	}
 	page := Page{Offset: data.Offset, HasMore: data.HasMore}
@@ -510,6 +535,11 @@ func (c *Client) FetchPage(ctx context.Context, uid, offset string) (Page, error
 		page.Items = append(page.Items, dynamic)
 	}
 	return page, nil
+}
+
+// ParseSpaceDynamic supplies the known author for space cards missing mid.
+func ParseSpaceDynamic(uid string, raw json.RawMessage) (model.Dynamic, error) {
+	return parseDynamicItem(uid, raw)
 }
 
 var supportedDynamicTypes = map[string]bool{

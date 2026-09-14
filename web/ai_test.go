@@ -200,3 +200,43 @@ func TestAIMutationConflicts(t *testing.T) {
 		})
 	}
 }
+
+func TestAutomaticAIJobAPIRetainsSourceSnapshot(t *testing.T) {
+	t.Parallel()
+	fixture := newAdminAPIFixture(t, nil)
+	_, err := fixture.store.PutAIProfile(model.AIProfile{Name: "transcribe", Kind: model.AIProfileTranscription, BaseURL: "https://provider.example/v1", Model: "transcribe", APIKey: "private-key", TimeoutSec: 60, Enabled: true, Default: true})
+	require.NoError(t, err)
+	_, err = fixture.store.PutAIProfile(model.AIProfile{Name: "summary", Kind: model.AIProfileText, BaseURL: "https://provider.example/v1", Model: "summary", APIKey: "private-key", ContextWindowChars: 10000, TimeoutSec: 60, Enabled: true, Default: true})
+	require.NoError(t, err)
+	_, err = fixture.store.PutAIPrompt(model.AIPromptTemplate{Name: "default", ChunkPrompt: "{{text}}", ReducePrompt: "{{summaries}}", Default: true})
+	require.NoError(t, err)
+	settings := model.DefaultRuntimeSettings()
+	settings.AIAutoProcessingEnabled = true
+	require.NoError(t, fixture.store.PutRuntimeSettings(settings))
+	require.NoError(t, fixture.store.PutUP(model.UP{UID: "42", Enabled: true}))
+	_, err = fixture.store.RecordDynamics("42", []model.Dynamic{{ID: "video", UID: "42", Type: "DYNAMIC_TYPE_AV", BVID: "BV1xx411c7mD", PublishedAt: contractTime()}}, nil, 0)
+	require.NoError(t, err)
+	response := fixture.request(t, http.MethodGet, "/api/v4/ai/jobs?limit=50&offset=0", nil, false)
+	require.Equal(t, http.StatusOK, response.Code)
+	var page model.AIJobPage
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &page))
+	require.Len(t, page.Items, 2)
+	tests := []struct {
+		name string
+		job  model.AIJob
+	}{{"transcription", page.Items[0]}, {"summary", page.Items[1]}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.NotNil(t, tt.job.Source)
+			assert.Equal(t, "bilibili:up:42", tt.job.Source.SourceID)
+			assert.Equal(t, "bilibili:content:video", tt.job.Source.ContentID)
+			detail := fixture.request(t, http.MethodGet, "/api/v4/ai/jobs/"+tt.job.ID, nil, false)
+			require.Equal(t, http.StatusOK, detail.Code)
+			var job model.AIJob
+			require.NoError(t, json.Unmarshal(detail.Body.Bytes(), &job))
+			assert.Equal(t, tt.job.Source, job.Source)
+			assert.NotContains(t, detail.Body.String(), "private-key")
+		})
+	}
+}

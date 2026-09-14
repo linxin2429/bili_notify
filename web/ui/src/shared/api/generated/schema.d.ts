@@ -1140,6 +1140,7 @@ export interface components {
         };
         AIContentSnapshot: {
             content_id: string;
+            source_id: string;
             bvid?: string;
             author?: string;
             title?: string;

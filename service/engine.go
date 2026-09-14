@@ -450,7 +450,8 @@ func (e *Engine) collectOnce(ctx context.Context) (err error) {
 		}
 		feedInitialized = feed.Initialized
 	}
-	g, gctx := errgroup.WithContext(ctx)
+	var g errgroup.Group
+	gctx := ctx
 	g.SetLimit(settings.BilibiliRequestConcurrency)
 	enabledUPs := 0
 	feedUPs := make([]model.UP, 0, len(ups))
@@ -462,12 +463,11 @@ func (e *Engine) collectOnce(ctx context.Context) (err error) {
 		enabledUPs++
 		relation := relations[up.UID]
 		feedReady := feedInitialized && relation.State == model.Followed && relation.SpaceSynced && up.BaselineReady && up.ExclusiveBaselineReady
-		if feedReady {
-			feedUPs = append(feedUPs, up)
-		}
 		spaceDue := !feedReady || relation.LastSpacePollAt.IsZero() || now.Sub(relation.LastSpacePollAt) >= settings.SpaceReconcileInterval()
 		if spaceDue {
 			g.Go(func() error { return e.pollUP(gctx, up) })
+		} else if feedReady {
+			feedUPs = append(feedUPs, up)
 		}
 	}
 	if len(feedUPs) > 0 {
@@ -509,136 +509,130 @@ func (e *Engine) pollFeed(ctx context.Context, account model.BiliAccount, ups []
 	if err != nil {
 		return err
 	}
-	uids := make([]string, 0, len(ups))
 	targets := make(map[string]model.UP, len(ups))
+	uids := make([]string, 0, len(ups))
 	for _, up := range ups {
-		uids = append(uids, up.UID)
 		targets[up.UID] = up
+		uids = append(uids, up.UID)
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
-	defer cancel()
-	update, err := e.client.CheckFeedUpdate(requestCtx, feed.UpdateBaseline)
-	if err != nil {
-		return e.failFeed(ctx, ups, started, err)
-	}
-	if update.UpdateNum == 0 {
-		return e.completeFeedPoll(ctx, ups, nil, started, 0)
-	}
-
-	var (
-		rawItems    []json.RawMessage
-		offset      string
-		newBaseline string
-		updateNum   = -1
-	)
-	maxPages := e.Settings().BilibiliMaxDynamicPages
-	for pageNumber := range maxPages {
-		page, fetchErr := e.client.FetchAllPage(requestCtx, feed.UpdateBaseline, offset)
-		if fetchErr != nil {
-			return e.failFeed(ctx, ups, started, fetchErr)
-		}
-		if pageNumber == 0 {
-			newBaseline = page.UpdateBaseline
-			updateNum = page.UpdateNum
-			if newBaseline == "" {
-				return e.failFeed(ctx, ups, started, &bilibili.APIError{Kind: bilibili.ErrorSchema, Message: "aggregate feed update baseline is missing"})
-			}
-		}
-		remaining := updateNum - len(rawItems)
-		if remaining > 0 {
-			rawItems = append(rawItems, page.Items[:min(remaining, len(page.Items))]...)
-		}
-		if len(rawItems) >= updateNum {
-			break
-		}
-		if !page.HasMore || page.Offset == "" || page.Offset == offset {
-			return e.failFeed(ctx, ups, started, &bilibili.APIError{Kind: bilibili.ErrorSchema, Message: "aggregate feed ended before update count was reached"})
-		}
-		if pageNumber == maxPages-1 {
-			if resetErr := store.ResetFeed(account.UID, uids, time.Now()); resetErr != nil {
-				return fmt.Errorf("resetting aggregate feed after pagination overflow: %w", resetErr)
-			}
-			e.publish(TopicUPs)
-			return e.failFeed(ctx, ups, started, fmt.Errorf("more than %d aggregate feed pages; space resynchronization required", maxPages))
-		}
-		offset = page.Offset
-	}
-
-	rawByUID := make(map[string][]json.RawMessage)
-	for _, raw := range rawItems {
-		uid, parseErr := bilibili.DynamicAuthorUID(raw)
-		if parseErr != nil {
-			return e.failFeed(ctx, ups, started, parseErr)
-		}
-		if _, ok := targets[uid]; ok {
-			rawByUID[uid] = append(rawByUID[uid], raw)
-		}
-	}
-	failedUIDs := make([]string, 0)
-	dynamicsByUID := make(map[string][]model.Dynamic, len(rawByUID))
-	allDynamics := make([]model.Dynamic, 0)
-	for uid, raws := range rawByUID {
-		group := make([]model.Dynamic, 0, len(raws))
-		var groupErr error
-		for _, raw := range raws {
-			dynamic, parseErr := bilibili.ParseDynamicItem(raw)
-			if bilibili.IsDynamicBlocked(parseErr) {
-				continue
-			}
-			if parseErr != nil {
-				groupErr = parseErr
+	update, fetchErr := e.client.CheckFeedUpdate(requestCtx, feed.UpdateBaseline)
+	cancel()
+	var newBaseline, offset string
+	var scanned, expected int
+	var gaps bool
+	if fetchErr == nil && update.UpdateNum > 0 {
+		for pageNumber := range e.Settings().BilibiliMaxDynamicPages {
+			requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
+			page, pageErr := e.client.FetchAllPage(requestCtx, feed.UpdateBaseline, offset)
+			cancel()
+			if pageErr != nil {
+				fetchErr = pageErr
 				break
 			}
-			if dynamic.Type != "DYNAMIC_TYPE_LIVE_RCMD" {
-				group = append(group, dynamic)
+			if pageNumber == 0 {
+				newBaseline, expected = page.UpdateBaseline, page.UpdateNum
 			}
-		}
-		if groupErr != nil {
-			failedUIDs = append(failedUIDs, uid)
-			if err := e.failPoll(ctx, targets[uid], targets[uid].Name, started, groupErr); err != nil {
+			items := make([]state.CollectionItem, 0, len(page.Items))
+			var unassigned []json.RawMessage
+			for _, raw := range page.Items[:min(max(expected-scanned, 0), len(page.Items))] {
+				scanned++
+				uid, parseErr := bilibili.DynamicAuthorUID(raw)
+				if parseErr != nil {
+					unassigned = append(unassigned, raw)
+					gaps = true
+					continue
+				}
+				if up, ok := targets[uid]; ok {
+					item := discoveryItem(up, raw)
+					seen, err := store.Seen(up.UID, item.ID)
+					if err != nil {
+						return err
+					}
+					if !seen {
+						items = append(items, item)
+					}
+				}
+			}
+			if err := store.StageFeedPage(account.UID, items, unassigned); err != nil {
 				return err
 			}
-			continue
-		}
-		if err := e.enrichArticles(ctx, group); err != nil {
-			failedUIDs = append(failedUIDs, uid)
-			if failErr := e.failPoll(ctx, targets[uid], targets[uid].Name, started, err); failErr != nil {
-				return failErr
+			if len(unassigned) > 0 {
+				e.logger.WarnContext(ctx, "unassignable feed cards retained for space reconciliation", "event", "bilibili.feed.unassigned", "account_uid", account.UID, "item_count", len(unassigned))
 			}
-			continue
+			if newBaseline == "" {
+				fetchErr = errors.New("aggregate feed update baseline is missing")
+				break
+			}
+			if scanned >= expected {
+				break
+			}
+			if !page.HasMore || page.Offset == "" || page.Offset == offset {
+				fetchErr = errors.New("aggregate feed ended before update count was reached; space resynchronization required")
+				break
+			}
+			if pageNumber == e.Settings().BilibiliMaxDynamicPages-1 {
+				fetchErr = errors.New("aggregate feed page budget exhausted; space resynchronization required")
+				break
+			}
+			offset = page.Offset
 		}
-		dynamicsByUID[uid] = group
-		allDynamics = append(allDynamics, group...)
 	}
-	slices.SortFunc(allDynamics, func(a, b model.Dynamic) int { return a.PublishedAt.Compare(b.PublishedAt) })
-	e.enrichMedia(ctx, allDynamics)
-	created, err := store.RecordFeedDynamics(account.UID, newBaseline, allDynamics, nil, failedUIDs)
-	if err != nil {
-		return err
-	}
-	if created > 0 {
-		e.publish(TopicStatus | TopicDeliveries | TopicDynamics)
-	} else if len(allDynamics) > 0 {
-		e.publish(TopicDynamics)
-	}
-	for uid, dynamics := range dynamicsByUID {
-		if err := e.refreshCommentTargets(ctx, targets[uid], targets[uid].Name, dynamics); err != nil {
+	// Recover incomplete or unassignable feed history via independently checkpointed
+	// space scans; never repeatedly poison the shared account baseline.
+	if fetchErr != nil || gaps {
+		if err := store.ResetFeed(account.UID, uids, time.Now()); err != nil {
+			return err
+		}
+		e.publish(TopicUPs)
+	} else if newBaseline != "" {
+		if err := store.InitializeFeed(account.UID, newBaseline, time.Now()); err != nil {
 			return err
 		}
 	}
-	successful := make([]model.UP, 0, len(ups)-len(failedUIDs))
+	var successful []model.UP
+	var failed []struct {
+		up  model.UP
+		err error
+	}
+	var allDynamics []model.Dynamic
+	created := 0
+	if bilibili.IsAuthentication(fetchErr) || bilibili.IsRiskControl(fetchErr) {
+		return e.failFeed(ctx, ups, started, fetchErr)
+	}
 	for _, up := range ups {
-		if !slices.Contains(failedUIDs, up.UID) {
-			successful = append(successful, up)
+		dynamics, count, itemErr := e.processDiscoveries(ctx, up)
+		created += count
+		allDynamics = append(allDynamics, dynamics...)
+		if err := e.refreshCommentTargets(ctx, up, up.Name, dynamics); err != nil {
+			return err
+		}
+		if itemErr != nil {
+			if bilibili.IsAuthentication(itemErr) || bilibili.IsRiskControl(itemErr) {
+				return e.failFeed(ctx, ups, started, itemErr)
+			}
+			failed = append(failed, struct {
+				up  model.UP
+				err error
+			}{up, itemErr})
+			continue
+		}
+		if pendingErr := store.CollectionPendingError(up.UID); pendingErr != nil {
+			continue
+		}
+		successful = append(successful, up)
+	}
+	if fetchErr != nil {
+		return e.failFeed(ctx, ups, started, fetchErr)
+	}
+	// Defer individual results until shared failures are ruled out, including
+	// authentication failures encountered while recovering a later UP's items.
+	for _, failure := range failed {
+		if err := e.failPoll(ctx, failure.up, failure.up.Name, started, failure.err); err != nil {
+			return err
 		}
 	}
-	if err := e.completeFeedPoll(ctx, successful, allDynamics, started, created); err != nil {
-		return err
-	}
-	if len(failedUIDs) > 0 {
-		e.publish(TopicUPs)
-	}
-	return nil
+	return e.completeFeedPoll(ctx, successful, allDynamics, started, created)
 }
 
 func (e *Engine) completeFeedPoll(ctx context.Context, ups []model.UP, dynamics []model.Dynamic, started time.Time, created int) error {
@@ -665,6 +659,7 @@ func (e *Engine) completeFeedPoll(ctx context.Context, ups []model.UP, dynamics 
 }
 
 func (e *Engine) failFeed(ctx context.Context, ups []model.UP, started time.Time, pollErr error) error {
+	trace.SpanFromContext(ctx).SetStatus(codes.Error, "Bilibili feed collection failed")
 	store := e.store.WithContext(ctx)
 	e.handleBiliAPIError(ctx, pollErr)
 	uids := make([]string, 0, len(ups))
@@ -687,78 +682,44 @@ func (e *Engine) pollUP(ctx context.Context, up model.UP) (err error) {
 	started := time.Now()
 	e.sessionMu.RLock()
 	defer e.sessionMu.RUnlock()
-	requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
-	defer cancel()
-	var (
-		items  []model.Dynamic
-		offset string
-		name   string
-	)
-	maxPages := e.Settings().BilibiliMaxDynamicPages
-	for pageNumber := range maxPages {
-		page, err := e.client.FetchPage(requestCtx, up.UID, offset)
-		if err != nil {
-			e.handleBiliAPIError(ctx, err)
-			return e.failPoll(ctx, up, name, started, err)
-		}
-		name = page.UPName
-		foundSeen := false
-		for _, dynamic := range page.Items {
-			seen, err := store.Seen(up.UID, dynamic.ID)
-			if err != nil {
-				return fmt.Errorf("checking seen dynamic: %w", err)
-			}
-			if seen {
-				foundSeen = true
-				// Space dynamics are newest-first. Once the persisted frontier is
-				// reached, everything after it is older and must not be rediscovered.
-				break
-			}
-			items = append(items, dynamic)
-		}
-		if !up.BaselineReady || foundSeen || !page.HasMore {
+	complete, discoveryErr := e.discoverSpace(ctx, up)
+	if bilibili.IsAuthentication(discoveryErr) || bilibili.IsRiskControl(discoveryErr) {
+		return e.failPoll(ctx, up, up.Name, started, discoveryErr)
+	}
+	items, created, processErr := e.processDiscoveries(ctx, up)
+	name := up.Name
+	for _, item := range items {
+		if item.UPName != "" {
+			name = item.UPName
 			break
 		}
-		if page.Offset == "" || page.Offset == offset {
-			err := &bilibili.APIError{Kind: bilibili.ErrorSchema, Message: "space dynamics pagination offset did not advance"}
-			return e.failPoll(ctx, up, name, started, err)
-		}
-		if pageNumber == maxPages-1 {
-			err := fmt.Errorf("more than %d pages of unseen dynamics; manual review required", maxPages)
-			return e.failPoll(ctx, up, name, started, err)
-		}
-		offset = page.Offset
 	}
-	slices.SortFunc(items, func(a, b model.Dynamic) int { return a.PublishedAt.Compare(b.PublishedAt) })
-	if err := e.enrichArticles(ctx, items); err != nil {
-		return e.failPoll(ctx, up, name, started, err)
+	if err := e.refreshCommentTargets(ctx, up, name, items); err != nil {
+		return err
 	}
-	e.enrichMedia(ctx, items)
 	baselineMode := state.DynamicBaselineNone
 	if !up.BaselineReady {
 		baselineMode = state.DynamicBaselineAll
 	} else if !up.ExclusiveBaselineReady {
 		baselineMode = state.DynamicBaselineExclusive
 	}
-	created, err := store.RecordDynamics(up.UID, items, nil, baselineMode)
-	if err != nil {
-		return fmt.Errorf("recording dynamics: %w", err)
-	}
-	if created > 0 {
-		// RecordDynamics commits content, seen markers, and outbox rows atomically.
-		// Publish that committed state before later bookkeeping can fail.
-		e.publish(TopicStatus | TopicDeliveries | TopicDynamics)
-	} else if len(items) > 0 {
-		e.publish(TopicDynamics)
-	}
-	if !up.BaselineReady {
-		// BaselineReady is committed by RecordDynamics as well.
+	if complete && baselineMode != state.DynamicBaselineNone {
+		if _, err := store.RecordDynamics(up.UID, nil, nil, baselineMode); err != nil {
+			return err
+		}
 		e.publish(TopicUPs)
-	} else if !up.ExclusiveBaselineReady {
-		e.logger.InfoContext(ctx, "Bilibili exclusive dynamic baseline established", "event", "bilibili.up.exclusive_baseline_established", "up_uid", up.UID, "up_name", name)
 	}
-	if err := e.refreshCommentTargets(ctx, up, name, items); err != nil {
-		return err
+	if pollErr := errors.Join(discoveryErr, processErr); pollErr != nil {
+		return e.failPoll(ctx, up, name, started, pollErr)
+	}
+	if pendingErr := store.CollectionPendingError(up.UID); pendingErr != nil {
+		if up.LastError == "" {
+			return e.failPoll(ctx, up, name, started, pendingErr)
+		}
+		return nil
+	}
+	if !complete {
+		return nil
 	}
 	now := time.Now()
 	if err := store.SetUPResult(up.UID, name, now, nil); err != nil {
@@ -1290,6 +1251,7 @@ func (e *Engine) handleCommentPollError(ctx context.Context, target model.Commen
 }
 
 func (e *Engine) failPoll(ctx context.Context, up model.UP, name string, started time.Time, pollErr error) error {
+	trace.SpanFromContext(ctx).SetStatus(codes.Error, "Bilibili source collection failed")
 	store := e.store.WithContext(ctx)
 	if name == "" {
 		name = up.Name
@@ -1300,8 +1262,7 @@ func (e *Engine) failPoll(ctx context.Context, up model.UP, name string, started
 	}
 	e.publish(TopicStatus | TopicUPs)
 	kind := "other"
-	var apiErr *bilibili.APIError
-	if errors.As(pollErr, &apiErr) {
+	if apiErr, ok := errors.AsType[*bilibili.APIError](pollErr); ok {
 		kind = string(apiErr.Kind)
 	}
 	e.logger.WarnContext(ctx, "Bilibili UP poll failed", "event", "bilibili.up.poll_completed", "result", "failure", "up_uid", up.UID, "up_name", name, "error_kind", kind, "consecutive_failures", up.ConsecutiveFail+1, "duration_ms", elapsedMS(started), "error", pollErr)
@@ -2066,22 +2027,6 @@ func enabledUPCount(ups []model.UP) int {
 		}
 	}
 	return count
-}
-
-func (e *Engine) enrichArticles(ctx context.Context, items []model.Dynamic) error {
-	for i := range items {
-		if !bilibili.NeedsArticleEnrichment(items[i]) {
-			continue
-		}
-		requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
-		err := e.client.EnrichArticle(requestCtx, &items[i])
-		cancel()
-		if err != nil {
-			e.handleBiliAPIError(ctx, err)
-			return err
-		}
-	}
-	return nil
 }
 
 func (e *Engine) enrichMedia(ctx context.Context, items []model.Dynamic) {

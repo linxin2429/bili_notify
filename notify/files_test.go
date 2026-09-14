@@ -136,3 +136,20 @@ func writeTestAttachment(t *testing.T, content []byte) (string, string) {
 	require.NoError(t, os.WriteFile(filepath.Join(dataDir, relative), content, 0o600))
 	return dataDir, relative
 }
+
+func TestAttachmentSizeBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		size int64
+		want string
+	}{
+		{"negative", -1, "0 B"}, {"empty", 0, "0 B"}, {"bytes", 1023, "1023 B"},
+		{"kibibyte", 1024, "1.0 KiB"}, {"fraction", 1536, "1.5 KiB"},
+		{"mebibyte", 1 << 20, "1.0 MiB"}, {"gibibyte", 1 << 30, "1.0 GiB"},
+		{"above largest unit", 1 << 40, "1024.0 GiB"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) { t.Parallel(); assert.Equal(t, tt.want, formatBytes(tt.size)) })
+	}
+}
