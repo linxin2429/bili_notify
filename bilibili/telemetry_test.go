@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/linxin2429/bili_notify/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -90,5 +92,63 @@ func TestTelemetryDoesNotRecordURLFromTransportError(t *testing.T) {
 	assert.Empty(t, spans[0].Events())
 	for _, value := range spans[0].Attributes() {
 		assert.False(t, strings.Contains(value.Value.Emit(), "secret-query-value"))
+	}
+}
+
+func TestSessionTelemetrySanitizesTransportFailures(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		canceled bool
+	}{{name: "transport error"}, {name: "canceled", canceled: true}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			recorder := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+			reader := sdkmetric.NewManualReader()
+			mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+			t.Cleanup(func() {
+				require.NoError(t, tp.Shutdown(context.Background()))
+				require.NoError(t, mp.Shutdown(context.Background()))
+			})
+			client := New(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) { return nil, fmt.Errorf("private-transport %s", r.URL) })}, "test", WithTelemetry(tp, mp))
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			if tt.canceled {
+				cancel()
+			}
+			_, err := NewSessionClient(client).Refresh(ctx, model.BiliSession{Cookies: map[string]string{"bili_jct": "private-csrf"}, RefreshToken: "private-token"}, 123)
+			require.Error(t, err)
+			ended := recorder.Ended()
+			require.Len(t, ended, 1)
+			assert.Equal(t, "bilibili /correspond/1/{correspondPath}", ended[0].Name())
+			assert.Empty(t, ended[0].Events())
+			if tt.canceled {
+				assert.ErrorIs(t, err, context.Canceled)
+				assert.NotEqual(t, codes.Error, ended[0].Status().Code)
+			} else {
+				assert.Equal(t, codes.Error, ended[0].Status().Code)
+			}
+			var metrics metricdata.ResourceMetrics
+			require.NoError(t, reader.Collect(t.Context(), &metrics))
+			assert.NotContains(t, fmt.Sprint(metrics, ended[0].Attributes(), ended[0].Status()), "private-")
+			for _, scope := range metrics.ScopeMetrics {
+				for _, m := range scope.Metrics {
+					if m.Name == "bili_notify.bilibili.requests" {
+						sum := m.Data.(metricdata.Sum[int64])
+						require.Len(t, sum.DataPoints, 1)
+						assert.EqualValues(t, 1, sum.DataPoints[0].Value)
+						value, ok := sum.DataPoints[0].Attributes.Value("result")
+						require.True(t, ok)
+						if tt.canceled {
+							assert.Equal(t, "canceled", value.AsString())
+						} else {
+							assert.Equal(t, "error", value.AsString())
+						}
+					}
+				}
+			}
+		})
 	}
 }

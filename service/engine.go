@@ -46,6 +46,10 @@ type Engine struct {
 	relationNotify     chan struct{}
 	httpTimeout        time.Duration
 	sessionMu          sync.RWMutex
+	sessionClient      *bilibili.SessionClient
+	sessionWake        chan struct{}
+	sessionWarning     bool
+	sessionRetryAt     time.Time
 	accountMu          sync.RWMutex
 	account            model.BiliAccount
 	authValid          atomic.Bool
@@ -97,7 +101,7 @@ func NewEngine(store *state.Store, client *bilibili.Client, logger *slog.Logger,
 		events = NewEventBus()
 	}
 	engine := &Engine{
-		store: store, client: client, media: mediaDownloader, logger: logger, metrics: metrics,
+		store: store, client: client, sessionClient: bilibili.NewSessionClient(client), sessionWake: make(chan struct{}, 1), media: mediaDownloader, logger: logger, metrics: metrics,
 		settings: settings, settingsChanged: make(chan struct{}),
 		relationNotify: make(chan struct{}, 1), httpTimeout: 10 * time.Second,
 		microsoftLogins: make(map[string]*MicrosoftLoginSession), events: events,
@@ -123,6 +127,14 @@ func (e *Engine) ClearBilibiliSession() error {
 		return err
 	}
 	e.client.ClearSession()
+	e.sessionWarning = false
+	e.sessionRetryAt = time.Time{}
+	e.loginMu.Lock()
+	if e.loginCancel != nil {
+		e.loginCancel()
+	}
+	e.login = nil
+	e.loginMu.Unlock()
 	e.setAuth(false)
 	e.accountMu.Lock()
 	e.account = model.BiliAccount{}
@@ -202,7 +214,6 @@ type clockStatus struct {
 }
 
 func (e *Engine) Run(ctx context.Context) error {
-	store := e.store.WithContext(ctx)
 	e.loginMu.Lock()
 	e.runCtx = ctx
 	e.loginMu.Unlock()
@@ -227,34 +238,8 @@ func (e *Engine) Run(ctx context.Context) error {
 		e.microsoftLoginMu.Unlock()
 		e.microsoftLoginWG.Wait()
 	}()
-	if session, err := store.Session(); err == nil {
-		e.client.SetSession(session)
-		validateCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
-		account, validateErr := e.client.ValidateSession(validateCtx)
-		cancel()
-		if validateErr == nil {
-			session.AccountUID = account.UID
-			session.AccountName = account.Name
-			if err := store.SaveSession(session); err != nil {
-				return fmt.Errorf("updating restored Bilibili session identity: %w", err)
-			}
-			e.setAccount(account)
-			e.authEverValid.Store(true)
-			e.authValid.Store(true)
-			e.metrics.SetAuth(true)
-			e.logger.Info("stored Bilibili session restored", "event", "bilibili.session.restored", "result", "success")
-		} else {
-			e.authEverValid.Store(true)
-			if statusErr := store.SetPlatformAccountStatus(model.PlatformBilibili, model.AccountInvalid, "session validation failed"); statusErr != nil {
-				return fmt.Errorf("marking invalid Bilibili session: %w", statusErr)
-			}
-			e.logger.Warn("stored Bilibili session is invalid", "event", "bilibili.session.invalid", "result", "failure", "error", validateErr)
-			e.enqueueSystem("B站登录失效，请在管理控制台重新扫码登录。")
-		}
-	} else if errors.Is(err, context.Canceled) {
-		return nil
-	} else if !errors.Is(err, state.ErrNotFound) {
-		return fmt.Errorf("loading Bilibili session: %w", err)
+	if err := e.restoreBiliSession(ctx); err != nil {
+		return err
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -1528,30 +1513,6 @@ func elapsedMS(started time.Time) int64 {
 	return time.Since(started).Milliseconds()
 }
 
-func (e *Engine) authLoop(ctx context.Context) error {
-	ticker := time.NewTicker(sessionValidationInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if !e.authValid.Load() {
-				continue
-			}
-			checkCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
-			e.sessionMu.RLock()
-			_, err := e.client.ValidateSession(checkCtx)
-			e.sessionMu.RUnlock()
-			cancel()
-			if err != nil {
-				e.setAuth(false)
-				e.logger.Warn("Bilibili session validation failed", "event", "bilibili.session.validation_failed", "error", err)
-			}
-		}
-	}
-}
-
 func (e *Engine) setAccount(account model.BiliAccount) {
 	e.accountMu.Lock()
 	e.account = account
@@ -1694,6 +1655,9 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 	}
 	current := *e.login
 	e.loginMu.Unlock()
+	if current.Status == bilibili.QRSuccess || current.Status == bilibili.QRExpired {
+		return current, nil
+	}
 	if time.Now().After(current.ExpiresAt) {
 		current.Status = bilibili.QRExpired
 		e.loginMu.Lock()
@@ -1715,6 +1679,17 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 	if status == bilibili.QRSuccess {
 		e.sessionMu.Lock()
 		defer e.sessionMu.Unlock()
+		e.loginMu.Lock()
+		if e.login != nil && e.login.Key == id && e.login.Status == bilibili.QRSuccess {
+			completed := *e.login
+			e.loginMu.Unlock()
+			return completed, nil
+		}
+		active := e.login != nil && e.login.Key == id && ctx.Err() == nil
+		e.loginMu.Unlock()
+		if !active {
+			return LoginSession{}, errors.New("login session no longer active")
+		}
 		previous, previousErr := e.store.Session()
 		if previousErr != nil && !errors.Is(previousErr, state.ErrNotFound) {
 			return LoginSession{}, previousErr
@@ -1734,10 +1709,21 @@ func (e *Engine) PollLogin(ctx context.Context, id string) (LoginSession, error)
 		}
 		session.AccountUID = account.UID
 		session.AccountName = account.Name
+		e.loginMu.Lock()
+		if e.login == nil || e.login.Key != id || ctx.Err() != nil {
+			e.loginMu.Unlock()
+			restorePrevious()
+			return LoginSession{}, errors.New("login session no longer active")
+		}
 		if err := e.store.SaveSession(session); err != nil {
+			e.loginMu.Unlock()
 			restorePrevious()
 			return LoginSession{}, err
 		}
+		e.loginMu.Unlock()
+		e.sessionWarning = false
+		e.sessionRetryAt = time.Time{}
+		e.wakeSessionMaintenance()
 		accountChanged := previous.AccountUID != account.UID
 		identityChanged := accountChanged || previous.AccountName != account.Name
 		if accountChanged {
