@@ -15,18 +15,19 @@ import (
 func TestCollectionCanceledOperations(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		run  func(*Store) error
+		name      string
+		run       func(*Store) error
+		operation string
 	}{
-		{"scan", func(s *Store) error { _, err := s.CollectionScan("42"); return err }},
-		{"known", func(s *Store) error { _, err := s.CollectionKnown("42", "one", CollectionScan{}); return err }},
-		{"stage", func(s *Store) error { return s.StageCollectionPage(nil, nil) }},
-		{"feed", func(s *Store) error { return s.StageFeedPage("100", nil, nil) }},
-		{"due", func(s *Store) error { _, err := s.DueCollectionItems("42", "dynamic", time.Now(), 10); return err }},
-		{"pending", func(s *Store) error { return s.CollectionPendingError("42") }},
-		{"complete", func(s *Store) error { return s.CompleteCollectionItem(CollectionItem{}) }},
-		{"fail", func(s *Store) error { return s.FailCollectionItem(CollectionItem{}, time.Now(), errors.New("retry")) }},
-		{"AI retry", func(s *Store) error { return s.RetryAutomaticAI(time.Now()) }},
+		{"scan", func(s *Store) error { _, err := s.CollectionScan("42"); return err }, "reading collection scan"},
+		{"known", func(s *Store) error { _, err := s.CollectionKnown("42", "one", CollectionScan{}); return err }, "checking collection seen boundary"},
+		{"stage", func(s *Store) error { return s.StageCollectionPage(nil, nil) }, "staging collection page"},
+		{"feed", func(s *Store) error { return s.StageFeedPage("100", nil, nil) }, "staging aggregate feed page"},
+		{"due", func(s *Store) error { _, err := s.DueCollectionItems("42", "dynamic", time.Now(), 10); return err }, "querying due collection items"},
+		{"pending", func(s *Store) error { return s.CollectionPendingError("42") }, "reading pending collection"},
+		{"complete", func(s *Store) error { return s.CompleteCollectionItem(CollectionItem{}) }, "completing collection item"},
+		{"fail", func(s *Store) error { return s.FailCollectionItem(CollectionItem{}, time.Now(), errors.New("retry")) }, "deferring collection item"},
+		{"AI retry", func(s *Store) error { return s.RetryAutomaticAI(time.Now()) }, "querying automatic AI recovery intents"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -34,7 +35,9 @@ func TestCollectionCanceledOperations(t *testing.T) {
 			store := openTestStore(t, 33)
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
-			require.ErrorIs(t, tt.run(store.WithContext(ctx)), context.Canceled)
+			err := tt.run(store.WithContext(ctx))
+			require.ErrorIs(t, err, context.Canceled)
+			assert.Contains(t, err.Error(), tt.operation)
 			rows, err := store.DueCollectionItems("", "dynamic", time.Now(), 100)
 			require.NoError(t, err)
 			assert.Empty(t, rows)

@@ -61,7 +61,7 @@ func (s *Store) InitializeFeed(accountUID, baseline string, at time.Time) error 
 }
 
 func (s *Store) ResetFeed(accountUID string, upUIDs []string, at time.Time) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	err := s.db.Transaction(func(tx *gorm.DB) error {
 		row := biliFeedStateRow{AccountUID: accountUID, UpdatedAt: at.Unix()}
 		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "account_uid"}},
@@ -90,6 +90,10 @@ func (s *Store) ResetFeed(accountUID string, upUIDs []string, at time.Time) erro
 			Where("account_uid = ? AND up_uid IN ?", accountUID, upUIDs).
 			Update("space_synced", 0).Error
 	})
+	if err != nil {
+		return fmt.Errorf("resetting aggregate feed and recovery scans: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) FollowRelations(accountUID string) (map[string]FollowRelation, error) {

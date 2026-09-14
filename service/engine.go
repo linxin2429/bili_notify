@@ -591,6 +591,10 @@ func (e *Engine) pollFeed(ctx context.Context, account model.BiliAccount, ups []
 		}
 	}
 	var successful []model.UP
+	var failed []struct {
+		up  model.UP
+		err error
+	}
 	var allDynamics []model.Dynamic
 	created := 0
 	if bilibili.IsAuthentication(fetchErr) || bilibili.IsRiskControl(fetchErr) {
@@ -607,9 +611,10 @@ func (e *Engine) pollFeed(ctx context.Context, account model.BiliAccount, ups []
 			if bilibili.IsAuthentication(itemErr) || bilibili.IsRiskControl(itemErr) {
 				return e.failFeed(ctx, ups, started, itemErr)
 			}
-			if err := e.failPoll(ctx, up, up.Name, started, itemErr); err != nil {
-				return err
-			}
+			failed = append(failed, struct {
+				up  model.UP
+				err error
+			}{up, itemErr})
 			continue
 		}
 		if pendingErr := store.CollectionPendingError(up.UID); pendingErr != nil {
@@ -619,6 +624,13 @@ func (e *Engine) pollFeed(ctx context.Context, account model.BiliAccount, ups []
 	}
 	if fetchErr != nil {
 		return e.failFeed(ctx, ups, started, fetchErr)
+	}
+	// Defer individual results until shared failures are ruled out, including
+	// authentication failures encountered while recovering a later UP's items.
+	for _, failure := range failed {
+		if err := e.failPoll(ctx, failure.up, failure.up.Name, started, failure.err); err != nil {
+			return err
+		}
 	}
 	return e.completeFeedPoll(ctx, successful, allDynamics, started, created)
 }

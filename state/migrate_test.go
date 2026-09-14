@@ -483,3 +483,29 @@ func TestV11ChannelFailuresRetainOriginalCredentials(t *testing.T) {
 		})
 	}
 }
+
+func TestV13RollbackRemovesAccountCleanupTriggers(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t, 43)
+	require.NoError(t, store.SaveSession(model.BiliSession{AccountUID: "100"}))
+	db, err := store.db.DB()
+	require.NoError(t, err)
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS,
+		goose.WithGoMigrations(goose.NewGoMigration(10, &goose.GoFunc{RunTx: migrateV10(store.vault)}, nil)),
+		goose.WithGoMigrations(goose.NewGoMigration(11, &goose.GoFunc{RunTx: migrateV11(store.vault)}, nil)))
+	require.NoError(t, err)
+	_, err = provider.Down(t.Context())
+	require.NoError(t, err)
+	assertMigrationVersion(t, db, 12)
+	// Account writes must remain usable after the recovery tables are removed.
+	require.NoError(t, store.SaveSession(model.BiliSession{AccountUID: "200"}))
+	require.NoError(t, store.ClearSession())
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'collection_feed_gaps_%'`).Scan(&count))
+	assert.Zero(t, count)
+	_, err = provider.Up(t.Context())
+	require.NoError(t, err)
+	assertMigrationVersion(t, db, 13)
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'collection_feed_gaps_%'`).Scan(&count))
+	assert.Equal(t, 3, count)
+}

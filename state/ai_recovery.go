@@ -34,11 +34,14 @@ func (s *Store) createAutomaticAIOrDeferTx(tx *gorm.DB, dynamic model.Dynamic, s
 	}
 	payload, marshalErr := json.Marshal(automaticAIIntent{dynamic, channels, originTraceparent(tx.Statement.Context), originTracestate(tx.Statement.Context)})
 	if marshalErr != nil {
-		return marshalErr
+		return fmt.Errorf("encoding automatic AI recovery intent: %w", marshalErr)
 	}
 	item := CollectionItem{SourceID: sourceID, ID: dynamic.ID, Kind: "ai", Payload: payload,
 		Attempts: 1, NextAt: time.Now().Add(CollectionRetryDelay(1)).Unix(), LastError: err.Error(), CreatedAt: time.Now().UnixNano()}
-	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&item).Error
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&item).Error; err != nil {
+		return fmt.Errorf("staging automatic AI recovery intent: %w", err)
+	}
+	return nil
 }
 
 // RetryAutomaticAI resumes durable scheduling intents independently of Bilibili
@@ -46,12 +49,15 @@ func (s *Store) createAutomaticAIOrDeferTx(tx *gorm.DB, dynamic model.Dynamic, s
 func (s *Store) RetryAutomaticAI(at time.Time) error {
 	items, err := s.DueCollectionItems("", "ai", at, 20)
 	if err != nil {
-		return err
+		return fmt.Errorf("querying automatic AI recovery intents: %w", err)
 	}
 	var failures []error
 	for _, item := range items {
 		var intent automaticAIIntent
 		err := json.Unmarshal(item.Payload, &intent)
+		if err != nil {
+			err = fmt.Errorf("decoding automatic AI recovery intent: %w", err)
+		}
 		if err == nil {
 			ctx := propagation.TraceContext{}.Extract(s.db.Statement.Context, propagation.MapCarrier{"traceparent": intent.Traceparent, "tracestate": intent.Tracestate})
 			err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -60,12 +66,15 @@ func (s *Store) RetryAutomaticAI(at time.Time) error {
 					if errors.Is(err, gorm.ErrRecordNotFound) {
 						return nil
 					}
-					return err
+					return fmt.Errorf("loading automatic AI recovery intent: %w", err)
 				}
 				if _, err := s.createAutomaticAIJobsTx(tx, intent.Dynamic, item.SourceID, intent.Channels); err != nil {
-					return err
+					return fmt.Errorf("recreating automatic AI jobs: %w", err)
 				}
-				return tx.Where("source_id = ? AND id = ? AND kind = ?", item.SourceID, item.ID, item.Kind).Delete(&CollectionItem{}).Error
+				if err := tx.Where("source_id = ? AND id = ? AND kind = ?", item.SourceID, item.ID, item.Kind).Delete(&CollectionItem{}).Error; err != nil {
+					return fmt.Errorf("completing automatic AI recovery intent: %w", err)
+				}
+				return nil
 			})
 		}
 		if err != nil {

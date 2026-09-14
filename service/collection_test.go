@@ -292,3 +292,68 @@ func TestExclusiveBaselineIsPreservedAcrossScanPages(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, deliveries, "continuation pages retain the original silent baseline mode")
 }
+
+func TestFeedCycleCountsEachUPFailureOnce(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name                  string
+		feedFailure, lateAuth bool
+		healthyFailures       int
+	}{
+		{name: "feed and item failures", feedFailure: true, healthyFailures: 1},
+		{name: "item failures only", healthyFailures: 0},
+		{name: "later item invalidates authentication", lateAuth: true, healthyFailures: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var opusCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/x/polymer/web-dynamic/v1/feed/all/update" {
+					if tt.feedFailure {
+						http.Error(w, "unavailable", http.StatusServiceUnavailable)
+						return
+					}
+					_, _ = io.WriteString(w, `{"code":0,"data":{"update_num":0}}`)
+					return
+				}
+				if r.URL.Path == "/x/polymer/web-dynamic/v1/opus/detail" {
+					opusCalls.Add(1)
+					_, _ = io.WriteString(w, `{"code":-101,"message":"login expired"}`)
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			t.Cleanup(server.Close)
+			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			ups := []model.UP{{UID: "42", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}, {UID: "43", Enabled: true, BaselineReady: true, ExclusiveBaselineReady: true}}
+			for _, up := range ups {
+				require.NoError(t, store.PutUP(up))
+			}
+			require.NoError(t, store.InitializeFeed("100", "baseline", time.Now()))
+			bad := discoveryItem(ups[0], json.RawMessage(`{"id_str":"bad","type":"UNKNOWN_TYPE"}`))
+			items := []state.CollectionItem{bad}
+			if tt.lateAuth {
+				items = append(items, discoveryItem(ups[1], json.RawMessage(articleDynamicWithAuthorFixture("auth", "43", 1700000000))))
+			}
+			require.NoError(t, store.StageCollectionPage(items, nil))
+			engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 1000, 2), nil, nil)
+			require.NoError(t, engine.pollFeed(t.Context(), model.BiliAccount{UID: "100"}, ups))
+			if tt.lateAuth {
+				assert.Equal(t, int32(1), opusCalls.Load())
+			}
+			badUP, err := store.UP("42")
+			require.NoError(t, err)
+			assert.Equal(t, 1, badUP.ConsecutiveFail)
+			otherUP, err := store.UP("43")
+			require.NoError(t, err)
+			assert.Equal(t, tt.healthyFailures, otherUP.ConsecutiveFail)
+			pending, err := store.DueCollectionItems("42", "dynamic", time.Now().Add(time.Hour), 10)
+			require.NoError(t, err)
+			require.Len(t, pending, 1)
+			assert.Equal(t, 1, pending[0].Attempts)
+		})
+	}
+}

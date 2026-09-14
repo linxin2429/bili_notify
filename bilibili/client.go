@@ -489,6 +489,9 @@ type RawPage struct {
 	Items   []json.RawMessage `json:"items"`
 }
 
+// FetchRawPage fetches unparsed space cards for durable per-item staging. Unlike
+// FetchPage, one malformed card does not reject the page; callers persist the
+// cards before advancing the cursor, then parse each with ParseSpaceDynamic.
 func (c *Client) FetchRawPage(ctx context.Context, uid, offset string) (RawPage, error) {
 	query := url.Values{
 		"features": {dynamicFeatures},

@@ -30,8 +30,37 @@ CREATE TABLE collection_feed_gaps (
   created_at INTEGER NOT NULL,
   PRIMARY KEY(account_uid, id)
 );
+CREATE INDEX idx_collection_feed_gaps_created ON collection_feed_gaps(created_at);
+
+-- Diagnostic samples belong to the current Bilibili account. Keep cleanup
+-- atomic with every account write, including direct platform-account APIs.
+-- +goose StatementBegin
+CREATE TRIGGER collection_feed_gaps_account_insert
+AFTER INSERT ON platform_accounts WHEN NEW.platform = 'bilibili'
+BEGIN
+  DELETE FROM collection_feed_gaps WHERE account_uid != NEW.external_id;
+END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER collection_feed_gaps_account_replace
+AFTER UPDATE OF external_id ON platform_accounts
+WHEN OLD.platform = 'bilibili' AND OLD.external_id != NEW.external_id
+BEGIN
+  DELETE FROM collection_feed_gaps;
+END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER collection_feed_gaps_account_delete
+AFTER DELETE ON platform_accounts WHEN OLD.platform = 'bilibili'
+BEGIN
+  DELETE FROM collection_feed_gaps;
+END;
+-- +goose StatementEnd
 
 -- +goose Down
+DROP TRIGGER collection_feed_gaps_account_delete;
+DROP TRIGGER collection_feed_gaps_account_replace;
+DROP TRIGGER collection_feed_gaps_account_insert;
 DROP TABLE collection_scans;
 DROP TABLE collection_items;
 DROP TABLE collection_feed_gaps;

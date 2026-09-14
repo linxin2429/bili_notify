@@ -38,6 +38,9 @@ type CollectionScan struct {
 	LastError      string
 }
 
+// CollectionScan returns the saved scan for a UP, or a fresh scan if absent.
+// Active scans retain their original seen/pending boundaries. Inactive scans
+// snapshot the current seen row ID and discovery time for CollectionKnown.
 func (s *Store) CollectionScan(uid string) (CollectionScan, error) {
 	row := CollectionScan{SourceID: model.SourceID(model.PlatformBilibili, uid)}
 	err := s.db.Where("source_id = ?", row.SourceID).Take(&row).Error
@@ -48,13 +51,16 @@ func (s *Store) CollectionScan(uid string) (CollectionScan, error) {
 		err = s.db.Model(&seenItemRow{}).Select("COALESCE(MAX(rowid), 0)").Scan(&row.SeenThrough).Error
 		row.PendingThrough = time.Now().UnixNano()
 	}
-	return row, err
+	if err != nil {
+		return row, fmt.Errorf("reading collection scan for %s: %w", uid, err)
+	}
+	return row, nil
 }
 
 // StageCollectionPage commits raw items before allowing their cursor to advance.
 // Existing retries keep their baseline semantics, attempts and retry deadline.
 func (s *Store) StageCollectionPage(items []CollectionItem, scan *CollectionScan) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	err := s.db.Transaction(func(tx *gorm.DB) error {
 		for _, item := range items {
 			if item.SourceID == "" || item.ID == "" || item.Kind == "" || !json.Valid(item.Payload) {
 				return errors.New("collection item requires source, id, kind and JSON payload")
@@ -75,17 +81,29 @@ func (s *Store) StageCollectionPage(items []CollectionItem, scan *CollectionScan
 		}
 		return nil
 	})
+	if err != nil {
+		return fmt.Errorf("staging collection page: %w", err)
+	}
+	return nil
 }
 
+// CollectionKnown reports whether an item predates the scan's seen or pending
+// snapshot. Discoveries and commits made during that scan cannot stop it early.
 func (s *Store) CollectionKnown(uid, id string, scan CollectionScan) (bool, error) {
 	var seen int64
 	err := s.db.Model(&seenItemRow{}).Where("source_id = ? AND entity_id = ? AND entity_type = ? AND rowid <= ?", model.SourceID(model.PlatformBilibili, uid), model.ContentID(model.PlatformBilibili, id), "content", scan.SeenThrough).Count(&seen).Error
-	if err != nil || seen > 0 {
-		return seen > 0, err
+	if err != nil {
+		return false, fmt.Errorf("checking collection seen boundary: %w", err)
+	}
+	if seen > 0 {
+		return true, nil
 	}
 	var count int64
 	err = s.db.Model(&CollectionItem{}).Where("source_id = ? AND id = ? AND kind = ? AND created_at <= ?", model.SourceID(model.PlatformBilibili, uid), id, "dynamic", scan.PendingThrough).Count(&count).Error
-	return count > 0, err
+	if err != nil {
+		return false, fmt.Errorf("checking collection pending boundary: %w", err)
+	}
+	return count > 0, nil
 }
 
 type collectionFeedGap struct {
@@ -97,8 +115,10 @@ type collectionFeedGap struct {
 
 // StageFeedPage persists even unassignable cards before the account cursor moves.
 // Gaps trigger space reconciliation, while valid cards remain independently usable.
+// Only the latest 100 distinct gap payloads are retained as diagnostic samples;
+// recovery itself uses the independent space checkpoints, not these samples.
 func (s *Store) StageFeedPage(accountUID string, items []CollectionItem, gaps []json.RawMessage) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	err := s.db.Transaction(func(tx *gorm.DB) error {
 		store := *s
 		store.db = tx
 		if err := store.StageCollectionPage(items, nil); err != nil {
@@ -110,10 +130,17 @@ func (s *Store) StageFeedPage(accountUID string, items []CollectionItem, gaps []
 				return err
 			}
 		}
-		return nil
+		return tx.Exec(`DELETE FROM collection_feed_gaps WHERE rowid IN (SELECT rowid FROM collection_feed_gaps ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET 100)`).Error
 	})
+	if err != nil {
+		return fmt.Errorf("staging aggregate feed page: %w", err)
+	}
+	return nil
 }
 
+// DueCollectionItems returns due work of one kind, oldest retry deadline first.
+// An empty uid selects all UPs; limit is clamped to [1, 100]. Reading does not
+// claim or delete rows, and callers must preserve each item's baseline mode.
 func (s *Store) DueCollectionItems(uid, kind string, at time.Time, limit int) ([]CollectionItem, error) {
 	query := s.db.Where("kind = ? AND next_at <= ?", kind, at.Unix())
 	if uid != "" {
@@ -121,11 +148,21 @@ func (s *Store) DueCollectionItems(uid, kind string, at time.Time, limit int) ([
 	}
 	var rows []CollectionItem
 	err := query.Order("next_at, created_at, id").Limit(max(1, min(limit, 100))).Find(&rows).Error
-	return rows, err
+	if err != nil {
+		return nil, fmt.Errorf("querying due collection items: %w", err)
+	}
+	return rows, nil
 }
 
+// CompleteCollectionItem deletes exactly the identified source/id/kind tuple.
+// Missing items are ignored. Use RecordCollectedDynamic when a content commit
+// and removal of its pending discovery must succeed atomically.
 func (s *Store) CompleteCollectionItem(item CollectionItem) error {
-	return s.db.Where("source_id = ? AND id = ? AND kind = ?", item.SourceID, item.ID, item.Kind).Delete(&CollectionItem{}).Error
+	err := s.db.Where("source_id = ? AND id = ? AND kind = ?", item.SourceID, item.ID, item.Kind).Delete(&CollectionItem{}).Error
+	if err != nil {
+		return fmt.Errorf("completing collection item: %w", err)
+	}
+	return nil
 }
 
 // CollectionRetryDelay saturates before shifting, including corrupted counters.
@@ -133,12 +170,21 @@ func CollectionRetryDelay(attempts int) time.Duration {
 	return min(time.Minute<<(min(max(attempts, 1), 7)-1), time.Hour)
 }
 
+// FailCollectionItem advances the supplied item's attempt count and retry time,
+// preserving its payload and baseline mode. cause must be non-nil. A deleted
+// item stays deleted, so a stale attempt cannot recreate a removed source.
 func (s *Store) FailCollectionItem(item CollectionItem, at time.Time, cause error) error {
 	attempts := min(max(item.Attempts, 0), 1000) + 1
-	return s.db.Model(&CollectionItem{}).Where("source_id = ? AND id = ? AND kind = ?", item.SourceID, item.ID, item.Kind).
+	err := s.db.Model(&CollectionItem{}).Where("source_id = ? AND id = ? AND kind = ?", item.SourceID, item.ID, item.Kind).
 		Updates(map[string]any{"attempts": attempts, "next_at": at.Add(CollectionRetryDelay(attempts)).Unix(), "last_error": cause.Error()}).Error
+	if err != nil {
+		return fmt.Errorf("deferring collection item: %w", err)
+	}
+	return nil
 }
 
+// CollectionPendingError reports the oldest pending dynamic even during backoff.
+// It returns nil only when no dynamic remains; database errors are propagated.
 func (s *Store) CollectionPendingError(uid string) error {
 	var row CollectionItem
 	err := s.db.Where("source_id = ? AND kind = ?", model.SourceID(model.PlatformBilibili, uid), "dynamic").Order("created_at, id").Take(&row).Error
@@ -174,5 +220,8 @@ func (s *Store) RecordCollectedDynamic(item CollectionItem, dynamic model.Dynami
 		}
 		return store.CompleteCollectionItem(item)
 	})
-	return created, err
+	if err != nil {
+		return 0, fmt.Errorf("recording collected dynamic %s: %w", item.ID, err)
+	}
+	return created, nil
 }
