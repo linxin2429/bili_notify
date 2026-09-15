@@ -2,7 +2,6 @@ package model
 
 import (
 	"cmp"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -636,12 +635,4 @@ func ValidateCollectorParams(pollInterval time.Duration, requestRate float64, co
 		errs = append(errs, errors.New("request concurrency must be in [1, 16]"))
 	}
 	return errors.Join(errs...)
-}
-
-func Encode(v any) ([]byte, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return nil, fmt.Errorf("encoding model: %w", err)
-	}
-	return b, nil
 }

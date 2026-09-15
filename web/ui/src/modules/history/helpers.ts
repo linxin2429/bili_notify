@@ -1,6 +1,8 @@
 import type { Attachment, UnifiedContent } from '../../shared/api/types'
 import { bilibiliPlayerEmbedURL, safeBilibiliURL, safeHTTPURL } from '../../shared/lib/presentation'
 
+export { formatBytes } from '../../shared/lib/presentation'
+
 export function platformLabel(platform: string) {
   return platform === 'zsxq' ? '知识星球' : 'B 站'
 }
@@ -17,12 +19,6 @@ export function historyTypeLabel(item: UnifiedContent, dynamicTypeLabel: (value:
     dynamic: '动态', video: '视频', article: '专栏', discussion: '讨论',
     question: '提问', answer: '回答', task: '作业', long_article: '长文',
   } as Record<string, string>)[item.type] || item.upstream_type || item.type || '内容'
-}
-
-export function formatBytes(value: number) {
-  if (value < 1024) return `${value} B`
-  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KiB`
-  return `${(value / 1024 ** 2).toFixed(1)} MiB`
 }
 
 export function formatDuration(seconds?: number) {

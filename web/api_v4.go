@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -458,11 +457,4 @@ func (s *Server) attachmentV4(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", attachment.MIME)
 	}
 	http.ServeContent(w, r, name, info.ModTime(), file)
-}
-
-func parseOptionalInt(raw string) (int, error) {
-	if raw == "" {
-		return 0, nil
-	}
-	return strconv.Atoi(raw)
 }

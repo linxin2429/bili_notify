@@ -121,68 +121,12 @@ func newMicrosoftSender(settings map[string]string, client *http.Client, dataDir
 }
 
 func (s *microsoftSender) Send(ctx context.Context, message Message) error {
-	token, err := microsoftTokenFromSettings(s.settings)
+	token, err := s.accessToken(ctx)
 	if err != nil {
-		return &PermanentError{Err: err}
-	}
-	config := microsoftOAuthConfig(s.settings, s.endpoints)
-	current, err := config.TokenSource(oauthContext(ctx, s.client), token).Token()
-	if err != nil {
-		return classifyMicrosoftTokenError(err)
-	}
-	if microsoftTokenChanged(token, current) {
-		if s.updateSettings == nil {
-			return errors.New("persisting refreshed Microsoft token: settings updater is required")
-		}
-		if err := s.updateSettings(microsoftTokenSettings(current)); err != nil {
-			return fmt.Errorf("persisting refreshed Microsoft token: %w", err)
-		}
-	}
-
-	recipients := make([]map[string]any, 0, len(s.recipients))
-	for _, recipient := range s.recipients {
-		recipients = append(recipients, map[string]any{"emailAddress": map[string]string{"address": recipient}})
-	}
-	attachments := make([]map[string]any, 0)
-	htmlBody := renderHTMLWithCID(message, func(image Image, index int) string {
-		if image.LocalPath == "" || s.dataDir == "" {
-			return ""
-		}
-		data, contentType, err := media.ReadFile(s.dataDir, image.LocalPath)
-		if err != nil || len(data) == 0 {
-			return ""
-		}
-		cid := fmt.Sprintf("image-%d", index)
-		name := filepath.Base(image.LocalPath)
-		if name == "." || name == "/" || name == "" {
-			name = cid
-		}
-		if contentType == "" {
-			contentType = image.ContentType
-		}
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-		attachments = append(attachments, map[string]any{
-			"@odata.type":  "#microsoft.graph.fileAttachment",
-			"name":         name,
-			"contentType":  contentType,
-			"contentBytes": base64.StdEncoding.EncodeToString(data),
-			"contentId":    cid,
-			"isInline":     true,
-		})
-		return cid
-	})
-	graphMessage := map[string]any{
-		"subject":      message.Subject,
-		"body":         map[string]string{"contentType": "HTML", "content": htmlBody},
-		"toRecipients": recipients,
-	}
-	if len(attachments) > 0 {
-		graphMessage["attachments"] = attachments
+		return err
 	}
 	payload := map[string]any{
-		"message":         graphMessage,
+		"message":         s.graphMessage(message),
 		"saveToSentItems": true,
 	}
 	body, err := json.Marshal(payload)
@@ -193,28 +137,9 @@ func (s *microsoftSender) Send(ctx context.Context, message Message) error {
 	if err != nil {
 		return &PermanentError{Err: fmt.Errorf("creating Microsoft Graph request: %w", err)}
 	}
-	req.Header.Set("Authorization", "Bearer "+current.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return sanitizedHTTPTransportError("sending Microsoft Graph mail", err)
-	}
-	defer resp.Body.Close()
-	_, oversized, err := readProtocolResponse(resp.Body)
-	if err != nil {
-		return fmt.Errorf("reading Microsoft Graph response: %w", err)
-	}
-	if resp.StatusCode == http.StatusAccepted {
-		if oversized {
-			return &PermanentError{Err: fmt.Errorf("Microsoft Graph response exceeds %d bytes", maxProtocolResponseBytes)}
-		}
-		return nil
-	}
-	graphErr := fmt.Errorf("Microsoft Graph returned HTTP %d", resp.StatusCode)
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return retryableHTTPError("Microsoft Graph", resp)
-	}
-	return &PermanentError{Err: graphErr}
+	return s.doGraph(ctx, req, http.StatusAccepted, nil)
 }
 
 // SendProgressive uses a persisted draft so file attachment and final-send
@@ -295,14 +220,18 @@ func (s *microsoftSender) graphMessagesURL() string {
 	return strings.TrimSuffix(s.endpoints.graphSendURL, "/") + "/messages"
 }
 
-func (s *microsoftSender) createDraft(ctx context.Context, token string, message Message) (string, error) {
-	recipients := make([]map[string]any, 0, len(s.recipients))
-	for _, recipient := range s.recipients {
+func graphRecipients(addresses []string) []map[string]any {
+	recipients := make([]map[string]any, 0, len(addresses))
+	for _, recipient := range addresses {
 		recipients = append(recipients, map[string]any{"emailAddress": map[string]string{"address": recipient}})
 	}
-	inline := make([]map[string]any, 0)
+	return recipients
+}
+
+func (s *microsoftSender) graphMessage(message Message) map[string]any {
+	attachments := make([]map[string]any, 0)
 	htmlBody := renderHTMLWithCID(message, func(image Image, index int) string {
-		if image.LocalPath == "" {
+		if image.LocalPath == "" || s.dataDir == "" {
 			return ""
 		}
 		data, detected, err := media.ReadFile(s.dataDir, image.LocalPath)
@@ -310,14 +239,33 @@ func (s *microsoftSender) createDraft(ctx context.Context, token string, message
 			return ""
 		}
 		cid := fmt.Sprintf("image-%d", index)
-		inline = append(inline, map[string]any{"@odata.type": "#microsoft.graph.fileAttachment", "name": filepath.Base(image.LocalPath),
-			"contentType": firstNonEmpty(image.ContentType, detected, "application/octet-stream"), "contentBytes": base64.StdEncoding.EncodeToString(data), "contentId": cid, "isInline": true})
+		name := filepath.Base(image.LocalPath)
+		if name == "." || name == "/" || name == "" {
+			name = cid
+		}
+		attachments = append(attachments, map[string]any{
+			"@odata.type":  "#microsoft.graph.fileAttachment",
+			"name":         name,
+			"contentType":  firstNonEmpty(image.ContentType, detected, "application/octet-stream"),
+			"contentBytes": base64.StdEncoding.EncodeToString(data),
+			"contentId":    cid,
+			"isInline":     true,
+		})
 		return cid
 	})
-	payload := map[string]any{"subject": message.Subject, "body": map[string]string{"contentType": "HTML", "content": htmlBody}, "toRecipients": recipients}
-	if len(inline) > 0 {
-		payload["attachments"] = inline
+	payload := map[string]any{
+		"subject":      message.Subject,
+		"body":         map[string]string{"contentType": "HTML", "content": htmlBody},
+		"toRecipients": graphRecipients(s.recipients),
 	}
+	if len(attachments) > 0 {
+		payload["attachments"] = attachments
+	}
+	return payload
+}
+
+func (s *microsoftSender) createDraft(ctx context.Context, token string, message Message) (string, error) {
+	payload := s.graphMessage(message)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", &PermanentError{Err: fmt.Errorf("encoding Microsoft draft: %w", err)}

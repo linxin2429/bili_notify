@@ -3,7 +3,7 @@ import { Database, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Source, ZSXQGroup } from '../shared/api/types'
-import { queries, queryKeys } from '../shared/api/query'
+import { queries, queryKeys, queryPrefixes } from '../shared/api/query'
 import { resources } from '../shared/api/resources'
 import { useSession } from '../modules/session'
 import { apiErrorMessage } from '../shared/api/errors'
@@ -17,7 +17,7 @@ export function SourcesPage() {
   const [adding, setAdding] = useState<'bilibili' | 'zsxq'>(); const [editing, setEditing] = useState<Source>(); const [removing, setRemoving] = useState<Source | null>(null)
   const zsxqConnected = accounts.data?.some(item => item.platform === 'zsxq' && item.status === 'connected') ?? false
   const zsxqGroups = useQuery(queries.zsxqGroups(adding === 'zsxq' && zsxqConnected))
-  const refresh = async () => { await Promise.all([client.invalidateQueries({ queryKey: ['sources'] }), client.invalidateQueries({ queryKey: queryKeys.accounts }), client.invalidateQueries({ queryKey: queryKeys.runtime })]) }
+  const refresh = async () => { await Promise.all([client.invalidateQueries({ queryKey: queryPrefixes.sources }), client.invalidateQueries({ queryKey: queryKeys.accounts }), client.invalidateQueries({ queryKey: queryKeys.runtime })]) }
   const createBilibili = useMutation({ mutationFn: (input: BilibiliSourceDraft) => resources.createBilibiliSource(csrf, { uid: input.externalID, name: input.name, note: input.note, enabled: input.enabled }), onSuccess: async () => { await refresh(); setAdding(undefined) }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const createZSXQ = useMutation({ mutationFn: (input: ZSXQSourceDraft) => resources.createZSXQSource(csrf, { group_id: input.groupID, note: input.note, enabled: input.enabled, zsxq_topic_mode: input.topicMode, zsxq_authors: authorsForMode(input.topicMode, input.authors) }), onSuccess: async () => { await refresh(); setAdding(undefined) }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const update = useMutation({ mutationFn: (input: EditSourceDraft) => resources.updateSource(csrf, { id: input.id, platform: input.platform, name: input.name, note: input.note, enabled: input.enabled, zsxq_topic_mode: input.topicMode, zsxq_authors: input.topicMode ? authorsForMode(input.topicMode, input.authors) : [] }), onSuccess: async () => { await refresh(); setEditing(undefined) }, onError: error => notify(apiErrorMessage(error), 'danger') })

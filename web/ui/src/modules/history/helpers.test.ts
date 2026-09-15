@@ -44,9 +44,11 @@ describe('history helpers', () => {
   })
 
   it('formats bytes, duration and avatar text', () => {
+    expect(formatBytes(0)).toBe('0 B')
     expect(formatBytes(512)).toBe('512 B')
     expect(formatBytes(2048)).toBe('2.0 KiB')
     expect(formatBytes(2 * 1024 ** 2)).toBe('2.0 MiB')
+    expect(formatBytes(1024 ** 3)).toBe('1.0 GiB')
     expect(formatDuration(undefined)).toBe('')
     expect(formatDuration(0)).toBe('')
     expect(formatDuration(75)).toBe('1:15')

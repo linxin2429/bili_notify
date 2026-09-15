@@ -1929,7 +1929,7 @@ func (e *Engine) Status() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	commentTargets, err := e.store.ListAllCommentTargets()
+	commentTargets, err := e.store.CountCommentTargets()
 	if err != nil {
 		return Status{}, err
 	}
@@ -1995,18 +1995,8 @@ func (e *Engine) Status() (Status, error) {
 			}
 		}
 	}
-	e.metrics.SetStatus(status.Ready, !status.RiskPausedUntil.IsZero(), len(ups), enabledUPCount(ups), len(channels), len(enabledChannelIDs(channels)), len(commentTargets))
+	e.metrics.SetStatus(status.Ready, !status.RiskPausedUntil.IsZero(), len(ups), enabledUPCount(ups), len(channels), len(enabledChannelIDs(channels)), commentTargets)
 	return status, nil
-}
-
-func oldestDelivery(deliveries []model.Delivery) time.Time {
-	oldest := deliveries[0].CreatedAt
-	for _, delivery := range deliveries[1:] {
-		if delivery.CreatedAt.Before(oldest) {
-			oldest = delivery.CreatedAt
-		}
-	}
-	return oldest
 }
 
 func enabledChannelIDs(channels []model.Channel) []string {
@@ -2056,8 +2046,6 @@ func messageHasLocalMedia(message notify.Message) bool {
 	}
 	return false
 }
-
-func messageHasLocalImages(message notify.Message) bool { return messageHasLocalMedia(message) }
 
 func finishSpan(span trace.Span, err error) {
 	if err != nil && !errors.Is(err, context.Canceled) {

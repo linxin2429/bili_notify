@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   auditActionLabel, auditResult, bilibiliBVID, bilibiliPlayerEmbedURL, channelTypeLabel, composePreviewBody, connectionLabel, deliverySummary,
-  deliveryTitle, dynamicTypeLabel, errorMessage, followStateLabel, formatDate, formatInteractionCount,
+  deliveryTitle, dynamicTypeLabel, errorMessage, followStateLabel, formatBytes, formatDate, formatInteractionCount,
   formatRelativeDate, historyMediaURL, localInputToRFC3339, loginLabel, nextTheme, normalizePreviewText,
   safeBilibiliURL, safeHTTPURL, settingLabel, themeLabel, usableTimeZone,
 } from './presentation'
@@ -36,6 +36,11 @@ describe('presentation helpers', () => {
     { value: 0, want: '点赞' }, { value: Number.NaN, want: '点赞' }, { value: 3980, want: '3,980' },
     { value: 12_500, want: '1.3万' }, { value: 2_000_000, want: '200万' }, { value: 120_000_000, want: '1.2亿' },
   ])('formats interaction $value', ({ value, want }) => expect(formatInteractionCount(value, '点赞')).toBe(want))
+
+  it.each([
+    { value: 0, want: '0 B' }, { value: Number.NaN, want: '0 B' }, { value: 512, want: '512 B' },
+    { value: 2048, want: '2.0 KiB' }, { value: 2 * 1024 ** 2, want: '2.0 MiB' }, { value: 1024 ** 3, want: '1.0 GiB' },
+  ])('formats bytes $value', ({ value, want }) => expect(formatBytes(value)).toBe(want))
 
   it.each([
     { value: '2026-08-05T12:00:00Z', now: '2026-08-05T12:00:30Z', want: '刚刚' },

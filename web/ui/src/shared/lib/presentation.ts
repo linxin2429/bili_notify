@@ -79,6 +79,13 @@ export function formatInteractionCount(value: number, emptyLabel: string) {
   return `${scaled.toFixed(scaled >= 100 ? 0 : 1).replace(/\.0$/, '')}${suffix}`
 }
 
+export function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  const units = ['B', 'KiB', 'MiB', 'GiB'] as const
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
+  return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`
+}
+
 export function normalizePreviewText(value: string) {
   return value.trim().replace(/\s+/g, ' ')
 }
@@ -176,10 +183,11 @@ export function dynamicTypeLabel(value: string) {
 }
 
 export function auditActionLabel(action: string) {
+  const sourceCRUD = { create: '添加采集源', update: '修改采集源', delete: '删除采集源' }
   const labels: Record<string, string> = {
     'auth.setup': '初始化管理员', 'auth.login': '管理员登录', 'auth.logout': '管理员退出', 'auth.password.change': '修改管理员密码',
-    'source.create': '添加采集源', 'source.update': '修改采集源', 'source.delete': '删除采集源',
-    'up.create': '添加采集源', 'up.update': '修改采集源', 'up.delete': '删除采集源',
+    'source.create': sourceCRUD.create, 'source.update': sourceCRUD.update, 'source.delete': sourceCRUD.delete,
+    'up.create': sourceCRUD.create, 'up.update': sourceCRUD.update, 'up.delete': sourceCRUD.delete,
     'channel.create': '添加通知渠道', 'channel.update': '修改通知渠道', 'channel.delete': '删除通知渠道', 'channel.test': '测试通知渠道',
     'delivery.retry': '重试投递',
     'bilibili.login.start': '开始 B 站登录', 'bilibili.login.cancel': '取消 B 站登录', 'bilibili.logout': '退出 B 站登录',

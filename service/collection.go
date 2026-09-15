@@ -128,21 +128,29 @@ func (e *Engine) processDiscoveries(ctx context.Context, up model.UP) ([]model.D
 	if err != nil {
 		return nil, 0, err
 	}
-	slices.SortStableFunc(items, func(a, b state.CollectionItem) int {
-		left, _ := bilibili.ParseSpaceDynamic(up.UID, a.Payload)
-		right, _ := bilibili.ParseSpaceDynamic(up.UID, b.Payload)
-		return cmp.Or(left.PublishedAt.Compare(right.PublishedAt), cmp.Compare(a.ID, b.ID))
+	type parsedItem struct {
+		item    state.CollectionItem
+		dynamic model.Dynamic
+		err     error
+	}
+	parsed := make([]parsedItem, len(items))
+	for i, item := range items {
+		dynamic, itemErr := bilibili.ParseSpaceDynamic(up.UID, item.Payload)
+		parsed[i] = parsedItem{item: item, dynamic: dynamic, err: itemErr}
+	}
+	slices.SortStableFunc(parsed, func(a, b parsedItem) int {
+		return cmp.Or(a.dynamic.PublishedAt.Compare(b.dynamic.PublishedAt), cmp.Compare(a.item.ID, b.item.ID))
 	})
 	workCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var collected []model.Dynamic
 	var failures []error
 	created := 0
-	for _, item := range items {
+	for _, current := range parsed {
 		if workCtx.Err() != nil {
 			break
 		}
-		dynamic, itemErr := bilibili.ParseSpaceDynamic(up.UID, item.Payload)
+		item, dynamic, itemErr := current.item, current.dynamic, current.err
 		// A transient malformed card may have changed upstream. Refresh the head
 		// on a scheduled parse retry, even when normal discovery stops at a newer
 		// seen item. Retain the original payload if the card is no longer present.

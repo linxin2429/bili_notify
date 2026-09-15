@@ -778,6 +778,12 @@ func (s *Store) ListAllCommentTargets() ([]model.CommentTarget, error) {
 	return targets, s.enrichCommentTargets(targets)
 }
 
+func (s *Store) CountCommentTargets() (int, error) {
+	var count int64
+	err := s.db.Model(&syncTargetRow{}).Where("platform = ?", model.PlatformBilibili).Count(&count).Error
+	return int(count), err
+}
+
 func (s *Store) enrichCommentTargets(targets []model.CommentTarget) error {
 	for index := range targets {
 		var source sourceRow

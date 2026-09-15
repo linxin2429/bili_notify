@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useSession } from '../modules/session'
 import { apiErrorMessage } from '../shared/api/errors'
-import { queries } from '../shared/api/query'
+import { queries, queryKeys } from '../shared/api/query'
+import { formatBytes } from '../shared/lib/presentation'
 import { resources } from '../shared/api/resources'
 import type { AIPrompt, AIPromptDraft, AIProfile, AIProfileDraft, AIProfileTestResult } from '../shared/api/types'
 import { Alert, Badge, Button, Card, LoadingState, PageError, PageHeader, SelectField, SwitchField, TextField, useNotify } from '../shared/ui'
@@ -24,7 +25,7 @@ export function AISettingsPage() {
 
 function ProfileEditor({ initial }: { initial: AIProfile[] }) {
   const { csrf } = useSession(); const notify = useNotify(); const client = useQueryClient(); const [form, setForm] = useState<AIProfileDraft>(() => blankProfile('transcription')); const [testResults, setTestResults] = useState<Record<string, AIProfileTestResult>>({}); const [testingIDs, setTestingIDs] = useState<Set<string>>(() => new Set()); const [availabilityIDs, setAvailabilityIDs] = useState<Set<string>>(() => new Set()); const [removing, setRemoving] = useState<AIProfile | null>(null)
-  const refresh = () => void client.invalidateQueries({ queryKey: ['ai-profiles'] })
+  const refresh = () => void client.invalidateQueries({ queryKey: queryKeys.aiProfiles })
   const save = useMutation({ mutationFn: (value: AIProfileDraft) => value.id ? resources.updateAIProfile(csrf, value as AIProfileDraft & { id: string }) : resources.createAIProfile(csrf, value), onSuccess: () => { notify('模型配置档已保存', 'success'); setForm(blankProfile(form.kind)); refresh() }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const remove = useMutation({ mutationFn: (id: string) => resources.deleteAIProfile(csrf, id), onSuccess: () => { notify('模型配置档已删除', 'success'); setRemoving(null); refresh() }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const availability = useMutation({ mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => resources.updateAIProfileAvailability(csrf, id, enabled), onMutate: ({ id }) => setAvailabilityIDs(current => new Set(current).add(id)), onSuccess: profile => { notify(profile.enabled ? '模型已启用' : '模型已停用', 'success'); setForm(current => current.id === profile.id ? { ...current, enabled: profile.enabled, default: profile.default } : current); refresh() }, onError: error => notify(apiErrorMessage(error), 'danger'), onSettled: (_data, _error, { id }) => setAvailabilityIDs(current => { const next = new Set(current); next.delete(id); return next }) })
@@ -59,7 +60,7 @@ function ProfileEditor({ initial }: { initial: AIProfile[] }) {
 
 function PromptEditor({ initial }: { initial: AIPrompt[] }) {
   const { csrf } = useSession(); const notify = useNotify(); const client = useQueryClient(); const [form, setForm] = useState<AIPromptDraft>(blankPrompt); const [removing, setRemoving] = useState<AIPrompt | null>(null)
-  const refresh = () => void client.invalidateQueries({ queryKey: ['ai-prompts'] })
+  const refresh = () => void client.invalidateQueries({ queryKey: queryKeys.aiPrompts })
   const save = useMutation({ mutationFn: (value: AIPromptDraft) => value.id ? resources.updateAIPrompt(csrf, value as AIPromptDraft & { id: string }) : resources.createAIPrompt(csrf, value), onSuccess: () => { notify('提示词模板已保存', 'success'); setForm(blankPrompt); refresh() }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const remove = useMutation({ mutationFn: (id: string) => resources.deleteAIPrompt(csrf, id), onSuccess: () => { notify('提示词模板已删除', 'success'); setRemoving(null); refresh() }, onError: error => notify(apiErrorMessage(error), 'danger') })
   const patch = <K extends keyof AIPromptDraft>(key: K, value: AIPromptDraft[K]) => setForm(state => ({ ...state, [key]: value }))
@@ -67,5 +68,3 @@ function PromptEditor({ initial }: { initial: AIPrompt[] }) {
     <Dialog open={Boolean(removing)} title="删除提示词模板" onClose={() => setRemoving(null)} actions={<><Button onPress={() => setRemoving(null)}>取消</Button><Button variant="primary" danger busy={remove.isPending} onPress={() => removing && remove.mutate(removing.id)}>确认删除</Button></>}><p>删除「{removing?.name}」后不可恢复；已提交任务仍使用提交时的提示词快照。</p></Dialog>
   </Card>
 }
-
-function formatBytes(value: number) { if (!value) return '0 B'; const units = ['B', 'KiB', 'MiB', 'GiB']; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}` }
