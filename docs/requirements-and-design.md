@@ -86,7 +86,7 @@ Outbox `progress` 分别记录正文段、图片数、普通文件数和 Microso
 
 ## 4. 管理接口与实时协议
 
-管理服务默认监听 `:8443`，只接受 TLS 1.3。静态 React 页面、认证接口和 WebSocket 同源部署。
+管理服务默认监听 `:8443`，只接受 TLS 1.3。静态 React 页面、认证接口和 WebSocket 同源部署。带内容哈希的 `/assets/` 使用 `Cache-Control: public, max-age=31536000, immutable`，并对 JS/CSS/SVG/JSON 等文本资源按 `Accept-Encoding` 做 gzip；`index.html` 保持 `no-cache` 且不压缩。CJK 可变字体在首屏渲染后再加载，不进入入口 CSS。
 
 HTTP 承担认证生命周期和全部管理资源 API：
 
@@ -102,7 +102,7 @@ HTTP 承担认证生命周期和全部管理资源 API：
 | `GET/POST /api/v4/accounts/bilibili/qr`、`DELETE /api/v4/accounts/bilibili/qr/{id}`、`DELETE /api/v4/accounts/bilibili/session` | 查询、建立或取消二维码事务，以及清除 B 站会话 |
 | `POST /api/v4/accounts/zsxq/token`、`DELETE /api/v4/accounts/zsxq/session`、`GET /api/v4/accounts/zsxq/groups` | 导入知识星球 Cookie 中的 access token、注销及实时读取账号可见星球 |
 | `GET /api/v4/sources`、`POST /api/v4/sources/bilibili`、`POST /api/v4/sources/zsxq`、`PUT/DELETE /api/v4/sources/{id}` | 查询采集源；分别添加 B 站 UP 或从登录账号星球中添加知识星球；启停或删除来源 |
-| `GET /api/v4/contents[/{id}]` | 按平台、来源、关键字、时间和稳定游标查询统一内容 |
+| `GET /api/v4/contents[/{id}]` | 按平台、来源、关键字、时间和稳定游标查询统一内容；列表省略 `safe_html` 并将 `text` 截到 280 个 Unicode 字符，完整正文只在详情返回 |
 | `GET /api/v4/contents/{id}/comments` | 返回稳定重建的嵌套评论树 |
 | `GET /api/v4/contents/{id}/attachments/{attachment_id}` | 认证下载本地附件，支持 Range |
 | `GET/POST /api/v4/channels`、`PUT/DELETE /api/v4/channels/{id}` | 读取、创建、更新或删除通知渠道 |
@@ -118,7 +118,7 @@ HTTP 负责全部浏览器主动请求：资源写操作使用单个、合法 UT
 
 内容、投递和审计列表统一返回 `{items,page:{next_cursor,has_more}}`，下一次请求只把非空 `next_cursor` 原样作为 `after` 传回。游标是服务端不透明值；投递按不可变的 `(created_at DESC,id DESC)`，内容按 `(published_at DESC,id DESC)`，审计按 `(occurred_at DESC,id DESC)` 稳定排序。内容与投递默认每页 20 条，审计默认 50 条，均最多 100 条且不接受 offset；历史时间范围为半开区间 `[from,to)`。内容详情同时返回不含私有远端 URL 的附件元数据，附件字节只能从认证下载端点取得；评论详情直接返回完整嵌套 `children`，不再暴露旧线性 thread 投影。
 
-WebSocket 只承载失效信号，不接受业务命令或资源数据。连接后先发送 `{event:"sync.required",revision,topics}`，客户端按需通过 REST 建立基线；后续将同一事件总线批次合并为 `{event:"resources.invalidated",revision,topics}`。资源主题只有 `accounts`、`sources`、`contents`、`backfills`、运行设置、渠道、投递、Microsoft 登录、审计和 AI；旧的 `ups`、`dynamics`、`comments` 与 `bilibili-login` 主题不再对外。客户端丢失连接或遇到未知消息后保留最后成功数据，通过资源 GET 重建事实，不在浏览器合成服务端领域状态。
+WebSocket 只承载失效信号，不接受业务命令或资源数据。连接后先发送 `{event:"sync.required",revision,topics}`，客户端只失效连接打开之前已有数据的 query，避免刚建立的 REST 基线被立刻重打；重连时重置 revision，以接受服务端重启后从 0 开始的序列。后续将同一事件总线批次合并为 `{event:"resources.invalidated",revision,topics}`。资源主题只有 `accounts`、`sources`、`contents`、`backfills`、运行设置、渠道、投递、Microsoft 登录、审计和 AI；旧的 `ups`、`dynamics`、`comments` 与 `bilibili-login` 主题不再对外。客户端丢失连接或遇到未知消息后保留最后成功数据，通过资源 GET 重建事实，不在浏览器合成服务端领域状态。
 
 领域事件主要由实际状态写入驱动：空闲投递周期不发布事件，空闲采集不广播整份 UP 列表；关注关系刷新、采集路由改变、就绪状态或风控暂停等时间派生状态跨越边界时发布对应轻量事件。投递成功、失败、重试或阻塞只标记状态和投递主题；渠道授权信息只有在实际变化时才标记渠道主题。事件总线使用主题脏标记合并突发更新，业务路径不等待浏览器。每个连接只有一个串行写入器；慢客户端会被关闭并通过重连恢复。WebSocket 消息限制为 1 MiB，并以独立的 30 秒 Ping 保活。
 

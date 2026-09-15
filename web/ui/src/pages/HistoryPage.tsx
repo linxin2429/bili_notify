@@ -50,8 +50,8 @@ export function HistoryPage() {
     update({ platform: undefined, source_id: undefined, q: undefined, from: undefined, to: undefined })
   }
 
-  if (runtime.isPending || sources.isPending) return <LoadingState />
   if (runtime.error || sources.error) return <PageError error={runtime.error || sources.error} retry={() => { void runtime.refetch(); void sources.refetch() }} />
+  const sourceOptions = (sources.data ?? []).map(source => ({ value: source.id, label: source.name || source.external_id }))
   return <div className="page-stack">
     <PageHeader title="历史内容" subtitle="统一浏览 B 站与知识星球归档；档案更新不会重复通知。" />
     <section className="history-filters" aria-label="历史内容筛选">
@@ -64,17 +64,17 @@ export function HistoryPage() {
       </div>
       {filtersOpen && <div className="filter-grid filter-grid--advanced">
         <SelectField label="平台" value={platform || ''} onChange={value => update({ platform: value || undefined, source_id: undefined })} options={[{ value: '', label: '全部平台' }, { value: 'bilibili', label: 'B 站' }, { value: 'zsxq', label: '知识星球' }]} />
-        <SelectField label="采集源" value={sourceID} onChange={value => update({ source_id: value || undefined })} options={[{ value: '', label: '全部来源' }, ...sources.data.map(source => ({ value: source.id, label: source.name || source.external_id }))]} />
+        <SelectField label="采集源" value={sourceID} onChange={value => update({ source_id: value || undefined })} options={[{ value: '', label: '全部来源' }, ...sourceOptions]} />
         <NativeDateTimeField label="开始时间" value={from} onChange={value => update({ from: value || undefined })} />
         <NativeDateTimeField label="结束时间" value={to} onChange={value => update({ to: value || undefined })} />
       </div>}
     </section>
-    {contents.isPending ? <LoadingState /> : contents.error ? <PageError error={contents.error} retry={() => void contents.refetch()} /> : contents.data.items.length === 0 ? <EmptyState icon={<SearchX />} title="当前筛选下没有历史记录" /> : <div className="list-stack">{contents.data.items.map(item => (
+    {contents.isPending || runtime.isPending ? <LoadingState /> : contents.error ? <PageError error={contents.error} retry={() => void contents.refetch()} /> : contents.data.items.length === 0 ? <EmptyState icon={<SearchX />} title="当前筛选下没有历史记录" /> : <div className="list-stack">{contents.data.items.map(item => (
       <HistoryCard
         key={item.id}
         item={item}
-        timeZone={runtime.data.timezone}
-        sourceName={sources.data.find(source => source.id === item.source_id)?.name}
+        timeZone={runtime.data?.timezone ?? ''}
+        sourceName={sources.data?.find(source => source.id === item.source_id)?.name}
       />
     ))}</div>}
     {contents.data && <div className="pagination">

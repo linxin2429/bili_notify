@@ -216,6 +216,8 @@ React Aria 负责 Dialog、Select、Tabs、Tooltip、Switch、NumberField 等需
 
 只有测量证明存在瓶颈时才引入虚拟列表、Worker 或其他复杂优化。每页几十条记录时，先解决全量 snapshot、无关订阅和运行时 CSS，而不是提前虚拟化。
 
+带哈希的 `/assets/` 由管理服务以 `immutable` 长期缓存，并对可压缩文本按客户端 `Accept-Encoding` 做 gzip；文档入口保持 `no-cache`。CJK 可变字体延后到首屏提交后再加载。`sync.required` 只失效早于当前 WebSocket 打开时刻的 query。历史列表接口返回预览正文，卡片默认只渲染截断文本，展开或打开媒体/评论时再取详情。
+
 ## 13. 测试矩阵
 
 | 层次 | 必测内容 |

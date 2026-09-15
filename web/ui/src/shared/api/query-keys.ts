@@ -1,4 +1,4 @@
-import type { QueryClient } from '@tanstack/react-query'
+import type { Query, QueryClient } from '@tanstack/react-query'
 import type { AuditQuery, ContentQuery, RealtimeTopic } from './types'
 
 export const queryKeys = {
@@ -27,4 +27,11 @@ const topicKeys: Record<RealtimeTopic, readonly string[]> = {
   'ai-status': queryKeys.aiStatus, 'ai-jobs': queryPrefixes.aiJobs,
   accounts: queryKeys.accounts, sources: queryPrefixes.sources, contents: queryPrefixes.contents, backfills: queryPrefixes.sources,
 }
-export function invalidateTopics(client: QueryClient, topics: RealtimeTopic[]) { for (const topic of new Set(topics)) void client.invalidateQueries({ queryKey: topicKeys[topic] }) }
+export function invalidateTopics(client: QueryClient, topics: RealtimeTopic[], include?: (query: Query) => boolean) {
+  for (const topic of new Set(topics)) {
+    void client.invalidateQueries({
+      queryKey: topicKeys[topic],
+      ...(include && { predicate: include }),
+    })
+  }
+}

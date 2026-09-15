@@ -14,7 +14,7 @@ class FakeWebSocket {
 }
 
 describe('RealtimeSync', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
   it.each([
     { name: 'valid invalidation', input: { event: 'resources.invalidated', revision: 2, topics: ['runtime'] }, valid: true },
@@ -58,6 +58,11 @@ describe('RealtimeSync', () => {
     invalidate.mockClear()
     act(() => FakeWebSocket.latest.onmessage?.({ data: JSON.stringify({ event: 'sync.required', revision: 1, topics: ['ups'] }) }))
     expect(invalidate).not.toHaveBeenCalled()
+
+    invalidate.mockClear()
+    act(() => FakeWebSocket.latest.onopen?.())
+    act(() => FakeWebSocket.latest.onmessage?.({ data: JSON.stringify({ event: 'resources.invalidated', revision: 1, topics: ['settings'] }) }))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.settings })
 
     act(() => FakeWebSocket.latest.onerror?.())
     expect(screen.getByText('polling')).toBeInTheDocument()
@@ -106,6 +111,23 @@ describe('RealtimeSync', () => {
 
     expect(onAuthenticationLost).not.toHaveBeenCalled()
     expect(client.getQueryData(queryKeys.session)).toBeUndefined()
+  })
+
+  it('only invalidates queries that existed when the websocket opened', async () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData(queryKeys.runtime, { timezone: 'Asia/Shanghai', updated_at: '2026-08-09T10:00:00Z', status: { auth_valid: true, up_count: 0, channel_count: 0, outbox_depth: 0, ready: true } })
+    const runtimeHash = client.getQueryCache().find({ queryKey: queryKeys.runtime })?.queryHash
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    render(<QueryClientProvider client={client}><RealtimeSync onAuthenticationLost={vi.fn()} onProtocolError={vi.fn()}><ConnectionProbe /></RealtimeSync></QueryClientProvider>)
+
+    act(() => FakeWebSocket.latest.onopen?.())
+    expect(screen.getByText('live')).toBeInTheDocument()
+    act(() => FakeWebSocket.latest.onmessage?.({ data: JSON.stringify({ event: 'sync.required', revision: 0, topics: ['runtime'] }) }))
+    await waitFor(() => expect(invalidate).toHaveBeenCalled())
+    const call = invalidate.mock.calls.find(entry => Array.isArray(entry[0]?.queryKey) && entry[0]?.queryKey[0] === 'runtime')
+    expect(call?.[0]?.predicate?.({ queryHash: runtimeHash } as never)).toBe(true)
+    expect(call?.[0]?.predicate?.({ queryHash: 'opened-after-connect' } as never)).toBe(false)
   })
 })
 

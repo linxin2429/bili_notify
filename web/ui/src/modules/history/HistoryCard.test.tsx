@@ -87,9 +87,54 @@ describe('HistoryCard', () => {
 
   it('clamps long body text and expands on demand', async () => {
     const user = userEvent.setup()
-    renderCard({ ...base, text: '字'.repeat(220) })
+    const preview = '字'.repeat(220)
+    api.content.mockResolvedValue({ content: { ...base, text: `${preview}全文` }, attachments: [] })
+    renderCard({ ...base, text: preview })
     expect(screen.getByRole('button', { name: '展开全文' })).toBeInTheDocument()
+    expect(api.content).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: '展开全文' }))
     expect(screen.getByRole('button', { name: '收起' })).toBeInTheDocument()
+    expect(api.content).toHaveBeenCalledWith(base.id, expect.anything())
+    expect(await screen.findByText(`${preview}全文`)).toBeInTheDocument()
+  })
+
+  it('keeps emoji intact when the preview cutoff crosses a surrogate pair', () => {
+    const preview = `${'字'.repeat(179)}😀`
+    renderCard({ ...base, text: `${preview}${'字'.repeat(20)}` })
+    const body = screen.getByText(preview)
+    expect(body).toBeInTheDocument()
+    expect(body.textContent).toBe(preview)
+    expect(body.textContent).not.toMatch(/[\uD800-\uDBFF]$/)
+  })
+
+  it('shows an error instead of the list preview when expansion fails', async () => {
+    const user = userEvent.setup()
+    api.content.mockRejectedValue(new Error('档案不可用'))
+    renderCard({ ...base, text: '字'.repeat(220) })
+    await user.click(screen.getByRole('button', { name: '展开全文' }))
+    expect(await screen.findByText('档案不可用')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument()
+    expect(screen.queryByText('字'.repeat(220))).not.toBeInTheDocument()
+  })
+
+  it('expands a truncated video description from the detail query', async () => {
+    const user = userEvent.setup()
+    const preview = '简'.repeat(220)
+    const video: UnifiedContent = {
+      ...base,
+      id: 'bilibili:content:video',
+      type: 'video',
+      upstream_type: 'DYNAMIC_TYPE_AV',
+      title: '测试视频',
+      text: preview,
+      url: 'https://www.bilibili.com/video/BV1xx411c7mD',
+    }
+    api.content.mockResolvedValue({ content: { ...video, text: `${preview}完整简介` }, attachments: [] })
+    renderCard(video)
+    expect(screen.getByRole('button', { name: '展开全文' })).toBeInTheDocument()
+    expect(api.content).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: '展开全文' }))
+    expect(await screen.findByText(`${preview}完整简介`)).toBeInTheDocument()
+    expect(api.content).toHaveBeenCalledWith(video.id, expect.anything())
   })
 })

@@ -335,7 +335,40 @@ func (s *Server) contentsV4(w http.ResponseWriter, r *http.Request) {
 		last := contents[len(contents)-1]
 		next = encodeListCursor(last.PublishedAt.Unix(), last.ID)
 	}
-	writeJSON(w, http.StatusOK, cursorPageResponse{Items: contents, Page: cursorPage{HasMore: hasMore, NextCursor: next}})
+	writeJSON(w, http.StatusOK, cursorPageResponse{Items: contentListItems(contents), Page: cursorPage{HasMore: hasMore, NextCursor: next}})
+}
+
+const contentListTextLimit = 280
+
+func contentListItems(contents []model.Content) []model.Content {
+	items := make([]model.Content, len(contents))
+	for i, content := range contents {
+		items[i] = contentListItem(content)
+	}
+	return items
+}
+
+func contentListItem(content model.Content) model.Content {
+	content.SafeHTML = ""
+	content.Text = truncateRunes(content.Text, contentListTextLimit)
+	return content
+}
+
+func truncateRunes(value string, limit int) string {
+	if limit <= 0 || value == "" {
+		if limit <= 0 {
+			return ""
+		}
+		return value
+	}
+	count := 0
+	for index := range value {
+		if count == limit {
+			return value[:index]
+		}
+		count++
+	}
+	return value
 }
 
 func (s *Server) contentV4(w http.ResponseWriter, r *http.Request) {

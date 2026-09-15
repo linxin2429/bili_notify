@@ -24,7 +24,7 @@ import { replaceSessionState } from '../../shared/api/session-cache'
 import { useConnectionState } from '../../shared/realtime/RealtimeSync'
 import { IconButton } from '../../shared/ui'
 import type { ConnectionState, ThemePreference } from '../../shared/api/types'
-import { shellOutboxQuery } from './outbox'
+import { runtimeQuery } from '../../shared/api/runtime-query'
 
 type NavItem = { path: string; label: string; icon: LucideIcon; shortLabel?: string }
 
@@ -101,7 +101,7 @@ export function AppShell() {
   const connection = useConnectionState()
   const client = useQueryClient()
   const location = useLocation()
-  const runtime = useQuery(shellOutboxQuery())
+  const runtime = useQuery({ ...runtimeQuery(), select: data => data.status.outbox_depth })
   const outboxDepth = runtime.data ?? 0
   const logout = useMutation({
     mutationFn: () => sessionAPI.logout(csrf),

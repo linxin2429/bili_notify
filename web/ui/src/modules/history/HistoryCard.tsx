@@ -38,6 +38,17 @@ import {
 } from './helpers'
 import { galleryImagesFromAttachments, MediaGrid } from './MediaGallery'
 
+const previewLimit = 180
+
+function unicodeUnits(value: string) {
+  return Array.from(value)
+}
+
+function clipPreview(value: string, limit = previewLimit) {
+  const units = unicodeUnits(value)
+  return units.length <= limit ? value : units.slice(0, limit).join('')
+}
+
 export function HistoryCard({ item, timeZone, sourceName }: {
   item: UnifiedContent
   timeZone: string
@@ -49,16 +60,16 @@ export function HistoryCard({ item, timeZone, sourceName }: {
   const contentCard = isContentCardType(item)
   const title = (item.title || '').trim()
   const text = (item.text || '').trim()
-  // Content-card types (video/article/…) use the landing preview for title/description.
-  // Feed types put the primary readable copy in text (or title when text is empty).
-  const body = contentCard ? '' : (text || title)
+  const detailEnabled = panel !== 'none' || expanded
+  const detail = useQuery({ ...queries.content(item.id), enabled: detailEnabled })
+  const detailText = (detail.data?.content.text || '').trim()
+  const feedSource = text || title
+  const expandable = unicodeUnits(contentCard ? text : feedSource).length > previewLimit
   const showTitle = !contentCard && Boolean(title && text && normalizePreviewText(title) !== normalizePreviewText(text))
   const targetURL = originalContentURL(item)
-  const expandable = body.length > 180
   const author = item.author_name || item.author_id || sourceName || '未知作者'
   const typeLabel = historyTypeLabel(item, dynamicTypeLabel)
-  const detailEnabled = panel !== 'none'
-  const detail = useQuery({ ...queries.content(item.id), enabled: detailEnabled })
+  const toggleExpanded = () => setExpanded(value => !value)
   const comments = useQuery({ ...queries.contentComments(item.id), enabled: panel === 'comments' })
   const commentLabel = `查看评论：${item.title || item.text?.slice(0, 40) || item.external_id}`
 
@@ -85,16 +96,33 @@ export function HistoryCard({ item, timeZone, sourceName }: {
 
     <div className="history-body">
       {showTitle && <h2>{title}</h2>}
-      {body && <>
-        <p className={expanded ? '' : 'history-text-clamp'}>{body}</p>
-        {(expanded || expandable) && (
-          <Button onPress={() => setExpanded(value => !value)}>{expanded ? '收起' : '展开全文'}</Button>
-        )}
-      </>}
+      {!contentCard && feedSource && (
+        <ExpandableText
+          preview={clipPreview(feedSource)}
+          full={detailText || feedSource}
+          expanded={expanded}
+          expandable={expandable}
+          pending={detail.isPending}
+          error={detail.error}
+          onToggle={toggleExpanded}
+          onRetry={() => void detail.refetch()}
+        />
+      )}
 
-      {contentCard && <ContentLandingPreview item={item} description={text} />}
+      {contentCard && (
+        <ContentLandingPreview
+          item={item}
+          description={expanded && detail.data ? detailText : clipPreview(text)}
+          expandable={expandable}
+          expanded={expanded}
+          pending={detail.isPending}
+          error={detail.error}
+          onToggle={toggleExpanded}
+          onRetry={() => void detail.refetch()}
+        />
+      )}
 
-      {!showTitle && !body && !contentCard && (
+      {!showTitle && !feedSource && !contentCard && (
         <p className="muted">（该归档没有可预览的正文）</p>
       )}
 
@@ -137,7 +165,37 @@ export function HistoryCard({ item, timeZone, sourceName }: {
   </Card>
 }
 
-function ContentLandingPreview({ item, description }: { item: UnifiedContent; description: string }) {
+function ExpandableText({ preview, full, expanded, expandable, pending, error, onToggle, onRetry }: {
+  preview: string
+  full: string
+  expanded: boolean
+  expandable: boolean
+  pending: boolean
+  error: Error | null
+  onToggle: () => void
+  onRetry: () => void
+}) {
+  return <>
+    {expanded && pending ? <LoadingState label="正在加载全文" /> : expanded && error ? <>
+      <Alert tone="danger">{error.message}</Alert>
+      <Button onPress={onRetry}>重试</Button>
+    </> : <p className={expanded ? '' : 'history-text-clamp'}>{expanded ? full : preview}</p>}
+    {(expanded || expandable) && (
+      <Button onPress={onToggle}>{expanded ? '收起' : '展开全文'}</Button>
+    )}
+  </>
+}
+
+function ContentLandingPreview({ item, description, expandable, expanded, pending, error, onToggle, onRetry }: {
+  item: UnifiedContent
+  description: string
+  expandable: boolean
+  expanded: boolean
+  pending: boolean
+  error: Error | null
+  onToggle: () => void
+  onRetry: () => void
+}) {
   const [open, setOpen] = useState(false)
   const target = originalContentURL(item)
   const embed = videoEmbedURL(item)
@@ -167,7 +225,13 @@ function ContentLandingPreview({ item, description }: { item: UnifiedContent; de
       </div>
       <div className="content-preview__meta">
         <strong>{title}</strong>
-        {blurb && <p>{blurb}</p>}
+        {expanded && pending ? <LoadingState label="正在加载全文" /> : expanded && error ? <>
+          <Alert tone="danger">{error.message}</Alert>
+          <Button onPress={onRetry}>重试</Button>
+        </> : blurb && <p>{blurb}</p>}
+        {(expanded || expandable) && (
+          <Button onPress={onToggle}>{expanded ? '收起' : '展开全文'}</Button>
+        )}
         {item.stats?.views !== undefined && item.stats.views > 0 && (
           <small>播放 {formatInteractionCount(item.stats.views, '播放')}</small>
         )}
