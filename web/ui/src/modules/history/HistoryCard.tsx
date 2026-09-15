@@ -49,16 +49,16 @@ export function HistoryCard({ item, timeZone, sourceName }: {
   const contentCard = isContentCardType(item)
   const title = (item.title || '').trim()
   const text = (item.text || '').trim()
-  // Content-card types (video/article/…) use the landing preview for title/description.
-  // Feed types put the primary readable copy in text (or title when text is empty).
-  const body = contentCard ? '' : (text || title)
+  const detailEnabled = panel !== 'none' || expanded
+  const detail = useQuery({ ...queries.content(item.id), enabled: detailEnabled })
+  const detailText = (detail.data?.content.text || '').trim()
+  const body = contentCard ? '' : ((expanded && detailText) || text || title)
+  const shown = expanded || body.length <= 180 ? body : body.slice(0, 180)
   const showTitle = !contentCard && Boolean(title && text && normalizePreviewText(title) !== normalizePreviewText(text))
   const targetURL = originalContentURL(item)
-  const expandable = body.length > 180
+  const expandable = text.length > 180 || body.length > 180
   const author = item.author_name || item.author_id || sourceName || '未知作者'
   const typeLabel = historyTypeLabel(item, dynamicTypeLabel)
-  const detailEnabled = panel !== 'none'
-  const detail = useQuery({ ...queries.content(item.id), enabled: detailEnabled })
   const comments = useQuery({ ...queries.contentComments(item.id), enabled: panel === 'comments' })
   const commentLabel = `查看评论：${item.title || item.text?.slice(0, 40) || item.external_id}`
 
@@ -86,7 +86,7 @@ export function HistoryCard({ item, timeZone, sourceName }: {
     <div className="history-body">
       {showTitle && <h2>{title}</h2>}
       {body && <>
-        <p className={expanded ? '' : 'history-text-clamp'}>{body}</p>
+        <p className={expanded ? '' : 'history-text-clamp'}>{shown}</p>
         {(expanded || expandable) && (
           <Button onPress={() => setExpanded(value => !value)}>{expanded ? '收起' : '展开全文'}</Button>
         )}

@@ -14,7 +14,7 @@ class FakeWebSocket {
 }
 
 describe('RealtimeSync', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
   it.each([
     { name: 'valid invalidation', input: { event: 'resources.invalidated', revision: 2, topics: ['runtime'] }, valid: true },
@@ -58,6 +58,11 @@ describe('RealtimeSync', () => {
     invalidate.mockClear()
     act(() => FakeWebSocket.latest.onmessage?.({ data: JSON.stringify({ event: 'sync.required', revision: 1, topics: ['ups'] }) }))
     expect(invalidate).not.toHaveBeenCalled()
+
+    invalidate.mockClear()
+    act(() => FakeWebSocket.latest.onopen?.())
+    act(() => FakeWebSocket.latest.onmessage?.({ data: JSON.stringify({ event: 'resources.invalidated', revision: 1, topics: ['settings'] }) }))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.settings })
 
     act(() => FakeWebSocket.latest.onerror?.())
     expect(screen.getByText('polling')).toBeInTheDocument()
@@ -106,6 +111,25 @@ describe('RealtimeSync', () => {
 
     expect(onAuthenticationLost).not.toHaveBeenCalled()
     expect(client.getQueryData(queryKeys.session)).toBeUndefined()
+  })
+
+  it('only invalidates queries older than the current websocket on sync.required', async () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const now = 1_700_000_100_000
+    vi.spyOn(Date, 'now').mockReturnValue(now)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    render(<QueryClientProvider client={client}><RealtimeSync onAuthenticationLost={vi.fn()} onProtocolError={vi.fn()}><ConnectionProbe /></RealtimeSync></QueryClientProvider>)
+
+    act(() => FakeWebSocket.latest.onopen?.())
+    expect(screen.getByText('live')).toBeInTheDocument()
+    act(() => FakeWebSocket.latest.onmessage?.({ data: JSON.stringify({ event: 'sync.required', revision: 0, topics: ['runtime'] }) }))
+    await waitFor(() => expect(invalidate).toHaveBeenCalled())
+    const call = invalidate.mock.calls.find(entry => Array.isArray(entry[0]?.queryKey) && entry[0]?.queryKey[0] === 'runtime')
+    expect(call?.[0]?.predicate).toEqual(expect.any(Function))
+    expect(call?.[0]?.predicate?.({ state: { dataUpdatedAt: now - 1 } } as never)).toBe(true)
+    expect(call?.[0]?.predicate?.({ state: { dataUpdatedAt: now } } as never)).toBe(false)
+    expect(call?.[0]?.predicate?.({ state: { dataUpdatedAt: 0 } } as never)).toBe(false)
   })
 })
 

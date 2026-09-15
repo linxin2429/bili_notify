@@ -87,9 +87,14 @@ describe('HistoryCard', () => {
 
   it('clamps long body text and expands on demand', async () => {
     const user = userEvent.setup()
-    renderCard({ ...base, text: '字'.repeat(220) })
+    const preview = '字'.repeat(220)
+    api.content.mockResolvedValue({ content: { ...base, text: `${preview}全文` }, attachments: [] })
+    renderCard({ ...base, text: preview })
     expect(screen.getByRole('button', { name: '展开全文' })).toBeInTheDocument()
+    expect(api.content).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: '展开全文' }))
     expect(screen.getByRole('button', { name: '收起' })).toBeInTheDocument()
+    expect(api.content).toHaveBeenCalledWith(base.id, expect.anything())
+    expect(await screen.findByText(`${preview}全文`)).toBeInTheDocument()
   })
 })

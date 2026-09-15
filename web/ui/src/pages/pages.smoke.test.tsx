@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionProvider } from '../modules/session'
 import { ThemeProvider } from '../shared/ui/theme'
 import { NotificationProvider } from '../shared/ui'
@@ -30,8 +30,17 @@ const source = { id: 'bilibili:up:42', platform: 'bilibili' as const, type: 'up'
 const content = { id: 'bilibili:content:dynamic', platform: 'bilibili' as const, source_id: source.id, external_id: 'dynamic', author_id: '42', author_name: '测试 UP', upstream_type: 'DYNAMIC_TYPE_WORD', type: 'dynamic' as const, title: '一条测试动态', text: '正文', published_at: '2026-08-09T10:00:00Z', first_seen_at: '2026-08-09T10:00:01Z', last_synced_at: '2026-08-09T10:00:01Z', baseline: false }
 
 describe('resource pages', () => {
+  afterEach(() => vi.unstubAllGlobals())
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (path.includes('/api/v4/runtime')) {
+        const value = await api.runtime()
+        return new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      throw new Error(`unexpected fetch ${path}`)
+    }))
     api.runtime.mockResolvedValue(runtime); api.settings.mockResolvedValue(settings); api.accounts.mockResolvedValue([{ platform: 'bilibili', status: 'connected' }, { platform: 'zsxq', status: 'disconnected' }]); api.channels.mockResolvedValue([channel])
     api.sources.mockResolvedValue([source]); api.contents.mockResolvedValue({ items: [content], page: { next_cursor: '', has_more: false } }); api.content.mockResolvedValue({ content, attachments: [] }); api.contentComments.mockResolvedValue({ children: [], incomplete: false })
     api.deliveries.mockResolvedValue({ items: [makeDelivery({ state: 'blocked' })], page: { next_cursor: '', has_more: false } }); api.biliLogin.mockResolvedValue(null); api.microsoftLogins.mockResolvedValue([])
@@ -184,6 +193,15 @@ describe('resource pages', () => {
     await user.click(screen.getByRole('tab', { name: '全部' }))
     await user.click(screen.getByRole('button', { name: '下一页' }))
     await waitFor(() => expect(api.deliveries).toHaveBeenLastCalledWith('cursor-2', expect.anything()))
+  })
+
+  it('shows history filters before contents and timezone resolve', async () => {
+    api.contents.mockReturnValue(new Promise(() => undefined))
+    api.runtime.mockReturnValue(new Promise(() => undefined))
+    renderPage(<HistoryPage />, '/history')
+    expect(await screen.findByRole('heading', { name: '历史内容' })).toBeInTheDocument()
+    expect(screen.getByLabelText('关键字')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 2, name: '一条测试动态' })).not.toBeInTheDocument()
   })
 
   it('renders archived dynamic content as a readable feed card', async () => {

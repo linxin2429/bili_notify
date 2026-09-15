@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useSession } from '../modules/session'
+import { useConnectionState } from '../shared/realtime/RealtimeSync'
 import { apiErrorMessage } from '../shared/api/errors'
 import { queries, queryKeys } from '../shared/api/query'
 import { formatBytes } from '../shared/lib/presentation'
@@ -13,7 +14,8 @@ const blankProfile = (kind: AIProfile['kind']): AIProfileDraft => ({ name: '', k
 const blankPrompt: AIPromptDraft = { name: '', system_prompt: '你是一名严谨的中文内容编辑。', chunk_prompt: '请总结以下内容，保留事实、论点和关键细节：\n\n{{text}}', reduce_prompt: '请将以下分段摘要合并为结构清晰、没有重复的最终摘要：\n\n{{summaries}}', default: false }
 
 export function AISettingsPage() {
-  const status = useQuery(queries.aiStatus()); const profiles = useQuery(queries.aiProfiles()); const prompts = useQuery(queries.aiPrompts())
+  const live = useConnectionState() === 'live'
+  const status = useQuery(queries.aiStatus(live)); const profiles = useQuery(queries.aiProfiles()); const prompts = useQuery(queries.aiPrompts())
   if (status.isPending || profiles.isPending || prompts.isPending) return <LoadingState label="正在加载 AI 设置" />
   if (status.error || profiles.error || prompts.error) return <PageError error={status.error || profiles.error || prompts.error} retry={() => { void status.refetch(); void profiles.refetch(); void prompts.refetch() }} />
   return <div className="page-stack"><PageHeader title="AI 设置" subtitle="模型凭据由服务端加密保存；浏览器只会看到凭据是否已配置。" />

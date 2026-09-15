@@ -198,7 +198,7 @@ func (s *Server) adminHandler() http.Handler {
 	s.registerAdminAPI(mux)
 	s.registerPlatformAPI(mux)
 	mux.HandleFunc("GET /api/v4/ws", s.webSocket)
-	mux.Handle("GET /assets/", http.FileServer(http.FS(s.static)))
+	mux.Handle("GET /assets/", hashedAssets(http.FileServer(http.FS(s.static))))
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /{path...}", s.index)
 	handler := http.Handler(securityHeaders(s.withRequestLog(mux)))

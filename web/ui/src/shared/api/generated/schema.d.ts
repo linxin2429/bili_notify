@@ -2638,7 +2638,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Unified content page. */
+            /** @description Unified content page. List items omit safe_html and truncate text to 280 Unicode characters; GET /api/v4/contents/{id} returns the full body. */
             200: {
                 headers: {
                     [name: string]: unknown;

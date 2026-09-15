@@ -728,7 +728,7 @@ paths:
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100}}
       responses:
         '200':
-          description: Unified content page.
+          description: Unified content page. List items omit safe_html and truncate text to 280 Unicode characters; GET /api/v4/contents/{id} returns the full body.
           content: {application/json: {schema: {$ref: '#/components/schemas/ContentPage'}}}
   /api/v4/contents/{id}:
     get:

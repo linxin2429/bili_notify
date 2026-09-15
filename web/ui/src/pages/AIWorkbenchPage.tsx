@@ -3,6 +3,7 @@ import { Sparkles } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSession } from '../modules/session'
+import { useConnectionState } from '../shared/realtime/RealtimeSync'
 import { apiErrorMessage } from '../shared/api/errors'
 import { queries, queryPrefixes } from '../shared/api/query'
 import { resources } from '../shared/api/resources'
@@ -13,7 +14,8 @@ import { Dialog } from '../shared/ui/Dialog'
 const labels = { queued: '排队中', running: '处理中', succeeded: '已完成', failed: '失败', canceled: '已取消', skipped: '已跳过' } as const
 
 export function AIWorkbenchPage() {
-  const profiles = useQuery(queries.aiProfiles()); const prompts = useQuery(queries.aiPrompts()); const jobs = useQuery(queries.aiJobs({ limit: 50 })); const worker = useQuery(queries.aiStatus())
+  const live = useConnectionState() === 'live'
+  const profiles = useQuery(queries.aiProfiles()); const prompts = useQuery(queries.aiPrompts()); const jobs = useQuery(queries.aiJobs({ limit: 50 }, live)); const worker = useQuery(queries.aiStatus(live))
   const [kind, setKind] = useState<'transcription' | 'summary'>('transcription'); const [bvid, setBVID] = useState(''); const [page, setPage] = useState('0'); const [text, setText] = useState(''); const [source, setSource] = useState(''); const [profile, setProfile] = useState(''); const [prompt, setPrompt] = useState(''); const [selected, setSelected] = useState(''); const [deleting, setDeleting] = useState<string | null>(null)
   const { csrf } = useSession(); const notify = useNotify(); const client = useQueryClient(); const invalidate = () => void client.invalidateQueries({ queryKey: queryPrefixes.aiJobs })
   const submit = useMutation({ mutationFn: ({ profileID, promptID }: { profileID: string; promptID: string }) => kind === 'transcription' ? resources.createAITranscription(csrf, { client_request_id: crypto.randomUUID(), bvid: bvid.trim(), page: Number(page) || undefined, profile_id: profileID }) : resources.createAISummary(csrf, { client_request_id: crypto.randomUUID(), ...(source ? { transcription_job_id: source } : { text: text.trim() }), profile_id: profileID, prompt_id: promptID }), onSuccess: job => { setSelected(job.id); notify('任务已提交', 'success'); invalidate() }, onError: error => notify(apiErrorMessage(error), 'danger') })
