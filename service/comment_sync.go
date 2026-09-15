@@ -19,8 +19,8 @@ type walkKind struct {
 	baseline bool
 }
 
-func walkKindFor(target model.CommentTarget, idx liveRootIndex) walkKind {
-	return walkKind{baseline: !target.BaselineReady || len(idx) == 0}
+func walkKindFor(target model.CommentTarget) walkKind {
+	return walkKind{baseline: !target.BaselineReady}
 }
 
 func (k walkKind) expandEveryPopulatedRoot() bool { return k.baseline }

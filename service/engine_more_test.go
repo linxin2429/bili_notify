@@ -353,6 +353,50 @@ func TestPollCommentTargetArchivesWithoutChannels(t *testing.T) {
 	assert.Equal(t, "reply", tree[0].RPID)
 }
 
+func TestPollCommentTargetNotifiesAfterEmptyBaseline(t *testing.T) {
+	t.Parallel()
+	phase := atomic.Int32{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/x/v2/reply" {
+			http.NotFound(w, r)
+			return
+		}
+		if phase.Load() == 0 {
+			_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"page":{"num":1,"size":20,"count":0},"replies":[]}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"page":{"num":1,"size":20,"count":1},"replies":[{"rpid_str":"e2e-up-reply","root_str":"0","parent_str":"0","ctime":1700000002,"member":{"mid":"42","uname":"UP"},"content":{"message":"E2E UP comment reply"}}]}}`)
+	}))
+	t.Cleanup(server.Close)
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	_, err = store.PutChannel(model.Channel{
+		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
+		Settings: map[string]string{"webhook": "https://example.com/hook"},
+	})
+	require.NoError(t, err)
+	target := seedServiceCommentTarget(t, store, model.CommentTarget{
+		UID: "42", UPName: "UP", DynamicID: "dynamic", CommentType: 11, CommentOID: "oid",
+	})
+	engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
+	require.NoError(t, engine.pollCommentTarget(t.Context(), target))
+	targets, err := store.ListCommentTargets("42")
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+	assert.True(t, targets[0].BaselineReady)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	assert.Empty(t, deliveries)
+	phase.Store(1)
+	require.NoError(t, engine.pollCommentTarget(t.Context(), targets[0]))
+	deliveries, err = store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	require.NotNil(t, deliveries[0].Comment)
+	assert.Equal(t, "e2e-up-reply", deliveries[0].Comment.RPID)
+}
+
 func TestPollCommentTargetClosesUnavailableTarget(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -933,7 +933,7 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 		return err
 	}
 	idx := indexLiveComments(stored)
-	kind := walkKindFor(target, idx)
+	kind := walkKindFor(target)
 	fetched, walk, err := e.walkBiliComments(ctx, target, idx, kind)
 	if err != nil {
 		return e.handleCommentPollError(ctx, target, err)
@@ -949,7 +949,7 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 		Fetched:   fetched,
 		Walk:      walk,
 	})
-	digests, err := store.SyncCommentTree(content, snap.Nodes(), snap.Complete(), kind.baseline, newBatchID("bilibili"), &target)
+	digests, err := store.SyncCommentTree(content, snap.Nodes(), snap.Complete(), !target.BaselineReady, newBatchID("bilibili"), &target)
 	if err != nil {
 		return err
 	}

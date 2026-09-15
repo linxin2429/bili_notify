@@ -78,8 +78,8 @@ func TestExpandReasonFor(t *testing.T) {
 		{RPID: "old-root"},
 		{RPID: "kept", RootID: "bilibili:comment:old-root", ParentID: "bilibili:comment:old-root"},
 	})
-	baseline := walkKindFor(model.CommentTarget{}, nil)
-	ready := walkKindFor(model.CommentTarget{BaselineReady: true}, idx)
+	baseline := walkKindFor(model.CommentTarget{})
+	ready := walkKindFor(model.CommentTarget{BaselineReady: true})
 	tests := []struct {
 		name string
 		root bilibili.Reply
@@ -94,7 +94,7 @@ func TestExpandReasonFor(t *testing.T) {
 		{name: "preview unknown", root: bilibili.Reply{RPID: "old-root", RCount: 1, Preview: []bilibili.Reply{{RPID: "unseen"}}}, kind: ready, want: expandPreviewUnknown},
 		{name: "preview already stored", root: bilibili.Reply{RPID: "old-root", RCount: 1, Preview: []bilibili.Reply{{RPID: "kept"}}}, kind: ready, want: expandNone},
 		{name: "shrink expands", root: bilibili.Reply{RPID: "old-root", RCount: 0}, kind: ready, want: expandChildGrowth},
-		{name: "ready with empty archive rebases", root: bilibili.Reply{RPID: "old-root", RCount: 1}, kind: walkKindFor(model.CommentTarget{BaselineReady: true}, nil), want: expandBaseline},
+		{name: "ready empty archive still incremental", root: bilibili.Reply{RPID: "fresh", RCount: 1}, kind: ready, want: expandNewRoot},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
