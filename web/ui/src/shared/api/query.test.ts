@@ -12,14 +12,11 @@ describe('query consistency', () => {
     expect(invalidate).toHaveBeenNthCalledWith(2, { queryKey: queryPrefixes.deliveries })
   })
 
-  it('only invalidates queries updated before the watermark', () => {
+  it('only invalidates queries present in the reconnect baseline', () => {
     const client = new QueryClient(); const invalidate = vi.spyOn(client, 'invalidateQueries')
-    invalidateTopics(client, ['runtime'], 1000)
-    expect(invalidate).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ['runtime'], predicate: expect.any(Function) }))
-    const predicate = invalidate.mock.calls[0]?.[0]?.predicate
-    expect(predicate?.({ state: { dataUpdatedAt: 999 } } as never)).toBe(true)
-    expect(predicate?.({ state: { dataUpdatedAt: 1000 } } as never)).toBe(false)
-    expect(predicate?.({ state: { dataUpdatedAt: 0 } } as never)).toBe(false)
+    const include = (query: { queryHash: string }) => query.queryHash === 'baseline'
+    invalidateTopics(client, ['runtime'], include)
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['runtime'], predicate: include })
   })
 
   it('stops AI polling while the websocket is live', () => {

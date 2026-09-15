@@ -18,7 +18,7 @@ export function RealtimeSync({ children, onAuthenticationLost, onProtocolError }
     let timer = 0
     let retry = 0
     let revision = -1
-    let openedAt = 0
+    let baselineHashes = new Set<string>()
     let live = false
     const transition = (state: ConnectionState) => { live = state === 'live'; setConnection(state) }
 
@@ -33,7 +33,12 @@ export function RealtimeSync({ children, onAuthenticationLost, onProtocolError }
       transition(retry ? 'reconnecting' : 'connecting')
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
       socket = new WebSocket(`${protocol}//${location.host}/api/v4/ws`)
-      socket.onopen = () => { retry = 0; revision = -1; openedAt = Date.now(); transition('live') }
+      socket.onopen = () => {
+        retry = 0
+        revision = -1
+        baselineHashes = new Set(queryClient.getQueryCache().findAll().map(query => query.queryHash))
+        transition('live')
+      }
       socket.onmessage = event => {
         const envelope = parseEnvelope(safeJSON(event.data))
         if (!envelope) {
@@ -43,7 +48,7 @@ export function RealtimeSync({ children, onAuthenticationLost, onProtocolError }
         }
         if (envelope.revision < revision) return
         revision = envelope.revision
-        invalidateTopics(queryClient, envelope.topics, envelope.event === 'sync.required' ? openedAt : undefined)
+        invalidateTopics(queryClient, envelope.topics, envelope.event === 'sync.required' ? query => baselineHashes.has(query.queryHash) : undefined)
       }
       socket.onerror = () => transition('polling')
       socket.onclose = async () => {

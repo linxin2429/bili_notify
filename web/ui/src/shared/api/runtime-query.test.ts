@@ -27,6 +27,10 @@ describe('runtimeQuery', () => {
     { name: 'invalid last success', body: { ...valid, status: { ...valid.status, last_success_at: 1 } }, ok: false },
     { name: 'invalid oldest delivery', body: { ...valid, status: { ...valid.status, oldest_delivery: 1 } }, ok: false },
     { name: 'invalid risk pause', body: { ...valid, status: { ...valid.status, risk_paused_until: 1 } }, ok: false },
+    { name: 'negative count', body: { ...valid, status: { ...valid.status, outbox_depth: -1 } }, ok: false },
+    { name: 'fractional count', body: { ...valid, status: { ...valid.status, up_count: 1.5 } }, ok: false },
+    { name: 'non-finite count', body: { ...valid, status: { ...valid.status, channel_count: Number.POSITIVE_INFINITY } }, ok: false },
+    { name: 'zero counts', body: { ...valid, status: { ...valid.status, up_count: 0, channel_count: 0, outbox_depth: 0 } }, ok: true },
   ])('parses $name', async ({ body, ok }) => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })))
     const pending = runtimeQuery().queryFn!({ signal: new AbortController().signal } as never)

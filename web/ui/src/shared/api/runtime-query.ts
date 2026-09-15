@@ -24,7 +24,7 @@ function parseRuntime(value: unknown): Runtime | null {
 }
 
 function parseStatus(value: unknown): ServiceStatus | null {
-  if (!record(value) || typeof value.auth_valid !== 'boolean' || typeof value.up_count !== 'number' || typeof value.channel_count !== 'number' || typeof value.outbox_depth !== 'number' || typeof value.ready !== 'boolean') return null
+  if (!record(value) || typeof value.auth_valid !== 'boolean' || !nonnegativeInt(value.up_count) || !nonnegativeInt(value.channel_count) || !nonnegativeInt(value.outbox_depth) || typeof value.ready !== 'boolean') return null
   const account = value.bili_account
   if (account !== undefined) {
     if (!record(account) || typeof account.uid !== 'string' || typeof account.name !== 'string') return null
@@ -43,6 +43,10 @@ function parseStatus(value: unknown): ServiceStatus | null {
     ...(typeof value.oldest_delivery === 'string' ? { oldest_delivery: value.oldest_delivery } : {}),
     ...(typeof value.risk_paused_until === 'string' ? { risk_paused_until: value.risk_paused_until } : {}),
   }
+}
+
+function nonnegativeInt(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
 }
 
 function record(value: unknown): value is Record<string, unknown> {

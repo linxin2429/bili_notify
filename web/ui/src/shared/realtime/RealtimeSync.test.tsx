@@ -113,11 +113,11 @@ describe('RealtimeSync', () => {
     expect(client.getQueryData(queryKeys.session)).toBeUndefined()
   })
 
-  it('only invalidates queries older than the current websocket on sync.required', async () => {
+  it('only invalidates queries that existed when the websocket opened', async () => {
     vi.stubGlobal('WebSocket', FakeWebSocket)
-    const now = 1_700_000_100_000
-    vi.spyOn(Date, 'now').mockReturnValue(now)
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData(queryKeys.runtime, { timezone: 'Asia/Shanghai', updated_at: '2026-08-09T10:00:00Z', status: { auth_valid: true, up_count: 0, channel_count: 0, outbox_depth: 0, ready: true } })
+    const runtimeHash = client.getQueryCache().find({ queryKey: queryKeys.runtime })?.queryHash
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     render(<QueryClientProvider client={client}><RealtimeSync onAuthenticationLost={vi.fn()} onProtocolError={vi.fn()}><ConnectionProbe /></RealtimeSync></QueryClientProvider>)
 
@@ -126,10 +126,8 @@ describe('RealtimeSync', () => {
     act(() => FakeWebSocket.latest.onmessage?.({ data: JSON.stringify({ event: 'sync.required', revision: 0, topics: ['runtime'] }) }))
     await waitFor(() => expect(invalidate).toHaveBeenCalled())
     const call = invalidate.mock.calls.find(entry => Array.isArray(entry[0]?.queryKey) && entry[0]?.queryKey[0] === 'runtime')
-    expect(call?.[0]?.predicate).toEqual(expect.any(Function))
-    expect(call?.[0]?.predicate?.({ state: { dataUpdatedAt: now - 1 } } as never)).toBe(true)
-    expect(call?.[0]?.predicate?.({ state: { dataUpdatedAt: now } } as never)).toBe(false)
-    expect(call?.[0]?.predicate?.({ state: { dataUpdatedAt: 0 } } as never)).toBe(false)
+    expect(call?.[0]?.predicate?.({ queryHash: runtimeHash } as never)).toBe(true)
+    expect(call?.[0]?.predicate?.({ queryHash: 'opened-after-connect' } as never)).toBe(false)
   })
 })
 
