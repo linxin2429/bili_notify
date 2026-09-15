@@ -2,7 +2,7 @@ import { queryOptions } from '@tanstack/react-query'
 import type { AuditQuery, ContentQuery } from './types'
 import { resources } from './resources'
 import { queryKeys } from './query-keys'
-export { queryKeys } from './query-keys'
+export { queryKeys, queryPrefixes } from './query-keys'
 
 export const queries = {
   runtime: () => queryOptions({ queryKey: queryKeys.runtime, queryFn: ({ signal }) => resources.runtime(signal), staleTime: 10_000 }),

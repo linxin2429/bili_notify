@@ -445,6 +445,9 @@ func TestCommentTargetsAndOutbox(t *testing.T) {
 	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 8))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
+	count, err := store.CountCommentTargets()
+	require.NoError(t, err)
+	assert.Zero(t, count)
 
 	require.NoError(t, store.PutUP(model.UP{UID: "42", Enabled: true}))
 	_, err = store.PutChannel(model.Channel{
@@ -471,6 +474,9 @@ func TestCommentTargetsAndOutbox(t *testing.T) {
 	require.Len(t, kept, 2)
 	assert.Equal(t, "200", kept[0].CommentOID)
 	assert.Equal(t, "100", kept[1].CommentOID)
+	count, err = store.CountCommentTargets()
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
 
 	// Preserve baseline flag across upsert.
 	kept[0].BaselineReady = true
@@ -517,9 +523,43 @@ func TestCommentTargetsAndOutbox(t *testing.T) {
 	targets, err := store.ListCommentTargets("42")
 	require.NoError(t, err)
 	assert.Empty(t, targets)
+	count, err = store.CountCommentTargets()
+	require.NoError(t, err)
+	assert.Zero(t, count)
 	seen, err = store.CommentSeen("42", "r2")
 	require.NoError(t, err)
 	assert.False(t, seen)
+}
+
+func TestCountCommentTargets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		closed bool
+	}{
+		{name: "empty store"},
+		{name: "closed store", closed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store, err := Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustVault(t, 12))
+			require.NoError(t, err)
+			if tt.closed {
+				require.NoError(t, store.Close())
+			} else {
+				t.Cleanup(func() { _ = store.Close() })
+			}
+			got, err := store.CountCommentTargets()
+			if tt.closed {
+				require.ErrorContains(t, err, "counting comment targets")
+				require.EqualError(t, errors.Unwrap(err), "sql: database is closed")
+				return
+			}
+			require.NoError(t, err)
+			assert.Zero(t, got)
+		})
+	}
 }
 
 func TestSessionSwitchResetsAccountScopedCollectionState(t *testing.T) {

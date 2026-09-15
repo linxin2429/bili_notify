@@ -13,10 +13,18 @@ export const queryKeys = {
   aiJobs: (query: object = {}) => ['ai-jobs', query] as const, aiJob: (id: string) => ['ai-jobs', 'detail', id] as const,
 }
 
+export const queryPrefixes = {
+  sources: ['sources'] as const,
+  contents: ['contents'] as const,
+  deliveries: ['deliveries'] as const,
+  auditLogs: ['audit-logs'] as const,
+  aiJobs: ['ai-jobs'] as const,
+}
+
 const topicKeys: Record<RealtimeTopic, readonly string[]> = {
   runtime: queryKeys.runtime, settings: queryKeys.settings, channels: queryKeys.channels,
-  deliveries: ['deliveries'], 'microsoft-logins': queryKeys.microsoftLogins, 'audit-logs': ['audit-logs'],
-  'ai-status': queryKeys.aiStatus, 'ai-jobs': ['ai-jobs'],
-  accounts: queryKeys.accounts, sources: ['sources'], contents: ['contents'], backfills: ['sources'],
+  deliveries: queryPrefixes.deliveries, 'microsoft-logins': queryKeys.microsoftLogins, 'audit-logs': queryPrefixes.auditLogs,
+  'ai-status': queryKeys.aiStatus, 'ai-jobs': queryPrefixes.aiJobs,
+  accounts: queryKeys.accounts, sources: queryPrefixes.sources, contents: queryPrefixes.contents, backfills: queryPrefixes.sources,
 }
 export function invalidateTopics(client: QueryClient, topics: RealtimeTopic[]) { for (const topic of new Set(topics)) void client.invalidateQueries({ queryKey: topicKeys[topic] }) }

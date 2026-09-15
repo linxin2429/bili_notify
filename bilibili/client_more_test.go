@@ -89,6 +89,46 @@ func TestClientSessionHeadersAndRetryAfter(t *testing.T) {
 	assert.Zero(t, ParseRetryAfter(nil))
 }
 
+func TestParseRetryAfter(t *testing.T) {
+	t.Parallel()
+	future := time.Now().UTC().Add(90 * time.Second).Format(http.TimeFormat)
+	tests := []struct {
+		name   string
+		header string
+		resp   *http.Response
+		want   time.Duration
+		min    time.Duration
+		max    time.Duration
+	}{
+		{name: "nil response"},
+		{name: "empty header", resp: &http.Response{Header: make(http.Header)}},
+		{name: "seconds", header: "12", want: 12 * time.Second},
+		{name: "zero seconds", header: "0"},
+		{name: "negative seconds", header: "-3"},
+		{name: "invalid", header: "invalid"},
+		{name: "clamps overflow seconds", header: "9223372036854775807", want: time.Duration((1<<63-1)/int64(time.Second)) * time.Second},
+		{name: "http date", header: future, min: 80 * time.Second, max: 90 * time.Second},
+		{name: "past http date", header: time.Now().UTC().Add(-time.Hour).Format(http.TimeFormat)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resp := tt.resp
+			if resp == nil && tt.name != "nil response" {
+				resp = &http.Response{Header: make(http.Header)}
+				resp.Header.Set("Retry-After", tt.header)
+			}
+			got := ParseRetryAfter(resp)
+			if tt.min != 0 || tt.max != 0 {
+				assert.GreaterOrEqual(t, got, tt.min)
+				assert.LessOrEqual(t, got, tt.max)
+				return
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestClientClassifiesHTTPAndQRStates(t *testing.T) {
 	t.Parallel()
 	httpTests := []struct {

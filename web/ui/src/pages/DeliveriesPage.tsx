@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import { queries } from '../shared/api/query'
+import { queries, queryPrefixes } from '../shared/api/query'
 import { resources } from '../shared/api/resources'
 import { apiErrorMessage } from '../shared/api/errors'
 import { useSession } from '../modules/session'
@@ -23,7 +23,7 @@ export function DeliveriesPage() {
   const notify = useNotify()
   const retry = useMutation({
     mutationFn: (id: string) => resources.retryDelivery(csrf, id),
-    onSuccess: () => { notify('已重新加入投递队列', 'success'); void client.invalidateQueries({ queryKey: ['deliveries'] }) },
+    onSuccess: () => { notify('已重新加入投递队列', 'success'); void client.invalidateQueries({ queryKey: queryPrefixes.deliveries }) },
     onError: error => notify(apiErrorMessage(error), 'danger'),
   })
   const update = (patch: Record<string, string | undefined>) => {

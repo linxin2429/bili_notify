@@ -15,7 +15,6 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -268,13 +267,7 @@ func (c *SessionClient) request(parent context.Context, operation, method, endpo
 		if resp.StatusCode == 429 || resp.StatusCode == 412 || resp.StatusCode == 403 {
 			kind = ErrorRiskControl
 		}
-		retry := time.Duration(0)
-		if seconds, err := strconv.ParseInt(resp.Header.Get("Retry-After"), 10, 64); err == nil && seconds > 0 {
-			retry = time.Duration(min(seconds, int64((1<<63-1)/int64(time.Second)))) * time.Second
-		} else if date, err := http.ParseTime(resp.Header.Get("Retry-After")); err == nil {
-			retry = max(0, time.Until(date))
-		}
-		return &APIError{Kind: kind, HTTPStatus: resp.StatusCode, RetryAfter: retry, Message: "renewal HTTP request failed"}
+		return &APIError{Kind: kind, HTTPStatus: resp.StatusCode, RetryAfter: ParseRetryAfter(resp), Message: "renewal HTTP request failed"}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil {

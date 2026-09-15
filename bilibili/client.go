@@ -1263,6 +1263,16 @@ func ParseRetryAfter(resp *http.Response) time.Duration {
 	if resp == nil {
 		return 0
 	}
-	seconds, _ := strconv.Atoi(resp.Header.Get("Retry-After"))
-	return time.Duration(seconds) * time.Second
+	value := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+		const maxSeconds = int64((1<<63 - 1) / int64(time.Second))
+		return time.Duration(min(seconds, maxSeconds)) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		return max(0, time.Until(when))
+	}
+	return 0
 }
