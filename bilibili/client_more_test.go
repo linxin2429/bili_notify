@@ -106,6 +106,7 @@ func TestParseRetryAfter(t *testing.T) {
 		{name: "zero seconds", header: "0"},
 		{name: "negative seconds", header: "-3"},
 		{name: "invalid", header: "invalid"},
+		{name: "clamps overflow seconds", header: "9223372036854775807", want: time.Duration((1<<63-1)/int64(time.Second)) * time.Second},
 		{name: "http date", header: future, min: 80 * time.Second, max: 90 * time.Second},
 		{name: "past http date", header: time.Now().UTC().Add(-time.Hour).Format(http.TimeFormat)},
 	}

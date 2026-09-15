@@ -552,7 +552,8 @@ func TestCountCommentTargets(t *testing.T) {
 			}
 			got, err := store.CountCommentTargets()
 			if tt.closed {
-				require.Error(t, err)
+				require.ErrorContains(t, err, "counting comment targets")
+				require.EqualError(t, errors.Unwrap(err), "sql: database is closed")
 				return
 			}
 			require.NoError(t, err)

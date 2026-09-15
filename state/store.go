@@ -780,8 +780,10 @@ func (s *Store) ListAllCommentTargets() ([]model.CommentTarget, error) {
 
 func (s *Store) CountCommentTargets() (int, error) {
 	var count int64
-	err := s.db.Model(&syncTargetRow{}).Where("platform = ?", model.PlatformBilibili).Count(&count).Error
-	return int(count), err
+	if err := s.db.Model(&syncTargetRow{}).Where("platform = ?", model.PlatformBilibili).Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("counting comment targets: %w", err)
+	}
+	return int(count), nil
 }
 
 func (s *Store) enrichCommentTargets(targets []model.CommentTarget) error {
