@@ -616,6 +616,26 @@ func TestParseReplyList(t *testing.T) {
 			},
 		},
 		{
+			name: "root preview is one level",
+			body: `{
+				"code":0,"message":"0","ttl":1,
+				"data":{"page":{"num":1,"size":20,"count":1},"replies":[
+					{"rpid_str":"11","root_str":"0","parent_str":"0","ctime":1700000000,"rcount":1,
+					 "member":{"mid":"1","uname":"alice"},"content":{"message":"root"},
+					 "replies":[{"rpid_str":"12","root_str":"11","parent_str":"11","ctime":1700000001,
+					   "member":{"mid":"2","uname":"bob"},"content":{"message":"child"},
+					   "replies":[{"rpid_str":"13","root_str":"11","parent_str":"12","ctime":1700000002,
+					     "member":{"mid":"3","uname":"carol"},"content":{"message":"ignored"}}]}]}
+				]}
+			}`,
+			check: func(t *testing.T, page ReplyPage) {
+				require.Len(t, page.Replies, 1)
+				require.Len(t, page.Replies[0].Preview, 1)
+				assert.Equal(t, "12", page.Replies[0].Preview[0].RPID)
+				assert.Empty(t, page.Replies[0].Preview[0].Preview)
+			},
+		},
+		{
 			name:    "closed",
 			body:    `{"code":12002,"message":"Comment area is closed","ttl":1,"data":null}`,
 			wantErr: "12002",

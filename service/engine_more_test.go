@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -351,6 +353,50 @@ func TestPollCommentTargetArchivesWithoutChannels(t *testing.T) {
 	assert.Equal(t, "reply", tree[0].RPID)
 }
 
+func TestPollCommentTargetNotifiesAfterEmptyBaseline(t *testing.T) {
+	t.Parallel()
+	phase := atomic.Int32{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/x/v2/reply" {
+			http.NotFound(w, r)
+			return
+		}
+		if phase.Load() == 0 {
+			_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"page":{"num":1,"size":20,"count":0},"replies":[]}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"page":{"num":1,"size":20,"count":1},"replies":[{"rpid_str":"e2e-up-reply","root_str":"0","parent_str":"0","ctime":1700000002,"member":{"mid":"42","uname":"UP"},"content":{"message":"E2E UP comment reply"}}]}}`)
+	}))
+	t.Cleanup(server.Close)
+	store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	_, err = store.PutChannel(model.Channel{
+		Name: "robot", Type: model.ChannelWeCom, Enabled: true,
+		Settings: map[string]string{"webhook": "https://example.com/hook"},
+	})
+	require.NoError(t, err)
+	target := seedServiceCommentTarget(t, store, model.CommentTarget{
+		UID: "42", UPName: "UP", DynamicID: "dynamic", CommentType: 11, CommentOID: "oid",
+	})
+	engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
+	require.NoError(t, engine.pollCommentTarget(t.Context(), target))
+	targets, err := store.ListCommentTargets("42")
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+	assert.True(t, targets[0].BaselineReady)
+	deliveries, err := store.ListDeliveries(0)
+	require.NoError(t, err)
+	assert.Empty(t, deliveries)
+	phase.Store(1)
+	require.NoError(t, engine.pollCommentTarget(t.Context(), targets[0]))
+	deliveries, err = store.ListDeliveries(0)
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	require.NotNil(t, deliveries[0].Comment)
+	assert.Equal(t, "e2e-up-reply", deliveries[0].Comment.RPID)
+}
+
 func TestPollCommentTargetClosesUnavailableTarget(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -433,36 +479,194 @@ func TestLoginLifecycle(t *testing.T) {
 	engine.loginWG.Wait()
 }
 
-func TestBuildCommentThreadEdgeCases(t *testing.T) {
+func TestPollCommentTargetIncrementalExpand(t *testing.T) {
 	t.Parallel()
-	target := model.CommentTarget{UID: "42"}
 	tests := []struct {
 		name           string
-		trigger        bilibili.Reply
-		roots          map[string]bilibili.Reply
-		children       map[string]bilibili.Reply
-		wantIDs        []string
+		secondRoots    string
+		secondHasMore  bool
+		grownRoot      string
+		wantChildRoots []string
+		wantLive       []string
+		wantDeleted    []string
+		wantDeliveries int
+		wantTrigger    string
+		wantThreadLen  int
 		wantIncomplete bool
+		wantLastError  bool
+		lostTree       bool
 	}{
-		{name: "complete parent chain", trigger: bilibili.Reply{RPID: "child", Root: "root", Parent: "root", Mid: "42"}, roots: map[string]bilibili.Reply{"root": {RPID: "root", Mid: "7"}}, wantIDs: []string{"root", "child"}},
-		{name: "missing parent falls back to root", trigger: bilibili.Reply{RPID: "child", Root: "root", Parent: "missing", Mid: "42"}, roots: map[string]bilibili.Reply{"root": {RPID: "root", Mid: "7"}}, wantIDs: []string{"root", "child"}},
-		{name: "missing root is incomplete", trigger: bilibili.Reply{RPID: "child", Root: "missing", Parent: "0", Mid: "42"}, wantIDs: []string{"child"}, wantIncomplete: true},
-		{name: "cycle terminates", trigger: bilibili.Reply{RPID: "a", Parent: "b", Mid: "42"}, children: map[string]bilibili.Reply{"b": {RPID: "b", Parent: "a"}}, wantIDs: []string{"b", "a"}},
+		{
+			name:           "ungrown root skips child http",
+			secondRoots:    `{"rpid_str":"quiet","root_str":"0","parent_str":"0","ctime":1700000000,"rcount":1,"member":{"mid":"7","uname":"viewer"},"content":{"message":"quiet"}},{"rpid_str":"grown","root_str":"0","parent_str":"0","ctime":1700000001,"rcount":2,"member":{"mid":"7","uname":"viewer"},"content":{"message":"grown"}}`,
+			grownRoot:      "grown",
+			wantChildRoots: []string{"grown"},
+			wantLive:       []string{"quiet", "quiet-child", "grown", "grown-child", "grown-new"},
+			wantDeliveries: 1,
+			wantTrigger:    "grown-new",
+			wantThreadLen:  2,
+		},
+		{
+			name:           "matching rcount skips child http",
+			secondRoots:    `{"rpid_str":"quiet","root_str":"0","parent_str":"0","ctime":1700000000,"rcount":1,"member":{"mid":"7","uname":"viewer"},"content":{"message":"quiet-edit"}},{"rpid_str":"grown","root_str":"0","parent_str":"0","ctime":1700000001,"rcount":1,"member":{"mid":"7","uname":"viewer"},"content":{"message":"grown"}}`,
+			wantChildRoots: nil,
+			wantLive:       []string{"quiet", "quiet-child", "grown", "grown-child"},
+			wantDeliveries: 0,
+		},
+		{
+			name:           "preview unknown expands",
+			secondRoots:    `{"rpid_str":"quiet","root_str":"0","parent_str":"0","ctime":1700000000,"rcount":1,"member":{"mid":"7","uname":"viewer"},"content":{"message":"quiet"},"replies":[{"rpid_str":"quiet-swap","root_str":"quiet","parent_str":"quiet","ctime":1700000003,"member":{"mid":"42","uname":"UP"},"content":{"message":"swap"}}]},{"rpid_str":"grown","root_str":"0","parent_str":"0","ctime":1700000001,"rcount":1,"member":{"mid":"7","uname":"viewer"},"content":{"message":"grown"}}`,
+			grownRoot:      "quiet",
+			wantChildRoots: []string{"quiet"},
+			wantLive:       []string{"quiet", "quiet-swap", "grown", "grown-child"},
+			wantDeleted:    []string{"quiet-child"},
+			wantDeliveries: 1,
+			wantTrigger:    "quiet-swap",
+			wantThreadLen:  2,
+		},
+		{
+			name:           "vanished root tombstones when census complete",
+			secondRoots:    `{"rpid_str":"grown","root_str":"0","parent_str":"0","ctime":1700000001,"rcount":1,"member":{"mid":"7","uname":"viewer"},"content":{"message":"grown"}}`,
+			wantChildRoots: nil,
+			wantLive:       []string{"grown", "grown-child"},
+			wantDeleted:    []string{"quiet", "quiet-child"},
+			wantDeliveries: 0,
+		},
+		{
+			name:           "truncated census does not commit",
+			secondRoots:    `{"rpid_str":"grown","root_str":"0","parent_str":"0","ctime":1700000001,"rcount":1,"member":{"mid":"7","uname":"viewer"},"content":{"message":"grown"}}`,
+			secondHasMore:  true,
+			wantChildRoots: nil,
+			wantLive:       []string{"quiet", "quiet-child", "grown", "grown-child"},
+			wantDeliveries: 0,
+			wantLastError:  true,
+		},
+		{
+			name:           "lost tree re-expands populated roots",
+			lostTree:       true,
+			secondRoots:    `{"rpid_str":"quiet","root_str":"0","parent_str":"0","ctime":1700000000,"rcount":1,"member":{"mid":"7","uname":"viewer"},"content":{"message":"quiet"}},{"rpid_str":"grown","root_str":"0","parent_str":"0","ctime":1700000001,"rcount":1,"member":{"mid":"7","uname":"viewer"},"content":{"message":"grown"}}`,
+			wantChildRoots: []string{"quiet", "grown"},
+			wantLive:       []string{"quiet", "quiet-child", "grown", "grown-child"},
+			wantDeliveries: 0,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			nodes, incomplete := buildCommentThread(target, tt.trigger, tt.roots, tt.children)
-			ids := make([]string, 0, len(nodes))
-			for _, node := range nodes {
-				ids = append(ids, node.RPID)
+			var childRoots []string
+			var mu sync.Mutex
+			phase := atomic.Int32{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/x/v2/reply":
+					if phase.Load() == 0 {
+						_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"page":{"num":1,"size":20,"count":2},"replies":[{"rpid_str":"quiet","root_str":"0","parent_str":"0","ctime":1700000000,"rcount":1,"member":{"mid":"7","uname":"viewer"},"content":{"message":"quiet"}},{"rpid_str":"grown","root_str":"0","parent_str":"0","ctime":1700000001,"rcount":1,"member":{"mid":"7","uname":"viewer"},"content":{"message":"grown"}}]}}`)
+						return
+					}
+					count := 2
+					if tt.secondHasMore {
+						count = 21
+					}
+					_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"page":{"num":1,"size":20,"count":%d},"replies":[%s]}}`, count, tt.secondRoots)
+				case "/x/v2/reply/reply":
+					root := r.URL.Query().Get("root")
+					mu.Lock()
+					if phase.Load() > 0 {
+						childRoots = append(childRoots, root)
+					}
+					mu.Unlock()
+					switch root {
+					case "quiet":
+						if strings.Contains(tt.secondRoots, "quiet-swap") && phase.Load() > 0 {
+							_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"page":{"num":1,"size":20,"count":1},"replies":[{"rpid_str":"quiet-swap","root_str":"quiet","parent_str":"quiet","ctime":1700000003,"member":{"mid":"42","uname":"UP"},"content":{"message":"swap"}}]}}`)
+							return
+						}
+						_, _ = io.WriteString(w, `{"code":0,"message":"0","data":{"page":{"num":1,"size":20,"count":1},"replies":[{"rpid_str":"quiet-child","root_str":"quiet","parent_str":"quiet","ctime":1700000002,"member":{"mid":"7","uname":"viewer"},"content":{"message":"quiet child"}}]}}`)
+					case "grown":
+						replies := `{"rpid_str":"grown-child","root_str":"grown","parent_str":"grown","ctime":1700000002,"member":{"mid":"7","uname":"viewer"},"content":{"message":"grown child"}}`
+						if phase.Load() > 0 && tt.grownRoot == "grown" {
+							replies += `,{"rpid_str":"grown-new","root_str":"grown","parent_str":"grown","ctime":1700000004,"member":{"mid":"42","uname":"UP"},"content":{"message":"new"}}`
+						}
+						_, _ = fmt.Fprintf(w, `{"code":0,"message":"0","data":{"page":{"num":1,"size":20,"count":2},"replies":[%s]}}`, replies)
+					default:
+						http.NotFound(w, r)
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+			store, err := state.Open(t.Context(), filepath.Join(t.TempDir(), "data.db"), mustTestVault(t))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = store.Close() })
+			_, err = store.PutChannel(model.Channel{
+				Name: "robot", Type: model.ChannelWeCom, Enabled: true,
+				Settings: map[string]string{"webhook": "https://example.com/hook"},
+			})
+			require.NoError(t, err)
+			target := seedServiceCommentTarget(t, store, model.CommentTarget{
+				UID: "42", UPName: "UP", DynamicID: "dynamic", ContentType: "DYNAMIC_TYPE_WORD",
+				Title: "title", URL: "https://t.bilibili.com/1", CommentType: 11, CommentOID: "oid",
+				PublishedAt: time.Unix(1700000000, 0),
+			})
+			engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), slog.New(slog.NewTextHandler(io.Discard, nil)), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 10, 1), nil, nil)
+			require.NoError(t, engine.pollCommentTarget(t.Context(), target))
+			targets, err := store.ListCommentTargets("42")
+			require.NoError(t, err)
+			require.Len(t, targets, 1)
+			if tt.lostTree {
+				content, _, err := store.Content(model.ContentID(model.PlatformBilibili, target.DynamicID))
+				require.NoError(t, err)
+				_, err = store.SyncCommentTree(content, nil, true, true, "lost", &targets[0])
+				require.NoError(t, err)
 			}
-			assert.Equal(t, tt.wantIDs, ids)
+			phase.Store(1)
+			childRoots = nil
+			require.NoError(t, engine.pollCommentTarget(t.Context(), targets[0]))
+			mu.Lock()
+			gotRoots := append([]string(nil), childRoots...)
+			mu.Unlock()
+			slices.Sort(gotRoots)
+			wantRoots := append([]string(nil), tt.wantChildRoots...)
+			slices.Sort(wantRoots)
+			assert.Equal(t, wantRoots, gotRoots)
+			tree, incomplete, err := store.CommentTree(model.ContentID(model.PlatformBilibili, target.DynamicID))
+			require.NoError(t, err)
 			assert.Equal(t, tt.wantIncomplete, incomplete)
-			require.NotEmpty(t, nodes)
-			assert.True(t, nodes[len(nodes)-1].IsTrigger)
+			live, deleted := splitCommentLife(tree)
+			assert.ElementsMatch(t, tt.wantLive, live)
+			assert.ElementsMatch(t, tt.wantDeleted, deleted)
+			targets, err = store.ListCommentTargets("42")
+			require.NoError(t, err)
+			require.Len(t, targets, 1)
+			if tt.wantLastError {
+				assert.Contains(t, targets[0].LastError, "comment walk incomplete")
+			} else {
+				assert.Empty(t, targets[0].LastError)
+			}
+			deliveries, err := store.ListDeliveries(0)
+			require.NoError(t, err)
+			require.Len(t, deliveries, tt.wantDeliveries)
+			if tt.wantDeliveries == 0 {
+				return
+			}
+			require.NotNil(t, deliveries[0].Comment)
+			assert.Equal(t, tt.wantTrigger, deliveries[0].Comment.RPID)
+			require.Len(t, deliveries[0].Comment.Thread, tt.wantThreadLen)
+			assert.True(t, deliveries[0].Comment.Thread[tt.wantThreadLen-1].IsTrigger)
 		})
 	}
+}
+
+func splitCommentLife(tree []model.CommentNode) (live, deleted []string) {
+	for _, node := range flattenCommentNodes(tree) {
+		if node.DeletedAt.IsZero() {
+			live = append(live, node.RPID)
+			continue
+		}
+		deleted = append(deleted, node.RPID)
+	}
+	return live, deleted
 }
 
 func TestRefreshRelationsPersistsRouting(t *testing.T) {

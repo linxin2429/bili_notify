@@ -924,159 +924,32 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 	))
 	defer func() { finishSpan(span, err) }()
 	store := e.store.WithContext(ctx)
-
-	upReplies := make([]bilibili.Reply, 0)
-	// rootRPID -> root reply
-	roots := make(map[string]bilibili.Reply)
-	// child rpid -> reply
-	children := make(map[string]bilibili.Reply)
-	// roots that need full expansion because an UP reply lives under them
-	expandRoots := make(map[string]struct{})
-	paginationIncomplete := false
-
-	seenRootPages := make(map[string]bool)
-	for pn := 1; pn <= 10000; pn++ {
-		if pn > 1 {
-		}
-		requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
-		page, err := e.client.ListRootReplies(requestCtx, target.CommentType, target.CommentOID, pn, 20)
-		cancel()
-		if err != nil {
-			return e.handleCommentPollError(ctx, target, err)
-		}
-		signature := replyPageSignature(page.Replies)
-		if page.HasMore && (signature == "" || seenRootPages[signature]) {
-			paginationIncomplete = true
-			break
-		}
-		seenRootPages[signature] = true
-		for _, reply := range page.Replies {
-			roots[reply.RPID] = reply
-			if reply.Mid == target.UID {
-				upReplies = append(upReplies, reply)
-			}
-			// Preview nested replies sometimes accompany roots; capture lightly.
-			_ = reply
-		}
-		if !page.HasMore {
-			break
-		}
-		if pn == 10000 {
-			paginationIncomplete = true
-		}
+	content, err := e.ensureCommentContent(store, target)
+	if err != nil {
+		return err
 	}
-
-	// A complete tree requires expanding every root that reports children. This
-	// also discovers nested UP replies without relying on truncated root previews.
-	for rootID, root := range roots {
-		if root.RCount <= 0 {
-			continue
-		}
-		expandRoots[rootID] = struct{}{}
+	stored, err := loadStoredComments(store, content.ID)
+	if err != nil {
+		return err
 	}
-
-	for rootID := range expandRoots {
-		seenReplyPages := make(map[string]bool)
-		for pn := 1; pn <= 10000; pn++ {
-			requestCtx, cancel := context.WithTimeout(ctx, e.httpTimeout)
-			page, err := e.client.ListChildReplies(requestCtx, target.CommentType, target.CommentOID, rootID, pn, 20)
-			cancel()
-			if err != nil {
-				return e.handleCommentPollError(ctx, target, err)
-			}
-			signature := replyPageSignature(page.Replies)
-			if page.HasMore && (signature == "" || seenReplyPages[signature]) {
-				paginationIncomplete = true
-				break
-			}
-			seenReplyPages[signature] = true
-			for _, reply := range page.Replies {
-				if reply.Root == "" {
-					reply.Root = rootID
-				}
-				children[reply.RPID] = reply
-				if reply.Mid == target.UID {
-					upReplies = append(upReplies, reply)
-				}
-			}
-			if !page.HasMore {
-				break
-			}
-			if pn == 10000 {
-				paginationIncomplete = true
-			}
-		}
+	idx := indexLiveComments(stored)
+	kind := walkKindFor(target)
+	fetched, walk, err := e.walkBiliComments(ctx, target, idx, kind)
+	if err != nil {
+		return e.handleCommentPollError(ctx, target, err)
 	}
-
-	// Deduplicate UP replies by rpid.
-	unique := make(map[string]bilibili.Reply, len(upReplies))
-	for _, reply := range upReplies {
-		unique[reply.RPID] = reply
+	if err := commentWalkReady(walk); err != nil {
+		return e.handleCommentPollError(ctx, target, err)
 	}
-
-	notes := make([]model.CommentNotification, 0, len(unique))
-	for _, reply := range unique {
-		seen, err := store.CommentSeen(target.UID, reply.RPID)
-		if err != nil {
-			return err
-		}
-		if seen && target.BaselineReady {
-			continue
-		}
-		thread, incomplete := buildCommentThread(target, reply, roots, children)
-		notes = append(notes, model.CommentNotification{
-			RPID:         reply.RPID,
-			UPUID:        target.UID,
-			UPName:       target.UPName,
-			ContentType:  target.ContentType,
-			ContentID:    target.DynamicID,
-			ContentTitle: target.Title,
-			ContentURL:   target.URL,
-			PublishedAt:  reply.CTime,
-			Incomplete:   incomplete || paginationIncomplete,
-			Thread:       thread,
-		})
-	}
-	slices.SortFunc(notes, func(a, b model.CommentNotification) int {
-		return a.PublishedAt.Compare(b.PublishedAt)
-	})
-
 	target.LastError = ""
-	content, _, contentErr := store.Content(model.ContentID(model.PlatformBilibili, target.DynamicID))
-	if errors.Is(contentErr, state.ErrNotFound) {
-		externalID := target.DynamicID
-		if externalID == "" {
-			externalID = target.CommentOID
-		}
-		source := model.Source{ID: model.SourceID(model.PlatformBilibili, target.UID), Platform: model.PlatformBilibili,
-			Type: model.SourceBilibiliUP, ExternalID: target.UID, Name: target.UPName, Enabled: true, BaselineState: model.BaselineComplete}
-		if err := store.PutSource(source); err != nil {
-			return err
-		}
-		content = model.Content{ID: model.ContentID(model.PlatformBilibili, externalID), Platform: model.PlatformBilibili,
-			SourceID: source.ID, ExternalID: externalID, AuthorID: target.UID, AuthorName: target.UPName,
-			UpstreamType: firstNonEmptyString(target.ContentType, "commentable"), Type: biliContentType(target.ContentType),
-			Title: target.Title, URL: target.URL, PublishedAt: target.PublishedAt, LastSyncedAt: time.Now()}
-		if content.PublishedAt.IsZero() {
-			content.PublishedAt = time.Now()
-		}
-	} else if contentErr != nil {
-		return contentErr
-	}
-	nodes := make([]model.CommentNode, 0, len(roots)+len(children))
-	for _, reply := range roots {
-		nodes = append(nodes, biliCommentNode(content.ID, target.UID, reply, true))
-	}
-	for _, reply := range children {
-		nodes = append(nodes, biliCommentNode(content.ID, target.UID, reply, false))
-	}
-	slices.SortFunc(nodes, func(a, b model.CommentNode) int {
-		if order := a.Time.Compare(b.Time); order != 0 {
-			return order
-		}
-		return strings.Compare(a.ID, b.ID)
+	snap := assembleCommentSnapshot(assembleInput{
+		ContentID: content.ID,
+		UPUID:     target.UID,
+		Stored:    stored,
+		Fetched:   fetched,
+		Walk:      walk,
 	})
-	digests, err := store.SyncCommentTree(content, nodes, !paginationIncomplete, !target.BaselineReady, newBatchID("bilibili"), &target)
+	digests, err := store.SyncCommentTree(content, snap.Nodes(), snap.Complete(), !target.BaselineReady, newBatchID("bilibili"), &target)
 	if err != nil {
 		return err
 	}
@@ -1088,8 +961,6 @@ func (e *Engine) pollCommentTarget(ctx context.Context, target model.CommentTarg
 	if created > 0 {
 		e.logger.InfoContext(ctx, "new UP replies queued", "event", "comment.replies_queued", "up_uid", target.UID, "comment_oid", target.CommentOID, "reply_count", created)
 		e.publish(TopicStatus | TopicDeliveries | TopicComments | TopicContents)
-	} else if len(notes) > 0 {
-		e.publish(TopicComments | TopicContents)
 	}
 	return nil
 }
@@ -1144,79 +1015,6 @@ func firstNonEmptyString(values ...string) string {
 
 func newBatchID(platform string) string {
 	return fmt.Sprintf("%s:%d", platform, time.Now().UnixNano())
-}
-
-func buildCommentThread(target model.CommentTarget, trigger bilibili.Reply, roots, children map[string]bilibili.Reply) ([]model.CommentNode, bool) {
-	incomplete := false
-	// Collect chain from trigger up to root via parent links.
-	byID := make(map[string]bilibili.Reply, len(roots)+len(children)+1)
-	for id, reply := range roots {
-		byID[id] = reply
-	}
-	for id, reply := range children {
-		byID[id] = reply
-	}
-	byID[trigger.RPID] = trigger
-
-	chain := make([]bilibili.Reply, 0, 8)
-	current := trigger
-	seen := map[string]struct{}{current.RPID: {}}
-	for {
-		chain = append(chain, current)
-		parentID := current.Parent
-		if parentID == "" || parentID == "0" {
-			// If this is not a root and we know root, ensure root is present.
-			if current.Root != "" && current.Root != current.RPID {
-				if root, ok := byID[current.Root]; ok {
-					if _, exists := seen[root.RPID]; !exists {
-						chain = append(chain, root)
-					}
-				} else {
-					incomplete = true
-				}
-			}
-			break
-		}
-		parent, ok := byID[parentID]
-		if !ok {
-			// Fall back to root if available.
-			if current.Root != "" {
-				if root, ok := byID[current.Root]; ok {
-					if _, exists := seen[root.RPID]; !exists {
-						chain = append(chain, root)
-					}
-				} else {
-					incomplete = true
-				}
-			} else {
-				incomplete = true
-			}
-			break
-		}
-		if _, exists := seen[parent.RPID]; exists {
-			break
-		}
-		seen[parent.RPID] = struct{}{}
-		current = parent
-	}
-	// chain is trigger -> ... -> root; reverse to root -> trigger.
-	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
-		chain[i], chain[j] = chain[j], chain[i]
-	}
-	nodes := make([]model.CommentNode, 0, len(chain))
-	for _, reply := range chain {
-		nodes = append(nodes, model.CommentNode{
-			RPID:      reply.RPID,
-			Parent:    reply.Parent,
-			Mid:       reply.Mid,
-			Name:      reply.Name,
-			Message:   reply.Message,
-			Time:      reply.CTime,
-			IsUP:      reply.Mid == target.UID,
-			IsTrigger: reply.RPID == trigger.RPID,
-		})
-	}
-	return nodes, incomplete
 }
 
 func (e *Engine) handleCommentPollError(ctx context.Context, target model.CommentTarget, pollErr error) error {
