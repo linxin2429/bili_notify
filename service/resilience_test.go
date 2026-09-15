@@ -213,18 +213,16 @@ func TestPollFeedPaginationInvariants(t *testing.T) {
 	}
 }
 
-func TestCommentPaginationMarksTruncatedThreadsIncomplete(t *testing.T) {
+func TestCommentPaginationAbortsIncompleteWalk(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name       string
 		rootCount  int
 		childCount int
-		rootPages  int
-		replyPages int
 		childUP    bool
 	}{
-		{name: "root page cap", rootCount: 21, rootPages: 1, replyPages: 1},
-		{name: "child page cap", rootCount: 1, childCount: 21, rootPages: 1, replyPages: 1, childUP: true},
+		{name: "root page cap", rootCount: 21},
+		{name: "child page cap", rootCount: 1, childCount: 21, childUP: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -249,9 +247,14 @@ func TestCommentPaginationMarksTruncatedThreadsIncomplete(t *testing.T) {
 			require.NoError(t, engine.pollCommentTarget(t.Context(), target))
 			deliveries, err := store.ListDeliveries(0)
 			require.NoError(t, err)
-			require.Len(t, deliveries, 1)
-			require.NotNil(t, deliveries[0].Comment)
-			assert.True(t, deliveries[0].Comment.Incomplete)
+			assert.Empty(t, deliveries)
+			seen, err := store.CommentSeen(target.UID, "child")
+			require.NoError(t, err)
+			assert.False(t, seen)
+			targets, err := store.ListCommentTargets("42")
+			require.NoError(t, err)
+			require.Len(t, targets, 1)
+			assert.Contains(t, targets[0].LastError, "comment walk incomplete")
 		})
 	}
 }
@@ -282,6 +285,13 @@ func TestCommentPaginationCollectsMultipleRootAndChildPages(t *testing.T) {
 	store := openServiceTestStore(t)
 	putServiceTestChannel(t, store)
 	target := seedServiceCommentTarget(t, store, model.CommentTarget{UID: "42", UPName: "UP", DynamicID: "dynamic", CommentType: 11, CommentOID: "oid", BaselineReady: true})
+	content, _, err := store.Content(model.ContentID(model.PlatformBilibili, target.DynamicID))
+	require.NoError(t, err)
+	_, err = store.SyncCommentTree(content, []model.CommentNode{{
+		ID: model.CommentID(model.PlatformBilibili, "seed"), Platform: model.PlatformBilibili, ContentID: content.ID,
+		RPID: "seed", Mid: "7", Name: "viewer", Time: time.Unix(1699999999, 0),
+	}}, true, true, "seed", &target)
+	require.NoError(t, err)
 	engine := NewEngine(store, bilibili.New(server.Client(), "test", bilibili.WithBaseURLs(server.URL, server.URL)), testLogger(), NewMetrics(metricnoop.NewMeterProvider()), testSettings(30, 1000, 2), nil, nil)
 
 	require.NoError(t, engine.pollCommentTarget(t.Context(), target))

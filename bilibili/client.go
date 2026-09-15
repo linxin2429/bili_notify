@@ -766,6 +766,9 @@ type Reply struct {
 	Message string
 	CTime   time.Time
 	RCount  int64
+	// Preview is the truncated child list that sometimes accompanies a root.
+	// It is not an authoritative child tree.
+	Preview []Reply
 }
 
 type ReplyPage struct {
@@ -1209,6 +1212,7 @@ type rawReply struct {
 	Content *struct {
 		Message string `json:"message"`
 	} `json:"content"`
+	Replies []rawReply `json:"replies"`
 }
 
 func parseReply(raw rawReply) (Reply, error) {
@@ -1246,6 +1250,15 @@ func parseReply(raw rawReply) (Reply, error) {
 	if raw.Content != nil {
 		message = strings.TrimSpace(raw.Content.Message)
 	}
+	preview := make([]Reply, 0, len(raw.Replies))
+	for _, nested := range raw.Replies {
+		nested.Replies = nil
+		child, err := parseReply(nested)
+		if err != nil {
+			continue
+		}
+		preview = append(preview, child)
+	}
 	return Reply{
 		RPID:    rpid,
 		Root:    root,
@@ -1256,6 +1269,7 @@ func parseReply(raw rawReply) (Reply, error) {
 		Message: message,
 		CTime:   time.Unix(int64(raw.CTime), 0),
 		RCount:  raw.RCount,
+		Preview: preview,
 	}, nil
 }
 
