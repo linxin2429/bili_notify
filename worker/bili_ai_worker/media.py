@@ -113,12 +113,16 @@ def _retry_delay(attempt: int) -> int:
     return min(2 ** max(attempt - 1, 0), 30)
 
 
-async def split_audio(page: DownloadedPage) -> list[tuple[Path, int]]:
+async def split_audio(
+    page: DownloadedPage, *, chunk_duration_ms: int = CHUNK_DURATION_MS
+) -> list[tuple[Path, int]]:
+    if chunk_duration_ms <= 0:
+        raise DownloadError("chunk duration must be positive")
     chunk_dir = page.audio_path.parent / f"chunks-{page.page}"
     chunk_dir.mkdir(mode=0o700, exist_ok=True)
     pattern = chunk_dir / "chunk-%04d.wav"
     process = await asyncio.create_subprocess_exec(
-        *_split_audio_command(page.audio_path, pattern),
+        *_split_audio_command(page.audio_path, pattern, chunk_duration_ms=chunk_duration_ms),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -133,7 +137,7 @@ async def split_audio(page: DownloadedPage) -> list[tuple[Path, int]]:
     chunks = _merge_short_trailing_chunk(sorted(chunk_dir.glob("chunk-*.wav")))
     if not chunks:
         raise DownloadError("ffmpeg produced no audio chunks")
-    return [(chunk, index * CHUNK_DURATION_MS) for index, chunk in enumerate(chunks)]
+    return [(chunk, index * chunk_duration_ms) for index, chunk in enumerate(chunks)]
 
 
 def audio_duration_seconds(path: Path) -> float:
@@ -183,7 +187,9 @@ def _merge_short_trailing_chunk(chunks: list[Path]) -> list[Path]:
     return chunks[:-1]
 
 
-def _split_audio_command(audio_path: Path, pattern: Path) -> tuple[str, ...]:
+def _split_audio_command(
+    audio_path: Path, pattern: Path, *, chunk_duration_ms: int = CHUNK_DURATION_MS
+) -> tuple[str, ...]:
     return (
         "ffmpeg",
         "-hide_banner",
@@ -204,7 +210,7 @@ def _split_audio_command(audio_path: Path, pattern: Path) -> tuple[str, ...]:
         "-f",
         "segment",
         "-segment_time",
-        str(CHUNK_DURATION_MS // 1000),
+        str(chunk_duration_ms // 1000),
         "-reset_timestamps",
         "1",
         str(pattern),

@@ -27,7 +27,13 @@ from bili_ai_worker.media import (
     download_pages,
     split_audio,
 )
-from bili_ai_worker.provider import ProviderError, complete, test_provider, transcribe
+from bili_ai_worker.provider import (
+    ProviderError,
+    complete,
+    test_provider,
+    transcribe,
+    transcription_chunk_duration_ms,
+)
 from bili_ai_worker.telemetry import audio_bytes as audio_bytes_metric
 from bili_ai_worker.telemetry import cache_bytes as cache_bytes_metric
 from bili_ai_worker.telemetry import configure_telemetry, job_duration, jobs
@@ -179,8 +185,9 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
             yield _progress("downloading_audio", 20, "音频下载完成")
             result_pages: list[worker_pb2.TranscriptPage] = []
             usage: dict[str, Any] = {}
+            chunk_duration_ms = transcription_chunk_duration_ms(request.provider.base_url)
             for page_index, page in enumerate(pages):
-                chunks = await split_audio(page)
+                chunks = await split_audio(page, chunk_duration_ms=chunk_duration_ms)
                 chunk_bytes = [chunk.stat().st_size for chunk, _ in chunks]
                 logger.info(
                     "audio page split into transcription chunks",
@@ -190,6 +197,7 @@ class AIWorker(worker_pb2_grpc.AIWorkerServicer):
                         "bvid": request.bvid,
                         "page": page.page,
                         "duration_ms": page.duration_ms,
+                        "chunk_duration_ms": chunk_duration_ms,
                         "chunk_count": len(chunks),
                         "chunk_bytes_total": sum(chunk_bytes),
                         "chunk_bytes_min": min(chunk_bytes),
