@@ -58,6 +58,12 @@ describe('AI profile editor', () => {
     expect(api.updateAIProfile.mock.calls[0]?.[1]).not.toHaveProperty('updated_at')
   })
 
+  it('explains host-selected transcription protocols', async () => {
+    renderPage()
+    expect(await screen.findByText(/Gemini 使用 Interactions/)).toBeInTheDocument()
+    expect(screen.getByText(/DashScope compatible-mode/)).toBeInTheDocument()
+  })
+
   it('toggles availability and shows the provider probe error', async () => {
     const user = userEvent.setup()
     renderPage()

@@ -88,6 +88,13 @@ def test_split_audio_forces_16_bit_pcm_wav() -> None:
     assert command[-1].endswith(".wav")
 
 
+@pytest.mark.parametrize(("duration_ms", "expected"), [(600_000, "600"), (150_000, "150")])
+def test_split_audio_segment_time_matches_chunk_duration(duration_ms: int, expected: str) -> None:
+    command = _split_audio_command(Path("input.flac"), Path("chunk-%04d.wav"), chunk_duration_ms=duration_ms)
+
+    assert command[command.index("-segment_time") + 1] == expected
+
+
 def _write_silence(path: Path, duration_sec: float, sample_rate: int = 16_000) -> None:
     frames = max(round(sample_rate * duration_sec), 0)
     with wave.open(str(path), "wb") as audio:
